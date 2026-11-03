@@ -130,7 +130,7 @@ import type {
 } from '@recued/contracts';
 import type { LLMConfig, QuotaTracker } from '@recued/llm';
 import type { EnrichmentProducerEntry } from './housekeeping-scheduler-instance.js';
-import { listCollectionDataTables } from '../../collections/table.js';
+import { countHousekeepingSourceRecords } from '../../housekeeping/source-counts.js';
 
 /**
  * STORE COMPOSER — Phase 1.
@@ -192,32 +192,10 @@ export const composeHousekeepingStores = (
  * RPC-DEPS COMPOSER — Phase 1.5.
  */
 
-/** Counts source records in a given enrichment scope. Drives the
- *  Run-Now dialog's "estimated tokens × N records" preview. Mail is
- *  the only scope D-123 + first AI producer (`summary`) cover; other
- *  scopes return 0 until their producers ship. The query scans
- *  `sqlite_master` for the per-account `collection_<scope>_<hash>`
- *  tables — same approach the canary `thread_signals` producer uses
- *  for its thread-walk SQL — so new mail accounts are picked up
- *  without a registry pass. */
-const countHousekeepingSourceRecords = (
-  database: Database.Database,
-  scope: string,
-): number => {
-  if (scope !== 'mail') return 0;
-  const tables = listCollectionDataTables(database, 'mail');
-  let total = 0;
-  for (const name of tables) {
-    const row = database
-      .prepare(`SELECT COUNT(*) AS n FROM "${name}"`)
-      .get() as { n: number };
-    total += row.n;
-  }
-  return total;
-};
-
 export interface ComposeHousekeepingRpcDepsArgs {
   db: Database.Database | undefined;
+  /** Same live collections the source walkers use; no body reads for previews. */
+  collectionRegistry?: Pick<CollectionRegistry, 'list'>;
   /** Output of `composeHousekeepingStores`. `configStore` + `stateStore`
    *  must be defined for the composer to return a deps object;
    *  otherwise the composer returns `undefined` and the caller spreads
@@ -367,37 +345,38 @@ export const composeHousekeepingRpcDeps = (
     // state when no slot / pool path resolves. Deterministic producers
     // skip the probe — `ai_path_available` is left undefined so the
     // dialog renders the standard "no token cost" body.
-    getEnrichmentInfo: async (task_id) => {
+    getEnrichmentInfo: async (task_id, sourceCounts) => {
       if (!db) return undefined;
       const entry = enrichmentProducers.get(task_id);
       if (!entry) return standaloneEnrichmentInfo(task_id);
       const tokens = entry.producer.estimate_per_record_tokens();
-      const source_collection_count = countHousekeepingSourceRecords(
-        db,
-        entry.producer.source_scope,
-      );
-      // D-132 P6 — declared scope-of-read with per-collection record
-      // counts. The producer registers the manifest at boot; bin counts
-      // records per collection at preview time so the dialog reflects
-      // warehouse growth without a re-register. Counts fall back to
-      // `undefined` for non-mail scopes until walkers ship —
-      // `record_count` is optional on the wire shape.
+      const counts = sourceCounts ?? new Map<string, number | undefined>();
+      const countScope = (scope: string): number | undefined => {
+        const key = scope.startsWith('data.') ? scope.slice(5) : scope;
+        if (!counts.has(key)) {
+          counts.set(key, countHousekeepingSourceRecords(db, args.collectionRegistry, key));
+        }
+        return counts.get(key);
+      };
+      const sourceCount = countScope(entry.producer.source_scope);
+      const sourceCollectionCount = sourceCount === undefined
+        ? {}
+        : { source_collection_count: sourceCount };
+      // Keep known empty sources explicit, and leave unavailable counts absent.
       const scope_read: HousekeepingScopeReadEntry[] =
         entry.producer.scope_read_declaration.map((spec) => {
-          const count = countHousekeepingSourceRecords(db, spec.collection);
+          const count = countScope(spec.collection);
           return {
             collection: spec.collection,
             sample_field_paths: spec.sample_field_paths,
-            ...(count > 0 || spec.collection === entry.producer.source_scope
-              ? { record_count: count }
-              : {}),
+            ...(count === undefined ? {} : { record_count: count }),
           };
         });
       if (tokens === 0) {
         return {
           token_estimate_per_record: 0,
           is_ai_surface: false,
-          source_collection_count,
+          ...sourceCollectionCount,
           scope_read,
         };
       }
@@ -426,7 +405,7 @@ export const composeHousekeepingRpcDeps = (
       return {
         token_estimate_per_record: tokens,
         is_ai_surface: true,
-        source_collection_count,
+        ...sourceCollectionCount,
         ai_path_available: probe.available,
         ...(probe.reason ? { ai_path_reason: probe.reason } : {}),
         scope_read,

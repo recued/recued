@@ -56,7 +56,38 @@ export type BridgeAction =
   | 'list_tabs'
   /** D-335 slice C — opens `args.url` in a new background tab, never in one
    *  already open, and answers the loaded page: `{ page, url, title }`. */
-  | 'open_tab';
+  | 'open_tab'
+  /** D-335 slice H — waits in the document `args.page` names until an element
+   *  matching `args.selector` shows (or, with `args.until: 'gone'`, until none
+   *  does), holding `args.text` when given, for at most `args.timeout_ms`:
+   *  `{ page, url, title, found, waited_ms }`. Not finding it in time answers
+   *  `found: false`, not an error. ⛔ Not `wait_for_selector`, which an older
+   *  Bridge runs against whichever tab matches the site, and checks only once.
+   *  `apps/bridge/src/actions/page-wait.ts`. */
+  | 'wait_for_element'
+  /** D-335 slice H — one table in the document `args.page` names: a `<table>`
+   *  or an ARIA table or grid, by `args.selector` or `args.ref`, else the first
+   *  shown. `{ page, url, title, columns, rows, truncated }`: the text a person
+   *  sees in each cell, a protected field's value left out. ⛔ Not
+   *  `extract_table`, which reads hidden text and has no bound.
+   *  `apps/bridge/src/actions/page-table.ts`. */
+  | 'read_table'
+  /** D-335 slice H — a picture of the document `args.page` names as Chrome draws
+   *  it: the visible part of the page, or the element `args.ref` or
+   *  `args.selector` names. `{ page, url, title, image, mime_type, width,
+   *  height }`, `image` in base64. Chrome only captures the tab in front, so the
+   *  Bridge brings the tab forward for the capture and then puts back the tab the
+   *  owner was on (owner's ruling, 2026-11-01). ⛔ Not `screenshot`, which an
+   *  older Bridge takes of whichever tab matches the site, and leaves in front.
+   *  `apps/bridge/src/actions/page-capture.ts`.
+   *
+   *
+   *  Chrome captures a tab only for an extension holding `<all_urls>` or
+   *  `activeTab`. The owner's ruling (2026-11-01) amends invariant I-9 (D-148
+   *  § A.3.4): `<all_urls>` is an optional grant the owner asks for with "Allow
+   *  screenshots" in the side panel, never in the manifest's host permissions.
+   *  Without it the Bridge refuses before any tab moves, naming the switch. */
+  | 'screenshot_page';
 
 export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'read_dom',
@@ -70,6 +101,9 @@ export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'describe',
   'list_tabs',
   'open_tab',
+  'wait_for_element',
+  'read_table',
+  'screenshot_page',
 ] as const;
 
 /** The actions every Bridge has run since D-148. A Bridge whose capability
@@ -121,6 +155,53 @@ export const BRIDGE_TABS_OUTPUT_KEYS = ['tabs', 'truncated'] as const;
 export const BRIDGE_TABS_MAX = 50;
 /** The keys of an `open_tab` answer. */
 export const BRIDGE_OPEN_OUTPUT_KEYS = ['page', 'url', 'title'] as const;
+
+/** D-335 slice H — how long `wait_for_element` waits when no time is given,
+ *  and the longest it waits. The command's own budget stays above it. */
+export const BRIDGE_WAIT_DEFAULT_MS = 10_000;
+export const BRIDGE_WAIT_MAX_MS = 30_000;
+/** The keys of a `wait_for_element` answer. */
+export const BRIDGE_WAIT_OUTPUT_KEYS = ['page', 'url', 'title', 'found', 'waited_ms'] as const;
+/** D-335 slice H — the most rows one `read_table` answers. Its cells share
+ *  inspect's budget: at most {@link BRIDGE_INSPECT_MAX_CHARS} characters in all,
+ *  and at most {@link BRIDGE_INSPECT_MAX_VALUE_CHARS} in one cell. A table that
+ *  does not fit answers the rows that did, with `truncated`. */
+export const BRIDGE_TABLE_MAX_ROWS = 500;
+/** The keys of a `read_table` answer. */
+export const BRIDGE_TABLE_OUTPUT_KEYS = ['page', 'url', 'title', 'columns', 'rows', 'truncated'] as const;
+/** D-335 slice H — the longest side of a screenshot, in pixels. A larger capture
+ *  is scaled down to it: about the most a model reads at full detail. */
+export const BRIDGE_SCREENSHOT_MAX_EDGE = 1568;
+/** The most base64 one screenshot may be (about 1.5 MB of picture), well under
+ *  the server socket's 4 MiB message cap. A JPEG over it is re-encoded smaller. */
+export const BRIDGE_SCREENSHOT_MAX_BASE64 = 2_000_000;
+/** The keys of a `screenshot_page` answer. */
+export const BRIDGE_SCREENSHOT_OUTPUT_KEYS = ['page', 'url', 'title', 'image', 'mime_type', 'width', 'height'] as const;
+
+/** D-335 slice H — a picture in a step's output, by reference: the server keeps
+ *  the bytes for {@link BROWSER_IMAGE_TTL_MS} and the output carries this. An
+ *  AI app over MCP receives the picture itself beside the result; a run's
+ *  history, chat and the audit log keep only the reference, so a screenshot is
+ *  never stored with them. */
+export interface BrowserImageRef {
+  type: 'image';
+  image_id: string;
+  mime_type: 'image/jpeg' | 'image/png';
+  width: number;
+  height: number;
+}
+
+/** How long the server keeps a screenshot after taking it. */
+export const BROWSER_IMAGE_TTL_MS = 10 * 60_000;
+
+export const isBrowserImageRef = (value: unknown): value is BrowserImageRef => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const ref = value as Record<string, unknown>;
+  return ref.type === 'image' && typeof ref.image_id === 'string' && /^[\w-]{8,64}$/.test(ref.image_id)
+    && (ref.mime_type === 'image/jpeg' || ref.mime_type === 'image/png')
+    && Number.isSafeInteger(ref.width) && (ref.width as number) > 0
+    && Number.isSafeInteger(ref.height) && (ref.height as number) > 0;
+};
 
 /** D-148 § A.3.1 — the surface kind a bridge-bound ingredient
  *  represents. `messaging` is permanently rejected by the marketplace
@@ -405,6 +486,10 @@ export interface AggregateCapacityGap {
     bridge_id: string;
     bridge_label: string;
     gap_reason: BridgeCapacityGap;
+    /** D-335 slice H — what the Bridge said, worded for the AI to pass on
+     *  ("Screenshots are off: turn on …", "Chrome's window with this page is
+     *  minimized …"). Absent when it said nothing. */
+    message?: string;
   }>;
 }
 
@@ -523,6 +608,10 @@ export const BRIDGE_LOCAL_STORAGE_FIELDS: ReadonlyArray<string> = [
   // kept when the Bridge is disconnected (`clear`), since dropping it would
   // let the Bridge act on a site the owner listed.
   'blocked_sites',
+  // D-163 O-2's follow-up — the approvals this Bridge has shown as OS
+  // notifications: ids only, the newest 200, so each shows once. An id leaves
+  // once its approval closes; `clear` drops the list, unlike `blocked_sites`.
+  'approval_notices_shown',
 ] as const;
 
 /** Per-ingredient grant record persisted by the bridge. Three-way

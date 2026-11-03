@@ -18,6 +18,7 @@ import {
   type ChatToolHandlerDeps,
 } from '../chat-tool-handlers.js';
 import type { ExecuteRequest, ExecuteResponse } from '../types.js';
+import { recipeConnectionChoices } from '../recipe-connection-choices.js';
 
 const recipe = (recipe_id: string, variables: Record<string, unknown>): RecipeDefinition => ({
   recipe_id,
@@ -99,6 +100,27 @@ describe("D-320 slice 2d — a recipe tool's `connections` is the run's choice",
 });
 
 describe('D-320 slice 2d — the recipe tools list their slots', () => {
+  it('omits impossible connection choices without scanning catalogs, even with family profiles wired', () => {
+    for (const enrolled of [[], ['hubspot-app']]) {
+      const contractScan = vi.fn(() => []);
+      const listProfiles = vi.fn(() => []);
+      const { deps } = depsWith({
+        connectionChoices: () => recipeConnectionChoices({
+          contractScan,
+          manifests: { get: () => null },
+          enrolled: new Set(enrolled),
+          displayName: () => undefined,
+          profiles: { list: listProfiles },
+        }),
+      });
+      const entries = createChatTier2Source(deps).listRecipes();
+      expect(entries.map(entry => entry.recipe_id)).toEqual(['dealer', 'own-setting']);
+      expect(entries.every(entry => entry.connection_slots === undefined)).toBe(true);
+      expect(contractScan).not.toHaveBeenCalled();
+      expect(listProfiles).not.toHaveBeenCalled();
+    }
+  });
+
   it("attach each recipe's choices, read once per listing", () => {
     const listings: string[] = [];
     const { deps } = depsWith({

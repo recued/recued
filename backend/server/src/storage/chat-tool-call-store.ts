@@ -12,6 +12,8 @@ export interface ChatToolCallSettlement {
   state: 'succeeded' | 'failed' | 'interrupted';
   /** The call never ran because its approval was refused (`state: 'failed'`). */
   denied?: true;
+  /** The call never ran because its approval expired unanswered (`state: 'failed'`). */
+  expired?: true;
 }
 
 const storedCall = (metadata: string | null): StoredChatToolCall | undefined => {
@@ -50,10 +52,11 @@ export const settleChatToolCall = (
   // value writes `"denied": null`, which `isChatToolCallRecord` refuses — and a
   // refused record vanishes from every reader rather than reading as not denied.
   const denied = settlement.denied === true ? `, '$.tool_call.denied', json('true')` : '';
+  const expired = settlement.expired === true ? `, '$.tool_call.expired', json('true')` : '';
   db.prepare(`UPDATE chat_messages
     SET metadata_blob = json_set(metadata_blob,
       '$.tool_call.state', @state, '$.tool_call.updated_at',
-      MAX(@ts, COALESCE(json_extract(metadata_blob, '$.tool_call.updated_at'), @ts))${denied})
+      MAX(@ts, COALESCE(json_extract(metadata_blob, '$.tool_call.updated_at'), @ts))${denied}${expired})
     WHERE message_id = @message_id AND session_id = @session_id
       AND role = 'tool' AND json_valid(metadata_blob)
       AND json_extract(metadata_blob, '$.tool_call.state') IN ('running', 'held', 'interrupted')

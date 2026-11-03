@@ -76,7 +76,7 @@ afterEach(async () => {
 });
 const rpc = <T>(socket: WebSocket, method: string, args: unknown = {}): Promise<T> => new Promise((resolveReply, reject) => {
   const request_id = randomUUID();
-  const timer = setTimeout(() => { socket.off('message', receive); reject(new Error(`RPC timed out: ${method}`)); }, 8_000);
+  const timer = setTimeout(() => { socket.off('message', receive); reject(new Error(`RPC timed out: ${method}`)); }, 60_000);
   const receive = (bytes: import('ws').RawData) => {
     const response = JSON.parse(bytes.toString()); if (response.request_id !== request_id) return;
     clearTimeout(timer); socket.off('message', receive);
@@ -344,14 +344,15 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
 
   // The clock the deadlines are measured from starts HERE.
   const now = Date.now();
+  const runAt = now + 120_000;
   const request: PreparePreapproval = { idempotency_key: 'boot-review',
     subject: { kind: 'recipe', recipe_id: fixtureRecipe.recipe_id, publisher_id: 'core', config: {} },
-    activation: { kind: 'one_shot', run_at: now + (execute ? 15_000 : 120_000), time_zone: 'UTC' },
-    // ⚠ 10s → 15s on the execute path. The validator requires
-    // `decision_deadline <= run_at`, so pulling it up to EQUAL `run_at` is the
-    // most headroom available without moving `run_at` — which would cost real
-    // wall-clock, because the test then sleeps until that instant.
-    decision_deadline: now + (execute ? 15_000 : 90_000), dispatch_deadline: now + DISPATCH_WINDOW_MS };
+    activation: { kind: 'one_shot', run_at: runAt, time_zone: 'UTC' },
+    // This checks encrypted review persistence and dispatch across a reboot,
+    // not preparation latency. A cold prepare can exceed the old eight-second
+    // RPC bound under a full sweep. Keep the RPC bound below the review window,
+    // and the review deadline before run_at, for every transport and outcome.
+    decision_deadline: now + 90_000, dispatch_deadline: now + DISPATCH_WINDOW_MS };
   let pending: PreapprovalResult;
   if (state === 'stdio') {
     const reply = await stdio!.send(request);
@@ -401,6 +402,9 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
     .toContain(reopened.execution_status);
   if (execute) {
     let result = reopened;
+    // Reopening may finish before the run is due. Preserve the completion
+    // budget by starting it at the scheduled time, rather than at the reboot.
+    await new Promise<void>(done => setTimeout(done, Math.max(0, runAt - Date.now())));
     const until = Date.now() + 45_000;
     while (Date.now() < until && ['active', 'running'].includes(result.execution_status)) {
       await new Promise(done => setTimeout(done, 500));

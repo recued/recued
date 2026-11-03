@@ -168,9 +168,13 @@ export const createPromptScheduleHealthStore = (db: Database.Database) => {
     WHERE o.session_id=? AND o.turn_id=?`);
   const unseen = db.prepare('SELECT * FROM chat_prompt_failure_signals WHERE observed=0 ORDER BY rowid LIMIT 100');
   const planFailed = db.prepare("SELECT 1 FROM chat_plans WHERE session_id=? AND plan_id=? AND execution_status IN ('failed','unknown')");
+  // D-337 slice R — an approval that expired is no failure, as a refusal is not (a held write's
+  // lapse opens no episode either). Read here and not in the trigger above: a database keeps the
+  // trigger it was created with (`IF NOT EXISTS`), and every signal is checked here first.
   const toolFailed = db.prepare(`SELECT 1 FROM chat_messages WHERE session_id=? AND message_id=? AND CASE WHEN json_valid(metadata_blob)
     THEN json_extract(metadata_blob,'$.tool_call.state') IN ('failed','interrupted')
-      AND COALESCE(json_extract(metadata_blob,'$.tool_call.denied'),0)<>1 ELSE 0 END`);
+      AND COALESCE(json_extract(metadata_blob,'$.tool_call.denied'),0)<>1
+      AND COALESCE(json_extract(metadata_blob,'$.tool_call.expired'),0)<>1 ELSE 0 END`);
   const stillFailed = (value: PromptScheduleFailureSignal): boolean => value.source_kind === 'turn'
     || !!(value.source_kind === 'plan' ? planFailed : toolFailed).get(value.session_id, value.source_id);
   const noticeSignal = db.prepare('SELECT failure_key FROM chat_prompt_schedule_notices WHERE schedule_id=? AND episode_open=1');

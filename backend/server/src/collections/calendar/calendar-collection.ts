@@ -131,8 +131,11 @@ export interface CreateCalendarCollectionOptions {
  *  the calendar table + provider so the dispatcher can hit them
  *  directly without re-walking the registry. */
 export interface CalendarCollection extends Collection {
+  /** Host lifecycle fence without running aggregate health queries. */
+  readonly stopped?: boolean;
   /** Host-only: prepare asynchronous body storage before a shared commit. */
   prepareVerifiedUpsert?(payload: ProviderEventPayload, expected_version: string): Promise<PreparedLocalWrite>;
+  prepareVerifiedDelete?(source_id: string, expected_version: string): PreparedLocalWrite;
   /** Settles once the sync started last has caught up with the calendar — its
    *  scan and first poll are done, either of them failing — or has stopped.
    *  `null` until a sync starts: one deferred while the vault is locked has
@@ -395,7 +398,7 @@ export const createCalendarCollection = (
     const result = table.delete(source_id, expected_version);
     if (!result.deleted || !result.prior) return;
     const recordId = `cal:${slug}:${source_id}`;
-    withLocalMutationScope(undefined, () => emitter.deleted(recordId, result.prior!.hot as unknown as Record<string, unknown>));
+    afterLocalCommit(db, () => withLocalMutationScope(undefined, () => emitter.deleted(recordId, result.prior!.hot as unknown as Record<string, unknown>)));
   };
 
   /** Remove the rows inside the window that the provider no longer makes — of
@@ -727,6 +730,7 @@ export const createCalendarCollection = (
     },
     table,
     provider,
+    get stopped() { return state === 'disconnected'; },
     applyVerifiedUpsert,
     prepareVerifiedUpsert: async (payload, expectedVersion) => {
       if (provider.kind !== 'local') throw new Error('Only local Calendar can join a local transaction.');
@@ -737,5 +741,6 @@ export const createCalendarCollection = (
       } };
     },
     applyVerifiedDelete,
+    prepareVerifiedDelete: (source_id, expected_version) => ({ db, apply: () => deleteSource(source_id, expected_version) }),
   };
 };

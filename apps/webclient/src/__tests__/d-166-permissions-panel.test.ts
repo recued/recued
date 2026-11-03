@@ -473,15 +473,20 @@ describe('D-166 Permissions override inventory panel', () => {
     await mount.whenLoaded();
 
     const fullText = allText(rowFor(host, 'user_self', DEALS, DEALS_WRITE)!).join(' ');
-    expect(fullText).toContain('denied');
-    expect(fullText).toContain('approval: always');
-    expect(fullText).toContain('how risky it may get before asking you: write');
+    expect(fullText).toContain('never allowed');
+    // D-336 (spec §52) — the owner's words, never the stored values.
+    expect(fullText).toContain('always ask');
+    expect(fullText).toContain('how risky it may get before asking you: making changes');
+    expect(fullText).not.toContain('approval: always');
+    // Whom the rule is for, as the form names them: "You", never `user_self`.
+    expect(fullText).toContain('You');
+    expect(fullText).not.toContain('user_self');
     expect(fullText).toContain('timeout: 2500 ms');
     expect(fullText).toContain('cache TTL: 15000 ms');
 
     const sparseText = allText(rowFor(host, 'system', CONTACTS, CONTACTS_WRITE)!).join(' ');
-    expect(sparseText).toContain('denied');
-    expect(sparseText).not.toContain('approval:');
+    expect(sparseText).toContain('never allowed');
+    expect(sparseText).not.toMatch(/\b(never|always) ask\b|calls for it/i);
     expect(sparseText).not.toContain('max risk without approval:');
     expect(sparseText).not.toContain('timeout:');
     expect(sparseText).not.toContain('cache TTL:');

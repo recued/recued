@@ -71,6 +71,8 @@ describe('D-138 P1 — closed-list constants', () => {
     expect([...CONTACT_MERGE_RPC_METHODS].sort()).toEqual([
       'contact.merge.confirm',
       'contact.merge.list',
+      // D-336 slice P — the owner merges two contacts they name
+      'contact.merge.pair',
       'contact.merge.reject',
       'contact.merge.resolve_remerge_prompt',
       // D-138 P3 — Settings → Contacts → "Scan now" trigger

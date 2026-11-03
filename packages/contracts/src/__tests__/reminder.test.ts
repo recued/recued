@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   REMINDER_LATE_MS,
+  reminderDetailLink,
+  parseReminderLink,
   formatReminderAt,
   formatReminderDay,
   formatReminderTime,
@@ -93,5 +95,22 @@ describe('reminderDeliveryText', () => {
     // Another day: the day too.
     expect(reminderDeliveryText(reminder, FRIDAY_3PM + 20 * 3_600_000))
       .toBe('For Friday 16 October at 3:00 PM: call the dentist');
+  });
+});
+
+
+describe('reminder notification addresses', () => {
+  it('round-trips an exact reminder and preserves the old list address', () => {
+    expect(parseReminderLink(reminderDetailLink('rem_00000000-0000-4000-8000-000000000001')))
+      .toEqual({ reminder_id: 'rem_00000000-0000-4000-8000-000000000001' });
+    expect(parseReminderLink('#data/reminder')).toEqual({ reminder_id: null });
+  });
+
+  it('rejects malformed or unrelated notification addresses', () => {
+    for (const value of [undefined, '#data/reminder/', '#data/reminder/../settings', '#data/reminder/%2F',
+      '#data/reminder/rem_1?next=chat', '#data/reminder/rem_1/extra', '#data/reminder/rem_1\n', '#data/reminder\r\n', '#data/reminder/' + 'x'.repeat(129), 'javascript:alert(1)']) {
+      expect(parseReminderLink(value)).toBeNull();
+    }
+    for (const id of ['../settings', 'rem_1\n', 'rem_1\r\n']) expect(() => reminderDetailLink(id)).toThrow('Invalid reminder ID');
   });
 });

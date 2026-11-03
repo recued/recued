@@ -31,6 +31,7 @@ import {
   type ChatDispatchReason,
   type ChatMessage,
   type ChatPlanExecutionReceipt,
+  type ChatPlanMade,
   type ChatPlanProposal,
   type Checkpoint,
   type ExecutionSource,
@@ -38,13 +39,14 @@ import {
 } from '@recued/contracts';
 import { PREFLIGHT_HANDLER_KIND, type planApproval } from '@recued/gateway';
 import type { NotificationBlock } from '@recued/notification';
-import type { CheckpointStore } from '@recued/storage';
+import type { AuditEntry, CheckpointStore } from '@recued/storage';
 
 import type { ChatBroadcastEmitter, ChatOrchestratorDeps } from './chat-orchestrator.js';
 import { holdTier1Call, type RawOpDispatchDeps } from './raw-op-dispatch.js';
 import { mailChatFollowUpText, mailChatRunOutcome } from './mail-chat-door/follow-ups.js';
 import type { PreflightRunSettled } from './preflight-resumer.js';
 import type { ChatStore } from './storage/chat-store.js';
+import type { HeldResultContinuation, HeldResultOutcome } from './chat-held-results.js';
 import type { GatedActionStore } from './gated-action-store.js';
 
 /** How long a settled write's reply waits for its turn's answer. */
@@ -54,7 +56,8 @@ const HELD_WRITE_REPLY_POLL_MS = 2_000;
 /** One reply per proposal, so a settlement told twice writes once. */
 export const heldWriteReplyId = (plan_id: string): string => `held-write:${plan_id}`;
 
-/** What a hold that expired unanswered settles with (retention's `onRawOpExpired`). */
+/** What a hold that expired unanswered settles with (retention's `onRawOpExpired`, and its
+ *  `onExpired` for a held recipe run). */
 export const HELD_WRITE_EXPIRED_MESSAGE =
   'Its approval expired before anyone answered it, so nothing ran.';
 
@@ -84,6 +87,21 @@ export const expiredHoldSettlement = (checkpoint: Checkpoint, ts: number): Prefl
   };
 };
 
+/** D-337 slice R — the same for a held recipe run, from the record retention writes when it
+ *  expires one (its `onExpired`). Before, nothing settled such a run: its conversation never
+ *  heard, its call kept "waiting to hear back", and the model's next turn read it as pending.
+ *  Shaped as the resumer's refusal is (the originating `execution_source`, carried onto the
+ *  expiry's record from the paused one; the recipe as `tool_name`). `undefined` for a run no
+ *  source started. */
+export const expiredRunSettlement = (entry: AuditEntry, ts: number): PreflightRunSettled | undefined =>
+  entry.execution_source === undefined ? undefined : {
+    execution_source: entry.execution_source,
+    run_id: entry.run_id,
+    tool_name: entry.recipe_id,
+    result: { success: false, expired: true, message: HELD_WRITE_EXPIRED_MESSAGE },
+    ts,
+  };
+
 /** Codes a resume refuses with before anything ran, which are not dispatch reasons: the
  *  card says it was not done rather than that it may not have finished. */
 const resumeRefusalReason = (code: unknown): ChatDispatchReason =>
@@ -100,6 +118,9 @@ export interface HeldChatWritesDeps {
   readonly now?: () => number;
   /** Test seam for the reply's wait. */
   readonly schedule?: (run: () => void, ms: number) => void;
+  /** D-337 — continue the conversation with the write's outcome, as an AI app would. `true` once
+   *  a continuation is queued; the fixed reply below is then not written. */
+  readonly continueConversation?: (continuation: HeldResultContinuation) => Promise<boolean>;
 }
 
 export interface HeldChatWrites {
@@ -107,6 +128,22 @@ export interface HeldChatWrites {
    *  also written as a tool call's result. */
   settle(settled: PreflightRunSettled): Promise<boolean>;
 }
+
+/** D-336 slice Q — what a held write that ran made, from its result: the contact a
+ *  `contact.write` added, or the note a `memory.write` saved. A change of a contact makes none. */
+const madeBy = (tool: string, settledResult: unknown): ChatPlanMade | undefined => {
+  const result = (settledResult as { result?: unknown } | null | undefined)?.result;
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return undefined;
+  const made = result as Record<string, unknown>;
+  if (tool === 'contact.write' && made.added === true && typeof made.target_id === 'string' && made.target_id !== ''
+    && typeof made.name === 'string') {
+    return { kind: 'contact', target_id: made.target_id, name: made.name };
+  }
+  if (tool === 'memory.write' && typeof made.memory_id === 'string' && made.memory_id !== '') {
+    return { kind: 'memory', memory_id: made.memory_id };
+  }
+  return undefined;
+};
 
 export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites => {
   const now = deps.now ?? Date.now;
@@ -169,6 +206,37 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
     void attempt();
   };
 
+  /** D-337 — the conversation continues with the outcome; the fixed reply is the fallback. The
+   *  owner's own conversations: the app's chat, a messenger or an email chat. */
+  const continueOrReply = async (
+    plan: ChatPlanProposal,
+    settled: PreflightRunSettled,
+    outcome: HeldResultOutcome,
+    title: string | undefined,
+    source: ExecutionSource,
+    reply: string,
+  ): Promise<void> => {
+    // Which conversations go on is the continuation's to decide (the owner's own, by source).
+    if (deps.continueConversation !== undefined) {
+      const continued = await deps.continueConversation({
+        source,
+        session_id: plan.session_id,
+        turn_id: plan.turn_id,
+        run_id: settled.run_id,
+        tool_name: plan.tool,
+        tier: plan.tier,
+        args: plan.args,
+        outcome,
+        ...(outcome === 'ran' || outcome === 'failed' ? { result: settled.result } : {}),
+        ...(title !== undefined ? { title } : {}),
+        called_at: plan.created_at,
+        settled_at: settled.ts,
+      }).catch(() => false);
+      if (continued) return;
+    }
+    replyOnceAnswered(plan, reply, source);
+  };
+
   const settle = async (settled: PreflightRunSettled): Promise<boolean> => {
     let plan: ChatPlanProposal | undefined;
     try {
@@ -191,7 +259,9 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
       } catch (error) {
         console.error(`[chat] held write expiry for plan ${plan.plan_id} was not recorded`, error);
       }
-      if (source !== undefined) replyOnceAnswered(plan, heldWriteExpiredText(title), source);
+      if (source !== undefined) {
+        await continueOrReply(plan, settled, 'expired', title, source, heldWriteExpiredText(title));
+      }
       return true;
     }
     const { outcome, detail } = mailChatRunOutcome(settled);
@@ -214,8 +284,12 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
         await deps.plans.markConsumed(plan.plan_id, at, plan.turn_id);
         const result = (settled.result ?? {}) as Record<string, unknown>;
         const run = { run_id: settled.run_id };
+        const made = outcome === 'succeeded' ? madeBy(plan.tool, settled.result) : undefined;
         const receipt: ChatPlanExecutionReceipt = outcome === 'succeeded'
-          ? { status: 'completed', turn_id: plan.turn_id, result_ref: heldWriteReplyId(plan.plan_id), ...run }
+          ? {
+              status: 'completed', turn_id: plan.turn_id, result_ref: heldWriteReplyId(plan.plan_id),
+              ...(made !== undefined ? { made } : {}), ...run,
+            }
           : outcome === 'interrupted'
             ? { status: 'unknown', turn_id: plan.turn_id }
             : {
@@ -253,7 +327,9 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
           content += `\n\n[Open scheduled conversation](#chat/session/${encodeURIComponent(session)})`;
         }
       }
-      replyOnceAnswered(plan, content, source);
+      await continueOrReply(plan, settled,
+        outcome === 'succeeded' ? 'ran' : outcome === 'denied' ? 'refused' : 'failed',
+        title, source, content);
     }
     return true;
   };
@@ -261,25 +337,66 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
   return { settle };
 };
 
+/** How many answered holds the card's answerer remembers: far more than are answered at
+ *  once, and few enough that a long uptime keeps it small. */
+const ANSWERED_KEPT = 1000;
+
 /** D-329 — the chat card's answer to its held write's ask, over the notification block,
  *  given as the owner's answer from the app (`via: 'ui'`) like the approval cards'. The ask
  *  is found by the hold's run on every call, never kept: a boot re-raise mints a new one.
  *  `expired` — no ask is out because the hold expired unanswered (`holdExpired`, read off
- *  the hold's receipt), and the card was never told. Any other missing ask is `no_ask`. */
+ *  the hold's receipt), and the card was never told. Any other missing ask is `no_ask`.
+ *  `beforeApprove` (D-336 slice E: the owner's change to the call) runs once the ask is found
+ *  open, just before it is approved; a throw leaves it unanswered.
+ *
+ *  ⛔ ONE ANSWER AT A TIME PER HOLD (audit 2026-11-01). Finding the ask open, the owner's
+ *  change (the hold's checkpoint, then the proposal, or the checkpoint taken back) and the
+ *  answer are one step. Two cards answering at once each found the ask open, and the second's
+ *  change and its taking back landed between the first's and its answer: the card said "Edit
+ *  on device A" and memory saved the agent's words. Now the second finds the ask answered.
+ *  The holds answered here are kept (the newest `ANSWERED_KEPT`): an ask whose handler has
+ *  finished leaves the unresolved list, and the second would otherwise read as one not
+ *  raised yet ("not ready yet; try again"). */
 export const createHeldPlanAskAnswerer = (
   block: Pick<NotificationBlock, 'listUnresolvedAsks' | 'submitAnswer'>,
   holdExpired?: (run_id: string) => Promise<boolean>,
-) => async (
-  run_id: string,
-  option: 'approve' | 'deny',
-): Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'> => {
-  const ask = (await block.listUnresolvedAsks()).find((candidate) =>
-    candidate.handler_kind === PREFLIGHT_HANDLER_KIND && candidate.handler_payload.run_id === run_id);
-  if (ask === undefined) {
-    return holdExpired !== undefined && await holdExpired(run_id) ? 'expired' : 'no_ask';
-  }
-  if (ask.status !== 'open') return 'closed';
-  return block.submitAnswer({ ask_id: ask.ask_id, option, via: 'ui' });
+) => {
+  const answering = new Map<string, Promise<void>>();
+  const answered = new Set<string>();
+  const answerOnce = async (
+    run_id: string,
+    option: 'approve' | 'deny',
+    beforeApprove?: () => Promise<void>,
+  ): Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'> => {
+    if (answered.has(run_id)) return 'closed';
+    const ask = (await block.listUnresolvedAsks()).find((candidate) =>
+      candidate.handler_kind === PREFLIGHT_HANDLER_KIND && candidate.handler_payload.run_id === run_id);
+    if (ask === undefined) {
+      return holdExpired !== undefined && await holdExpired(run_id) ? 'expired' : 'no_ask';
+    }
+    if (ask.status !== 'open') return 'closed';
+    if (option === 'approve') await beforeApprove?.();
+    const outcome = await block.submitAnswer({ ask_id: ask.ask_id, option, via: 'ui' });
+    if (outcome === 'answered') {
+      answered.add(run_id);
+      if (answered.size > ANSWERED_KEPT) answered.delete(answered.values().next().value!);
+    }
+    return outcome;
+  };
+  return async (
+    run_id: string,
+    option: 'approve' | 'deny',
+    beforeApprove?: () => Promise<void>,
+  ): Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'> => {
+    const turn = (answering.get(run_id) ?? Promise.resolve()).then(() => answerOnce(run_id, option, beforeApprove));
+    const settled = turn.then(() => {}, () => {});
+    answering.set(run_id, settled);
+    try {
+      return await turn;
+    } finally {
+      if (answering.get(run_id) === settled) answering.delete(run_id);
+    }
+  };
 };
 
 /** D-329 — the chat gate's hold (`ChatOrchestratorDeps.holdTier1Write`): a Tier-1 write held
@@ -289,7 +406,7 @@ export const createHeldPlanAskAnswerer = (
 export const createHoldTier1Write = (
   getDeps: () => RawOpDispatchDeps | undefined,
 ): NonNullable<ChatOrchestratorDeps['holdTier1Write']> =>
-  async ({ tool, args, plan_id, run_id, session_id, execution_source, contract_snapshot, value_labels }) => {
+  async ({ tool, args, plan_id, run_id, session_id, turn_id, execution_source, contract_snapshot, value_labels, memory_conflicts, change_in_chat }) => {
     const deps = getDeps();
     if (deps === undefined) return { held: false, reason: 'execute_deps_unavailable' };
     const outcome = await holdTier1Call(deps, {
@@ -300,11 +417,17 @@ export const createHoldTier1Write = (
       correlationId: plan_id,
       runId: run_id,
       sessionId: session_id,
+      ...(turn_id !== undefined ? { turnId: turn_id } : {}),
       ...(value_labels !== undefined ? { valueLabels: value_labels } : {}),
+      ...(memory_conflicts !== undefined ? { memoryConflicts: memory_conflicts } : {}),
+      ...(change_in_chat !== undefined ? { changeInChat: change_in_chat } : {}),
     });
-    return outcome.kind === 'held'
-      ? { held: true }
-      : { held: false, reason: outcome.kind === 'ask' ? 'approval_not_wired' : outcome.kind };
+    if (outcome.kind !== 'held') {
+      return { held: false, reason: outcome.kind === 'ask' ? 'approval_not_wired' : outcome.kind };
+    }
+    return outcome.approval_channels !== undefined
+      ? { held: true, approval_channels: outcome.approval_channels }
+      : { held: true };
   };
 
 /** D-329 — the chat's run-settled sink: a held write settles here, onto its card and its
@@ -312,8 +435,12 @@ export const createHoldTier1Write = (
 export const settleChatRun = (
   heldWrites: HeldChatWrites,
   toolRowSink: (settled: PreflightRunSettled) => Promise<void>,
+  /** D-337 — a run held in the owner's messenger or email chat, which keeps no tool-call row:
+   *  `true` when it was one (`createWatchedRunSettlement`). */
+  watchedRuns?: (settled: PreflightRunSettled) => Promise<boolean>,
 ) => async (settled: PreflightRunSettled): Promise<void> => {
   if (await heldWrites.settle(settled)) return;
+  if (watchedRuns !== undefined && await watchedRuns(settled)) return;
   await toolRowSink(settled);
 };
 

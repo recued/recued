@@ -222,7 +222,7 @@ describe('ringing', () => {
     expect(await delivery().tick()).toMatchObject({ due: 0, delivered: 0 });
     clock = NOW + 30 * MINUTE;
     expect(await delivery().tick()).toMatchObject({ due: 1, delivered: 1 });
-    expect(sent).toEqual([{ title: 'Reminder', text: 'call the dentist', ui_link_url: '#data/reminder' }]);
+    expect(sent).toEqual([{ title: 'Reminder', text: 'call the dentist', ui_link_url: `#data/reminder/${reminder.reminder_id}` }]);
     expect(store.get(reminder.reminder_id)).toMatchObject({
       state: 'delivered', delivered_at: clock, delivered_to: ['in_app'], attempts: 1,
     });
@@ -470,6 +470,30 @@ describe('the Data → Reminders rpc', () => {
     expect(store.countPending()).toBe(0);
   });
 
+  it('reads an exact retained reminder beyond list pages, without changing it, and returns null after pruning', async () => {
+    const exact = store.create({ text: 'Original notification', at: FRIDAY_3PM, time_zone: null, origin: {} }, NOW);
+    for (let index = 0; index < 60; index++) store.create({ text: 'Earlier ' + index, at: NOW + index, time_zone: NY, origin: {} }, NOW);
+    const rpc = handlers()['reminder.get'];
+    const get = () => rpc({ reminder_id: exact.reminder_id }, client);
+    expect((await handlers()['reminder.list']({ limit: 50 }, client)).reminders.some(row => row.reminder_id === exact.reminder_id)).toBe(false);
+    const original = store.get(exact.reminder_id);
+    expect(await get()).toMatchObject({ reminder: { reminder_id: exact.reminder_id, text: 'Original notification', state: 'pending', time_zone: NY, when: 'Friday 16 October at 3:00 PM' } });
+    expect(store.get(exact.reminder_id)).toEqual(original);
+    store.markDelivered(exact.reminder_id, NOW, ['in_app']);
+    expect(await get()).toMatchObject({ reminder: { state: 'delivered', delivered_at: NOW } });
+    const cancelled = store.cancel(store.listPending(1)[0]!.reminder_id, NOW)!;
+    expect(await rpc({ reminder_id: cancelled.reminder_id }, client)).toMatchObject({ reminder: { state: 'cancelled' } });
+    const managed = store.ensureClock({ text: 'Meter check', at: FRIDAY_3PM, time_zone: NY, origin: {},
+      clock: { occurrence_id: 'occ-exact', point_key: 'point-exact', ask_id: 'ask-exact' } }, NOW);
+    expect(await rpc({ reminder_id: managed.reminder_id }, client)).toMatchObject({ reminder: { managed_by: 'clock' } });
+    store.prune(NOW + 1);
+    expect(await get()).toEqual({ reminder: null });
+    expect(await rpc({ reminder_id: 'rem_missing' }, client)).toEqual({ reminder: null });
+    for (const args of [null, {}, { reminder_id: '' }, { reminder_id: 7 }, { reminder_id: 'x'.repeat(129) }]) {
+      await expect(rpc(args as never, client)).rejects.toMatchObject({ code: 'bad_request' });
+    }
+  });
+
   it('lists, moves and cancels, answering as the ops do', async () => {
     const { reminder } = await reminders().reminderCreate({ text: 'call', at: FRIDAY_3PM });
     expect(await handlers()['reminder.list']({}, client)).toMatchObject({
@@ -504,6 +528,7 @@ describe('the Data → Reminders rpc', () => {
     for (const other of [{ instance_id: 'bridge-1', client_kind: 'bridge' }, { client_kind: 'webclient' }, {}]) {
       await expect(handlers()['reminder.create']({ text: 'Call', at: FRIDAY_3PM, creation_id: 'unauthorized' }, other as never)).rejects.toMatchObject({ code: 'unauthorized' });
       await expect(handlers()['reminder.list']({}, other as never)).rejects.toMatchObject({ code: 'unauthorized' });
+      await expect(handlers()['reminder.get']({ reminder_id: 'rem_1' }, other as never)).rejects.toMatchObject({ code: 'unauthorized' });
       await expect(handlers()['reminder.cancel']({ reminder_id: 'rem_1' }, other as never)).rejects.toMatchObject({ code: 'unauthorized' });
     }
   });

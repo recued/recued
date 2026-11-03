@@ -41,4 +41,16 @@ describe('D-182 — chat activity error line', () => {
     expect(text.length).toBeLessThan(200);
     expect(text.endsWith('…')).toBe(true);
   });
+
+  it('D-337 — a call not asked while one before it waits reads as left for later, not as an error', () => {
+    const row = projectInFlightActivity(turnWith({
+      tool_name: 'calendar.create', tier: 1, args: {}, status: 'error',
+      reason: 'not_asked_yet', detail: 'Not asked: an earlier call in this turn (recipe.run) is waiting …',
+    })).find((r) => r.kind === 'tool');
+    expect(row).toMatchObject({
+      text: 'left until you answer the approval before it: calendar.create',
+      // Nothing failed, so nothing "Needs attention"; nothing runs, so nothing is ongoing.
+      status: 'ok',
+    });
+  });
 });

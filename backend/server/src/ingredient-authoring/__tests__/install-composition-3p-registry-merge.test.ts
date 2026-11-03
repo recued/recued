@@ -189,6 +189,13 @@ describe('resolveBundledPackRecipes third-party registry merge', () => {
       ...composition.ingredients[0].http!,
       write_style: 'hubspot_properties',
     };
+    // On the HubSpot dialect a property is one flat name (a dotted one is refused, below).
+    composition.ingredients[0].entities!.Deal!.fields = [
+      dealField({ field_path: 'id', maps_to: 'id', type: 'string' }),
+      dealField({ field_path: 'title', maps_to: 'name', type: 'string' }),
+      dealField({ field_path: 'stage_name', maps_to: 'stage', type: 'string' }),
+      dealField({ field_path: 'value', maps_to: 'amount', type: 'number' }),
+    ];
 
     const res = resolveBundledPackRecipes(
       composition,
@@ -209,15 +216,31 @@ describe('resolveBundledPackRecipes third-party registry merge', () => {
     expect(raw.input).toEqual({
       operation: 'deal.create',
       args: {
-        'body.properties': {
-          'data.title': 'Acme',
-          'data.value': '30000',
-        },
+        'body.properties.title': 'Acme',
+        'body.properties.value': '30000',
       },
     });
     const projection = stepById(recipe, 'deal');
     expect(projection.transform).toBe('project');
     expect(projection.object).toBe('{{step.deal__raw.result}}');
+  });
+
+  it('fails closed for 3p deal.create on the HubSpot dialect when a field nests (data.title)', () => {
+    const composition = thirdPartyComposition();
+    composition.ingredients[0].http = {
+      ...composition.ingredients[0].http!,
+      write_style: 'hubspot_properties',
+    };
+
+    const res = resolveBundledPackRecipes(
+      composition,
+      'pack/acme/pipedrive-crm',
+      [bundledOpStepRecipe('pipedrive-deal-create', 'deal.create', { name: 'Acme', amount: 30000 })],
+    );
+
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.message).toContain("vendor field_path 'data.title' which is not a safe write identifier");
   });
 
   it('fails closed for 3p deal.create when write_style is bogus and narrows to undefined', () => {

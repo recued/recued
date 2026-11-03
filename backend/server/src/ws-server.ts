@@ -575,6 +575,15 @@ export const UPGRADE_FAILURES_BEFORE_COOLDOWN = 10;
 export const UPGRADE_FAILURE_WINDOW_MS = 60_000;
 export const UPGRADE_COOLDOWN_MS = 30_000;
 const UPGRADE_FAILURE_SOURCES_MAX = 1024;
+/** ⛔ …and ONE PAIRING refused again and again is refused without a check first, and those
+ *  refusals do not count against its address. Behind a proxy or tunnel every client is one
+ *  address, so a single dead pairing retrying (a revoked Bridge before 0.0.6 reconnected every
+ *  ~40 ms) put the address cooldown on all of them: a valid client was refused 19 times in 20,
+ *  measured 2026-11-03. Keyed on the token id AND the address, so on a server reached directly a
+ *  stranger who knows a device's token id cannot cool that device down from elsewhere. An unknown
+ *  token id and a refused one are treated alike, so this says nothing about which exist. */
+export const UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN = 3;
+export const UPGRADE_PAIRING_COOLDOWN_MS = 60_000;
 
 export const DATA_WS_MAX_IN_FLIGHT_GLOBAL = 16;
 
@@ -2378,25 +2387,41 @@ const buildWsBinding = (
    *  UPGRADE_FAILURES_BEFORE_COOLDOWN). Bounded: a spray of addresses cannot
    *  grow it without limit. */
   const upgradeFailures = new Map<string, { count: number; since: number; coolUntil: number }>();
+  /** The same, per pairing at an address (`UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN`). */
+  const pairingFailures = new Map<string, { count: number; since: number; coolUntil: number }>();
+  const coolingDown = (
+    failures: Map<string, { coolUntil: number }>,
+    key: string,
+    now: number,
+  ): boolean => (failures.get(key)?.coolUntil ?? 0) > now;
   const upgradeSourceCoolingDown = (source: string, now: number): boolean =>
-    (upgradeFailures.get(source)?.coolUntil ?? 0) > now;
-  const noteUpgradeFailure = (source: string, now: number): void => {
-    const prior = upgradeFailures.get(source);
+    coolingDown(upgradeFailures, source, now);
+  const noteFailure = (
+    failures: Map<string, { count: number; since: number; coolUntil: number }>,
+    key: string,
+    now: number,
+    before: number,
+    coolFor: number,
+  ): void => {
+    const prior = failures.get(key);
     const entry = prior !== undefined && now - prior.since <= UPGRADE_FAILURE_WINDOW_MS
       ? { ...prior, count: prior.count + 1 }
       : { count: 1, since: now, coolUntil: 0 };
-    if (entry.count >= UPGRADE_FAILURES_BEFORE_COOLDOWN) {
-      entry.coolUntil = now + UPGRADE_COOLDOWN_MS;
+    if (entry.count >= before) {
+      entry.coolUntil = now + coolFor;
       entry.count = 0;
       entry.since = now;
     }
-    upgradeFailures.delete(source);
-    upgradeFailures.set(source, entry);
-    if (upgradeFailures.size > UPGRADE_FAILURE_SOURCES_MAX) {
-      const oldest = upgradeFailures.keys().next().value;
-      if (oldest !== undefined) upgradeFailures.delete(oldest);
+    failures.delete(key);
+    failures.set(key, entry);
+    if (failures.size > UPGRADE_FAILURE_SOURCES_MAX) {
+      const oldest = failures.keys().next().value;
+      if (oldest !== undefined) failures.delete(oldest);
     }
   };
+  const noteUpgradeFailure = (source: string, now: number): void =>
+    noteFailure(upgradeFailures, source, now, UPGRADE_FAILURES_BEFORE_COOLDOWN, UPGRADE_COOLDOWN_MS);
+  const pairingKey = (source: string, token_id: string): string => `${source}\u0000${token_id}`;
   let upgradeAdmissionOpen = true;
   let rpcAdmissionOpen = true;
   let dataSocketAdmissionOpen = true;
@@ -2972,7 +2997,10 @@ const buildWsBinding = (
       // a source that keeps failing, or a full queue, is turned away first.
       const source = req.socket?.remoteAddress ?? 'unknown';
       const startedAt = Date.now();
-      if (upgradeSourceCoolingDown(source, startedAt)) {
+      const pairing = pairingKey(source, structured.token_id);
+      // A pairing refused again and again first, and not counted against the address: one dead
+      // pairing must not cool down every client behind the same proxy.
+      if (coolingDown(pairingFailures, pairing, startedAt) || upgradeSourceCoolingDown(source, startedAt)) {
         try { socket.write('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\n\r\n'); } catch { /* closed */ }
         try { socket.destroy(); } catch { /* destroyed */ }
         return;
@@ -2993,11 +3021,15 @@ const buildWsBinding = (
             return;
           }
           if (!ok || !record) {
-            noteUpgradeFailure(source, Date.now());
+            const failedAt = Date.now();
+            noteFailure(pairingFailures, pairing, failedAt,
+              UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN, UPGRADE_PAIRING_COOLDOWN_MS);
+            noteUpgradeFailure(source, failedAt);
             rejectBearer();
             return;
           }
           upgradeFailures.delete(source);
+          pairingFailures.delete(pairing);
           // Stamp last_used_at — best-effort; a touch failure shouldn't block
           // the accepted upgrade (the verify already succeeded so the bearer is
           // authoritative).

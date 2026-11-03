@@ -111,6 +111,7 @@ export {
 } from './connection-notification.js';
 export {
   validateIngredient,
+  graphqlOperationKind,
   isValidIngredient,
   assertValidIngredient,
   crossCheckCatalogOpenApi,

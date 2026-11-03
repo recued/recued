@@ -203,11 +203,9 @@ describe('deriveVendorWriteArgs - HubSpot properties body', () => {
     );
 
     expect(args).toEqual({
-      'body.properties': {
-        dealname: 'Acme',
-        dealstage: 'appointmentscheduled',
-        amount: '30000',
-      },
+      'body.properties.dealname': 'Acme',
+      'body.properties.dealstage': 'appointmentscheduled',
+      'body.properties.amount': '30000',
     });
   });
 
@@ -223,9 +221,25 @@ describe('deriveVendorWriteArgs - HubSpot properties body', () => {
     );
 
     expect(args).toEqual({
-      'body.properties': { email: 'a@b.com' },
+      'body.properties.email': 'a@b.com',
       contact_id: '{{config.cid}}',
     });
+  });
+
+  it('refuses a dotted property path: a HubSpot property name is one identifier', () => {
+    // A vendor whose fields nest (`data.title`) cannot borrow this dialect: the old one-object
+    // body wrote `{"properties": {"data.title": …}}`, a property HubSpot cannot have, and a flat
+    // `body.properties.data.title` key would nest. Refused, as the Pipedrive dialect refuses it.
+    const result = deriveVendorWriteArgs(
+      'hubspot_properties',
+      'deal',
+      'update',
+      entityFieldsFromRegistry('pipedrive', [pipedriveDealRegistry]),
+      { [WRITE_SELECTOR_KEY]: '5', name: 'Acme' },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain("vendor field_path 'data.title' which is not a safe write identifier");
   });
 
   it('derives a selector-only delete without a write style or entity fields', () => {
@@ -438,11 +452,9 @@ describe('resolveConnectionAgnosticRecipe - write reverse projection', () => {
       input: {
         operation: 'deal.create',
         args: {
-          'body.properties': {
-            dealname: 'Acme',
-            dealstage: 'appointmentscheduled',
-            amount: '30000',
-          },
+          'body.properties.dealname': 'Acme',
+          'body.properties.dealstage': 'appointmentscheduled',
+          'body.properties.amount': '30000',
         },
       },
       result_names_connection: true,
@@ -503,7 +515,7 @@ describe('resolveConnectionAgnosticRecipe - write reverse projection', () => {
       input: {
         operation: 'contact.update',
         args: {
-          'body.properties': { email: 'a@b.com' },
+          'body.properties.email': 'a@b.com',
           contact_id: '{{config.cid}}',
         },
       },
@@ -540,6 +552,13 @@ describe('resolveConnectionAgnosticRecipe - write reverse projection', () => {
         company: '{{item.properties.company}}',
         job_title: '{{item.properties.jobtitle}}',
         industry: '{{item.properties.industry}}',
+        // D-336 (spec §55) — the vCard address parts and BDAY, each one HubSpot property.
+        mailing_street: '{{item.properties.address}}',
+        mailing_city: '{{item.properties.city}}',
+        mailing_region: '{{item.properties.state}}',
+        mailing_postal_code: '{{item.properties.zip}}',
+        mailing_country: '{{item.properties.country}}',
+        birthday: '{{item.properties.date_of_birth}}',
       },
     });
     expect(recipe.steps[1]).not.toHaveProperty('array');
@@ -718,6 +737,16 @@ describe('resolveConnectionAgnosticRecipe - write fail closed cases', () => {
 
 describe('resolveConnectionAgnosticRecipe - write edge cases', () => {
   it('treats a canonical id field mapping as the update selector, not a writable body field', () => {
+    // A vendor on the HubSpot dialect names each property flat (a dotted one is refused).
+    const flatDealRegistry: ConnectionVendorEntity = {
+      ...pipedriveDealRegistry,
+      meta_fields: [
+        { key: 'id', type: 'string', source_path: 'id', description: 'id' },
+        { key: 'name', type: 'string', source_path: 'title', description: 'title' },
+        { key: 'stage', type: 'string', source_path: 'stage_name', description: 'stage' },
+        { key: 'amount', type: 'number', source_path: 'value', description: 'amount' },
+      ],
+    };
     const ctx: PackResolutionContext = {
       pack_slug: 'pack/acme/pipedrive-crm',
       vendor: 'pipedrive',
@@ -727,8 +756,8 @@ describe('resolveConnectionAgnosticRecipe - write edge cases', () => {
       search_style: 'hubspot_search',
       write_style: 'hubspot_properties',
       operation_families: [operationRow('deal.update', 'PATCH')],
-      entity_fields: entityFieldsFromRegistry('pipedrive', [pipedriveDealRegistry]),
-      registry: [pipedriveDealRegistry],
+      entity_fields: entityFieldsFromRegistry('pipedrive', [flatDealRegistry]),
+      registry: [flatDealRegistry],
     };
 
     const { recipe } = resolveOne(
@@ -748,14 +777,14 @@ describe('resolveConnectionAgnosticRecipe - write edge cases', () => {
       input: {
         operation: 'deal.update',
         args: {
-          'body.properties': { 'data.title': 'Acme' },
+          'body.properties.title': 'Acme',
           deal_id: '5',
         },
       },
       result_names_connection: true,
     });
     const args = (recipe.steps[0] as unknown as { input: { args: Record<string, unknown> } }).input.args;
-    expect(args['body.properties']).not.toHaveProperty('id');
+    expect(Object.keys(args)).not.toContain('body.properties.id');
     expect(recipe.steps[1]).toEqual({
       id: 'deal',
       transform: 'project',
@@ -765,9 +794,9 @@ describe('resolveConnectionAgnosticRecipe - write edge cases', () => {
         target_id: 'pipedrive_deal_{{step.deal__raw.connection_name}}_{{item.id}}',
         connection_name: '{{step.deal__raw.connection_name}}',
         id: '{{item.id}}',
-        name: '{{item.data.title}}',
-        stage: '{{item.data.stage_name}}',
-        amount: '{{item.data.value | number}}',
+        name: '{{item.title}}',
+        stage: '{{item.stage_name}}',
+        amount: '{{item.value | number}}',
       },
     });
     expect(recipe.steps[1]).not.toHaveProperty('array');

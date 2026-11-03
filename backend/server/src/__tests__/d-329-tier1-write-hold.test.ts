@@ -17,6 +17,7 @@ import {
   RECUED_BUILTIN_SOURCE_ID,
   tier1WriteStaysInRecued,
   type ApprovalValueLabels,
+  type HeldCallNotices,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type Checkpoint,
@@ -42,7 +43,7 @@ import { HELD_FOR_APPROVAL_MESSAGE } from '../run-result-agent-projection.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import Database from 'better-sqlite3';
 import { createWriteRuleStore, type WriteRuleStore } from '../storage/write-rule-store.js';
-import { writeRuleKeyHash, writeRuleKeyOf, writeRuleOccasionOf } from '@recued/contracts';
+import { ANY_ARGUMENT, writeRuleKeyHash, writeRuleKeyOf, writeRuleOccasionOf } from '@recued/contracts';
 
 const NOW = 1_760_000_000_000;
 const entry = (name: string, classification: ToolEntry['classification']): ToolEntry => ({
@@ -59,13 +60,22 @@ const harness = (opts: {
   check?: (name: string, args: unknown) => ChatDispatchResult | null;
   /** The registry's `askValueLabels`: the names of the records a call names. */
   labels?: (name: string, args: unknown) => ApprovalValueLabels | undefined;
+  /** D-336 slice G — the registry's `askNotices`: what a held call meets. */
+  notices?: (name: string, args: unknown) => HeldCallNotices | undefined;
+  /** The write the registry offers; `calendar.create` unless a test needs another. */
+  write?: string;
+  /** The channels the raised ask went to, as its record keeps them. */
+  fanout?: readonly string[];
+  /** D-336 (spec §41) — the contacts the hold names people by. */
+  contactStore?: unknown;
 } = {}) => {
   let clock = NOW;
   const calls: Array<{ name: string; args: unknown; ctx: ChatDispatchContext }> = [];
+  const write = opts.write ?? 'calendar.create';
   const registry: InternalToolRegistry = {
-    list: () => [entry('calendar.create', 'write'), entry('calendar.search', 'read')],
-    listByTier: (tier) => (tier === 1 ? [entry('calendar.create', 'write'), entry('calendar.search', 'read')] : []),
-    getByName: (name) => (name === 'calendar.create' ? entry(name, 'write') : name === 'calendar.search' ? entry(name, 'read') : null),
+    list: () => [entry(write, 'write'), entry('calendar.search', 'read')],
+    listByTier: (tier) => (tier === 1 ? [entry(write, 'write'), entry('calendar.search', 'read')] : []),
+    getByName: (name) => (name === write ? entry(name, 'write') : name === 'calendar.search' ? entry(name, 'read') : null),
     dispatch: async (name, args, ctx): Promise<ChatDispatchResult> => {
       calls.push({ name, args, ctx });
       if (opts.throwOnRun) throw new Error('provider went away');
@@ -73,6 +83,7 @@ const harness = (opts: {
     },
     ...(opts.check !== undefined ? { checkBeforeAsking: async (name: string, args: unknown) => opts.check!(name, args) } : {}),
     ...(opts.labels !== undefined ? { askValueLabels: async (name: string, args: unknown) => opts.labels!(name, args) } : {}),
+    ...(opts.notices !== undefined ? { askNotices: async (name: string, args: unknown) => opts.notices!(name, args) } : {}),
     subscribeRefresh: () => () => undefined,
   };
   const checkpoints = new Map<string, Checkpoint>();
@@ -117,6 +128,9 @@ const harness = (opts: {
     newId: () => `id-${(seq += 1)}`,
     now: () => clock,
     ...(opts.writeRules !== undefined ? { writeRules: opts.writeRules } : {}),
+    approvalAskChannels: async (ask_id: string) =>
+      (ask_id === `ask-${String(asks.length)}` ? opts.fanout ?? ['ui'] : undefined),
+    ...(opts.contactStore !== undefined ? { contactStore: opts.contactStore } : {}),
   };
   const resumer = createPreflightResumer({
     auditLog: createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>()),
@@ -165,6 +179,15 @@ describe('D-329 A — an AI app\'s Tier-1 write is held', () => {
     expect(ask!.message.text).toContain('Dentist');
   });
 
+  it('tells the app where else the owner answers it, as a held run does', async () => {
+    const told = harness({ fanout: ['ui', 'telegram'] });
+    expect((await told.call('calendar.create', EVENT)).structuredContent).toMatchObject({
+      approval_elsewhere: 'This approval request also goes to the user on Telegram; they can answer it there too.',
+    });
+    const appOnly = harness();
+    expect((await appOnly.call('calendar.create', EVENT)).structuredContent).not.toHaveProperty('approval_elsewhere');
+  });
+
   it('leaves a read alone', async () => {
     const h = harness();
     await h.call('calendar.search', {});
@@ -208,6 +231,54 @@ describe('D-329 A — the ask names the records a call names', () => {
     const h = harness({ labels: () => { throw new Error('store went away'); } });
     expect((await h.call('calendar.create', EVENT)).structuredContent).toMatchObject({ status: 'awaiting_approval' });
     expect([...h.checkpoints.values()][0]!.preflight_context?.value_labels).toBeUndefined();
+  });
+});
+
+describe('D-336 (spec §41) — the hold names the people a call carries', () => {
+  const contactStore = {
+    resolveCanonicalEmail: (email: string) => ({ canonical_email: email, chain_depth: 0 }),
+    get: (email: string) => (email === 'mia.whitfield@example.test' ? { email, name: 'Mia Whitfield' } : null),
+    getByContactIdResolved: () => null,
+  };
+
+  it('beside the registry\'s names, on the hold and in the ask; the app is told no name', async () => {
+    const h = harness({ contactStore, labels: () => ({ summary: { Dentist: 'Dr Okafor, the dentist' } }) });
+    const response = await h.call('calendar.create', { ...EVENT, guest: 'mia.whitfield@example.test' });
+    const [checkpoint] = [...h.checkpoints.values()];
+    expect(checkpoint!.preflight_context?.value_labels).toEqual({
+      summary: { Dentist: 'Dr Okafor, the dentist' },
+      [ANY_ARGUMENT]: { 'mia.whitfield@example.test': 'Mia Whitfield <mia.whitfield@example.test>' },
+    });
+    expect(h.asks[0]!.message.text).toContain('Mia Whitfield <mia.whitfield@example.test>');
+    // What runs is still what the app sent, and the app learns no name from its hold.
+    expect(checkpoint!.raw_op!.op_args).toMatchObject({ guest: 'mia.whitfield@example.test' });
+    expect(JSON.stringify(response)).not.toContain('Whitfield');
+  });
+});
+
+describe('D-336 slice G — an AI app\'s held save is told the notes it meets, and so is the owner\'s ask', () => {
+  const MET: HeldCallNotices = {
+    agent: 'It contradicts "Mia is Dana\'s daughter." (\'umem_1\'), which another agent saved and you cannot change.',
+    memory_conflicts: [{ kind: 'contradicts', memory_id: 'umem_1', summary: "Mia is Dana's daughter." }],
+  };
+  const SISTER = { summary: "Mia is Dana's sister", claim: { subject: 'Mia', relation: 'sister of', object: 'Dana' } };
+
+  it('answers the app with them beside "held", and keeps them on the hold for every channel\'s ask', async () => {
+    const h = harness({ write: 'memory.write', notices: (name) => (name === 'memory.write' ? MET : undefined) });
+    const out = await h.call('memory.write', SISTER);
+    expect(out.structuredContent).toMatchObject({ status: 'awaiting_approval' });
+    // Beside the held message, before the action to follow.
+    expect(String(out.structuredContent?.message)).toContain(MET.agent!);
+    const [checkpoint] = [...h.checkpoints.values()];
+    expect(checkpoint!.preflight_context?.memory_conflicts).toEqual(MET.memory_conflicts);
+    expect(h.asks[0]!.message.text).toContain('Contradicts: "Mia is Dana\'s daughter."');
+    expect(checkpoint!.raw_op!.op_args).toEqual(SISTER);
+  });
+
+  it('holds with nothing told when the lookup throws', async () => {
+    const h = harness({ write: 'memory.write', notices: () => { throw new Error('store went away'); } });
+    expect((await h.call('memory.write', SISTER)).structuredContent).toMatchObject({ status: 'awaiting_approval' });
+    expect([...h.checkpoints.values()][0]!.preflight_context?.memory_conflicts).toBeUndefined();
   });
 });
 
@@ -301,6 +372,11 @@ describe('D-329 A — the hold\'s shape and words', () => {
     expect(isCheckpoint(held({ tier1_session_id: '' }))).toBe(false);
     expect(isCheckpoint(held({ tier1_tool: undefined, catalog_slug: 'hubspot-catalog', op_id: 'x', operation: 'x',
       tier1_session_id: 'chat-1' }))).toBe(false);
+    // D-336 slice Q — the turn a messenger's held write was asked in, on a Tier-1 hold only.
+    expect(isCheckpoint(held({ tier1_turn_id: 'turn-1' }))).toBe(true);
+    expect(isCheckpoint(held({ tier1_turn_id: '' }))).toBe(false);
+    expect(isCheckpoint(held({ tier1_tool: undefined, catalog_slug: 'hubspot-catalog', op_id: 'x', operation: 'x',
+      tier1_turn_id: 'turn-1' }))).toBe(false);
   });
 
   it('says a write stays in Recued only when it provably does', () => {

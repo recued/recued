@@ -1,3 +1,14 @@
+import { RECIPE_TEMPLATE_KEYS, RECIPE_TRIGGER_KEYS, RECIPE_SYNC_TARGET_KEYS } from './workflow-authoring.js';
+import { operationPolicyIssueLocations, operationApprovalReasonValid } from './operation-policies.js';
+import { graphqlIssueLocations } from './graphql-authoring.js';
+import { entityPropertyPath, vendorEntitySchemaOrigins, vendorEntityFindingPath } from './vendor-entity-issues.js';
+import { apiSchemaIssueLocations } from './api-schema-authoring.js';
+import { restRequestIssueLocations } from './rest-request-authoring.js';
+import { CLI_SETUP_KEYS, cliSetupKeyAllowed } from './cli-setup-authoring.js';
+import { restUnsafeIntegersAllowed, restIntegerSelector, restIntegerSchemaMatches, restJsonShapeTarget, restJsonTargetSuffix } from './rest-json-authoring.js';
+import { restCaptureKindAllowed, restFilenameKindAllowed, restEnrichmentAllowed, httpUploadKindAllowed } from './file-transfer-authoring.js';
+import { packConnectionNames } from './connection-authoring.js';
+import { paginationSelectionAllowed, paginationIncrementAllowed } from './pagination-authoring.js';
 import {
   describeUnstorable,
   findUnstorableStrings,
@@ -10,8 +21,8 @@ import {
   SLUG_RE,
   PACK_CONTENT_KINDS,
   parseBulkPackManifest,
-  assertEntitySchemaIngredientShape,
-  assertEngagementFacetShape,
+  entitySchemaIngredientFindings,
+  engagementFacetFindings,
   ACCT_ALIAS_VALUES,
   CRM_ALIAS_VALUES,
   canonicalCrmFieldSet,
@@ -53,7 +64,6 @@ import type {
   CompositionIngredient,
   CrmAlias,
   EntitySchemaIngredientInput,
-  IngredientCliConfig,
   PackContentRef,
 } from '@recued/contracts';
 import {
@@ -117,17 +127,9 @@ export interface CompositionValidationOptions {
 const PACK_CONTENT_KIND_SET: ReadonlySet<string> = new Set(PACK_CONTENT_KINDS);
 const CRM_ALIAS_SET: ReadonlySet<string> = new Set(CRM_ALIAS_VALUES);
 const ACCT_ALIAS_SET: ReadonlySet<string> = new Set(ACCT_ALIAS_VALUES);
-const PAGINATION_SELECTOR_SET: ReadonlySet<string> = new Set(['first', 'last']);
-const WORKFLOW_ROW_KEYS: ReadonlySet<string> = new Set([
-  'template',
-  'trigger',
-  'operation',
-  'sync_target',
-  'notify_target',
-  'escalate_after_ms',
-]);
-const WORKFLOW_TRIGGER_KEYS: ReadonlySet<string> = new Set(['entity', 'field', 'value', 'cron']);
-const WORKFLOW_SYNC_TARGET_KEYS: ReadonlySet<string> = new Set(['source_id', 'write_back_op']);
+const WORKFLOW_ROW_KEYS: ReadonlySet<string> = new Set(RECIPE_TEMPLATE_KEYS);
+const WORKFLOW_TRIGGER_KEYS: ReadonlySet<string> = new Set(RECIPE_TRIGGER_KEYS);
+const WORKFLOW_SYNC_TARGET_KEYS: ReadonlySet<string> = new Set(RECIPE_SYNC_TARGET_KEYS);
 const CLI_STREAMING_LINT_TOKENS: ReadonlySet<string> = new Set([
   '-f',
   '--follow',
@@ -611,7 +613,7 @@ const validateRestResponseCapture = (
     add('error', 'composition_rest_response_capture_shape', capturePath, 'response_capture must be an object');
     return;
   }
-  if (capture.kind !== 'file_ref') {
+  if (!restCaptureKindAllowed(capture.kind)) {
     add('error', 'composition_rest_response_capture_kind', `${capturePath}.kind`, "response_capture.kind must be 'file_ref'");
   }
   if (row.bind.method !== 'GET') {
@@ -632,7 +634,7 @@ const validateRestResponseCapture = (
   // The one value there is: a captured file the pack keeps out of UNATTENDED
   // AI enrichment (captions / transcripts / extracted text). Anything else is a
   // typo, and a typo here would silently leave the file enrichable.
-  if (capture.ai_enrichment !== undefined && capture.ai_enrichment !== 'opt_out') {
+  if (capture.ai_enrichment !== undefined && !restEnrichmentAllowed(capture.ai_enrichment)) {
     add('error', 'composition_rest_response_capture_ai_enrichment', `${capturePath}.ai_enrichment`, "response_capture.ai_enrichment must be 'opt_out' when present; omit it to let the file's origin decide");
   }
   const fs = capture.filename_source;
@@ -652,7 +654,7 @@ const validateRestResponseCapture = (
     if (typeof fs.arg !== 'string' || fs.arg.length === 0) {
       add('error', 'composition_rest_response_capture_filename_arg', `${capturePath}.filename_source.arg`, "filename_source.arg must be a non-empty string for kind 'arg'");
     }
-  } else if (fs.kind !== 'header') {
+  } else if (!restFilenameKindAllowed(fs.kind)) {
     add('error', 'composition_rest_response_capture_filename_kind', `${capturePath}.filename_source.kind`, "filename_source.kind must be one of 'header' | 'static' | 'arg'");
   }
 };
@@ -674,15 +676,15 @@ const validateRestResponseJson = (
     add('error', 'composition_rest_response_json_shape', specPath, 'response_json must be an object');
     return;
   }
-  if (Object.keys(spec).length !== 1 || spec.unsafe_integers !== 'string') {
-    add('error', 'composition_rest_response_json_unsafe_integers', `${specPath}.unsafe_integers`, "response_json must be exactly { unsafe_integers: 'string' }");
+  if (Object.keys(spec).length !== 1 || !restUnsafeIntegersAllowed(spec.unsafe_integers)) {
+    const target = restJsonShapeTarget('response', spec);
+    add('error', 'composition_rest_response_json_unsafe_integers', specPath + restJsonTargetSuffix(target.path), "response_json must be exactly { unsafe_integers: 'string' }",
+      target.key ? { target: 'key', offset: 0, length: target.key.length } : undefined);
   }
   if (row.bind.response_capture !== undefined) {
     add('error', 'composition_rest_response_json_capture_conflict', specPath, 'response_json cannot be combined with response_capture because a captured body is not JSON-parsed');
   }
 };
-
-const DECIMAL_INTEGER_FIELD_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\[\])?$/;
 
 /** Validate exact decimal-string request serialization. The selector grammar
  * is deliberately top-level and closed because the connection adapter's body
@@ -704,10 +706,12 @@ const validateRestRequestJson = (
     && isStringArray(spec.decimal_integer_fields)
     && selectors.length > 0
     && new Set(selectors).size === selectors.length
-    && selectors.every((field) => DECIMAL_INTEGER_FIELD_RE.test(field));
+    && selectors.every((field) => !!restIntegerSelector(field));
   if (!shapeValid) {
-    add('error', 'composition_rest_request_json_decimal_integer_fields', specPath,
-      'request_json must be exactly { decimal_integer_fields: [unique top-level field or field[] selectors] }');
+    const target = restJsonShapeTarget('request', spec);
+    add('error', 'composition_rest_request_json_decimal_integer_fields', specPath + restJsonTargetSuffix(target.path),
+      'request_json must be exactly { decimal_integer_fields: [unique top-level field or field[] selectors] }',
+      target.key ? { target: 'key', offset: 0, length: target.key.length } : undefined);
   } else {
     const declaredArgs = new Map<string, string>();
     if (Array.isArray(row.args)) {
@@ -720,20 +724,19 @@ const validateRestRequestJson = (
     }
     const schema = isPlainObject(row.request_schema) ? row.request_schema : {};
     const properties = isPlainObject(schema.properties) ? schema.properties : {};
-    for (const selector of selectors) {
-      const array = selector.endsWith('[]');
-      const argKey = `body.${selector.replace(/\[\]$/, '')}`;
+    for (const [index, selector] of selectors.entries()) {
+      const parsed = restIntegerSelector(selector)!, array = parsed.array, argKey = parsed.argument;
+      const selectorPath = specPath + '.decimal_integer_fields[' + index + ']';
       const expectedType = array ? 'array' : 'string';
       if (declaredArgs.get(argKey) !== expectedType) {
-        add('error', 'composition_rest_request_json_arg_mismatch', specPath,
+        add('error', 'composition_rest_request_json_arg_mismatch', selectorPath,
           `request_json selector '${selector}' requires declared arg '${argKey}' with type '${expectedType}'`);
       }
       const property = properties[argKey];
-      const schemaMatches = isPlainObject(property)
-        && property.type === expectedType
-        && (!array || (isPlainObject(property.items) && property.items.type === 'string'));
+      const schemaMatches = isPlainObject(property) && restIntegerSchemaMatches(array, property.type,
+        isPlainObject(property.items) ? property.items.type : undefined);
       if (!schemaMatches) {
-        add('error', 'composition_rest_request_json_schema_mismatch', specPath,
+        add('error', 'composition_rest_request_json_schema_mismatch', selectorPath,
           `request_json selector '${selector}' requires request_schema.properties['${argKey}'] to describe ${array ? 'an array of strings' : 'a string'}`);
       }
     }
@@ -747,7 +750,8 @@ const validateRestRequestJson = (
   if (contentType !== undefined
     && (typeof contentType !== 'string'
       || contentType.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json')) {
-    add('error', 'composition_rest_request_json_content_type', `${path}.bind.static_headers`, 'request_json requires application/json when a static Content-Type is declared');
+    const header = Object.keys(headers).find(name => name.toLowerCase() === 'content-type')!;
+    add('error', 'composition_rest_request_json_content_type', path + '.bind.static_headers' + restJsonTargetSuffix([header]), 'request_json requires application/json when a static Content-Type is declared');
   }
 };
 
@@ -805,7 +809,7 @@ const validateHttpUpload = (
     add('error', 'composition_http_upload_shape', uPath, 'upload must be an object');
     return;
   }
-  if (upload.kind !== 'multipart' && upload.kind !== 'binary' && upload.kind !== 'chunked') {
+  if (!httpUploadKindAllowed(upload.kind)) {
     add('error', 'composition_http_upload_kind', `${uPath}.kind`, "upload.kind must be 'multipart', 'binary' or 'chunked'");
   }
   // D-217 slice 1 — the chunked form has its own shape and its own bound
@@ -1125,7 +1129,7 @@ const validateOperationPagination = (
       if (!isNonEmptyString(raw.cursor_from.path)) {
         add('error', 'composition_operation_pagination_cursor_from_path', `${path}.cursor_from.path`, 'path must be a non-empty string');
       }
-      if (typeof raw.cursor_from.select !== 'string' || !PAGINATION_SELECTOR_SET.has(raw.cursor_from.select)) {
+      if (!paginationSelectionAllowed(raw.cursor_from.select)) {
         add('error', 'composition_operation_pagination_cursor_from_select', `${path}.cursor_from.select`, 'select must be first or last');
       }
       if (!isNonEmptyString(raw.cursor_from.field)) {
@@ -1178,7 +1182,7 @@ const validateOperationPagination = (
     if (!Number.isInteger(raw.start) || (raw.start as number) < 0) {
       add('error', 'composition_operation_pagination_offset_start', `${path}.start`, 'start must be a non-negative integer');
     }
-    if (raw.increment !== 'page' && raw.increment !== 'by_page_size') {
+    if (!paginationIncrementAllowed(raw.increment)) {
       add('error', 'composition_operation_pagination_offset_increment', `${path}.increment`, 'increment must be page or by_page_size');
     }
     if (raw.done_when !== undefined) validatePaginationCondition(raw.done_when, `${path}.done_when`, add);
@@ -1415,14 +1419,6 @@ const DECOMPOSABLE_INGREDIENT_KINDS: ReadonlySet<string> = new Set(['cli', 'http
  *  `cli` ingredient) would otherwise leak into the connection/grant binding. */
 const INGREDIENT_CONFIG_CELLS = ['cli', 'http', 'connection', 'mcp'] as const;
 
-/** The keys a `cli` cell may carry: every key of `IngredientCliConfig`, so a
- *  new one fails to compile until it is listed. Closed (D-321), so a misspelt
- *  `versoin` is refused instead of dropped. */
-const CLI_CELL_KEYS: Record<keyof IngredientCliConfig, true> = {
-  tool: true, probe: true, config_dir: true, profile: true, package_ref: true, entry_point: true,
-  version: true, install: true,
-};
-
 /** A shared-check problem's relative path joined onto the cell path. */
 const problemPath = (base: string, problem: CliToolPolicyProblem): string =>
   problem.path === '' ? base : problem.path.startsWith('[') ? `${base}${problem.path}` : `${base}.${problem.path}`;
@@ -1449,9 +1445,9 @@ const validateIngredientConfigCell = (
     }
     const cli = ing.cli;
     for (const key of Object.keys(cli)) {
-      if (!Object.hasOwn(CLI_CELL_KEYS, key)) {
-        add('error', 'composition_ingredient_cli_unknown_key', `${path}.cli.${key}`,
-          `cli.${key} is not a cli setting (${Object.keys(CLI_CELL_KEYS).join(', ')})`);
+      if (!cliSetupKeyAllowed(key)) {
+        add('error', 'composition_ingredient_cli_unknown_key', `${path}.cli${restJsonTargetSuffix([key])}`,
+          `cli.${key} is not a cli setting (${CLI_SETUP_KEYS.join(', ')})`, { target: 'key', offset: 0, length: key.length });
       }
     }
     if (!isNonEmptyString(cli.tool)) {
@@ -1474,12 +1470,12 @@ const validateIngredientConfigCell = (
     }
     if (cli.version !== undefined) {
       for (const problem of cliVersionProblems(cli.version)) {
-        add('error', 'composition_ingredient_cli_version_invalid', problemPath(`${path}.cli.version`, problem), problem.message);
+        add('error', 'composition_ingredient_cli_version_invalid', problemPath(`${path}.cli.version`, problem), problem.message, problem.reference_span);
       }
     }
     if (cli.install !== undefined) {
       for (const problem of cliInstallProblems(cli.install)) {
-        add('error', 'composition_ingredient_cli_install_invalid', problemPath(`${path}.cli.install`, problem), problem.message);
+        add('error', 'composition_ingredient_cli_install_invalid', problemPath(`${path}.cli.install`, problem), problem.message, problem.reference_span);
       }
     }
     return;
@@ -1575,7 +1571,7 @@ const validateIngredientEntities = (
   let fieldCount = 0;
   const seenEntityKeys = new Set<string>();
   for (const [rawEntityId, entityVal] of Object.entries(ing.entities)) {
-    const ePath = `${path}.entities.${rawEntityId}`;
+    const ePath = `${path}.entities${entityPropertyPath(rawEntityId, ing.entities)}`;
     if (!isPlainObject(entityVal)) {
       add('error', 'composition_entity_shape', ePath, 'entity must be an object');
       continue;
@@ -1640,8 +1636,8 @@ const validateIngredientEntities = (
     // registry at lift time (`assertEngagementRegistryInvariants`), mirroring how
     // crm_alias cross-entry uniqueness lives in `assertConnectionVendorRegistry`.
     if (entity.engagement !== undefined) {
-      for (const issue of assertEngagementFacetShape(entity.engagement)) {
-        add('error', 'composition_entity_engagement_invalid', `${ePath}.engagement`, issue);
+      for (const issue of engagementFacetFindings(entity.engagement)) {
+        add('error', 'composition_entity_engagement_invalid', `${ePath}.engagement${issue.path ? '.' + issue.path.join('.') : ''}`, issue.message);
       }
       if (crm !== undefined || acct !== undefined) {
         add('error', 'composition_entity_alias_domain_conflict', ePath,
@@ -1910,8 +1906,8 @@ const validateOperations = (
     // future author copies.
     for (const key of Object.keys(row)) {
       if (!PACK_OPERATION_ROW_KEYS.has(key)) {
-        add('error', 'composition_operation_unknown_key', `${path}.${key}`,
-          `operation declares '${key}', which is not a PackOperationRow field`);
+        add('error', 'composition_operation_unknown_key', path + restJsonTargetSuffix([key]),
+          `operation declares '${key}', which is not a PackOperationRow field`, key.length ? { target: 'key', offset: 0, length: key.length } : undefined);
       }
     }
     // D-254 — `record_id_arg` names the arg carrying a platform-record id. A NAME
@@ -2029,9 +2025,7 @@ const validateOperations = (
     // It remains a warning for a discriminating row, but becomes part of the
     // error-level exemption when a pack holds every read (see the pack fence
     // below). The value is a compact extensible code, not policy-bearing prose.
-    const approvalReasonValid = row.approval_reason === undefined
-      || (isNonEmptyString(row.approval_reason)
-        && /^[a-z][a-z0-9_]{2,63}$/.test(row.approval_reason));
+    const approvalReasonValid = row.approval_reason === undefined || operationApprovalReasonValid(row.approval_reason);
     if (!approvalReasonValid) {
       add(
         'error',
@@ -2074,10 +2068,14 @@ const validateOperations = (
     }
     validateClosedRequestSchemaArgAlignment(row, path, add);
     if (row.required_scopes !== undefined && !isStringArray(row.required_scopes)) {
-      add('error', 'composition_operation_required_scopes_shape', `${path}.required_scopes`, 'required_scopes must be a string array when present');
+      const item = Array.isArray(row.required_scopes) ? row.required_scopes.findIndex(scope => !isNonEmptyString(scope)) : -1;
+      add('error', 'composition_operation_required_scopes_shape', `${path}.required_scopes${item >= 0 ? '[' + item + ']' : ''}`, 'required_scopes must be a string array when present');
     }
     validateDetachedCliPatternRefs(row, path, add);
     validateDetachedSupervision(row, path, add);
+    if (row.result_path !== undefined && typeof row.result_path !== 'string') {
+      add('error', 'composition_operation_result_path_shape', `${path}.result_path`, 'result_path must be a string when present');
+    }
     if (row.pagination !== undefined) {
       if (row.risk !== 'read') {
         add('error', 'composition_operation_pagination_non_read', `${path}.pagination`,
@@ -2253,7 +2251,7 @@ export const validateCompositionStructure = (body: unknown): CompositionValidati
   validateRecipeTemplateRows(raw, operationKeys, add);
   if (isRecordsComposition(body)) {
     for (const recordsIssue of validateRecordsComposition(body as unknown as CompositionIngredient)) {
-      add(recordsIssue.severity, recordsIssue.code, recordsIssue.path, recordsIssue.message);
+      add(recordsIssue.severity, recordsIssue.code, recordsIssue.path, recordsIssue.message, recordsIssue.reference_span);
     }
   }
   // Optional install-time grant override — must be a string[] of group ids when
@@ -2269,11 +2267,12 @@ export const validateCompositionStructure = (body: unknown): CompositionValidati
 const wrapEntityIssues = (
   schema: EntitySchemaIngredientInput,
   schemaIdx: number,
+  origin?: string,
 ): CompositionValidationIssue[] =>
-  assertEntitySchemaIngredientShape(schema).map((message, idx) => ({
+  entitySchemaIngredientFindings(schema).map(({ message, path }, idx) => ({
     severity: 'error',
     code: 'entity_schema_invalid',
-    path: `entity_schemas[${schemaIdx}]#${idx}`,
+    path: vendorEntityFindingPath(origin, path) ?? `entity_schemas[${schemaIdx}]#${idx}`,
     message,
   }));
 
@@ -2379,10 +2378,21 @@ export const validateComposition = (
     // duplicate identities here; source paths come from the structured checker.
     const definitions = new Set(Object.entries(decomposed.catalog.operations ?? {}).flatMap(([op, spec]) =>
       closedRequestSchemaDefinitionIssues(spec.request_schema).map(message => `operation '${op}' closed request schema is invalid: ${message}`)));
-    issues.push(...validateIngredient(decomposed.catalog).issues.filter(issue => issue.code !== 'CATALOG_REQUEST_SCHEMA_INVALID' || !definitions.has(issue.message)));
+    const requestLocations = restRequestIssueLocations(isPlainObject(body) ? body.operations : undefined, decomposed.catalog.surfaces?.api?.executes);
+    const policyLocations = operationPolicyIssueLocations(isPlainObject(body) ? body.operations : undefined, decomposed.catalog.operations);
+    const schemaLocations = apiSchemaIssueLocations(body, decomposed.catalog.surfaces?.api);
+    const graphqlLocations = graphqlIssueLocations(isPlainObject(body) ? body.operations : undefined, decomposed.catalog.surfaces?.api?.executes, decomposed.catalog.operations);
+    issues.push(...validateIngredient(decomposed.catalog).issues.filter(issue => issue.code !== 'CATALOG_REQUEST_SCHEMA_INVALID' || !definitions.has(issue.message)).map(issue => {
+      const location = issue.code === 'CATALOG_BINDING_INVALID' ? requestLocations.get(JSON.stringify([issue.path, issue.message])) : undefined;
+      const policyPath = policyLocations.get(JSON.stringify([issue.code, issue.path]));
+      const schemaPath = schemaLocations.get(JSON.stringify([issue.code, issue.path]));
+      const graphqlPath = graphqlLocations.get(JSON.stringify([issue.code, issue.path]));
+      return location ? { ...issue, ...location } : policyPath || schemaPath || graphqlPath ? { ...issue, path: policyPath ?? schemaPath ?? graphqlPath! } : issue;
+    }));
   }
+  const entityOrigins = vendorEntitySchemaOrigins(body, decomposed.entity_schemas ?? []);
   for (const [idx, schema] of (decomposed.entity_schemas ?? []).entries()) {
-    issues.push(...wrapEntityIssues(schema, idx));
+    issues.push(...wrapEntityIssues(schema, idx, entityOrigins.get(idx)));
   }
   if (opts.recipeValidator !== undefined) {
     for (const [idx, recipe] of (decomposed.recipes ?? []).entries()) {
@@ -2459,47 +2469,7 @@ export const validatePackStructure = (pack: unknown): CompositionValidationIssue
   // touches is refused rather than dropped: silently ignoring it would read to
   // its author as an accepted declaration.
   if (isPlainObject(pack) && Array.isArray((pack as Record<string, unknown>).connection_hints)) {
-    const declared = new Set<string>();
-    for (const content of Array.isArray(pack.contents) ? pack.contents : []) {
-      if (
-        !isPlainObject(content)
-        || content.type !== 'composition'
-        || !isPlainObject(content.composition)
-        || !Array.isArray(content.composition.ingredients)
-      ) continue;
-      for (const ingredient of content.composition.ingredients) {
-        if (!isPlainObject(ingredient)) continue;
-        // ⛔ ALL THREE SLOT KINDS, because that is what the rest of the system means by
-        // "declared". `connection-scope-coverage.ts` resolves an ingredient's slot as
-        // `http ?? connection ?? mcp`; reading only `http` here made this gate and the
-        // readiness surface disagree about the same word, and a pack binding through
-        // `connection.connection` could not describe its own connection form.
-        for (const kind of ['http', 'connection', 'mcp'] as const) {
-          const block = ingredient[kind];
-          if (isPlainObject(block) && typeof block.connection === 'string' && block.connection.length > 0) {
-            declared.add(block.connection);
-          }
-        }
-      }
-    }
-    // ⛔ A FRONT DOOR DECLARES ITS CONNECTION IN `connection_requirements`, NOT IN AN
-    // INGREDIENT. Forty packs in this corpus are front doors: no composition of their own,
-    // operations living in the leaves they depend on, and a `connection_requirements[]` that
-    // is precisely the pack saying "installing me needs a connection called X". That is the
-    // same claim an ingredient binding makes, and it is the screen a user actually lands on
-    // to install — so refusing the hint there sent them to a blank form at the one moment the
-    // pack could have filled it in.
-    //
-    // ⚠ Vendors are underscored (`adobe_sign`) and slots hyphenated (`adobe-sign`); both
-    // spellings are admitted rather than guessing which side is canonical.
-    for (const requirement of Array.isArray(pack.connection_requirements) ? pack.connection_requirements : []) {
-      if (!isPlainObject(requirement) || typeof requirement.vendor !== 'string') continue;
-      const vendor = requirement.vendor.trim();
-      if (vendor.length === 0) continue;
-      declared.add(vendor);
-      declared.add(vendor.replace(/_/gu, '-'));
-      declared.add(vendor.replace(/-/gu, '_'));
-    }
+    const declared = new Set(packConnectionNames(pack));
     (pack as { connection_hints: unknown[] }).connection_hints.forEach((entry, idx) => {
       if (!isPlainObject(entry) || typeof entry.connection !== 'string') return;
       if (!declared.has(entry.connection)) {
@@ -2534,8 +2504,7 @@ export const validatePackStructure = (pack: unknown): CompositionValidationIssue
     }
     const allHeld = reads.length >= 3
       && reads.every(({ approval }) => approval === 'ask' || approval === 'always');
-    const everyHeldReadExplained = reads.every(({ approval_reason: reason }) =>
-      isNonEmptyString(reason) && /^[a-z][a-z0-9_]{2,63}$/.test(reason));
+    const everyHeldReadExplained = reads.every(({ approval_reason: reason }) => operationApprovalReasonValid(reason));
     if (allHeld && !everyHeldReadExplained) {
       addIssue(
         issues,
@@ -2577,18 +2546,28 @@ export const validatePack = (
     });
     return { valid: false, issues };
   }
+  // The install plan lifts/deduplicates recipe references before other content.
+  // Its indices are not authored contents[] indices. Non-recipe refs retain
+  // object identity; queues also preserve repeated refs on direct JS input.
+  const authoredIndices = new Map<unknown, number[]>();
+  if (manifestVersion === 2 && isPlainObject(pack) && Array.isArray(pack.contents)) {
+    pack.contents.forEach((content, index) => {
+      const indices = authoredIndices.get(content) ?? []; indices.push(index); authoredIndices.set(content, indices);
+    });
+  }
   for (const [idx, content] of decomposed.contents.entries()) {
+    const sourceIndex = authoredIndices.get(content)?.shift() ?? idx;
     if (content.type === 'composition') {
       const result = validateComposition(content.composition, opts);
       issues.push(...result.issues.map((issue) => ({
         ...issue,
-        path: issue.path.length > 0 ? `contents[${idx}].composition.${issue.path}` : `contents[${idx}].composition`,
+        path: issue.path.length > 0 ? `contents[${sourceIndex}].composition.${issue.path}` : `contents[${sourceIndex}].composition`,
       })));
     } else if (!isPlainObject(content) || typeof content.type !== 'string' || !PACK_CONTENT_KIND_SET.has(content.type)) {
       issues.push({
         severity: 'error',
         code: 'pack_content_type_unknown',
-        path: `contents[${idx}].type`,
+        path: `contents[${sourceIndex}].type`,
         message: 'content type is not known',
       });
     }

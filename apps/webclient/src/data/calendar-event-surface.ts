@@ -4,8 +4,11 @@ import {
   type CalendarEventDetails, type CalendarEventPatch, type CalendarEventRef,
   type CalendarEventSnapshot, type CalendarEventUpdateRequest,
   type CalendarEventRespondRequest, type CalendarEventRespondResult, type CalendarInvitationResponse,
+  type CalendarEventDeleteRequest, type CalendarEventDeleteResult,
+  type CalendarEventDeletionCheckRequest, type CalendarEventDeletionState,
 } from '@recued/contracts';
 import { e, renderActionLabel, type IconName } from '@recued/ui-shared';
+import { createCalendarOverlapPreview, CALENDAR_OVERLAP_STYLES, type CalendarOverlapCaller } from './calendar-overlap-preview.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export const CALENDAR_EVENT_ACTION_PREFIX = 'calendar-event-';
@@ -15,9 +18,12 @@ const REPEAT = 'data-calendar-event-repeat';
 type Field = 'summary' | 'description' | 'location' | 'start' | 'end' | 'startChoice' | 'endChoice';
 export type CalendarEventDraft = Record<Field, string>;
 export interface CalendarEventCallers {
+  overlaps?: CalendarOverlapCaller;
   get?: (ref: CalendarEventRef) => Promise<CalendarEventSnapshot>;
   update?: (request: CalendarEventUpdateRequest) => Promise<CalendarEventSnapshot>;
   respond?: (request: CalendarEventRespondRequest) => Promise<CalendarEventRespondResult>;
+  delete?: (request: CalendarEventDeleteRequest) => Promise<CalendarEventDeleteResult>;
+  checkDeletion?: (request: CalendarEventDeletionCheckRequest) => Promise<CalendarEventDeletionState>;
 }
 export interface CalendarEventFocus { key: string; start?: number | null; end?: number | null; }
 
@@ -109,6 +115,19 @@ const timeLabel = (at: number, zone: string): string => {
   } catch { return `${new Date(at).toISOString()} (event time zone unavailable)`; }
 };
 const dayLabel = (day: string): string => new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', dateStyle: 'full' }).format(Date.parse(day + 'T00:00:00Z'));
+const deletionRangeLabel = (event: CalendarEventDetails): string => {
+  const days = event.is_all_day ? allDayEventDays(event) : null;
+  if (days) return dayLabel(days.first) + (days.last !== days.first ? ' – ' + dayLabel(days.last) : '');
+  try {
+    const date = new Intl.DateTimeFormat(undefined, { timeZone: event.timezone, dateStyle: 'short' });
+    const sameDay = date.format(event.start_at) === date.format(event.end_at);
+    const first = new Intl.DateTimeFormat(undefined, { timeZone: event.timezone, dateStyle: 'medium', timeStyle: 'long' });
+    const endOptions: Intl.DateTimeFormatOptions = { timeZone: event.timezone, timeStyle: 'long' };
+    if (!sameDay) endOptions.dateStyle = 'medium';
+    // Keep both offsets when a range crosses a repeated daylight-saving hour.
+    return first.format(event.start_at) + ' – ' + new Intl.DateTimeFormat(undefined, endOptions).format(event.end_at);
+  } catch { return timeLabel(event.start_at, event.timezone) + ' – ' + timeLabel(event.end_at, event.timezone); }
+};
 const durationLabel = (event: CalendarEventDetails): string => {
   if (event.is_all_day) { const n = (event.end_at - event.start_at) / DAY_MS; return `${n} ${n === 1 ? 'day' : 'days'}`; }
   const totalSeconds = Math.round((event.end_at - event.start_at) / 1000);
@@ -129,13 +148,15 @@ const confirmsDraft = (before: CalendarEventSnapshot, patch: CalendarEventPatch,
 export const createCalendarEventSurface = (deps: {
   callers: CalendarEventCallers; actionAttr: string; render: () => void;
   onSaved: (snapshot: CalendarEventSnapshot) => void;
-  onRemoved?: (recordId: string) => void;
+  onRemoved?: (recordId: string, returnToAgenda?: boolean) => void;
 }) => {
   let ref: CalendarEventRef | null = null;
   let recordId = '';
   let snapshot: CalendarEventSnapshot | null = null;
   let draft: CalendarEventDraft | null = null;
-  let busy: 'read' | 'save' | 'respond' | null = null;
+  let busy: 'read' | 'save' | 'respond' | 'delete' | 'delete-check' | null = null;
+  let deleteReview = false;
+  let deleteNeedsCheck = false;
   let responseNeedsCheck = false;
   let saveNeedsCheck = false;
   let pendingResponse: CalendarInvitationResponse | null = null;
@@ -157,10 +178,11 @@ export const createCalendarEventSurface = (deps: {
   const actionIcons: Partial<Record<string, IconName>> = {
     edit: 'rename', save: 'save', retry: 'refresh', check: 'refresh', reload: 'refresh',
     'response-check': 'refresh', 'response-refresh': 'refresh',
+    'delete-open': 'delete', 'delete-confirm': 'delete', 'delete-check': 'refresh',
   };
   const button = (action: string, label: string, primary = false): string => {
     const icon = actionIcons[action];
-    return `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}" ${deps.actionAttr}="calendar-event-${action}" ${FOCUS}="${action}"${busy || action === 'save' && saveNeedsCheck ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon ? renderActionLabel(icon, label) : e(label)}</button>`;
+    return `<button type="button" class="data-button${primary ? ' data-button--primary' : ''}${action === 'delete-open' || action === 'delete-confirm' ? ' data-button--danger' : ''}" ${deps.actionAttr}="calendar-event-${action}" ${FOCUS}="${action}"${busy || action === 'save' && saveNeedsCheck ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon ? renderActionLabel(icon, label) : e(label)}</button>`;
   };
   const repaint = (focus?: string | CalendarEventFocus) => {
     if (focus) pendingFocus = typeof focus === 'string' ? { key: focus } : focus;
@@ -171,9 +193,25 @@ export const createCalendarEventSurface = (deps: {
   const editable = (value: CalendarEventSnapshot | null): boolean => value?.editable === true
     && deps.callers.update !== undefined && (zoneAvailable(value.event)
       || value.editable_fields !== undefined && !value.editable_fields.some(key => key === 'start_at' || key === 'end_at'));
+  // A local event says `deletable`; a connected calendar's says `provider_delete`, with what its
+  // delete does (D-336 spec §58).
+  const deletable = (): boolean => (snapshot?.deletable === true || snapshot?.provider_delete !== undefined)
+    && Boolean(snapshot.incarnation) && !snapshot.event.is_recurring && Boolean(deps.callers.delete && deps.callers.checkDeletion);
   const fieldAllowed = (key: Field): boolean => {
     const field = key === 'start' || key === 'startChoice' ? 'start_at' : key === 'end' || key === 'endChoice' ? 'end_at' : key;
     return snapshot?.editable_fields === undefined || snapshot.editable_fields.includes(field);
+  };
+  const overlaps = createCalendarOverlapPreview({ call: deps.callers.overlaps, id: 'edit',
+    actionAttr: deps.actionAttr, retryAction: 'calendar-event-overlap-retry' });
+  const updateOverlaps = () => {
+    if (!draft || !snapshot?.incarnation || !ref || !fieldAllowed('start') && !fieldAllowed('end')) { overlaps.reset(); return; }
+    const original = calendarEventDraft(snapshot.event);
+    const times = calendarEventPatch(snapshot.event, { ...draft, summary: original.summary || 'Untitled event',
+      description: original.description, location: original.location });
+    if (times.error || !times.patch) { overlaps.update(null); return; }
+    overlaps.update({ start_at: times.patch.start_at ?? snapshot.event.start_at,
+      end_at: times.patch.end_at ?? snapshot.event.end_at, is_all_day: snapshot.event.is_all_day,
+      timezone: snapshot.event.timezone, exclude: { ...ref, expected_incarnation: snapshot.incarnation } });
   };
   const viewFocus = (value: CalendarEventSnapshot) => editable(value) ? 'edit' : 'heading';
   const resumeEditing = () => { pendingLeave = null; repaint(editorFocus); };
@@ -192,7 +230,7 @@ export const createCalendarEventSurface = (deps: {
         const wanted = calendarEventPatch(snapshot.event, draft);
         const confirmed = wanted.patch && confirmsDraft(snapshot, wanted.patch, value);
         if (confirmed) {
-          snapshot = value; draft = null; saveNeedsCheck = false; error = ''; notice = 'Your changes are saved.'; deps.onSaved(value);
+          snapshot = value; draft = null; overlaps.reset(); saveNeedsCheck = false; error = ''; notice = 'Your changes are saved.'; deps.onSaved(value);
           pendingFocus = { key: viewFocus(value), onlyIfOwned: true };
         } else if (snapshot.editable_fields !== undefined && value.resource_version === snapshot.resource_version
           && value.incarnation === snapshot.incarnation && editable(value)
@@ -226,7 +264,55 @@ export const createCalendarEventSurface = (deps: {
       repaint();
     } }
   };
-  const reset = () => { generation++; ref = null; recordId = ''; snapshot = null; draft = null; busy = null; saveNeedsCheck = false; responseNeedsCheck = false; pendingResponse = null; removed = false; error = ''; notice = ''; unsupported = false; pendingLeave = null; pendingFocus = null; editorFocus = { key: 'summary' }; };
+  const reset = () => { generation++; ref = null; recordId = ''; snapshot = null; draft = null; overlaps.reset(); busy = null; deleteReview = false; deleteNeedsCheck = false; saveNeedsCheck = false; responseNeedsCheck = false; pendingResponse = null; removed = false; error = ''; notice = ''; unsupported = false; pendingLeave = null; pendingFocus = null; editorFocus = { key: 'summary' }; };
+  const finishDeletion = () => {
+    removed = true; deleteReview = false; deleteNeedsCheck = false; busy = null; error = '';
+    notice = 'Event is no longer in this calendar.';
+    pendingFocus = { key: 'heading', onlyIfOwned: true };
+    deps.onRemoved?.(recordId, true);
+  };
+  const deleteEvent = async (): Promise<void> => {
+    if (!ref || !snapshot || !deleteReview || deleteNeedsCheck || !deletable() || busy || draft || removed) return;
+    const request = { ...ref, expected_incarnation: snapshot.incarnation!, expected_version: snapshot.resource_version };
+    const seq = ++generation;
+    busy = 'delete'; error = ''; notice = ''; repaint('delete-confirm');
+    try {
+      const result = await deps.callers.delete!(request);
+      if (disposed || seq !== generation) return;
+      if (result?.deleted !== true || result.slug !== request.slug || result.source_id !== request.source_id
+        || result.incarnation !== request.expected_incarnation) throw new Error('The deletion could not be confirmed.');
+      finishDeletion();
+    } catch (err) { if (!disposed && seq === generation) {
+      deleteNeedsCheck = true;
+      error = `${humanizeRpcError(err)} Check the event before trying again.`;
+      pendingFocus = { key: 'delete-check', onlyIfOwned: true };
+    } } finally { if (!disposed && seq === generation) { busy = null; repaint(); } }
+  };
+  const checkDeletion = async (): Promise<void> => {
+    if (!ref || !snapshot?.incarnation || !deleteNeedsCheck || !deps.callers.checkDeletion || busy || removed) return;
+    const request = { ...ref, expected_incarnation: snapshot.incarnation };
+    const expectedRecord = recordId; const seq = ++generation;
+    busy = 'delete-check'; error = ''; repaint('delete-check');
+    try {
+      const result = await deps.callers.checkDeletion(request);
+      if (disposed || seq !== generation) return;
+      if (result?.slug !== request.slug || result.source_id !== request.source_id || result.incarnation !== request.expected_incarnation) {
+        throw new Error('This calendar could not confirm the event. Reopen its details.');
+      }
+      if (result.snapshot === null) finishDeletion();
+      else {
+        if (!identityMatches(request, expectedRecord, result.snapshot) || result.snapshot.incarnation !== request.expected_incarnation) {
+          throw new Error('This calendar returned a different event. Reopen its details.');
+        }
+        snapshot = result.snapshot; deleteReview = false; deleteNeedsCheck = false;
+        notice = 'The event is still here. Review its saved details before deleting again.';
+        deps.onSaved(result.snapshot);
+        pendingFocus = { key: 'heading', onlyIfOwned: true };
+      }
+    } catch (err) { if (!disposed && seq === generation) {
+      error = humanizeRpcError(err); pendingFocus = { key: 'delete-check', onlyIfOwned: true };
+    } } finally { if (!disposed && seq === generation) { busy = null; repaint(); } }
+  };
   const save = async (): Promise<void> => {
     if (!snapshot || !draft || !ref || !deps.callers.update || busy || saveNeedsCheck || !editable(snapshot) || !snapshot.incarnation) return;
     const result = calendarEventPatch(snapshot.event, draft);
@@ -234,7 +320,7 @@ export const createCalendarEventSurface = (deps: {
     if (snapshot.editable_fields && Object.keys(result.patch).some(key => !snapshot!.editable_fields!.includes(key as keyof CalendarEventPatch))) {
       error = 'Edit that field in the connected calendar. Your draft is kept.'; repaint(); return;
     }
-    if (Object.keys(result.patch).length === 0) { draft = null; error = ''; repaint('edit'); return; }
+    if (Object.keys(result.patch).length === 0) { draft = null; overlaps.reset(); error = ''; repaint('edit'); return; }
     const request = { ...ref, expected_version: snapshot.resource_version, expected_incarnation: snapshot.incarnation, patch: result.patch };
     const seq = ++generation; const expectedRecord = recordId;
     busy = 'save'; error = ''; notice = ''; repaint('save');
@@ -244,7 +330,7 @@ export const createCalendarEventSurface = (deps: {
       if (!identityMatches(request, expectedRecord, value) || !confirmsDraft(snapshot, request.patch, value)) {
         throw new Error('The save could not be confirmed. Your draft is kept. Check the saved event before trying again.');
       }
-      snapshot = value; draft = null; notice = 'Event saved.'; deps.onSaved(value);
+      snapshot = value; draft = null; overlaps.reset(); notice = 'Event saved.'; deps.onSaved(value);
       pendingFocus = { key: viewFocus(value), onlyIfOwned: true };
     } catch (err) { if (!disposed && seq === generation) {
       saveNeedsCheck = snapshot.editable_fields !== undefined;
@@ -286,9 +372,10 @@ export const createCalendarEventSurface = (deps: {
     } finally { if (!disposed && seq === generation) { busy = null; repaint(); } }
   };
   const beforeLeave = (effect: () => void): boolean => {
+    if (busy === 'delete') { repaint('delete-confirm'); return false; }
     if (!draft && busy !== 'save' && busy !== 'respond') return true;
     if (busy) { repaint(busy === 'respond' ? `respond-${pendingResponse}` : busy === 'save' ? 'save' : 'check'); return false; }
-    if (!dirty()) { draft = null; return true; }
+    if (!dirty()) { draft = null; overlaps.reset(); return true; }
     if (!pendingLeave) pendingLeave = effect;
     repaint('keep'); return false;
   };
@@ -314,9 +401,10 @@ export const createCalendarEventSurface = (deps: {
     hasSnapshot: () => snapshot !== null,
     isEditable: () => editable(snapshot),
     isEditing: () => draft !== null,
+    isDeleting: () => deleteReview || deleteNeedsCheck,
     isLoading: () => busy === 'read' && draft === null,
     hasUnsavedChanges: dirty,
-    hasInFlightWork: () => busy === 'save' || busy === 'respond' || (busy === 'read' && draft !== null),
+    hasInFlightWork: () => busy === 'save' || busy === 'respond' || busy === 'delete' || (busy === 'read' && draft !== null),
     beforeLeave,
     render(): string {
       if (!ref || (!snapshot && unsupported)) return '';
@@ -336,12 +424,24 @@ export const createCalendarEventSurface = (deps: {
         ${snapshot.edit_notice ? `<p class="calendar-event-hint">${e(snapshot.edit_notice)}</p>` : ''}
         ${field('summary', 'Title')}${field('location', 'Location')}
         <div class="calendar-event-dates">${dateField('start', event.is_all_day ? 'First day' : 'Start')}${dateField('end', event.is_all_day ? 'Last day' : 'End')}</div>
+        ${snapshot.incarnation && (fieldAllowed('start') || fieldAllowed('end')) ? overlaps.render() : ''}
         <label class="calendar-event-field">Description${!fieldAllowed('description') ? ' (read-only)' : ''}<textarea class="data-input" rows="6" maxlength="${CALENDAR_EVENT_EDIT_LIMITS.description}" ${CALENDAR_EVENT_FIELD}="description" ${FOCUS}="description"${busy || pendingLeave || saveNeedsCheck ? ' disabled' : !fieldAllowed('description') ? ' readonly' : ''}>
 ${e(draft.description)}</textarea></label>
         ${pendingLeave ? `<div class="calendar-event-discard" role="alertdialog" aria-modal="true" aria-labelledby="calendar-event-discard-title" aria-describedby="calendar-event-discard-copy"><h4 id="calendar-event-discard-title">Discard event changes?</h4><p id="calendar-event-discard-copy">Your unfinished changes will be lost.</p><div class="calendar-event-actions">${button('keep', 'Keep editing')}${button('discard', 'Discard changes')}</div></div>` : `<div class="calendar-event-actions">${button('save', busy === 'save' ? 'Saving…' : 'Save changes', true)}${button('cancel', 'Cancel')}</div>`}
       </div>` : '';
       const meta = (label: string, value: string) => `<div><dt>${e(label)}</dt><dd>${e(value)}</dd></div>`;
-      const errorHtml = error ? `<div class="calendar-event-error" role="alert"><p>${e(error)}</p>${responseNeedsCheck ? button('response-check', busy === 'read' ? 'Checking…' : 'Check response') : draft ? `<div class="calendar-event-actions">${button('check', busy === 'read' ? 'Checking…' : 'Check saved event')}${button('reload', 'Reload saved values')}</div>` : snapshot.refresh_error ? button('response-refresh', busy ? 'Refreshing…' : 'Retry refresh') : button('retry', busy ? 'Retrying…' : 'Retry event details')}</div>` : '';
+      const deletion = deleteReview || deleteNeedsCheck ? `<section class="calendar-event-delete" aria-label="Delete event">
+        <h3>${deleteNeedsCheck ? 'Check this event' : 'Delete this event?'}</h3>
+        <p><strong>${e(event.summary || 'Untitled event')}</strong><br>${e(event.calendar_name || event.calendar_id)}</p>
+        <p>${e(deletionRangeLabel(event))}${days ? ' · All day' : `<br>${e(zone)}`}</p>
+        <p class="calendar-event-hint">${deleteNeedsCheck ? 'Check whether the event is still in this calendar before sending another deletion.' : e(snapshot.provider_delete?.notice ?? 'This permanently removes the event from this local calendar. Guests will not be notified.')}</p>
+        ${error ? `<p role="alert" class="calendar-event-error">${e(error)}</p>` : ''}
+        <div class="calendar-event-actions">${deleteNeedsCheck ? button('delete-check', busy === 'delete-check' ? 'Checking…' : 'Check deletion')
+          : button('delete-cancel', 'Keep event') + button('delete-confirm', busy === 'delete' ? 'Deleting…' : 'Delete event')}</div>
+      </section>` : '';
+      const more = !draft && !removed && !deleteReview && !deleteNeedsCheck && deletable()
+        ? `<details class="calendar-event-more"><summary class="data-button" ${FOCUS}="more">${renderActionLabel('more', 'More')}</summary><div>${button('delete-open', 'Delete event')}</div></details>` : '';
+      const errorHtml = error && !deleteNeedsCheck ? `<div class="calendar-event-error" role="alert"><p>${e(error)}</p>${responseNeedsCheck ? button('response-check', busy === 'read' ? 'Checking…' : 'Check response') : draft ? `<div class="calendar-event-actions">${button('check', busy === 'read' ? 'Checking…' : 'Check saved event')}${button('reload', 'Reload saved values')}</div>` : snapshot.refresh_error ? button('response-refresh', busy ? 'Refreshing…' : 'Retry refresh') : button('retry', busy ? 'Retrying…' : 'Retry event details')}</div>` : '';
       const invitation = snapshot.invitation;
       const invitationHtml = !draft && invitation ? `<section class="calendar-event-invitation" aria-label="Invitation response">
         <div class="calendar-event-title-row"><h3>Invitation</h3>${!removed && !responseNeedsCheck && !snapshot.refresh_error && deps.callers.get ? button('response-refresh', busy === 'read' ? 'Refreshing…' : 'Refresh response') : ''}</div><dl class="calendar-event-meta">${meta('Organizer', invitation.organizer.display_name ? `${invitation.organizer.display_name} <${invitation.organizer.email}>` : invitation.organizer.email)}${meta('Responding as', invitation.attendee_email)}${meta(snapshot.provider_verified ? 'Your response' : 'Last synced response', responseLabel(invitation.response))}</dl>
@@ -352,13 +452,17 @@ ${e(draft.description)}</textarea></label>
         }).join('')}</div>` : !removed && invitation.unavailable_reason && !snapshot.refresh_error ? `<p class="calendar-event-hint">${e(invitation.unavailable_reason)}</p>` : ''}
         ${responseNeedsCheck || snapshot.refresh_error ? errorHtml : ''}
       </section>` : '';
+      const attendeesHtml = !draft && event.attendees?.length ? `<section class="calendar-event-guests" aria-label="Event guests"><h3>Guests · ${e(String(event.attendee_count ?? event.attendees.length))}</h3>
+        <ul>${event.attendees.map(guest => `<li><span>${guest.display_name ? `<strong>${e(guest.display_name)}</strong><br>` : ''}${e(guest.email)}</span><span class="calendar-event-hint">${e(responseLabel(guest.response_status))}</span></li>`).join('')}</ul>
+        ${(event.attendee_count ?? 0) > event.attendees.length ? '<p class="calendar-event-hint">Open the provider calendar to see the complete guest list.</p>' : ''}</section>` : '';
       return `<div class="calendar-event">
         <header class="calendar-event-head"><div class="calendar-event-context"><span class="col-explorer-detail-scope">Calendar · ${e(event.calendar_name || event.calendar_id)}</span><span class="calendar-event-status">${e(event.status === 'cancelled' ? 'Cancelled' : event.status === 'tentative' ? 'Tentative' : 'Confirmed')}${event.is_recurring ? ' · Recurring' : ''}</span></div>
-          <div class="calendar-event-title-row"><h2 class="col-explorer-detail-title" data-recued-collection-detail-heading ${FOCUS}="heading" tabindex="-1">${e(event.summary || 'Untitled event')}</h2>${!draft && editable(snapshot) ? button('edit', 'Edit event') : ''}</div>
+          <div class="calendar-event-title-row"><h2 class="col-explorer-detail-title" data-recued-collection-detail-heading ${FOCUS}="heading" tabindex="-1">${e(event.summary || 'Untitled event')}</h2><div class="calendar-event-actions">${!draft && !removed && !deleteReview && !deleteNeedsCheck && editable(snapshot) ? button('edit', 'Edit event') : ''}${more}</div></div>
         </header>
         ${notice ? `<p role="status" class="calendar-event-notice">${e(notice)}</p>` : ''}
+        ${deletion}
         ${busy === 'read' ? `<p role="status" class="calendar-event-hint">${draft ? 'Checking saved event…' : responseNeedsCheck ? 'Checking your response…' : 'Reading event details…'}</p>` : ''}
-        ${!draft ? `<dl class="calendar-event-meta">${meta(days ? 'First day' : 'Start', days ? dayLabel(days.first) : timeLabel(event.start_at, zone))}${meta(days ? 'Last day' : 'End', days ? dayLabel(days.last) : timeLabel(event.end_at, zone))}${meta(days ? 'All day' : 'Time zone', days ? 'Yes' : zone)}${meta('Duration', durationLabel(event))}${event.location ? meta('Location', event.location) : ''}</dl>${invitationHtml}${event.description ? `<div><h3>Description</h3><p class="calendar-event-description">${e(event.description)}</p>${event.description_truncated ? '<p class="calendar-event-hint">Description preview. The full text is kept in the calendar.</p>' : ''}</div>` : ''}${readOnlyReason ? `<p class="calendar-event-hint">${e(readOnlyReason)}</p>` : ''}` : editor}
+        ${!draft ? `<dl class="calendar-event-meta">${meta(days ? 'First day' : 'Start', days ? dayLabel(days.first) : timeLabel(event.start_at, zone))}${meta(days ? 'Last day' : 'End', days ? dayLabel(days.last) : timeLabel(event.end_at, zone))}${meta(days ? 'All day' : 'Time zone', days ? 'Yes' : zone)}${meta('Duration', durationLabel(event))}${event.location ? meta('Location', event.location) : ''}</dl>${invitationHtml}${attendeesHtml}${event.description ? `<div><h3>Description</h3><p class="calendar-event-description">${e(event.description)}</p>${event.description_truncated ? '<p class="calendar-event-hint">Description preview. The full text is kept in the calendar.</p>' : ''}</div>` : ''}${readOnlyReason ? `<p class="calendar-event-hint">${e(readOnlyReason)}</p>` : ''}` : editor}
         ${!invitation || (!responseNeedsCheck && !snapshot.refresh_error) ? errorHtml : ''}
         ${!draft ? `<details class="calendar-event-identities"><summary>Event identifiers</summary><dl class="calendar-event-meta">${meta('Record id', event.record_id)}${meta('Source id', event.source_id)}</dl></details>` : ''}
       </div>`;
@@ -368,26 +472,34 @@ ${e(draft.description)}</textarea></label>
       const key = action.slice(CALENDAR_EVENT_ACTION_PREFIX.length);
       if (busy) return true;
       if (pendingLeave && key !== 'keep' && key !== 'discard') return true;
+      if ((deleteReview || deleteNeedsCheck) && !['delete-confirm', 'delete-cancel', 'delete-check'].includes(key)) return true;
+      if (key === 'delete-open' && deletable() && !draft && !removed) {
+        deleteReview = true; error = ''; notice = ''; repaint('delete-cancel');
+      }
+      if (key === 'delete-cancel' && !deleteNeedsCheck) { deleteReview = false; error = ''; repaint('more'); }
+      if (key === 'delete-confirm') void deleteEvent();
+      if (key === 'delete-check') void checkDeletion();
       if (key === 'retry' && !removed) void read(false, 'retry');
       if (key === 'response-check') void read(false, 'response-check');
       if (key === 'response-refresh' && !removed) void read(false, 'response-refresh');
       if (key === 'respond-accepted' || key === 'respond-tentative' || key === 'respond-declined') void respond(key.slice('respond-'.length) as CalendarInvitationResponse);
       if (key === 'edit' && snapshot && editable(snapshot)) {
         if (saveNeedsCheck) void read(false, 'heading');
-        else { draft = calendarEventDraft(snapshot.event); editorFocus = { key: 'summary' }; error = ''; notice = ''; repaint('summary'); }
+        else { draft = calendarEventDraft(snapshot.event); updateOverlaps(); editorFocus = { key: 'summary' }; error = ''; notice = ''; repaint('summary'); }
       }
+      if (key === 'overlap-retry') overlaps.retry();
       if (key === 'save') void save();
       if (key === 'check') void read(true, 'check');
       if (key === 'cancel') {
-        const cancel = () => { draft = null; error = ''; notice = ''; repaint('edit'); };
+        const cancel = () => { draft = null; overlaps.reset(); error = ''; notice = ''; repaint('edit'); };
         if (beforeLeave(cancel)) cancel();
       }
       if (key === 'reload') {
-        const reload = () => { draft = null; error = ''; void read(false, 'heading'); };
+        const reload = () => { draft = null; overlaps.reset(); error = ''; void read(false, 'heading'); };
         if (beforeLeave(reload)) reload();
       }
       if (key === 'keep') resumeEditing();
-      if (key === 'discard') { const leave = pendingLeave; pendingLeave = null; draft = null; error = ''; leave?.(); }
+      if (key === 'discard') { const leave = pendingLeave; pendingLeave = null; draft = null; overlaps.reset(); error = ''; leave?.(); }
       return true;
     },
     handleInput(target: HTMLElement, _change = false): boolean {
@@ -405,6 +517,9 @@ ${e(draft.description)}</textarea></label>
         const host = target.closest?.('.calendar-event')?.querySelector<HTMLElement>(`[${REPEAT}="${key}"]`);
         if (host) { const choices = repeatedTime(key); host.innerHTML = choices; host.hidden = !choices; }
       }
+      if (['start', 'end', 'startChoice', 'endChoice'].includes(key)) {
+        overlaps.mount(target.closest?.('.calendar-event') ?? target); updateOverlaps();
+      }
       return true;
     },
     guardKeyDown(event: KeyboardEvent, root: HTMLElement): boolean {
@@ -419,6 +534,8 @@ ${e(draft.description)}</textarea></label>
       return true;
     },
     escape(): boolean {
+      if (busy === 'delete') return true;
+      if (deleteReview && !deleteNeedsCheck) { this.handleAction('calendar-event-delete-cancel'); return true; }
       if (!draft) return false;
       if (busy) return true;
       if (pendingLeave) resumeEditing();
@@ -434,6 +551,7 @@ ${e(draft.description)}</textarea></label>
       return focus;
     },
     restoreFocus(root: HTMLElement, previous: CalendarEventFocus | null): void {
+      overlaps.mount(root);
       const requested = pendingFocus; pendingFocus = null;
       if (requested?.onlyIfOwned && previous === null) return;
       const focus = requested ?? previous;
@@ -447,7 +565,7 @@ ${e(draft.description)}</textarea></label>
   };
 };
 
-export const CALENDAR_EVENT_STYLES = `
+export const CALENDAR_EVENT_STYLES = CALENDAR_OVERLAP_STYLES + `
 .calendar-event .data-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
 .calendar-event .data-button svg[aria-hidden=true] { flex:none; }
 .calendar-event { display: grid; gap: 1rem; min-width: 0; }
@@ -459,6 +577,12 @@ export const CALENDAR_EVENT_STYLES = `
 .calendar-event h3 { font-size: 1rem; }
 .calendar-event-status, .calendar-event-hint, .calendar-event-identities { color: var(--fg-muted); font-size: .8125rem; overflow-wrap: anywhere; }
 .calendar-event-invitation { display: grid; gap: .75rem; border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; }
+.calendar-event-guests { display:grid; gap:.75rem; }
+.calendar-event-guests h3 { margin:0; }
+.calendar-event-guests ul { display:grid; gap:.5rem; list-style:none; margin:0; padding:0; }
+.calendar-event-guests li { display:flex; align-items:center; justify-content:space-between; gap:1rem; border-bottom:1px solid var(--border); padding:.5rem 0; }
+.calendar-event-guests li > span:first-child { min-width:0; overflow-wrap:anywhere; }
+.calendar-event-guests li > span:last-child { flex:none; }
 .calendar-event-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem 1.5rem; margin: 0; }
 .calendar-event-invitation .calendar-event-meta { grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)); }
 .calendar-event-meta dt { color: var(--fg-muted); font-size: .75rem; margin-bottom: .25rem; }
@@ -471,8 +595,13 @@ export const CALENDAR_EVENT_STYLES = `
 .calendar-event-date-field { display: grid; align-content: start; gap: .75rem; min-width: 0; }
 .calendar-event-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .calendar-event-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.calendar-event-more { position: relative; }
+.calendar-event-more > summary { list-style: none; cursor: pointer; }
+.calendar-event-more > summary::-webkit-details-marker { display: none; }
+.calendar-event-more > div { position: absolute; right: 0; top: calc(100% + .25rem); z-index: 2; padding: .5rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--surface); box-shadow: 0 4px 12px #0002; white-space: nowrap; }
+.calendar-event-delete { display: grid; gap: .75rem; padding: 1rem; min-width: 0; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: .5rem; background: var(--surface); }
 .calendar-event-error, .calendar-event-discard { display: grid; gap: .75rem; padding: .875rem; border: 1px solid var(--border); border-radius: .375rem; }
 .calendar-event-error { color: var(--danger); }
-.calendar-event-identities summary { cursor: pointer; margin-bottom: .75rem; }
+.calendar-event-identities summary { cursor: pointer; margin-bottom: .75rem; min-height: 36px; box-sizing: border-box; padding-block: 8px; }
 @media (max-width: 540px) { .calendar-event-meta, .calendar-event-invitation .calendar-event-meta, .calendar-event-dates { grid-template-columns: minmax(0, 1fr); } .calendar-event-editor { padding: .75rem; } }
 `;

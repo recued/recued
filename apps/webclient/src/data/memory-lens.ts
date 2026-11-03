@@ -19,8 +19,18 @@
  *
  *  Spec: D-198 §4/§5 + D-198 §B Slice 1b/2. */
 
-import type { Actor, MemoryGetResponse, MemoryImportResult, MemoryListEntry } from '@recued/contracts';
+import type { Actor, MemoryClaimCountsResult, MemoryGetResponse, MemoryImportResult, MemoryListEntry } from '@recued/contracts';
+import {
+  listedMemoryRelation,
+  MEMORY_RELATION_INDEX,
+  parseQualifiedWorkEntityId,
+  type MemoryClaim,
+  type MemoryClaimEnd,
+  type MemoryRelationEnd,
+  type MemoryRelationGroup,
+} from '@recued/contracts';
 import { renderProvenance, renderReferenceLink } from '@recued/ui-shared';
+import { serializeShellRoute } from '../shell/route.js';
 
 /** Origin-filter selector — the "tenancy view" over one store (D-198 §2):
  *  `all` = no filter; the rest map 1:1 to a D-161 `Actor`. */
@@ -125,6 +135,43 @@ export const MEMORY_IMPORT_DISCARD_COMMIT_ATTR =
 export const MEMORY_EXPORT_ACTION = 'memory-export';
 export const MEMORY_ROW_ID_ATTR = 'data-memory-id';
 export const MEMORY_FIELD_ATTR = 'data-memory-field';
+// D-336 slice E — the relationship beside a note's summary.
+export const MEMORY_CLAIM_ADD_ACTION = 'memory-claim-add';
+export const MEMORY_CLAIM_REMOVE_ACTION = 'memory-claim-remove';
+export const MEMORY_CLAIM_LINK_ACTION = 'memory-claim-link';
+export const MEMORY_CLAIM_LINK_CANCEL_ACTION = 'memory-claim-link-cancel';
+export const MEMORY_CLAIM_PICK_ACTION = 'memory-claim-pick';
+export const MEMORY_CLAIM_YOU_ACTION = 'memory-claim-you';
+export const MEMORY_CLAIM_UNLINK_ACTION = 'memory-claim-unlink';
+/** D-336 slice H — add the end's words as a new contact, where "Link to a contact" found
+ *  nobody (`MemoryComposeLinking.addable`), and link the end to it. */
+export const MEMORY_CLAIM_ADD_CONTACT_ACTION = 'memory-claim-add-contact';
+/** D-336 slice L — add the end's words as a thing the owner owns, where "Link to a thing you
+ *  own" found nothing (`MemoryComposeLinking.addable`), and link the end to it. */
+export const MEMORY_CLAIM_ADD_THING_ACTION = 'memory-claim-add-thing';
+/** D-336 slice H — what the picker says when the server is older than `contact.create_by_name`. */
+export const MEMORY_CLAIM_ADD_CONTACT_UPDATE = 'Update your Recued server to add a contact from here.';
+/** The matches an end's lookup found, and its add under way, on the Memory form and the card. */
+export const MEMORY_CLAIM_MATCHES_ATTR = 'data-memory-claim-matches';
+
+/** D-336 audit 2026-11-01 — take an end's matches off the form in place. A lookup or an add
+ *  under way was for the words as they were; once the owner changes them its answer is
+ *  dropped, and its "Looking…" or "Adding “Mia”…" would otherwise stay up for good. In
+ *  place, never a redraw, which would take the field the owner is typing in. */
+export const dropMemoryClaimMatches = (host: ParentNode | null | undefined, end: 'subject' | 'object'): void => {
+  (host?.querySelector?.(`[${MEMORY_CLAIM_MATCHES_ATTR}="${end}"]`) as Element | null | undefined)?.remove?.();
+};
+/** Which end an action acts on: `subject` or `object`. */
+export const MEMORY_CLAIM_END_ATTR = 'data-memory-claim-end';
+/** What a link action looks for: `contact` or `asset`. */
+export const MEMORY_CLAIM_LINK_ATTR = 'data-memory-claim-link';
+export const MEMORY_CLAIM_PICK_ID_ATTR = 'data-memory-claim-pick-id';
+export const MEMORY_CLAIM_PICK_NAME_ATTR = 'data-memory-claim-pick-name';
+/** What an end written as words can be linked to, by its relation: `person`, `thing`,
+ *  `any` (no relation yet, or the owner's own) or `none` (a place, a name, words). */
+export const MEMORY_CLAIM_TAKES_ATTR = 'data-memory-claim-takes';
+/** Which link a button offers: `person` (a contact, you) or `thing` (a thing you own). */
+export const MEMORY_CLAIM_OFFER_ATTR = 'data-memory-claim-offer';
 const MEMORY_LENS_HEADING_ID = 'recued-memory-lens-heading';
 
 /** Compose (create/edit/replace) form state, owned by the route, rendered here. */
@@ -140,6 +187,44 @@ export interface MemoryComposeState {
   body: string;
   submitting: boolean;
   error?: string;
+  /** D-336 slice E — the relationship beside the summary, while one is being written.
+   *  An end is words, the owner, or a linked contact or thing; the relation is the
+   *  list's word or the owner's own. */
+  claim?: MemoryComposeClaim;
+  /** A new note's summary follows its relationship until the owner writes their own. */
+  summaryFollows?: boolean;
+  /** The matches offered for linking one end. */
+  linking?: MemoryComposeLinking;
+}
+
+/** D-336 slice E — the relationship in the compose form. */
+export interface MemoryComposeClaim {
+  subject: MemoryClaimEnd;
+  relation: string;
+  object: MemoryClaimEnd;
+}
+
+/** D-336 slice E — the records offered for one end: a contact or a thing the owner keeps,
+ *  matched by the words in that end. */
+export interface MemoryComposeLinking {
+  end: 'subject' | 'object';
+  kind: 'contact' | 'asset';
+  loading: boolean;
+  options: ReadonlyArray<{ id: string; name: string; detail?: string }>;
+  error?: string;
+  /** D-336 slice H — the words a contact can be added from: set when the search for them
+   *  found nobody, so the picker offers to add them (§3.6). Slice L: or a thing the owner
+   *  owns, when the search was for one. */
+  addable?: string;
+  /** D-336 slice L — the add's idempotency key, one per offer: a retry after a failure adds
+   *  the thing once. */
+  addKey?: string;
+  /** The add is on its way to the server. */
+  adding?: boolean;
+  /** Audit 2026-11-01 (second) — which lookup or add this is. An answer lands only on the one
+   *  it was asked for: an older add's answer, back after a newer add began on the same end,
+   *  linked the older name. */
+  request?: number;
 }
 
 /** Detail-view state — the lazy `memory.get` result for one entry. */
@@ -268,6 +353,8 @@ export interface MemoryLensProps {
   /** Slice 2 — whether the owner CRUD callers are wired; gates the write
    *  affordances (Add / Edit / Delete). Absent = read-only (no affordances). */
   canWrite?: boolean;
+  /** D-336 slice K — what the relation list misses (`memory.claim_counts`); absent → no line. */
+  claimCounts?: MemoryClaimCountsResult;
 }
 
 const e = (value: string): string =>
@@ -338,6 +425,82 @@ const revisionNote = (
     : entry.replaces !== undefined
       ? '<p class="memory-row-revision">Corrects an earlier entry</p>'
       : '';
+
+/** D-336 slice G (§3.9) — the line under a note that contradicts another in memory, each one
+ *  by its summary and opening it. The server marks only current notes, so the line goes once
+ *  either is replaced or removed. */
+const contradictsNote = (entry: Pick<MemoryListEntry, 'contradicts'>): string =>
+  entry.contradicts === undefined || entry.contradicts.length === 0
+    ? ''
+    : `<p class="memory-row-revision" data-memory-contradicts>Contradicts ${entry.contradicts
+      .map((other) => `<a href="${e(serializeShellRoute('data', 'memory', other.memory_id))}">"${e(other.summary)}"</a>`)
+      .join(' and ')}</p>`;
+
+/** D-336 slice T — the attribute on a note's relationship line, and on each of its ends: what
+ *  the end is (`contact`, `asset`, `owner`, or `words` for a name linked to no record). */
+export const MEMORY_CLAIM_LINE_ATTR = 'data-memory-claim-line';
+export const MEMORY_CLAIM_LINE_END_ATTR = 'data-memory-claim-end-is';
+
+/** D-336 slice T — one end of a note's relationship, told apart on sight (the owner,
+ *  2026-11-02: "a visual id of differentiating the string name, and linked contact, so user
+ *  knows how to switch"): a contact, a thing you own or you, drawn as a record and named as
+ *  one, or a name in words, drawn as words and said to be not linked. Two notes match only by
+ *  the same record or the same words (§9), so a name never matches the contact of that name
+ *  in code: the owner sees which it is and links it. Each says what it is, never by colour
+ *  alone. */
+const claimLineEnd = (end: MemoryClaimEnd): string => {
+  if ('text' in end) {
+    return `<span class="memory-claim-tag memory-claim-tag--words" ${MEMORY_CLAIM_LINE_END_ATTR}="words">“${e(end.text)}”`
+      + '<span class="memory-claim-tag-kind">not linked</span></span>';
+  }
+  if ('owner' in end) return `<span class="memory-claim-tag memory-claim-tag--record" ${MEMORY_CLAIM_LINE_END_ATTR}="owner">You</span>`;
+  if ('asset_id' in end) {
+    // D-336 (spec §45) — a thing's tag opens its page in Yours, which reads a thing by the id it
+    // keeps for it: a claim's qualified id holds it when the thing is Recued's own.
+    const local = localAssetIdOf(end.asset_id);
+    const [open, close] = local === undefined ? ['<span', '</span>'] : ['<a', '</a>'];
+    return `${open} class="memory-claim-tag memory-claim-tag--record" ${MEMORY_CLAIM_LINE_END_ATTR}="asset"`
+      + `${local === undefined ? '' : ` href="${e(serializeShellRoute('yours', 'asset', local))}"`}>${e(end.name)}`
+      + `<span class="memory-claim-tag-kind">thing you own</span>${close}`;
+  }
+  // A contact's tag opens its page, by the contact's id, which the page looks up (D-325).
+  return `<a class="memory-claim-tag memory-claim-tag--record" ${MEMORY_CLAIM_LINE_END_ATTR}="contact" `
+    + `href="${e(serializeShellRoute('data', 'contact', end.contact_id))}">${e(end.name)}<span class="memory-claim-tag-kind">contact</span></a>`;
+};
+
+/** The id the Yours page reads a thing by, from the qualified id a claim stores: only a thing
+ *  Recued keeps itself (`local`); one from a source is known there by another id. */
+const localAssetIdOf = (id: string): string | undefined => {
+  try {
+    const parsed = parseQualifiedWorkEntityId(id);
+    return parsed?.kind === 'asset' && parsed.identity === 'local' ? parsed.record_id : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** D-336 slice T — a note's relationship under its summary, in the list and the detail. */
+const claimLine = (entry: Pick<MemoryListEntry, 'claim'>): string =>
+  entry.claim === undefined
+    ? ''
+    : `<p class="memory-row-claim" ${MEMORY_CLAIM_LINE_ATTR}>${claimLineEnd(entry.claim.subject)} `
+      + `<span class="memory-claim-relation">${e(entry.claim.relation)}</span> ${claimLineEnd(entry.claim.object)}</p>`;
+
+/** D-336 slice T — under the detail's relationship, how to link a name in words, for a note the
+ *  owner can change: their own by Edit, an AI's by Replace, which keeps its relationship. Only
+ *  an end its relation lets be linked, as the form offers (`claimTakes`). */
+const claimSwitchHint = (claim: MemoryClaim | undefined, change: 'Edit' | 'Replace' | undefined): string => {
+  if (claim === undefined || change === undefined) return '';
+  const listed = listedMemoryRelation(claim.relation);
+  const names = (['subject', 'object'] as const).flatMap((place) => {
+    const end = claim[place];
+    return 'text' in end && claimTakes(listed?.[place]) !== 'none' ? [`“${end.text}”`] : [];
+  });
+  if (names.length === 0) return '';
+  const one = names.length === 1;
+  return `<p class="memory-detail-claim-hint">${e(names.join(' and '))} ${one ? 'is' : 'are'} not linked, so Recued matches `
+    + `${one ? 'it' : 'them'} only with notes in the same words. To link ${one ? 'it' : 'them'}, choose ${change}.</p>`;
+};
 
 /** D-198 §13 — the line under an agent's note the owner revoked. */
 const revokedNote = (entry: Pick<MemoryListEntry, 'revoked_at'>, now: number): string =>
@@ -674,7 +837,7 @@ const renderRow = (
   const bodyLines = isRedacted
     ? `<p class="memory-row-redacted">${e(removedNote(entry, now))}</p>`
     : `${primary ? `<p class="memory-row-title">${e(primary)}</p>` : ''}${
-        secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}${revisionNote(entry)}${revokedNote(entry, now)}`;
+        secondary ? `<p class="memory-row-preview">${e(secondary)}</p>` : ''}${claimLine(entry)}${revisionNote(entry)}${revokedNote(entry, now)}${contradictsNote(entry)}`;
   return `<li class="memory-row${isRedacted ? ' is-redacted' : ''}" data-origin="${e(entry.origin_actor)}">
     <div class="memory-row-head">
       ${renderMemoryOrigin(entry)}
@@ -700,6 +863,128 @@ const renderRow = (
       deleteSaves,
     )}
   </li>`;
+};
+
+/** D-336 slice E — what a relationship is for, said where the owner adds one. */
+export const MEMORY_CLAIM_HINT =
+  'Also say the fact as a relationship, such as Mia, daughter of, Dana. Then it matches however it was worded.';
+
+const RELATION_GROUP_WORDS: Readonly<Record<MemoryRelationGroup, string>> = {
+  family: 'Family', ties: 'Other ties', work: 'Work', services: 'Services', places: 'Places',
+  names: 'Names', things: 'Things', preferences: 'Preferences',
+};
+
+/** Every listed relation, for the relation field's suggestions: the owner may also type
+ *  their own words (§3.11). */
+const relationOptions = (): string => [...MEMORY_RELATION_INDEX.values()]
+  .map((r) => `<option value="${e(r.relation)}" label="${e(RELATION_GROUP_WORDS[r.group])}"></option>`)
+  .join('');
+
+/** One end of the relationship: its words, or the record it is linked to, and the
+ *  links its relation allows there (§3.6): a contact or you where a person goes, a
+ *  thing you own where a thing goes, any of them for a relation of your own. */
+const renderClaimEnd = (
+  end: 'subject' | 'object',
+  value: MemoryClaimEnd,
+  kind: MemoryRelationEnd | undefined,
+  linking: MemoryComposeLinking | undefined,
+  actionAttr: string,
+  readonlyAttr: string,
+  idPrefix: string,
+): string => {
+  const label = end === 'subject' ? 'First part' : 'Second part';
+  const button = (action: string, text: string, extra = ''): string =>
+    `<button type="button" class="memory-btn" ${actionAttr}="${action}" ${MEMORY_CLAIM_END_ATTR}="${end}"${extra}>${e(text)}</button>`;
+  if (!('text' in value)) {
+    const linked = 'owner' in value ? 'You' : value.name;
+    const what = 'owner' in value ? '' : 'contact_id' in value ? ' · a contact' : ' · a thing you own';
+    return `<div class="memory-field memory-claim-end" data-memory-claim-linked="${end}">
+      <span class="memory-field-label">${label}</span>
+      <span class="memory-claim-linked">${e(linked)}<span class="memory-field-hint">${e(what)}</span></span>
+      ${button(MEMORY_CLAIM_UNLINK_ACTION, 'Unlink')}
+    </div>`;
+  }
+  // Every link is drawn and the end says which its relation takes (`MEMORY_CLAIM_TAKES_ATTR`;
+  // the styles hide the rest). A relation typed then changes them in place: redrawing the
+  // form on its change replaced Save under the pointer, so the click that blurred the
+  // relation was lost and Save took a second click (browser drive, 2026-10-31).
+  const offers = [
+    button(MEMORY_CLAIM_LINK_ACTION, 'Link to a contact', ` ${MEMORY_CLAIM_LINK_ATTR}="contact" ${MEMORY_CLAIM_OFFER_ATTR}="person"`),
+    button(MEMORY_CLAIM_YOU_ACTION, 'That’s you', ` ${MEMORY_CLAIM_OFFER_ATTR}="person"`),
+    button(MEMORY_CLAIM_LINK_ACTION, 'Link to a thing you own', ` ${MEMORY_CLAIM_LINK_ATTR}="asset" ${MEMORY_CLAIM_OFFER_ATTR}="thing"`),
+  ].join('');
+  const matches = linking === undefined || linking.end !== end ? '' : `<div class="memory-claim-matches" ${MEMORY_CLAIM_MATCHES_ATTR}="${end}" role="group" aria-label="${e(linking.kind === 'contact' ? 'Contacts to link' : 'Things you own to link')}">
+      ${linking.loading ? '<p class="memory-field-hint" role="status">Looking…</p>' : ''}
+      ${linking.error !== undefined ? `<p class="memory-compose-error" role="alert">${e(linking.error)}</p>` : ''}
+      ${linking.options.map((option) => `<button type="button" class="memory-btn" ${actionAttr}="${MEMORY_CLAIM_PICK_ACTION}" ${MEMORY_CLAIM_END_ATTR}="${end}" ${MEMORY_CLAIM_PICK_ID_ATTR}="${e(option.id)}" ${MEMORY_CLAIM_PICK_NAME_ATTR}="${e(option.name)}">${e(option.name)}${option.detail !== undefined ? ` <span class="memory-field-hint">${e(option.detail)}</span>` : ''}</button>`).join('')}
+      ${linking.addable === undefined ? '' : linking.adding === true
+        ? `<p class="memory-field-hint" role="status">Adding “${e(linking.addable)}”…</p>`
+        : linking.kind === 'contact'
+          ? button(MEMORY_CLAIM_ADD_CONTACT_ACTION, `Add “${linking.addable}” as a contact`)
+          : button(MEMORY_CLAIM_ADD_THING_ACTION, `Add “${linking.addable}” as a thing you own`)}
+      ${button(MEMORY_CLAIM_LINK_CANCEL_ACTION, 'Cancel')}
+    </div>`;
+  return `<div class="memory-field memory-claim-end" data-memory-claim-part="${end}" ${MEMORY_CLAIM_TAKES_ATTR}="${claimTakes(kind)}">
+    <label class="memory-field-label" for="${idPrefix}-${end}">${label}</label>
+    <input id="${idPrefix}-${end}" class="memory-input" type="text" value="${e(value.text)}" ${MEMORY_FIELD_ATTR}="claim-${end}"${readonlyAttr} />
+    <div class="memory-claim-offers">${offers}</div>
+    ${matches}
+  </div>`;
+};
+
+/** What an end of `kind` can be linked to (`MEMORY_CLAIM_TAKES_ATTR`). */
+const claimTakes = (kind: MemoryRelationEnd | undefined): 'any' | 'person' | 'thing' | 'none' =>
+  kind === undefined ? 'any' : kind === 'person' || kind === 'thing' ? kind : 'none';
+
+/** D-336 slice E — a relation being typed decides what each end written as words can be
+ *  linked to: set in place on the ends inside `within`, so nothing the owner is about to
+ *  press is redrawn. */
+export const showMemoryClaimTakes = (within: ParentNode | null | undefined, relation: string): void => {
+  const listed = relation.trim() === '' ? undefined : listedMemoryRelation(relation);
+  for (const end of ['subject', 'object'] as const) {
+    const field = within?.querySelector?.(`[data-memory-claim-part="${end}"][${MEMORY_CLAIM_TAKES_ATTR}]`);
+    field?.setAttribute(MEMORY_CLAIM_TAKES_ATTR, claimTakes(listed?.[end]));
+  }
+};
+
+/** D-336 slice E — the links an end's relation does not take, hidden. */
+export const MEMORY_CLAIM_TAKES_STYLES = `
+[${MEMORY_CLAIM_TAKES_ATTR}="person"] [${MEMORY_CLAIM_OFFER_ATTR}="thing"],
+[${MEMORY_CLAIM_TAKES_ATTR}="thing"] [${MEMORY_CLAIM_OFFER_ATTR}="person"],
+[${MEMORY_CLAIM_TAKES_ATTR}="none"] [${MEMORY_CLAIM_OFFER_ATTR}],
+[${MEMORY_CLAIM_TAKES_ATTR}="none"] > .memory-claim-offers { display: none; }`;
+
+/** D-336 slice E — the relationship beside the summary (§3.5): one form, both editable,
+ *  nothing to switch. A note with none offers to add one. Also the approval card's, for a
+ *  held save (`idPrefix` keeps two cards' fields apart). */
+export const renderMemoryClaimFields = (
+  compose: Pick<MemoryComposeState, 'claim' | 'linking'>,
+  actionAttr: string,
+  readonlyAttr: string,
+  idPrefix = 'memory-claim',
+): string => {
+  const claim = compose.claim;
+  if (claim === undefined) {
+    return `<div class="memory-field memory-claim-empty" data-memory-claim>
+      <span class="memory-field-label">Relationship <span class="memory-field-hint">(optional)</span></span>
+      <span class="memory-field-hint">${e(MEMORY_CLAIM_HINT)}</span>
+      <button type="button" class="memory-btn" ${actionAttr}="${MEMORY_CLAIM_ADD_ACTION}">Add a relationship</button>
+    </div>`;
+  }
+  const listed = claim.relation.trim() === '' ? undefined : listedMemoryRelation(claim.relation);
+  return `<fieldset class="memory-claim" data-memory-claim>
+    <legend class="memory-field-label">Relationship</legend>
+    ${renderClaimEnd('subject', claim.subject, listed?.subject, compose.linking, actionAttr, readonlyAttr, idPrefix)}
+    <div class="memory-field">
+      <label class="memory-field-label" for="${idPrefix}-relation">Relation</label>
+      <input id="${idPrefix}-relation" class="memory-input" type="text" list="${idPrefix}-relations" placeholder="e.g. daughter of"
+        value="${e(claim.relation)}" ${MEMORY_FIELD_ATTR}="claim-relation"${readonlyAttr} />
+      <datalist id="${idPrefix}-relations">${relationOptions()}</datalist>
+      <span class="memory-field-hint">Choose one from the list, or write your own words.</span>
+    </div>
+    ${renderClaimEnd('object', claim.object, listed?.object, compose.linking, actionAttr, readonlyAttr, idPrefix)}
+    <button type="button" class="memory-btn" ${actionAttr}="${MEMORY_CLAIM_REMOVE_ACTION}">Remove relationship</button>
+  </fieldset>`;
 };
 
 /** D-198 §12 — what a replace does, said where the owner decides to save it. */
@@ -761,6 +1046,7 @@ const renderComposeForm = (
         <textarea class="memory-textarea" rows="6" placeholder="${e(MEMORY_BODY_PLACEHOLDER)}" ${MEMORY_FIELD_ATTR}="body"${readonlyAttr}>${e(compose.body)}</textarea>
         <span class="memory-field-hint">${e(MEMORY_KEYWORDS_HINT)}</span>
       </label>
+      ${renderMemoryClaimFields(compose, actionAttr, readonlyAttr)}
       ${err}
       <footer class="memory-compose-actions">
         <button type="button" class="memory-btn memory-compose-cancel"
@@ -909,12 +1195,15 @@ const renderDetail = (
             : ''}`;
       }
     }
+    // D-336 slice T — how a name in words in its relationship is linked, where it can be changed.
+    const change = !canWrite || isRedacted ? undefined : isOwn ? 'Edit' as const : isReplaceableEntry(entry) ? 'Replace' as const : undefined;
     const content = isRedacted
       ? `<p class="memory-row-redacted">${e(removedNote(entry, now))}</p>`
       : `${entry.summary !== undefined ? `<p class="memory-detail-summary">${e(entry.summary)}</p>` : ''}${
+          claimLine(entry)}${claimSwitchHint(entry.claim, change)}${
           entry.body !== undefined
             ? `<pre class="memory-detail-body">${e(entry.body)}</pre>`
-            : '<p class="memory-lens-empty">This entry has no body.</p>'}${revisionNote(entry)}${revokedNote(entry, now)}`;
+            : '<p class="memory-lens-empty">This entry has no body.</p>'}${revisionNote(entry)}${revokedNote(entry, now)}${contradictsNote(entry)}`;
     body = `<div class="memory-detail-head">
         ${renderMemoryOrigin(entry)}
         <span class="memory-row-kind">${e(entry.kind)}</span>
@@ -936,6 +1225,31 @@ const renderMemoryLensFrame = (content: string): string => `
     <h2 class="memory-lens-title" id="${MEMORY_LENS_HEADING_ID}">Memory</h2>
     ${content}
   </section>`;
+
+/** D-336 slice K — the attribute on the Memory lens's count of relationships. */
+export const MEMORY_CLAIM_COUNTS_ATTR = 'data-memory-claim-counts';
+/** The owner's own relations the line names; the rest are counted. */
+const OWN_RELATIONS_SHOWN = 5;
+
+/** D-336 slice K (§5) — what the relation list misses, in one line: the notes an AI saved with
+ *  no relationship, and the relations the owner wrote in their own words. Nothing to say → no
+ *  line. */
+export const renderClaimCounts = (counts: MemoryClaimCountsResult): string => {
+  const said: string[] = [];
+  const missing = counts.agent_notes_without_claim;
+  if (missing > 0) {
+    said.push(counts.agent_notes === 1
+      ? 'The note an AI saved has no relationship. Replace it to add one.'
+      : `${String(missing)} of the ${String(counts.agent_notes)} notes an AI saved ${missing === 1 ? 'has' : 'have'} no relationship. Replace one to add it.`);
+  }
+  if (counts.own_relations.length > 0) {
+    const named = counts.own_relations.slice(0, OWN_RELATIONS_SHOWN)
+      .map((own) => `"${e(own.relation)}" (${String(own.notes)})`).join(', ');
+    const more = counts.own_relations.length - OWN_RELATIONS_SHOWN;
+    said.push(`Relations in your own words: ${named}${more > 0 ? `, and ${String(more)} more` : ''}.`);
+  }
+  return said.length === 0 ? '' : `<p class="memory-claim-counts" ${MEMORY_CLAIM_COUNTS_ATTR}>${said.join(' ')}</p>`;
+};
 
 export const renderMemoryLens = (props: MemoryLensProps): string => {
   const canWrite = props.canWrite ?? false;
@@ -1053,12 +1367,14 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
       <div class="memory-filter-chips" role="group" aria-label="Filter memory by origin">${chips}</div>
       ${addBtn}
     </div>
+    ${props.claimCounts !== undefined ? renderClaimCounts(props.claimCounts) : ''}
     ${body}
   `);
 };
 
 export const MEMORY_LENS_STYLES = `
 .memory-more { margin-top: 0.5rem; }
+.memory-claim-counts { margin: 0; font-size: 13px; color: var(--fg-muted); overflow-wrap: anywhere; }
 .data-lens-switch { display: inline-flex; gap: 0.25rem; padding: 0.25rem; background: var(--surface-sunk); border-radius: 0.5rem; margin: 0.5rem 0; }
 .data-lens-btn {
   box-sizing: border-box; min-height: 36px; display: inline-flex; align-items: center; justify-content: center;
@@ -1136,6 +1452,25 @@ export const MEMORY_LENS_STYLES = `
 .memory-textarea { resize: vertical; min-height: 5rem; }
 .memory-compose-actions, .memory-detail-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end; min-width: 0; }
 .memory-compose-error { color: var(--danger); font-size: 0.8125rem; margin: 0; overflow-wrap: anywhere; }
+.memory-claim { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; margin: 0; padding: 0.625rem; border: 1px solid var(--border-strong); border-radius: 0.5rem; }
+.memory-claim > legend { padding: 0 0.25rem; }
+.memory-claim-empty > .memory-btn, .memory-claim > .memory-btn { align-self: flex-start; }
+.memory-claim-offers, .memory-claim-matches { display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
+/* A match reads as its name, then its email: a flex button drops the space between them. */
+.memory-claim-matches > .memory-btn { flex-wrap: wrap; gap: 0.375rem; }
+.memory-claim-linked { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; font-size: 0.875rem; color: var(--fg); overflow-wrap: anywhere; }
+.memory-claim-end > .memory-btn { align-self: flex-start; }
+/* D-336 slice T — a relationship's ends: a record drawn as one, a name in words as words. */
+.memory-row-claim { margin: 0.25rem 0 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.375rem; min-width: 0; font-size: 0.8125rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+.memory-claim-tag { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem; min-width: 0; max-width: 100%; padding: 0 0.375rem; border: 1px solid var(--border-strong); border-radius: 0.375rem; color: var(--fg); overflow-wrap: anywhere; }
+.memory-claim-tag--record { border-color: var(--accent); background: var(--accent-weak); color: var(--accent); font-weight: 500; }
+.memory-claim-tag--words { border-style: dashed; background: transparent; }
+a.memory-claim-tag { text-decoration: none; }
+a.memory-claim-tag:hover { text-decoration: underline; }
+.memory-claim-tag-kind { font-size: 0.75rem; font-weight: 400; color: var(--fg-muted); white-space: nowrap; }
+.memory-claim-relation { min-width: 0; }
+.memory-detail-claim-hint { margin: 0; font-size: 0.8125rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+${MEMORY_CLAIM_TAKES_STYLES}
 [${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}] {
   display: grid; gap: 0.625rem; padding: 0.875rem;
   border: 1px solid var(--danger); border-radius: 0.5rem; background: var(--danger-weak);

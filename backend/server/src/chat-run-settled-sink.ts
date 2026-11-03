@@ -15,6 +15,7 @@ import {
   deriveChatMessageRecallEligibility,
   type ChatStore,
 } from './storage/chat-store.js';
+import { heldResultOutcomeOf, type HeldResultContinuation } from './chat-held-results.js';
 
 export interface RunSettledRow {
   readonly session_id: string;
@@ -60,16 +61,14 @@ export const planRunSettledRow = (
     deriveChatMessageRecallEligibility(source)
     !== CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
   ) return null;
-  // ⚠ REDUNDANT TODAY AND NOT LOAD-BEARING — mutation testing (2026-09-04)
-  //   shows removing it leaves every test green, because
-  //   `deriveChatMessageRecallEligibility` can only return
-  //   `OWNER_AUTHENTICATED_CHAT` for the chat channel, so the gate above
-  //   already implies this one. It stays as a fence against a future widening
-  //   of that derivation: the field read below is chat-specific, and a new
-  //   owner-authenticated channel without a `chat_session_id` would otherwise
-  //   fall through to a session lookup that means nothing on it. Recorded as
-  //   unexercised rather than presented as verified.
-  if (source.channel !== 'chat') return null;
+  // The chat channel, or a scheduled conversation (D-337: "just a normal chat where the user
+  //   prompt injected on schedule"). ⚠ No longer redundant: the derivation above admits a
+  //   scheduled prompt's source too, and this kept its held runs from ever settling in their
+  //   conversation (the call stayed "Waiting to hear back"). Both carry the `chat_session_id`
+  //   read below; another owner-authenticated channel without one still stops here.
+  if (source.channel !== 'chat' && !(source.channel === 'schedule' && source.prompt_schedule !== undefined)) {
+    return null;
+  }
   const session_id = (source as { chat_session_id?: unknown }).chat_session_id;
   if (typeof session_id !== 'string' || session_id.length === 0) return null;
   if (settled.run_id.length === 0) return null;
@@ -90,6 +89,12 @@ export const createChatRunSettledSink = (
   store: ChatStore,
   signature: RecuedServerSignature,
   broadcast: ChatBroadcastEmitter,
+  /** D-337 — continue the conversation with the run's outcome, as an AI app would, naming the
+   *  run as the owner knows its recipe (`recipeToolTitle`: "Reschedule a calendar event"). */
+  continuation?: {
+    readonly continueWith: (continuation: HeldResultContinuation) => Promise<boolean>;
+    readonly toolTitle?: (tool_name: string) => string | undefined;
+  },
 ) => async (settled: PreflightRunSettled): Promise<void> => {
   let callIds: string[] = [];
   try {
@@ -102,6 +107,10 @@ export const createChatRunSettledSink = (
     // reading as "it broke", to the owner and to the model's next turn.
     const denied = !succeeded && plan.result !== null && typeof plan.result === 'object'
       && (plan.result as { denied?: unknown }).denied === true;
+    // D-337 slice R — so does an approval no one answered before it expired (retention's
+    // `expiredRunSettlement`): "no one answered in time" reads as neither.
+    const expired = !succeeded && !denied && plan.result !== null && typeof plan.result === 'object'
+      && (plan.result as { expired?: unknown }).expired === true;
     const state = settled.state ?? (succeeded ? 'succeeded' as const : 'failed' as const);
     await store.appendMessage({
       id: `settle:${plan.pair_id}`, session_id: plan.session_id, role: 'tool',
@@ -115,7 +124,8 @@ export const createChatRunSettledSink = (
       // model recall. Existing untracked pairs keep their legacy writer.
       ...(callIds.length > 0 ? { source_lifecycle: 'failed' as const } : {}),
       tool_call_settlements: callIds.map(message_id => ({ message_id, state,
-        ...(denied && state === 'failed' ? { denied: true as const } : {}) })),
+        ...(denied && state === 'failed' ? { denied: true as const } : {}),
+        ...(expired && state === 'failed' ? { expired: true as const } : {}) })),
     });
     for (const message_id of callIds) {
       broadcast.emit({ kind: 'chat.session_changed', session_id: plan.session_id,
@@ -131,6 +141,30 @@ export const createChatRunSettledSink = (
       if (tidied !== null) await store.writeSessionBrief(plan.session_id, tidied);
     } catch (error) {
       console.error('[chat] run-settled brief tidy failed', error);
+    }
+    // D-337 — the conversation goes on from the result, as an AI app's does. The call keeps the
+    // name the model called it by; the result is what the call returned, as the turn would have.
+    if (continuation !== undefined) {
+      const recorded = callIds.length > 0 ? store.toolCalls?.get(callIds[0]!) : undefined;
+      const titleOf = (tool_name: string): string | undefined => {
+        try { return continuation.toolTitle?.(tool_name); } catch { return undefined; }
+      };
+      const title = titleOf(plan.tool_name) ?? (recorded !== undefined ? titleOf(recorded.tool_name) : undefined);
+      const outcome = heldResultOutcomeOf({ result: plan.result, state });
+      await continuation.continueWith({
+        // Which conversations go on is the continuation's to decide, as for a held write.
+        source: plan.execution_source,
+        session_id: plan.session_id,
+        ...(plan.turn_id !== null ? { turn_id: plan.turn_id } : {}),
+        run_id: settled.run_id,
+        tool_name: recorded?.tool_name ?? plan.tool_name,
+        tier: 2,
+        outcome,
+        ...(outcome === 'ran' || outcome === 'failed' ? { result: plan.result } : {}),
+        ...(title !== undefined ? { title } : {}),
+        called_at: recorded?.started_at ?? plan.ts,
+        settled_at: plan.ts,
+      }).catch(() => false);
     }
   } catch (error) {
     console.error('[chat] run-settled tool row append failed', error);

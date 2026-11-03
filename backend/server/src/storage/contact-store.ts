@@ -107,6 +107,9 @@ import {
   type PlatformIdEntry,
   assertValidPersonalRecipesBlob,
   normalizeTopic,
+  MENTION_ONLY_EMAIL_DOMAIN,
+  MENTION_ONLY_EMAIL_PREFIX,
+  isMentionOnlyEmail,
 } from '@recued/contracts';
 import { resolveContactReference as resolveContactReferenceImpl } from '@recued/contracts';
 import { phoneMatchDigits } from '@recued/transforms';
@@ -191,17 +194,11 @@ export const CONTACT_SOURCE_BLOB_TABLE = 'contact_source_blob';
  *  also signaling at the data layer that no real outbound delivery is
  *  possible. Promoted contacts get the real email written over the
  *  placeholder via `promoteMentionOnlyToVerified`; the contact_id
- *  column survives the email rewrite intact. */
-export const MENTION_ONLY_EMAIL_DOMAIN = '_recued.invalid';
-export const MENTION_ONLY_EMAIL_PREFIX = 'mention-only-';
-
-/** Substrate-level test for "this email is the synthetic placeholder
- *  the substrate emits for a mention_only contact". Surfaces in
- *  Settings UX so the placeholder isn't rendered as a real address. */
-export const isMentionOnlyEmail = (email: string): boolean =>
-  typeof email === 'string' &&
-  email.startsWith(MENTION_ONLY_EMAIL_PREFIX) &&
-  email.endsWith(`@${MENTION_ONLY_EMAIL_DOMAIN}`);
+ *  column survives the email rewrite intact.
+ *
+ *  D-336 slice H — the constants and the test live in contracts, so the webclient reads a
+ *  placeholder as no address with the same test; re-exported here for this file's callers. */
+export { MENTION_ONLY_EMAIL_DOMAIN, MENTION_ONLY_EMAIL_PREFIX, isMentionOnlyEmail };
 
 const synthesizeMentionOnlyEmail = (contact_id: string): string =>
   `${MENTION_ONLY_EMAIL_PREFIX}${contact_id.toLowerCase()}@${MENTION_ONLY_EMAIL_DOMAIN}`;
@@ -1545,6 +1542,25 @@ export interface ContactStore {
     now?: number,
     opts?: ManualContactWriteOptions,
   ): ContactRecord;
+  /** D-336 slice R — the contact an address names: its own row (a merged contact's tombstone
+   *  included, as `get` reads it), or, for an address with no row of its own, the live contact
+   *  it is a second address of. An address a contact was re-keyed off is one: mail and records
+   *  that hold it still find the contact. `null` when no contact has it. */
+  getByAnyEmail(email: string): ContactRecord | null;
+  /** D-336 slice R — the owner changes a VERIFIED contact's email (`contact.change_email`). It
+   *  is re-keyed onto `email` in place, as a promotion re-keys a placeholder, and keeps its
+   *  `contact_id`. The address it had stays its `email_alias`, written as the owner's
+   *  (`manual`), so mail from it still finds the contact; what this store holds under it moves
+   *  with the contact (`carryEmailReferences`, which promotion runs too). Throws
+   *  `change_email_already_attached` for an address another contact has (a merge), and refuses
+   *  a contact with no address (promotion's), one merged away, an unknown one and a synthetic
+   *  address. The address it has returns it as it is; one of its second addresses may become
+   *  its first. */
+  changeVerifiedEmail(
+    input: ChangeVerifiedEmailInput,
+    now?: number,
+    opts?: ManualContactWriteOptions,
+  ): ContactRecord;
   /** Set / replace `network_domain` array on a contact. Validates
    *  every entry against the closed list. Empty array clears. */
   setNetworkDomain(
@@ -1854,6 +1870,13 @@ export interface MentionOnlyContactInput {
 }
 
 /** § A.4.6 — input for `promoteMentionOnlyToVerified`. */
+/** D-336 slice R — `changeVerifiedEmail`'s input. */
+export interface ChangeVerifiedEmailInput {
+  contact_id: string;
+  /** The address the contact is keyed on from now (substrate canonicalizes again). */
+  email: string;
+}
+
 export interface PromoteMentionOnlyInput {
   contact_id: string;
   /** Real canonical email (substrate canonicalizes again at write). */
@@ -3099,10 +3122,15 @@ export const createContactStore = (
 
   const linkPlatformId = (input: PlatformLinkInput, nowOpt?: number): void => {
     const now = nowOpt ?? nowFn();
-    const canonical = canonicalizeEmail(input.canonical_email);
-    if (!canonical) {
+    const given = canonicalizeEmail(input.canonical_email);
+    if (!given) {
       throw new Error(`platform_link_invalid_email: ${input.canonical_email}`);
     }
+    // D-336 slice R — a linker still holding an address a contact was re-keyed off (its alias
+    // now, with no row of its own) links that contact, not an address no row has. A merged
+    // contact's tombstone is a row, and keeps its links as before.
+    const aliasOwner = getStmt.get(given) === undefined ? contactByAnyEmail(given) : null;
+    const canonical = aliasOwner && !aliasOwner.merged_into ? aliasOwner.email : given;
     let priorOwner: string | undefined;
     let isNewOwner = false;
     const tx = db.transaction(() => {
@@ -3686,8 +3714,9 @@ export const createContactStore = (
     `INSERT INTO ${CONTACT_TABLE}
        (email, name, first_seen, last_interaction, interaction_count,
         source, created_at, updated_at,
-        platform_ids, rejected_pairs, contact_id, identity_status, network_domain)
-       VALUES (?, ?, ?, ?, 0, 'manual', ?, ?, '[]', '[]', ?, 'mention_only', ?)`,
+        platform_ids, rejected_pairs, contact_id, identity_status, network_domain,
+        origin_actor, origin_contract_id, origin_surface)
+       VALUES (?, ?, ?, ?, 0, 'manual', ?, ?, '[]', '[]', ?, 'mention_only', ?, ?, ?, ?)`,
   );
 
   const createMentionOnlyContact = (
@@ -3722,6 +3751,12 @@ export const createContactStore = (
       now,
       contactId,
       JSON.stringify(domains),
+      // D-177 N.11 rule 1 — the writer's origin, as `upsertManual` stamps it: an AI's
+      // name-only contact (D-336 slice F) is the AI's, under its contract. Absent → the
+      // column defaults, as before.
+      opts.origin_actor ?? 'system',
+      opts.origin_actor !== undefined ? opts.origin_contract_id ?? null : null,
+      opts.origin_surface ?? 'system',
     );
     // D-192 C-2 slice 3 — the name is the ONLY thing a mention_only contact
     // asserts, and the user typed it (the gate above requires it), so it is
@@ -3972,6 +4007,8 @@ export const createContactStore = (
         now,
         input.contact_id,
       );
+      // D-336 slice R — and what this store holds under the address it was keyed on.
+      if (existing.email !== targetEmail) carryEmailReferences(existing.email, targetEmail, now);
       // ── D-192 C-2 slice 3 ───────────────────────────────────────────────────
       //
       // The contact now HAS a real address, so it finally earns an `email_alias`
@@ -4009,6 +4046,148 @@ export const createContactStore = (
     });
     tx();
 
+    const refreshed = getByContactIdStmt.get(input.contact_id) as ContactRow;
+    const record = rowToRecord(refreshed);
+    notifyContactWrite(record, 'updated', buildPrev(existing), opts);
+    return record;
+  };
+
+  // ── D-336 slice R — what a re-key carries ─────────────────────────────────
+  //
+  // A re-key (promotion, the owner's email change) keeps the outgoing address as the
+  // contact's `email_alias`, which is what keeps every reference OUTSIDE this store finding
+  // it (`contactByAnyEmail` falls through the key to the alias). These are the rows inside it
+  // keyed on the address itself, which an alias does not reach:
+  //   - a contact merged into it: its chain walks `merged_into` by key, so it would end at an
+  //     address no row has, and stop resolving (with its notes, fields and history);
+  //   - its platform links, and the row's materialized copy of them, which is rebuilt from
+  //     the links under the new key and would drop the rest;
+  //   - the pairs the owner said are not one person, so the scan does not suggest them again;
+  //   - merge candidates and their history, which the merge history and a split read by key.
+  // Anything outside the store (annotations, enrichment) is the caller's (`contact.change_email`'s
+  // `onEmailChanged`).
+  const repointMergedIntoStmt = db.prepare(
+    `UPDATE ${CONTACT_TABLE} SET merged_into = ?, updated_at = ? WHERE merged_into = ?`,
+  );
+  const rekeyPlatformLinksStmt = db.prepare(
+    `UPDATE ${CONTACT_PLATFORM_LINK_TABLE} SET canonical_email = ? WHERE canonical_email = ?`,
+  );
+  const rejectionRowsForEmailStmt = db.prepare(
+    `SELECT email_a, email_b, rejected_at, rejected_by, source_candidate_id FROM ${CONTACT_REJECTION_TABLE}
+       WHERE email_a = ? OR email_b = ?`,
+  );
+  const candidatesForEmailStmt = db.prepare(
+    `SELECT id, email_a, email_b FROM ${CONTACT_MERGE_CANDIDATE_QUEUE} WHERE email_a = ? OR email_b = ?`,
+  );
+  const candidateRekeyStmt = db.prepare(
+    `UPDATE ${CONTACT_MERGE_CANDIDATE_QUEUE} SET email_a = ?, email_b = ?, pair_key = ? WHERE id = ?`,
+  );
+  const candidateDeleteStmt = db.prepare(`DELETE FROM ${CONTACT_MERGE_CANDIDATE_QUEUE} WHERE id = ?`);
+  const candidateResolvedByRekeyStmt = db.prepare(
+    `UPDATE ${CONTACT_MERGE_CANDIDATE_QUEUE} SET resolved_by = ? WHERE resolved_by = ?`,
+  );
+
+  /** Inside the re-key's transaction: `from` is the address the contact was keyed on, `to` the
+   *  one it is keyed on now. */
+  const carryEmailReferences = (from: string, to: string, now: number): void => {
+    repointMergedIntoStmt.run(to, now, from);
+    rekeyPlatformLinksStmt.run(to, from);
+    materializePlatformIdsJson(to, now);
+    const partners: string[] = [];
+    for (const r of rejectionRowsForEmailStmt.all(from, from) as Array<{
+      email_a: string; email_b: string; rejected_at: number; rejected_by: string | null; source_candidate_id: string | null;
+    }>) {
+      rejectionDeleteStmt.run(r.email_a, r.email_b);
+      const partner = r.email_a === from ? r.email_b : r.email_a;
+      if (partner === to) continue; // no pair with itself
+      const pair = orderedPair(to, partner);
+      rejectionUpsertStmt.run(pair.email_a, pair.email_b, r.rejected_at, r.rejected_by, r.source_candidate_id);
+      partners.push(partner);
+    }
+    materializeRejectedPairsJson(to, now);
+    for (const partner of partners) materializeRejectedPairsJson(partner, now);
+    for (const c of candidatesForEmailStmt.all(from, from) as Array<{ id: string; email_a: string; email_b: string }>) {
+      const other = c.email_a === from ? c.email_b : c.email_a;
+      const pair = orderedPair(to, other);
+      const pair_key = `${pair.email_a}|${pair.email_b}`;
+      // A pair with itself is none, and a pair the queue holds already keeps its own row.
+      if (other === to || candidateLookupByPairKeyStmt.get(pair_key) !== undefined) candidateDeleteStmt.run(c.id);
+      else candidateRekeyStmt.run(pair.email_a, pair.email_b, pair_key, c.id);
+    }
+    candidateResolvedByRekeyStmt.run(to, from);
+  };
+
+  const getByAnyEmail = (email: string): ContactRecord | null => {
+    const canonical = canonicalizeEmail(email);
+    if (!canonical) return null;
+    const own = getStmt.get(canonical) as ContactRow | undefined;
+    if (own) return rowToRecord(own);
+    try {
+      const live = resolveCanonicalEmail(canonical).canonical_email;
+      if (live === canonical) return null;
+      const row = getStmt.get(live) as ContactRow | undefined;
+      return row ? rowToRecord(row) : null;
+    } catch {
+      return null; // a broken chain names no one
+    }
+  };
+
+  const changeVerifiedEmail = (
+    input: ChangeVerifiedEmailInput,
+    nowOpt?: number,
+    opts: ManualContactWriteOptions = {},
+  ): ContactRecord => {
+    if (!input.contact_id) throw new Error('change_email_contact_id_required');
+    const targetEmail = canonicalizeEmail(input.email);
+    if (!targetEmail || isMentionOnlyEmail(targetEmail)) {
+      throw new Error(`change_email_invalid_email: ${input.email}`);
+    }
+    const existing = getByContactIdStmt.get(input.contact_id) as ContactRow | undefined;
+    if (!existing) throw new Error(`change_email_contact_unknown: ${input.contact_id}`);
+    if (existing.merged_into) throw new Error(`change_email_merged: ${input.contact_id}`);
+    // A contact with no address gets its first one by promotion, which says what it was.
+    if (isMentionOnlyEmail(existing.email)) {
+      throw new Error(`change_email_mention_only: ${input.contact_id} (use promotion)`);
+    }
+    if (existing.email === targetEmail) return rowToRecord(existing);
+    // One address is one contact: another's, as its key or a second address, is a merge.
+    // One of this contact's own second addresses may become its first.
+    const collision = contactByAnyEmail(targetEmail);
+    if (collision && collision.contact_id !== input.contact_id) {
+      throw new Error(`change_email_already_attached: ${targetEmail}`);
+    }
+    const now = nowOpt ?? nowFn();
+    const tx = db.transaction(() => {
+      // The old address stays its second address, as the owner's (`manual`): an alias a
+      // source wrote would go with that source's teardown, and mail from it would then make
+      // a new contact (D-205 §9 item 2).
+      upsertContactAlias(
+        {
+          contact_id: input.contact_id,
+          kind: 'email_alias',
+          alias_pattern: existing.email,
+          source: 'manual',
+          source_id: CONTACT_SOURCE_ID_MANUAL,
+          created_at: now,
+        },
+        now,
+      );
+      updateEmailIdentityStmt.run(targetEmail, 'verified', null, now, input.contact_id);
+      upsertContactAlias(
+        {
+          contact_id: input.contact_id,
+          kind: 'email_alias',
+          alias_pattern: targetEmail,
+          source: 'manual',
+          source_id: CONTACT_SOURCE_ID_MANUAL,
+          created_at: now,
+        },
+        now,
+      );
+      carryEmailReferences(existing.email, targetEmail, now);
+      materializeContactProjection(input.contact_id, now);
+    });
+    tx();
     const refreshed = getByContactIdStmt.get(input.contact_id) as ContactRow;
     const record = rowToRecord(refreshed);
     notifyContactWrite(record, 'updated', buildPrev(existing), opts);
@@ -5638,6 +5817,8 @@ export const createContactStore = (
     createMentionOnlyContact,
     createImportedContact,
     promoteMentionOnlyToVerified,
+    changeVerifiedEmail,
+    getByAnyEmail,
     setNetworkDomain,
     // D-145 PB11
     getPersonalRecipes,

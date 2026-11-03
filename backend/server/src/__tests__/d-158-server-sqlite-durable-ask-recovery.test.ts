@@ -233,7 +233,7 @@ describe('D-158 durable ask recovery over real SQLite', () => {
     expect(row).not.toHaveProperty('answered_via');
   });
 
-  it('re-delivers an open ask to the ui bus on recoverNotificationBlockAtBoot after a restart', async () => {
+  it('re-delivers an open ask to the ui bus once the restarted server runs, not at its boot step', async () => {
     const { db, dir } = freshDb();
 
     // Block A persists the ask, then is discarded (the "crash").
@@ -258,6 +258,11 @@ describe('D-158 durable ask recovery over real SQLite', () => {
       checkpointStore: blockB.checkpointStore,
       auditLog: blockB.auditLog,
     });
+    // D-158 P3 — the boot step sweeps no ask: what an ask reaches (the
+    // mailboxes, the calendars) is registered after it. The sweep runs once
+    // the server runs (`recoverPendingAsksOnceRunning`).
+    expect(busB.events).toEqual([]);
+    await blockB.block.recoverPendingAsks();
 
     // The re-delivery lands on block B's fresh bus — proving the ask was
     // reconstructed from SQLite, not from any block-A in-memory state.
@@ -310,8 +315,8 @@ describe('D-158 durable ask recovery over real SQLite', () => {
     const handler = vi.fn();
     blockB.block.registerAskHandler(HANDLER_KIND, handler);
 
-    // Registration alone fires nothing — only the boot recovery sweep can
-    // dispatch the persisted `answered` ask, so this brackets the call.
+    // Registration alone fires nothing — only the sweep can dispatch the
+    // persisted `answered` ask, so this brackets the call.
     expect(handler).not.toHaveBeenCalled();
 
     await recoverNotificationBlockAtBoot({
@@ -319,6 +324,10 @@ describe('D-158 durable ask recovery over real SQLite', () => {
       checkpointStore: blockB.checkpointStore,
       auditLog: blockB.auditLog,
     });
+    // D-158 P3 — not at the boot step: an approved run would resume before the
+    // mailboxes and calendars it acts on are registered.
+    expect(handler).not.toHaveBeenCalled();
+    await blockB.block.recoverPendingAsks();
 
     // The persisted (kind, payload) reached the freshly-wired function with
     // the channel-stripped answer (I-10) read back from SQLite.
@@ -417,6 +426,8 @@ describe('D-158 durable ask recovery over real SQLite', () => {
       checkpointStore: blockB.checkpointStore,
       auditLog: blockB.auditLog,
     });
+    // D-158 P3 — and the sweep once the server runs.
+    await blockB.block.recoverPendingAsks();
 
     expect(busB.events).toContainEqual({
       kind: 'notification.ask',
@@ -484,6 +495,8 @@ describe('D-158 durable ask recovery over real SQLite', () => {
       checkpointStore: blockB.checkpointStore,
       auditLog: blockB.auditLog,
     });
+    // D-158 P3 — and the sweep once the server runs.
+    await blockB.block.recoverPendingAsks();
 
     const rows = await blockB.annotationStore.annotationsForRecord(
       IN_DOUBT_TARGET_COLLECTION,

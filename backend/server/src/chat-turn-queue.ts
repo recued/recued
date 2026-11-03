@@ -19,6 +19,19 @@ export interface ChatTurnQueue {
   submit(command: QueuedChatCommand, submission: string, repeat?: boolean,
     beforeInsert?: (turn_id: string) => undefined): Promise<ChatTurnAcceptance>;
   register(family: string, execute: (command: QueuedChatCommand, turn: string, assertActive: () => void, complete: () => void) => Promise<ChatTurnAck>): void;
+  /** D-337 — when the newest of `turn` and the turns of `family` queued right behind it was
+   *  admitted. */
+  lastAdmitted(turn: string, family: string): number | undefined;
+  /** D-337 — fold the turns of `family` queued right behind `turn`, which this worker is running,
+   *  into it: each is settled `completed` and its command returned, in order. `inTransaction`
+   *  records them in the same transaction, given the turns taken. */
+  fold(turn: string, family: string,
+    inTransaction?: (taken: readonly string[]) => undefined): Promise<QueuedChatCommand[]>;
+  /** D-337 — the command a turn was admitted with, whatever became of it. */
+  commandOf(turn: string): Promise<QueuedChatCommand | undefined>;
+  /** D-337 — be told once recovery has run: after the first round that could (the vault open), and
+   *  whenever a round finds turns a stopped worker left running, now `interrupted`. */
+  whenRecovered(listener: () => void): () => void;
   close(): void;
 }
 
@@ -45,6 +58,8 @@ export const withQueuedChatTurns = (
   let closed = false;
   let pumping = false;
   let indexing = false;
+  const recoveredListeners = new Set<() => void>();
+  let recoveredOnce = false;
   const notify = (session: string): void => {
     try { options.broadcast?.emit({ kind: 'chat.session_changed', session_id: session, field: 'queue', value: true }); }
     catch { /* Durable snapshots recover an unavailable broadcast. */ }
@@ -74,7 +89,14 @@ export const withQueuedChatTurns = (
         journal.settle(turn, worker.id, 'interrupted'); retired.delete(turn);
         if (row && !isChatQueueTerminal(row.status)) notify(row.session_id);
       }
-      for (const session of journal.recover(options.recoverAlive ?? workerAlive)) notify(session);
+      const recovered = journal.recover(options.recoverAlive ?? workerAlive);
+      for (const session of recovered) notify(session);
+      if (!recoveredOnce || recovered.length > 0) {
+        recoveredOnce = true;
+        for (const listener of recoveredListeners) {
+          queueMicrotask(() => { try { listener(); } catch { /* the listener's own concern */ } });
+        }
+      }
       flushWaiters();
       while (active.size < 4) {
         const row = journal.claim([...handlers.keys()], worker);
@@ -156,6 +178,38 @@ export const withQueuedChatTurns = (
       return ack;
     },
     register(family, execute) { handlers.set(family, execute); queueMicrotask(pump); },
+    lastAdmitted(turn, family) {
+      const row = journal.get(turn);
+      if (!row) return undefined;
+      return Math.max(row.created_at, ...journal.following(turn, family).map((next) => next.created_at));
+    },
+    async fold(turn, family, inTransaction) {
+      const rows = journal.following(turn, family);
+      // Decrypted before the transaction. One that cannot be read ends the fold: it and those
+      // behind it run as their own turns, in order.
+      const read: Array<{ row: (typeof rows)[number]; command: QueuedChatCommand }> = [];
+      for (const row of rows) {
+        try {
+          read.push({ row, command: await journal.read(row) });
+        } catch {
+          break;
+        }
+      }
+      if (read.length === 0) return [];
+      const taken = new Set(journal.fold(turn, worker.id, read.map((entry) => entry.row), inTransaction));
+      if (taken.size > 0) notify(read[0]!.row.session_id);
+      return read.filter((entry) => taken.has(entry.row.turn_id)).map((entry) => entry.command);
+    },
+    async commandOf(turn) {
+      const row = journal.get(turn);
+      return row === undefined ? undefined : journal.read(row);
+    },
+    whenRecovered(listener) {
+      recoveredListeners.add(listener);
+      // Recovery already ran: this listener hears it now.
+      if (recoveredOnce) queueMicrotask(() => { try { listener(); } catch { /* its own concern */ } });
+      return () => { recoveredListeners.delete(listener); };
+    },
     close() {
       closed = true; clearInterval(timer); options.messengerBridge?.close();
       for (const [turn, callbacks] of waiters) for (const done of callbacks) done({ turn_id: turn });

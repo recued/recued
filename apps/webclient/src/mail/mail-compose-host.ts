@@ -170,8 +170,8 @@ export type MailDraftCallers = {
 export type MailComposeSubmitOutcome = 'held' | 'sent';
 
 export interface MailComposeMount {
-  /** Open a blank compose. */
-  openCreate(): boolean;
+  /** Open a new compose, optionally addressed to editable recipient refs. */
+  openCreate(options?: { to?: readonly string[] }): boolean;
   /** Open a compose prefilled from a thread. */
   openReply(context: MailReplyContext, recipients?: 'sender' | 'all'): boolean;
   /** Quote the complete original in a new conversation with no recipients. */
@@ -1169,7 +1169,7 @@ export const mountMailCompose = (
   };
 
   return {
-    openCreate() {
+    openCreate(options) {
       const first = mailComposeOpenSender(readinessState, sources);
       const dialog = composeDialog(state);
       if (
@@ -1187,6 +1187,7 @@ export const mountMailCompose = (
       setState(
         openCreateComposeTransition(state, {
           default_sender_source_id: first.id,
+          ...(options?.to ? { to: options.to } : {}),
         }),
       );
       focusCompose();

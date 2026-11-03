@@ -220,10 +220,8 @@ describe('resolveConnectionAgnosticRecipe - single-object response projection', 
       input: {
         operation: 'deal.create',
         args: {
-          'body.properties': {
-            dealname: 'Acme',
-            amount: '30000',
-          },
+          'body.properties.dealname': 'Acme',
+          'body.properties.amount': '30000',
         },
       },
     });
@@ -249,9 +247,7 @@ describe('resolveConnectionAgnosticRecipe - single-object response projection', 
       input: {
         operation: 'deal.update',
         args: {
-          'body.properties': {
-            amount: '40000',
-          },
+          'body.properties.amount': '40000',
           deal_id: '5',
         },
       },

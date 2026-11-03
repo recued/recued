@@ -1,6 +1,11 @@
 import { answerOutputAttachments } from './chat-output-files.js';
+import { approvalChannelOf, approvalElsewhereMessage } from './run-result-agent-projection.js';
+import {
+  askAfterWaiting, conversationCarriesOn, noteWaitingInTurn, notAskedYetMessage,
+} from './chat-carries-on.js';
 import { withResourceReview } from './resource-review.js';
-import { captureResourceReview } from '@recued/contracts';
+import { captureResourceReview, mergeValueLabels, type ApprovalValueLabels } from '@recued/contracts';
+import { heldPeopleValueLabels } from './held-people-labels.js';
 /** D-137 / D-164 P6.3 — Server-side chat orchestrator: single AI main
  *  turn + tool dispatch loop.
  *
@@ -95,6 +100,7 @@ import {
   type ChatDispatchChannel,
   type ChatDispatchContext,
   type ChatDispatchResult,
+  type ChatPriorToolCall,
   type ChatSourceCitation,
   type ChatDataDiagnosisContext,
   type ChatMessage,
@@ -113,6 +119,7 @@ import {
   type IngredientManifest,
   type InternalToolRegistry,
   type ModelTier,
+  type NotificationChannelName,
   type RecuedServerSignature,
   type ServerEvent,
   type TransparencyEvent,
@@ -188,6 +195,7 @@ import { mediaClassForMimeType } from './collections/file/inbound-file-collectio
 // decisions off the shared `state` (Stage 3, N.9) + finalize.
 import {
   ChatContextLengthError,
+  ChatTurnUnansweredError,
   runChatTurn,
   isNonTerminalToolResult,
   type RunChatTurnPromptContent,
@@ -268,6 +276,7 @@ import type {
   ExecutionCaseProposalCritic,
 } from './execution-case-critic.js';
 import { parseBrief } from './chat-rolling-brief.js';
+import { heldPlanEditableArgs } from './chat-plan-edits.js';
 import type { CurrentAssetAttachment } from './chat-asset-fresh-read.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
@@ -503,6 +512,19 @@ const validateLlmGatewayToolArguments = (
  * vault/context/credential carriers. */
 export const isLlmGatewayContractSafeToolEntry = (entry: ToolEntry): boolean =>
   entry.tier === 2 && closedLlmGatewayArgSchema(entry.arg_schema) !== null;
+
+/** D-337 follow-up 25 — a gateway call still waiting, as its model reads it: the gateway's own
+ *  words in place of the owner's (`LlmGatewayTurnInput.held_message`), and no word of where else
+ *  the owner can answer it (`approval_elsewhere`), which is the owner's business, not the user's. */
+const withGatewayHeldMessage = (
+  result: Extract<ChatDispatchResult, { ok: true }>,
+  message: string,
+): ChatDispatchResult => {
+  const held = result.result;
+  if (held === null || typeof held !== 'object' || Array.isArray(held)) return result;
+  const { approval_elsewhere: _elsewhere, ...rest } = held as Record<string, unknown>;
+  return { ...result, result: { ...rest, message } };
+};
 
 /** Lever-2 — the catalog delivery mode enum moved to `@recued/contracts`
  *  (`packages/contracts/src/chat.ts`) so `packages/llm` (the `LLMConfig` that
@@ -921,6 +943,25 @@ export interface ChatOrchestratorDeps {
    *  stamping audit (5.f). The gateway reads it via the slice-D seam.
    *  Optional — absent means scoped grants simply never match. */
   forwardedSenderIndex?: SessionForwardedSenderIndex;
+  /** D-337 — told each run held in a conversation that keeps no tool-call rows (the owner's
+   *  messenger and email chats), so its settlement carries that conversation on as a held call's
+   *  row does in the app's chat (`watchHeldRunsIn`, which keeps only the owner's own). */
+  heldRunWatches?: {
+    watch(watch: {
+      run_id: string; session_id: string; turn_id: string; tool_name: string;
+      called_at: number; source: ExecutionSource;
+    }): void;
+  };
+  /** D-337 ruling 4, design (a) — an LLM gateway call held for the owner's approval: what it
+   *  returns once its run settles by `until`, as it would have returned had it not waited, or
+   *  `undefined` when it does not (or the caller went away), and it stays held
+   *  (`held-run-waiters.ts`). Absent ⇒ it returns held at once, as before. */
+  settleHeldCall?: (call: {
+    readonly run_id: string;
+    readonly held: ChatDispatchResult;
+    readonly until: number;
+    readonly signal?: AbortSignal;
+  }) => Promise<ChatDispatchResult | undefined>;
   /** D-177 N.11 rule 5 (5.c, slice C) — the scoped-grant parse hook's
    *  late-bound deps. Threaded into `createChatStreamMiddlewares`; absent
    *  (or resolving undefined per turn) → the hook is a faithful no-op. */
@@ -946,7 +987,11 @@ export interface ChatOrchestratorDeps {
   /** D-259 §7.4.2 — bounded declaration-only state for work already live in
    * this turn's own channel session. It is dynamic tail context, never a tool
    * catalog or queue-management capability. */
-  buildInFlightContext?: (source: ExecutionSource) => string | undefined;
+  buildInFlightContext?: (source: ExecutionSource, telling?: ReadonlySet<string>) => string | undefined;
+  /** D-337 §7.10 — the calls of this conversation no model was told of: their continuation's model
+   *  did not answer. The turn opens holding them, and they are told once its model answers
+   *  (`createCarriedHeldResults`). Absent ⇒ none are carried. */
+  carriedHeldResults?: (session_id: string) => Promise<import('./chat-held-results.js').CarriedHeldResults | undefined>;
   /** D-213 pointer arm. Bound at the composition root (it needs the chat store
    *  AND the contract definition store); absent everywhere it is not wired, so
    *  the control arm is the natural default. */
@@ -1062,6 +1107,11 @@ export interface ChatOrchestratorDeps {
     surface: LlmPromptSurface,
     options?: { readonly systemToolsAllowed?: boolean },
   ) => ResolvedLlmSystemPrompt;
+  /** The channels an approval request goes to now: each one whose approval is on in Settings →
+   *  Notifications. Read each turn, so a Telegram or email conversation's system prompt names its
+   *  own channel as where approvals are answered only while they go there
+   *  (`RunChatTurnInputs.approvals_here`). Absent, or a read that fails ⇒ the bell alone. */
+  approvalChannels?: () => Promise<readonly string[]>;
   /** D-121 broadcast bus. */
   broadcast?: ChatBroadcastEmitter;
   /** Audit log — chat lifecycle codes (`chat_session_created`,
@@ -1153,7 +1203,23 @@ export interface ChatOrchestratorDeps {
     readonly contract_snapshot?: ContractSnapshot;
     /** How the owner knows the records it names, for its ask (`ChatPlanProposal.value_labels`). */
     readonly value_labels?: import('@recued/contracts').ApprovalValueLabels;
-  }) => Promise<{ readonly held: true } | { readonly held: false; readonly reason: string }>;
+    /** D-336 slice G — the notes in memory a held save meets, for its ask
+     *  (`ChatPlanProposal.memory_conflicts`). */
+    readonly memory_conflicts?: readonly import('@recued/contracts').MemorySaveConflict[];
+    /** D-336 slice N's open item — the chat whose card can change it, named on its ask. */
+    readonly change_in_chat?: string;
+    /** D-336 slice Q — the turn the call was asked in, which a messenger's source does not name:
+     *  the hold keeps it, so the resumed call pairs with what its turn added. */
+    readonly turn_id?: string;
+  }) => Promise<
+    | {
+        readonly held: true;
+        /** The channels its ask went to, once raised, so the model can say where else the
+         *  owner answers it (`approvalElsewhereMessage`). */
+        readonly approval_channels?: readonly string[];
+      }
+    | { readonly held: false; readonly reason: string }
+  >;
   /** D-329 §3.4 — spend one use of a live write rule that stands in for this Tier-1 write's
    *  ask (`useWriteRule`). Absent, or no rule ⇒ the write is held as above. */
   useWriteRule?: (
@@ -1239,6 +1305,27 @@ export interface ChatOrchestratorDeps {
 export interface ChatTurnInput {
   /** Host-only: the scheduler invokes the normal chat loop with system provenance. */
   scheduled_prompt?: import('@recued/contracts').ScheduledPromptOrigin;
+  /** D-337 — host-only: the calls this conversation was waiting on, now answered. The turn's
+   *  `message` is Recued's record of the answer ("Approved: …"), stored as a `system` row,
+   *  never as the owner's words; the model opens holding the calls and their outcomes. */
+  held_results?: ReadonlyArray<ChatPriorToolCall>;
+  /** D-337 — host-only, with `held_results`: the owner's own messenger or email conversation's
+   *  source, so the continuation runs as that conversation. Absent ⇒ the app's chat. */
+  held_source?: Extract<ExecutionSource, { channel: 'messenger'; actor: 'user_self' }>;
+  /** D-337 — host-only, with `held_results`: Recued's own line for each settled call ("The action
+   *  that waited for your approval, "…", is done."), one a line. When the model does not answer,
+   *  the turn's stored answer ends with it, so the owner still hears the outcome: a Telegram or an
+   *  email chat never receives Recued's record of the answer. */
+  held_fallback?: string;
+  /** D-337 — host-only, with `held_results`: told once, at the turn's first tool call. An
+   *  interrupted continuation that had begun acting is not run again (`chat-held-results.ts`). */
+  held_acted?: () => void;
+  /** D-337 slice M — host-only, with `held_results`: this turn tries again a continuation no model
+   *  answered. It is quiet until its model answers or acts: its record is written then (before the
+   *  first call's row), and a try whose model fails again before either writes and sends nothing
+   *  (the owner had the outcome the first time); its calls stay untold, for the next try or the
+   *  conversation's next turn. */
+  held_retry?: true;
   /** Host-only queue ownership. Never accepted from an RPC payload. */
   queue_turn_id?: string;
   /** Host snapshot of routing at admission; authorization is still checked at execution. */
@@ -1308,6 +1395,11 @@ export interface ChatTurnAck {
    *  call short-circuited before any provider call landed). Field is
    *  observability-only — the orchestrator never gates on it. */
   total_usage?: TokenUsageReport;
+  /** D-337 — the model answered: its first call returned, and no provider failure ended the turn.
+   *  Absent when the turn stored a failure in its place ("The AI provider failed before
+   *  answering."), which the queue still counts as completed. A continuation is told to the model
+   *  only when it is present. */
+  answered?: true;
 }
 
 /** D-196 — one stateless OpenAI-compatible customer turn over the shared chat
@@ -1348,6 +1440,21 @@ export interface LlmGatewayTurnInput {
    *  and what direct harness callers get). */
   readonly system_prompt?: string;
   readonly system_role?: LLMMessageRole;
+  /** D-337 ruling 4, design (a) — how long this request may wait, in all, for the owner's answers
+   *  to calls it holds for approval (`ChatOrchestratorDeps.settleHeldCall`), and the signal that the
+   *  caller went away. Absent ⇒ a held call returns at once, held, as before. */
+  readonly held_wait?: { readonly ms: number; readonly signal?: AbortSignal };
+  /** D-337 follow-up 24, design (b) — calls an earlier reply of this conversation left waiting,
+   *  answered since, each with its outcome: the turn opens holding them, with `in_flight_context`
+   *  saying why (`readCarriedHeldCalls`). */
+  readonly held_results?: ReadonlyArray<ChatPriorToolCall>;
+  readonly in_flight_context?: string;
+  /** D-337 follow-up 24 — a call held for the owner's approval, told as soon as it is held and
+   *  before any wait: the reference its record is found by (the MCP action's), or `undefined`. */
+  readonly on_held?: (call: { readonly run_id: string; readonly tool_name: string }) => Promise<string | undefined>;
+  /** What the model reads, in place of the held result's own words, for a call still waiting when
+   *  the request's wait is over (`LLM_GATEWAY_HELD_MESSAGE`). Absent ⇒ the held result as it is. */
+  readonly held_message?: string;
 }
 
 export interface LlmGatewayTurnResult {
@@ -1356,6 +1463,9 @@ export interface LlmGatewayTurnResult {
   readonly tool_calls?: ChatToolCall[];
   readonly usage?: TokenUsageReport;
   readonly post_effect_outcome?: LlmGatewayPostEffectOutcome;
+  /** D-337 follow-up 24 — the references (`on_held`) of this turn's calls still waiting for the
+   *  owner when it ended: they go on the reply. */
+  readonly waiting_refs?: readonly string[];
 }
 
 export type LlmGatewayPostEffectStatus = 'completed' | 'partial' | 'in_doubt';
@@ -1429,6 +1539,46 @@ export interface MessengerTurnInput {
  *  the `STDIO_MCP_*` constants in `mcp-server.ts`. */
 const LOCAL_CHAT_USER_ID = 'local';
 
+/** D-337 — the model's copy of a continuation turn's message, before Recued's record of the
+ *  answer. Model-facing: see `chat-prompt-optimization-log.md`. */
+export const HELD_RESULT_TURN_NOTE =
+  '[The owner answered the approval this conversation was waiting on. The call and its outcome '
+  + 'are in prior_tool_calls, as if it had just returned. Carry on with the work in progress from '
+  + 'it: take the next step it needs, or tell the owner how it went if nothing is left. The owner '
+  + 'sent no new message.]';
+
+/** The same, when the owner answered several together and they carry the conversation on in one
+ *  turn (`HELD_RESULT_GATHER_QUIET_MS`): one answer for them all, not one each. Model-facing. */
+export const HELD_RESULTS_TURN_NOTE =
+  '[The owner answered approvals this conversation was waiting on. The calls and their outcomes '
+  + 'are in prior_tool_calls, as if they had just returned. Carry on with the work in progress from '
+  + 'them: take the next steps they need, or tell the owner how they went, in one answer, if '
+  + 'nothing is left. The owner sent no new message.]';
+
+/** D-337 §7.10 — the note of a turn that carries calls no model was told of: their continuation's
+ *  model did not answer (it failed, or the server stopped in it). They open the turn's
+ *  prior_tool_calls, with their outcomes. Rides `in_flight_context`. Model-facing: see
+ *  `chat-prompt-optimization-log.md`. */
+export const CARRIED_HELD_RESULTS_NOTE =
+  'Calls this conversation waited on settled while no model could carry it on. They come first in '
+  + 'prior_tool_calls with their outcomes, as if they had just returned: take them into account, '
+  + 'and pick up any work in progress they were part of, as well as answering the message.';
+
+/** The conversation's own channel when the owner's approval requests go there now: a Telegram,
+ *  Slack or email chat of the owner's own (`approvalChannelOf`) whose channel has approvals on. */
+const approvalsHereIn = async (
+  source: ExecutionSource,
+  approvalChannels: (() => Promise<readonly string[]>) | undefined,
+): Promise<NotificationChannelName | undefined> => {
+  const here = approvalChannelOf(source);
+  if (here === undefined || approvalChannels === undefined) return undefined;
+  try {
+    return (await approvalChannels()).includes(here) ? here : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /** D-329 — what the model reads after a Tier-1 write is held: it went to the owner, it
  *  runs by itself once approved, and its outcome is posted in the chat. Before D-329 the
  *  approval waited for the conversation to ask again; a model told nothing new would still
@@ -1436,6 +1586,19 @@ const LOCAL_CHAT_USER_ID = 'local';
 export const HELD_WRITE_AWAITING_DETAIL =
   'It was sent to the owner for approval and runs by itself once they approve it; '
   + 'the outcome is posted in this chat. Do not call it again.';
+
+/** D-337 — the same, in a conversation that carries on once the approval is answered
+ *  (`conversationCarriesOn`): the model gets the outcome then, as if the call had just returned.
+ *  A step the user asked for after it waits too, one that would ask itself included, as
+ *  `HELD_CARRIES_ON_MESSAGE` says. A chat under a contract keeps the words above, and its fixed
+ *  reply. Model-facing: see `chat-prompt-optimization-log.md`. */
+export const HELD_WRITE_CARRIES_ON_DETAIL =
+  'It was sent to the owner for approval and runs by itself once they approve it. Once they '
+  + 'answer, this conversation carries on by itself: you will get its outcome then, as if it had '
+  + 'just returned. Until then, do not take a step that should only happen after it, or that '
+  + 'needs its result, even one that would wait for approval too (it could then run first, or run '
+  + 'although this one was declined); do not call it again; and do not ask them to tell you when '
+  + 'it is done.';
 
 /** D-153 P2.C — build the channel-shaped `ExecutionSource` for a chat
  *  dispatch. Today the orchestrator's only chat surface is the local
@@ -2544,6 +2707,12 @@ export const createChatOrchestrator = (
    *  `recued_op_*` operations governed by the contract, dispatched by the same
    *  Self path as everything else. */
 
+  /** D-336 slice N's open item — the chat a held call's card is in, by its title. */
+  const changeInChatOf = (session_id: string): { change_in_chat?: string } => {
+    const title = deps.chatStore.getSession(session_id)?.title?.trim();
+    return title !== undefined && title !== '' ? { change_in_chat: title } : {};
+  };
+
   const dispatchTool: OrchestratorDispatch['dispatchTool'] = async ({
     session_id,
     turn_id,
@@ -2695,6 +2864,8 @@ export const createChatOrchestrator = (
     let consumedResourceReview: import("@recued/contracts").ResourceReview | undefined;
     // Set when a standing write rule the owner accepted stands in for the ask.
     let ruledWrite = false;
+    // D-329 — the channels a hold raised in this dispatch went to (`holdProposal`).
+    let heldApprovalChannels: readonly string[] | undefined;
     let confirmedLocalExecution: Extract<ChatPlanExecutionReceipt, { status: 'completed' }> | undefined;
     const savePlanExecution = async (execution: ChatPlanExecutionReceipt) => {
       const saved = await persistPlanExecution(consumedPlanId, execution);
@@ -2716,11 +2887,16 @@ export const createChatOrchestrator = (
           plan_id: proposal.plan_id,
           run_id,
           session_id,
+          turn_id,
           execution_source: internalDispatchCtx.execution_source!,
           ...(internalDispatchCtx.contract_snapshot !== undefined
             ? { contract_snapshot: internalDispatchCtx.contract_snapshot }
             : {}),
           ...(proposal.value_labels !== undefined ? { value_labels: proposal.value_labels } : {}),
+          ...(proposal.memory_conflicts !== undefined ? { memory_conflicts: proposal.memory_conflicts } : {}),
+          // D-336 slice N's open item — a call its card can change says where, in every
+          // channel's ask: its chat, by name.
+          ...(proposal.editable_args !== undefined ? changeInChatOf(session_id) : {}),
         });
       } catch (error) {
         console.error(
@@ -2729,7 +2905,10 @@ export const createChatOrchestrator = (
         );
         return proposal;
       }
-      if (outcome.held) return proposal;
+      if (outcome.held) {
+        heldApprovalChannels = outcome.approval_channels;
+        return proposal;
+      }
       console.warn(
         `[chat] ${tool_name} was not held (${outcome.reason}); plan ${proposal.plan_id} is a plain card`,
       );
@@ -2942,6 +3121,31 @@ export const createChatOrchestrator = (
         );
         // Fall through to normal dispatch below, with no card: the rule is the yes.
       } else {
+        // D-337 slice K — not asked while a call of this turn waits for the owner's answer: the
+        // conversation carries on with that call's outcome, and the model makes this call then,
+        // if it should still happen. A repeat of a call already asked (this turn's, or one still
+        // out from an earlier turn) is that ask, and goes on below.
+        const waitingFor = !sameTurnPending && pendingHeld === undefined
+          ? askAfterWaiting(internalDispatchCtx.execution_source, turn_state)
+          : undefined;
+        if (waitingFor !== undefined) {
+          const result: ChatDispatchResult = {
+            ok: false,
+            reason: 'not_asked_yet',
+            detail: notAskedYetMessage(waitingFor),
+          };
+          safeBroadcast(deps.broadcast, {
+            kind: 'chat.tool_call_completed',
+            session_id,
+            turn_id,
+            tool_name,
+            tier,
+            status: 'error',
+            reason: result.reason,
+            detail: result.detail!,
+          });
+          return result;
+        }
         // D-329 — a call its own arguments refuse is not put to the owner: they would
         // approve it and then read that it did not run. The model reads the refusal now
         // and can call again (an AI sent an asset's details as `body`, live 2026-10-25).
@@ -2969,6 +3173,7 @@ export const createChatOrchestrator = (
         // spent (consumed / TTL-expired) approval: that grant is
         // used up, so this dispatch is a new ask, not a re-emit.
         const reEmit = sameTurnPending ? sameTurn : pendingHeld;
+        let heldNotices: import('@recued/contracts').HeldCallNotices | undefined;
         let proposal =
           reEmit ??
           planApprovalModule.buildPlanProposal({
@@ -2992,16 +3197,37 @@ export const createChatOrchestrator = (
           if (resourceReview) proposal.resource_review = resourceReview;
           // D-329 — the records it names, by their names, for its card and its ask. A lookup
           // that fails leaves the ids: the names are for the owner's eyes, never a gate.
+          let recordLabels: ApprovalValueLabels | undefined;
           try {
-            const valueLabels = await deps.registry.askValueLabels?.(tool_name, arg_values, internalDispatchCtx);
-            if (valueLabels !== undefined) proposal = { ...proposal, value_labels: valueLabels };
+            recordLabels = await deps.registry.askValueLabels?.(tool_name, arg_values, internalDispatchCtx);
           } catch (error) {
             console.warn(`[chat] the names for ${tool_name}'s approval were not read`, error);
+          }
+          // D-336 (spec §41) — and the people it carries, by the contacts they are.
+          const valueLabels = mergeValueLabels(recordLabels, heldPeopleValueLabels([arg_values], deps.getContactStore?.()));
+          if (valueLabels !== undefined) proposal = { ...proposal, value_labels: valueLabels };
+          // D-336 slice G — what it meets (a save's contradictions), for its card, its ask and
+          // the model. Told, never a gate: a lookup that fails tells nothing.
+          try {
+            heldNotices = await deps.registry.askNotices?.(tool_name, arg_values, internalDispatchCtx);
+            if (heldNotices?.memory_conflicts !== undefined && heldNotices.memory_conflicts.length > 0) {
+              proposal = { ...proposal, memory_conflicts: heldNotices.memory_conflicts };
+            }
+          } catch (error) {
+            console.warn(`[chat] what ${tool_name}'s approval meets was not read`, error);
           }
           // Stored WITH its hold, before the hold is raised: an ask may be out from
           // the moment it is, and a proposal without the link would also be approvable
           // as a plain card, so the write could run twice.
-          if (holdsTier1) proposal = { ...proposal, hold: { run_id: mintId() } };
+          if (holdsTier1) {
+            // D-336 slice E — and with what the owner may change on its card while approving.
+            const editable = heldPlanEditableArgs(tool_name);
+            proposal = {
+              ...proposal,
+              hold: { run_id: mintId() },
+              ...(editable !== undefined ? { editable_args: editable } : {}),
+            };
+          }
           await deps.planApprovalStore.put(proposal);
           void safeLogActivity(
             deps.auditLog,
@@ -3039,14 +3265,30 @@ export const createChatOrchestrator = (
           created_at: proposal.created_at,
           ...(proposal.hold !== undefined ? { held: true as const } : {}),
           ...(proposal.value_labels !== undefined ? { value_labels: proposal.value_labels } : {}),
+          ...(proposal.hold !== undefined && proposal.editable_args !== undefined
+            ? { editable_args: proposal.editable_args }
+            : {}),
+          ...(proposal.memory_conflicts !== undefined ? { memory_conflicts: proposal.memory_conflicts } : {}),
         });
+        // D-336 slice G — what the write meets, told beside "it was sent to the owner".
+        const told = heldNotices?.agent !== undefined ? ` ${heldNotices.agent}` : '';
+        // D-329 — where else the owner answers it, as a held run says: "the app" is a guess
+        // in a Telegram chat whose approval came with buttons (live, 2026-11-01). The
+        // conversation's own channel first, when the request goes there.
+        const elsewhere = proposal.hold !== undefined
+          ? approvalElsewhereMessage(heldApprovalChannels ?? [], approvalChannelOf(internalDispatchCtx.execution_source))
+          : undefined;
+        const where = elsewhere !== undefined ? ` ${elsewhere}` : '';
         const result: ChatDispatchResult = {
           ok: false,
           reason: 'awaiting_approval',
           detail: proposal.hold !== undefined
-            ? `plan_id=${proposal.plan_id}. ${HELD_WRITE_AWAITING_DETAIL}`
-            : `plan_id=${proposal.plan_id}`,
+            ? `plan_id=${proposal.plan_id}. ${conversationCarriesOn(internalDispatchCtx.execution_source)
+              ? HELD_WRITE_CARRIES_ON_DETAIL : HELD_WRITE_AWAITING_DETAIL}${where}${told}`
+            : `plan_id=${proposal.plan_id}${told}`,
         };
+        // D-337 slice K — held, it waits for the owner's answer, and the turn's further asks wait on it.
+        if (proposal.hold !== undefined) noteWaitingInTurn(turn_state, tool_name);
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -3301,7 +3543,21 @@ export const createChatOrchestrator = (
     result = { ...result };
     try { await saveOutcome(result); }
     catch (error) { failedOutcomeWrite(error); }
+    // D-337 — a run held where no tool-call row is kept is watched instead, so it is found
+    // again when it settles. Best effort: a watch not kept leaves the run settling as before.
+    if (durableCalls === undefined && result.run_id !== undefined && isNonTerminalToolResult(result)) {
+      try {
+        deps.heldRunWatches?.watch({
+          run_id: result.run_id, session_id, turn_id, tool_name, called_at: callStartedAt, source,
+        });
+      } catch (error) {
+        console.warn(`[chat] held run ${result.run_id} was not watched`, error);
+      }
+    }
     registerVisibleRecallToolResult(turn_state, tool_name, result);
+    // D-337 slice K — a run or pack action held for the owner's approval: the turn's further asks
+    // wait on it.
+    if (result.ok && result.run_held?.kind === 'approval') noteWaitingInTurn(turn_state, tool_name);
     // Only a SELF dispatch can deep-link into this client's Logs host. Peer
     // results may carry a run id from the remote executor, but that id is not
     // addressable through the local Logs route and is deliberately ignored in
@@ -3448,6 +3704,13 @@ export const createChatOrchestrator = (
     /** Explanation-only policy enforced again at dispatch. */
     readonly read_only?: boolean;
     readonly mail_work?: import('@recued/contracts').MailWorkReadRequest;
+    /** D-337 — the answered calls the turn opens holding. */
+    readonly held_results?: ReadonlyArray<ChatPriorToolCall>;
+    /** D-337 — told once, before the turn's first tool call (`ChatTurnInput.held_acted`). */
+    readonly on_first_dispatch?: () => void;
+    /** D-337 slice M — awaited before each tool call: a quiet try again writes its record before
+     *  the first call's row (`ChatTurnInput.held_retry`). */
+    readonly before_dispatch?: () => Promise<void>;
     readonly picker_target: ChatPickerTarget;
     readonly dispatch_peer_name: string | null;
     /** The turn's REAL channel-minted `ExecutionSource` — chat's
@@ -3590,6 +3853,7 @@ export const createChatOrchestrator = (
     const turnExecutor: TurnExecutor = async (ctx): Promise<TurnOutput> => {
       params.assert_active?.();
       let answerStreamed = false;
+      let dispatched = false;
       // ENACT (N.9): read the before-turn hooks' decisions. The
       // `correction-learning` hook contributed its flat "recent
       // corrections — …" summary to the prompt draft (filter to its
@@ -3641,7 +3905,14 @@ export const createChatOrchestrator = (
             params.visible_recall_item_ids ?? [],
           ).catch(() => undefined)
         : undefined;
-      const inFlightContext = deps.buildInFlightContext?.(params.execution_source);
+      // D-337 §7.10 — calls no model was told of (their continuation's model did not answer): this
+      // turn carries them, first among its opening calls, and its note says why they are there.
+      const carried = await deps.carriedHeldResults?.(session_id).catch(() => undefined);
+      const inFlightContext = [
+        deps.buildInFlightContext?.(params.execution_source, carried?.run_ids),
+        carried !== undefined ? CARRIED_HELD_RESULTS_NOTE : undefined,
+      ].filter((part): part is string => part !== undefined && part.length > 0).join('\n') || undefined;
+      const openingHeld = [...(params.held_results ?? []), ...(carried?.calls ?? [])];
       const priorToolPointers = await deps.buildPriorToolPointers?.(
         params.execution_source,
         params.session_id,
@@ -3758,6 +4029,9 @@ export const createChatOrchestrator = (
       // `runLlmGatewayTurn`, so an owner's chat persona can never reach an
       // external caller.
       const chatSystemPrompt = deps.resolveSystemPrompt?.('chat');
+      // The owner's own Telegram or email conversation, when its approval requests go there: the
+      // approvals posture says to answer them there, as a held call's message does.
+      const approvalsHere = await approvalsHereIn(params.execution_source, deps.approvalChannels);
 
       const result = await runChatTurn(
         {
@@ -3769,6 +4043,7 @@ export const createChatOrchestrator = (
           picker_target,
           dispatch_peer_name: params.dispatch_peer_name,
           ...(params.mail_work ? { mail_work: params.mail_work } : {}),
+          ...(openingHeld.length > 0 ? { held_results: openingHeld } : {}),
           ...(directOwnerRecallSurface && picker_target === 'self' && !params.read_only
             && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id
             ? { prefetch_selected_asset: true as const } : {}),
@@ -3779,6 +4054,7 @@ export const createChatOrchestrator = (
                 system_role: chatSystemPrompt.role,
               }
             : {}),
+          ...(approvalsHere !== undefined ? { approvals_here: approvalsHere } : {}),
           ...(params.contract_snapshot !== undefined
             ? { contract_snapshot: params.contract_snapshot }
             : {}),
@@ -3892,6 +4168,11 @@ export const createChatOrchestrator = (
             } : {}),
           dispatchTool: async (call) => {
             params.assert_active?.();
+            if (!dispatched) {
+              dispatched = true;
+              try { params.on_first_dispatch?.(); } catch { /* a record of it, never the call */ }
+            }
+            await params.before_dispatch?.();
             const result = await dispatchTool({
               ...call,
               ...(params.read_only === true ? { read_only: true } : {}),
@@ -3950,6 +4231,10 @@ export const createChatOrchestrator = (
       );
       capturedTurnResult = { ...result, ...(prefetchSourceCapture?.sources().length
         ? { prefetch_source_citations: prefetchSourceCapture.sources() } : {}) };
+      // The model read the calls this turn carried, and answered.
+      if (carried !== undefined && result.final_ai_output !== undefined && result.tool_loop_failure === undefined) {
+        carried.told();
+      }
 
       // DECIDE → write `state`: stash the after-turn inputs the `update`
       // hooks consume — but ONLY when the turn produced an `AIOutput`. The
@@ -4011,7 +4296,11 @@ export const createChatOrchestrator = (
       ? { channel: 'schedule', actor: 'system', schedule_id: input.scheduled_prompt.schedule_id,
           cron: input.scheduled_prompt.cron, prompt_schedule: input.scheduled_prompt,
           chat_session_id: input.session_id, turn_id }
-      : buildChatExecutionSource(input.session_id, turn_id);
+      // D-337 — a continuation runs as the conversation it continues: a Telegram chat's goes on
+      // as that Telegram chat, so a write it holds next is asked of it and its answer lands there.
+      : input.held_results !== undefined && input.held_source !== undefined
+        ? input.held_source
+        : buildChatExecutionSource(input.session_id, turn_id);
     const picker_target = input.picker_state.current as ChatPickerTarget;
     const pickerAtSend = buildPickerAtSend(picker_target);
     const modelLayer = resolveModelPref(session, input.model_pref);
@@ -4085,45 +4374,57 @@ export const createChatOrchestrator = (
     /** Held so a reply written in the SAME millisecond can order itself
      *  strictly after this row — see the wordless-drop short-circuit below. */
     const userTs = now();
-    const committedUser = await deps.chatStore.appendMessage({
-      assert_active: input.assert_active,
-      id: userMessageId,
-      session_id: input.session_id,
-      role: 'user',
-      content: turnMessage,
-      ...(input.reply_to_message_id ? { reply_to: { message_id: input.reply_to_message_id } } : {}),
-      target_server: picker_target,
-      picker_at_send: pickerAtSend,
-      model_used: modelUsed,
-      execution_source: executionSource,
-      turn_id,
-      ts: userTs,
-      ...(input.data_diagnosis
-        ? { data_diagnosis: input.data_diagnosis }
-        : {}),
-      ...(input.attachments && input.attachments.length > 0
-        ? { attachments: [...input.attachments] }
-        : {}),
-    });
-    safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id: input.session_id,
-      field: 'message', value: committedUser });
-    if (committedUser.attachments?.length) input = { ...input, attachments: committedUser.attachments };
-    void safeLogActivity(
-      deps.auditLog,
-      'chat_message_sent',
-      `${input.session_id}:${userMessageId}`,
-      JSON.stringify({
-        role: 'user',
+    // D-337 slice M — a try again of a continuation no model answered is quiet until it answers or
+    // acts: one whose model fails again before either leaves nothing in the conversation or the
+    // owner's chat (`held_retry`). Its record is written once, at the first of them.
+    const quietUntilAnswered = input.held_results !== undefined && input.held_retry === true;
+    let userRow: Promise<ChatMessage> | undefined;
+    const appendUserRow = (): Promise<ChatMessage> => (userRow ??= (async () => {
+      const committed = await deps.chatStore.appendMessage({
+        assert_active: input.assert_active,
+        id: userMessageId,
+        session_id: input.session_id,
+        // D-337 — a continuation's row is Recued's record of the answer, not the owner's words.
+        role: input.held_results ? 'system' : 'user',
+        content: turnMessage,
+        ...(input.reply_to_message_id ? { reply_to: { message_id: input.reply_to_message_id } } : {}),
         target_server: picker_target,
+        picker_at_send: pickerAtSend,
         model_used: modelUsed,
-        tool_call_count: 0,
-      }),
-    );
+        execution_source: executionSource,
+        turn_id,
+        ts: userTs,
+        ...(input.data_diagnosis
+          ? { data_diagnosis: input.data_diagnosis }
+          : {}),
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachments: [...input.attachments] }
+          : {}),
+      });
+      safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id: input.session_id,
+        field: 'message', value: committed });
+      void safeLogActivity(
+        deps.auditLog,
+        'chat_message_sent',
+        `${input.session_id}:${userMessageId}`,
+        JSON.stringify({
+          role: 'user',
+          target_server: picker_target,
+          model_used: modelUsed,
+          tool_call_count: 0,
+        }),
+      );
+      return committed;
+    })());
+    if (!quietUntilAnswered) {
+      const committedUser = await appendUserRow();
+      if (committedUser.attachments?.length) input = { ...input, attachments: committedUser.attachments };
+    }
     // D-177 5.d/5.f — feed the forwarded-sender index from the just-
     // persisted USER turn (chat channel only). Best-effort: a candidate
     // that fails to record only means a scoped grant degrades to asking.
     try {
-      if (!input.scheduled_prompt) deps.forwardedSenderIndex?.recordUserTurn(
+      if (!input.scheduled_prompt && !input.held_results) deps.forwardedSenderIndex?.recordUserTurn(
         input.session_id,
         turnMessage,
         now(),
@@ -4229,7 +4530,8 @@ export const createChatOrchestrator = (
     // per-turn `state`). Chat passes its D-121 bus emitter so the rich
     // SI-transparency + tool-call events stream to the webclient; the SAME
     // driver backs `runMessengerTurn` over the SAME `streamRegistry`.
-    let userSourceClosed = false;
+    // D-337 — a continuation's row is `system`, stored finalized: it has no pending source.
+    let userSourceClosed = input.held_results !== undefined;
     const failPendingUserSource = (): void => {
       if (userSourceClosed) return;
       userSourceClosed = true;
@@ -4274,6 +4576,9 @@ export const createChatOrchestrator = (
           ? { read_only: true }
           : {}),
         ...(input.mail_work ? { mail_work: input.mail_work } : {}),
+        ...(input.held_results ? { held_results: input.held_results } : {}),
+        ...(input.held_results !== undefined && input.held_acted !== undefined ? { on_first_dispatch: input.held_acted } : {}),
+        ...(quietUntilAnswered ? { before_dispatch: async () => { await appendUserRow(); } } : {}),
         picker_target,
         dispatch_peer_name: dispatchPeerName,
         // The same chat source the stream's inbound carries (below) — the
@@ -4295,7 +4600,9 @@ export const createChatOrchestrator = (
             )}`
             : input.scheduled_prompt
               ? `[Scheduled request: ${input.scheduled_prompt.schedule_id}, occurrence ${input.scheduled_prompt.occurrence_id}, saved revision ${input.scheduled_prompt.revision}. Execute the saved request below. This is an unattended turn; use normal approvals for writes.]\n${modelMessage}`
-              : modelMessage,
+              : input.held_results
+                ? `${input.held_results.length > 1 ? HELD_RESULTS_TURN_NOTE : HELD_RESULT_TURN_NOTE}\n${modelMessage}`
+                : modelMessage,
           chat_tail: builtChatTail.messages,
         }),
         visible_recall_item_ids: [
@@ -4450,10 +4757,17 @@ export const createChatOrchestrator = (
     // / inactive (no `pii-restore` ran). On a gate short-circuit (no captured
     // result) the resolved `final_text` is the answer — no provider egress
     // ran, so it is the owner's own warehouse data going straight to the owner.
-    const assistantContent =
+    const answerContent =
       readPiiRestoredText(streamState)
       ?? (capturedResult === undefined ? streamSummary.final_text : undefined)
       ?? turnResult.assistant_content;
+    // D-337 — the model answered: its first call returned, and no provider failure ended the turn.
+    const answered = turnResult.final_ai_output !== undefined && turnResult.tool_loop_failure === undefined;
+    // D-337 — a continuation its model did not answer still tells the owner what became of each
+    // call, in Recued's words: in a Telegram or an email chat the failure was all they heard.
+    const assistantContent = input.held_results !== undefined && input.held_fallback !== undefined && !answered
+      ? `${answerContent}\n\n${input.held_fallback}`
+      : answerContent;
     const assistantToolCalls = turnResult.tool_calls;
     const assistantProvenance = turnResult.provenance;
     const totalUsage = turnResult.usage;
@@ -4587,6 +4901,13 @@ export const createChatOrchestrator = (
         }
       }
     }
+    // D-337 slice M — a try again that neither answered nor acted is quiet: nothing is written or
+    // sent, and its calls stay untold. Otherwise its record is in (written as it acted), or goes in
+    // now, before the answer.
+    if (quietUntilAnswered) {
+      if (!answered && userRow === undefined) return { turn_id };
+      await appendUserRow();
+    }
     const assistantMessage = await deps.chatStore.appendMessage({
       assert_active: input.assert_active,
       id: assistantMessageId,
@@ -4702,6 +5023,7 @@ export const createChatOrchestrator = (
     return {
       turn_id,
       ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
+      ...(answered ? { answered: true as const } : {}),
     };
   };
 
@@ -5092,6 +5414,10 @@ export const createChatOrchestrator = (
     let partialDispatches = 0;
     let inDoubtDispatches = 0;
     let nonEffectDispatches = 0;
+    // D-337 ruling 4, design (a) — the time this request has spent waiting for the owner.
+    let heldWaitedMs = 0;
+    // D-337 follow-up 24 — the references of this turn's calls still waiting when it ends.
+    const waitingRefs: string[] = [];
     const dispatchedToolCalls = (): number =>
       completedDispatches + partialDispatches + inDoubtDispatches;
     const buildPostEffectOutcome = (
@@ -5143,6 +5469,13 @@ export const createChatOrchestrator = (
             : {}),
           ...(input.llm_gateway_tool_usage !== undefined
             ? { llm_gateway_tool_usage: input.llm_gateway_tool_usage }
+            : {}),
+          // D-337 follow-up 24 — outcomes an earlier reply left waiting, and the note saying why.
+          ...(input.held_results !== undefined && input.held_results.length > 0
+            ? { held_results: input.held_results }
+            : {}),
+          ...(input.in_flight_context !== undefined
+            ? { in_flight_context: input.in_flight_context }
             : {}),
           dispatch_depth: 0,
           available_tools: availableTools,
@@ -5232,7 +5565,7 @@ export const createChatOrchestrator = (
               };
             }
             try {
-              const dispatchResult = await dispatchTool({
+              let dispatchResult = await dispatchTool({
                 ...call,
                 execution_source: executionSource,
                 contract_snapshot: snapshot,
@@ -5240,6 +5573,38 @@ export const createChatOrchestrator = (
                   ? { llm_gateway_tool_usage: input.llm_gateway_tool_usage }
                   : {}),
               });
+              // D-337 ruling 4, design (a) — the owner: "that piece is held, until owner approves
+              // then it passed back to the model of that session". The request is the session, so
+              // a call held for their approval waits here, within the request's limit, and returns
+              // what it would have returned: the model takes the next step from it. Past the
+              // limit, or with the caller gone, it stays held, as before.
+              const heldRunId = dispatchResult.ok && dispatchResult.run_held?.kind === 'approval'
+                ? dispatchResult.run_id : undefined;
+              // D-337 follow-up 24 — its reference, made before any wait: an answer given at any
+              // moment, even while the request still waits, finds the record it settles.
+              const heldRef = heldRunId !== undefined && input.on_held !== undefined
+                ? await input.on_held({ run_id: heldRunId, tool_name: call.tool_name }).catch(() => undefined)
+                : undefined;
+              if (heldRunId !== undefined && input.held_wait !== undefined && deps.settleHeldCall !== undefined
+                && heldWaitedMs < input.held_wait.ms) {
+                const waitStarted = now();
+                const settled = await deps.settleHeldCall({
+                  run_id: heldRunId,
+                  held: dispatchResult,
+                  until: waitStarted + (input.held_wait.ms - heldWaitedMs),
+                  ...(input.held_wait.signal !== undefined ? { signal: input.held_wait.signal } : {}),
+                }).catch(() => undefined);
+                heldWaitedMs += Math.max(0, now() - waitStarted);
+                if (settled !== undefined) dispatchResult = settled;
+              }
+              // Still waiting once the request's wait is over: its reference goes on the reply, and the
+              // model reads that it waits for the person who runs the service.
+              if (dispatchResult.ok && dispatchResult.run_held?.kind === 'approval') {
+                if (heldRef !== undefined) waitingRefs.push(heldRef);
+                if (input.held_message !== undefined) {
+                  dispatchResult = withGatewayHeldMessage(dispatchResult, input.held_message);
+                }
+              }
               if (dispatchResult.ok) {
                 if (dispatchResult.run_held) nonEffectDispatches += 1;
                 else if (dispatchResult.run_failed) partialDispatches += 1;
@@ -5287,6 +5652,7 @@ export const createChatOrchestrator = (
             ? { usage: observedGatewayUsage }
             : {}),
           post_effect_outcome: outcome,
+          ...(waitingRefs.length > 0 ? { waiting_refs: waitingRefs } : {}),
         };
       }
       throw error;
@@ -5300,17 +5666,20 @@ export const createChatOrchestrator = (
           ...(result.tool_calls !== undefined ? { tool_calls: result.tool_calls } : {}),
           ...(result.usage !== undefined ? { usage: result.usage } : {}),
           post_effect_outcome: outcome,
+          ...(waitingRefs.length > 0 ? { waiting_refs: waitingRefs } : {}),
         };
       }
     }
     if (result.final_ai_output === undefined) {
-      throw new Error('llm_gateway shared chat turn did not produce a valid AI output');
+      // D-337 follow-up 33 — with the cause, so the HTTP answer can say it.
+      throw new ChatTurnUnansweredError(result.decoder_failure?.reason, result.decoder_failure?.retry_at);
     }
     return {
       turn_id,
       assistant_content: result.assistant_content,
       ...(result.tool_calls !== undefined ? { tool_calls: result.tool_calls } : {}),
       ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      ...(waitingRefs.length > 0 ? { waiting_refs: waitingRefs } : {}),
     };
   };
 

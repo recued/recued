@@ -111,7 +111,7 @@ const ACCT_ALIAS_SET: ReadonlySet<string> = new Set<string>(ACCT_ALIAS_VALUES);
  *  (create/update/void/payment/refund) MUST ride the explicit ingredient binding
  *  (so it carries its approval context + is never agnostic-dispatched), never a
  *  canonical op-step. So an `<acct_alias>.<verb>` admits only the two read verbs. */
-const CANONICAL_ACCT_VERBS = ['search', 'read'] as const;
+export const CANONICAL_ACCT_VERBS = ['search', 'read'] as const;
 const CANONICAL_ACCT_VERB_SET: ReadonlySet<string> = new Set<string>(CANONICAL_ACCT_VERBS);
 
 /** The canonical CRM verb vocabulary an op-step may use (convention §2). A pack's

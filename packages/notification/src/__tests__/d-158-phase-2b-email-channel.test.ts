@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createInMemoryCollection, type Collection } from '@recued/storage';
 import {
   createEmailChannel,
   extractAskId,
   parseEmailReply,
   type AskOption,
+  type EmailPromptRecord,
   type EmailSender,
   type NotificationMessage,
   type OutboundEmail,
@@ -177,6 +179,74 @@ describe('D-158 P2b-i createEmailChannel closeAsk', () => {
     await expect(channel.closeAsk('ask-close')).resolves.toBeUndefined();
 
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe('D-158 P3 — which asks the email channel sent outlives the process', () => {
+  const records = () => createInMemoryCollection<EmailPromptRecord>();
+  const keys = async (store: Collection<EmailPromptRecord>) =>
+    (await store.listByPrefix('email:')).map(({ key }) => key);
+
+  it('an ask emailed before a restart is not emailed again, and its record goes when it closes', async () => {
+    const store = records();
+    const first = emailSender();
+    await createEmailChannel({ sendEmail: first, promptRecords: store }).deliverAsk('ask-1', askMessage, askOptions);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(await keys(store)).toEqual(['email:ask-1']);
+
+    // The restart: a new channel over the same records. The boot sweep delivers every open ask again.
+    const second = emailSender();
+    const after = createEmailChannel({ sendEmail: second, promptRecords: store });
+    await after.deliverAsk('ask-1', askMessage, askOptions);
+    expect(second).not.toHaveBeenCalled();
+
+    await after.closeAsk('ask-1');
+    expect(await keys(store)).toEqual([]);
+    expect(second).not.toHaveBeenCalled();
+  });
+
+  it('an ask whose email failed keeps no record, so a restart still sends it', async () => {
+    const store = records();
+    const failing = vi.fn<EmailSender>(async () => { throw new Error('smtp rejected'); });
+    await expect(createEmailChannel({ sendEmail: failing, promptRecords: store })
+      .deliverAsk('ask-1', askMessage, askOptions)).rejects.toThrow(/smtp rejected/);
+    expect(await keys(store)).toEqual([]);
+
+    const second = emailSender();
+    await createEmailChannel({ sendEmail: second, promptRecords: store }).deliverAsk('ask-1', askMessage, askOptions);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('⛔ CONTROL: with no records a restart emails the ask again', async () => {
+    await createEmailChannel({ sendEmail: emailSender() }).deliverAsk('ask-1', askMessage, askOptions);
+    const second = emailSender();
+    await createEmailChannel({ sendEmail: second }).deliverAsk('ask-1', askMessage, askOptions);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads only its own keys from a store it shares', async () => {
+    const store = records();
+    // `slack:` is as long as `email:`: a reader of every key would take this one for ask-1.
+    await store.set('slack:ask-1', { sent_at: 1 });
+    await store.set('telegram:ask-1', { sent_at: 1 });
+    const sendEmail = emailSender();
+    await createEmailChannel({ sendEmail, promptRecords: store }).deliverAsk('ask-1', askMessage, askOptions);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('⛔ records that cannot be read, kept or removed cost only what they did before: the ask still goes out once', async () => {
+    const broken: Collection<EmailPromptRecord> = {
+      ...records(),
+      listByPrefix: async () => { throw new Error('locked'); },
+      set: async () => { throw new Error('locked'); },
+      delete: async () => { throw new Error('locked'); },
+    };
+    const sendEmail = emailSender();
+    const channel = createEmailChannel({ sendEmail, promptRecords: broken });
+    await channel.deliverAsk('ask-1', askMessage, askOptions);
+    await channel.deliverAsk('ask-1', askMessage, askOptions);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    await expect(channel.closeAsk('ask-1')).resolves.toBeUndefined();
   });
 });
 

@@ -332,37 +332,40 @@ const META_FIELD_TYPES: ReadonlySet<ConnectionVendorEntityMetaFieldType> = new S
  *  facet in isolation carries no alias to compare). The per-VENDOR cross-entry
  *  invariants (one sync_kind / one daily_budget / uniform group capability)
  *  stay in `assertConnectionVendorRegistry` (they span entries, not one facet). */
-export function assertEngagementFacetShape(g: unknown): string[] {
+export interface EngagementFacetFinding { message: string; path?: string[] }
+export function assertEngagementFacetShape(g: unknown): string[] { return engagementFacetFindings(g).map(row => row.message); }
+export function engagementFacetFindings(g: unknown): EngagementFacetFinding[] {
   if (g === null || typeof g !== 'object' || Array.isArray(g)) {
-    return ["field 'engagement' must be an object when present"];
+    return [{ message: "field 'engagement' must be an object when present" }];
   }
-  const issues: string[] = [];
+  const issues: EngagementFacetFinding[] = [];
+  const add = (key: string, message: string) => issues.push({ message, path: [key] });
   const facet = g as Record<string, unknown>;
   if (typeof facet.capability !== 'string' || !ENGAGEMENT_CAPABILITY_SET.has(facet.capability)) {
-    issues.push(
+    add('capability',
       `engagement.capability must be one of ${[...ENGAGEMENT_CAPABILITY_VALUES].join(' / ')} (got ${JSON.stringify(facet.capability)})`,
     );
   }
   if (typeof facet.sync_kind !== 'string' || !ENGAGEMENT_SYNC_KIND_SET.has(facet.sync_kind)) {
-    issues.push(
+    add('sync_kind',
       `engagement.sync_kind must be one of ${[...ENGAGEMENT_SYNC_KINDS].join(' / ')} (got ${JSON.stringify(facet.sync_kind)})`,
     );
   }
   if (facet.exclusive_group !== undefined
       && (typeof facet.exclusive_group !== 'string' || facet.exclusive_group.length === 0)) {
-    issues.push('engagement.exclusive_group must be a non-empty string when present');
+    add('exclusive_group', 'engagement.exclusive_group must be a non-empty string when present');
   }
   // A pick-one group is only meaningful for probe-gated alternatives — an
   // always-present entity is unconditionally surfaced, so it can't be one of a
   // mutually-exclusive set.
   if (facet.exclusive_group !== undefined && facet.capability === 'always') {
-    issues.push(
+    add('exclusive_group',
       "engagement.exclusive_group requires capability 'probe_gated' — an always-present entity is not a pick-one alternative",
     );
   }
   if (facet.daily_budget !== undefined
       && (typeof facet.daily_budget !== 'number' || !Number.isInteger(facet.daily_budget) || facet.daily_budget <= 0)) {
-    issues.push('engagement.daily_budget must be a positive integer when present');
+    add('daily_budget', 'engagement.daily_budget must be a positive integer when present');
   }
   return issues;
 }
@@ -780,6 +783,19 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
       // different thing, and the industry lives on the linked Account). A recipe
       // that needs industry on every CRM should read `account_id` → `account.industry`.
       { key: 'industry', type: 'string', source_path: 'properties.industry', description: 'industry (HubSpot contact-level copy; the portable home is account.industry)' },
+      // D-336 (spec §55, the owner: "the standard vcf fields as variable") — the vCard
+      // contact the AI can set. The address in its vCard ADR parts, each its own HubSpot
+      // property (the reconciler fetches them already, for `mailing_address` above), so a
+      // vendor-neutral update can write one without the read-only derived object.
+      { key: 'mailing_street', type: 'string', source_path: 'properties.address', description: 'address — the street line (vCard ADR street)' },
+      { key: 'mailing_city', type: 'string', source_path: 'properties.city', description: 'city (vCard ADR locality)' },
+      { key: 'mailing_region', type: 'string', source_path: 'properties.state', description: 'state — the state or region (vCard ADR region)' },
+      { key: 'mailing_postal_code', type: 'string', source_path: 'properties.zip', description: 'zip — the postal code (vCard ADR postal code)' },
+      { key: 'mailing_country', type: 'string', source_path: 'properties.country', description: 'country (vCard ADR country)' },
+      // vCard BDAY. HubSpot's default "Date of birth" (`date_of_birth`) is a TEXT property,
+      // so the date rides as written, YYYY-MM-DD. Registry-only, like `job_title`: the
+      // reconciler does not fetch it, so the mirror's hash is unchanged.
+      { key: 'birthday', type: 'string', source_path: 'properties.date_of_birth', description: "date_of_birth — HubSpot's default \"Date of birth\", a text property (YYYY-MM-DD as Recued writes it; vCard BDAY)" },
     ],
   }),
   buildConnectionVendorEntity({
@@ -964,6 +980,18 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
       // Portable with hubspot.contact.jobtitle. Standard Contact field `Title`
       // (Text 128), already in the salesforce pack's Contact `fields` list.
       { key: 'job_title', type: 'string', source_path: 'Title', description: 'Title — the role held at the associated account' },
+      // D-336 (spec §55) — the vCard contact the AI can set: the address in its ADR parts
+      // (the reconciler SELECTs them already, for `mailing_address`), and BDAY as the standard
+      // Contact field `Birthdate` (a date, written YYYY-MM-DD). `Birthdate` is registry-only,
+      // like `Title`: the reconciler does not SELECT it, so the mirror's hash is unchanged.
+      // ⚠ Like `Title`, the canonical search SELECTs it: a profile that hides it from the
+      // connected user fails that org's contact searches (SOQL refuses an unknown column).
+      { key: 'mailing_street', type: 'string', source_path: 'MailingStreet', description: 'MailingStreet — the street line (vCard ADR street)' },
+      { key: 'mailing_city', type: 'string', source_path: 'MailingCity', description: 'MailingCity (vCard ADR locality)' },
+      { key: 'mailing_region', type: 'string', source_path: 'MailingState', description: 'MailingState — the state or region (vCard ADR region)' },
+      { key: 'mailing_postal_code', type: 'string', source_path: 'MailingPostalCode', description: 'MailingPostalCode (vCard ADR postal code)' },
+      { key: 'mailing_country', type: 'string', source_path: 'MailingCountry', description: 'MailingCountry (vCard ADR country)' },
+      { key: 'birthday', type: 'string', source_path: 'Birthdate', description: 'Birthdate — YYYY-MM-DD (vCard BDAY)' },
     ],
   }),
   buildConnectionVendorEntity({
@@ -1848,6 +1876,13 @@ export const CANONICAL_CRM_FIELD_SCHEMA: Record<CrmAlias, ReadonlyArray<Canonica
     { name: 'job_title', type: 'string', required: false, description: 'Role held at the associated company (HubSpot jobtitle / Salesforce Title). Pipedrive models a person\u2019s title as a custom field, so it maps nothing here.' },
     { name: 'industry', type: 'string', required: false, description: 'Industry, as HubSpot denormalises it onto the contact. Salesforce and Pipedrive hold it only on the linked account \u2014 `account.industry` is the portable home.' },
     { name: 'updated_at', type: 'date_ms', required: false, description: 'Record update time (Pipedrive).' },
+    // D-336 (spec §55) — the vCard contact's address, in its ADR parts, and its BDAY.
+    { name: 'mailing_street', type: 'string', required: false, description: 'Street line of the mailing address (vCard ADR; HubSpot address / Salesforce MailingStreet).' },
+    { name: 'mailing_city', type: 'string', required: false, description: 'City of the mailing address (vCard ADR; HubSpot city / Salesforce MailingCity).' },
+    { name: 'mailing_region', type: 'string', required: false, description: 'State or region of the mailing address (vCard ADR; HubSpot state / Salesforce MailingState).' },
+    { name: 'mailing_postal_code', type: 'string', required: false, description: 'Postal code of the mailing address (vCard ADR; HubSpot zip / Salesforce MailingPostalCode).' },
+    { name: 'mailing_country', type: 'string', required: false, description: 'Country of the mailing address (vCard ADR; HubSpot country / Salesforce MailingCountry).' },
+    { name: 'birthday', type: 'string', required: false, description: 'Date of birth, YYYY-MM-DD (vCard BDAY; HubSpot date_of_birth / Salesforce Birthdate).' },
   ],
   account: [
     { name: 'id', type: ['string', 'number'], required: true, description: 'Vendor record id — the canonical record selector. String on HubSpot/Salesforce, number on Pipedrive (D-190 C2).' },

@@ -91,6 +91,8 @@ import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { ContactStore } from '../storage/contact-store.js';
 import type { MailFactStore } from '../storage/mail-fact-store.js';
 import type { CascadeEngine } from '../storage/enrichment-cascade.js';
+import type { EnrichmentStore } from '../storage/enrichment-store.js';
+import { preparationNotesReady } from '../situations/agenda-prep-notes.js';
 import type { BlobStore } from '../storage/index.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import type { WorkEntitySourceWriteExecutor } from '../work-entity-write-executor.js';
@@ -182,6 +184,9 @@ export interface ComposeCollectionContextOptions {
   connectionStore: ConnectionStoreSqlite | undefined;
   workEntityStore: WorkEntityStore | undefined;
   enrichmentCascade: CascadeEngine | undefined;
+  /** D-325 §15.7 (2026-11-02, later) — read for the Agenda's "prep notes ready". Absent ⇒ it
+   *  never says so. */
+  enrichmentStore?: EnrichmentStore;
   /** D-192 P4b — late-bound getter over the app context's write-
    *  executor ref (populated post-listener once the gateway fetch deps
    *  exist). Threaded into the work-entity dispatchers. */
@@ -320,6 +325,7 @@ export const composeCollectionContext = (
     connectionStore,
     workEntityStore,
     enrichmentCascade,
+    enrichmentStore,
     annotationDeps,
     getRemoteFileReadDeps,
     privateAiCall,
@@ -929,6 +935,7 @@ export const composeCollectionContext = (
         ...(episodeRuntime ? { retainCited: clusters => episodeRuntime!.retainCited(clusters), memoryAllowed: cluster => episodeRuntime!.memoryAllowed(cluster) } : {}),
         ...(contactStore ? { personName: (id: string) => { const contact = contactStore.getByContactIdResolved(id) ?? contactStore.get(id); return contact ? contact.name ?? contact.email : undefined; } } : {}),
         mailHealth: () => mailboxHealthOf(collectionRegistry.list(), Date.now()),
+        ...(enrichmentStore ? { prepNotesReady: preparationNotesReady(enrichmentStore) } : {}),
       }) : undefined;
   if (scheduledSituations) yours!.bindScheduled(scheduledSituations);
   let feedSubscribers: EventTriggersStore | undefined;

@@ -201,12 +201,14 @@ describe('D-274 — an UNDECLARED cli binding now gets a resource contract', () 
       stallTuning: { pollMs: 10, resourceSampleMs: 0 },
     });
 
+    // ⛔ Windows the tool's one line and exit never come near: a worker starved before it reads
+    // them runs the expired stall first (500 ms stalled a 700 ms starvation, probed).
     await exec({
       slug: 'codex-pack',
       operation_key: 'codex.review',
       operation_id: 'recued-core/codex.review',
       args: {},
-      timeout_ms: 5_000,
+      timeout_ms: 60_000,
       stepMeta: { run_id: 'run-declared', step_id: 'review', trigger_source: 'chat' },
       binding: {
         kind: 'cli_invocation',
@@ -216,7 +218,7 @@ describe('D-274 — an UNDECLARED cli binding now gets a resource contract', () 
         ],
         shape: 'text',
         exit_code_handling: 'zero_is_success',
-        progress: { contract: 'heartbeat', adapter: 'codex-jsonl', stall_ms: 500 },
+        progress: { contract: 'heartbeat', adapter: 'codex-jsonl', stall_ms: 10_000 },
       },
     });
 

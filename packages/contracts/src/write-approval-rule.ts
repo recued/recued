@@ -51,6 +51,7 @@ export const WRITE_RULE_TOOLS = [
   'recipe.schedule',
   'memory.write',
   'memory.forget',
+  'contact.write',
 ] as const;
 export type WriteRuleTool = (typeof WRITE_RULE_TOOLS)[number];
 const WRITE_RULE_TOOL_SET: ReadonlySet<string> = new Set(WRITE_RULE_TOOLS);
@@ -66,8 +67,8 @@ export interface WriteRuleKey {
   readonly principal: WriteRulePrincipal;
   readonly tool: WriteRuleTool;
   /** What the tool writes on: a work kind (`task`, `asset:passport`), a calendar id
-   *  (`local` for Recued's own), the recipe a schedule runs, or `''` for a tool with one
-   *  target (the memory tools, `recipe.stop`). */
+   *  (`local` for Recued's own), the recipe a schedule runs, `add` or `change` for a
+   *  contact, or `''` for a tool with one target (the memory tools, `recipe.stop`). */
   readonly scope: string;
 }
 
@@ -109,6 +110,10 @@ export const writeRuleScopeOf = (tool: string, args: unknown): string | undefine
     case 'memory.write':
     case 'memory.forget':
       return '';
+    // D-336 slice F — adding a contact and changing one are two rules: three yeses to
+    // new contacts are no yes to rewriting the ones the owner has.
+    case 'contact.write':
+      return nonEmpty(record.target_id) ? 'change' : 'add';
     default:
       return undefined;
   }
@@ -217,5 +222,6 @@ export const describeWriteRule = (key: WriteRuleKey): { readonly action: string;
     return { action, on: type !== undefined ? `${kind} (${type})` : kind! };
   }
   if (key.tool === 'recipe.schedule') return { action, on: `the recipe ${key.scope}` };
+  if (key.tool === 'contact.write') return { action: key.scope === 'change' ? 'Change a contact' : 'Add a contact' };
   return { action };
 };

@@ -38,6 +38,13 @@ import type {
   ComposeChatOrchestratorDeps,
 } from '../composition/bin/wire-chat-orchestrator.js';
 
+// ⛔ The first test that imports the chat composition fresh (`vi.resetModules()`, then
+//   `wire-chat-orchestrator.js`) pays for transforming its whole module graph: measured at 19–22 s
+//   for the whole file on a quieter machine, and 29–39 s at load average 19 (2026-11-02), against
+//   vitest's 30 s default for the first test. It timed out in a 768-file run; with a longer limit
+//   it passes, so nothing in it hangs. The limit is for the import, not for the assertions.
+vi.setConfig({ testTimeout: 120_000 });
+
 const WIRE_SRC_URL = new URL(
   '../composition/bin/wire-chat-orchestrator.ts',
   import.meta.url,

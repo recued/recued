@@ -112,7 +112,10 @@ const waitedCallRow = (
     case 'running': return { text: `running ${call.tool_name} again...`, status: 'started' };
     case 'failed': return record.denied === true
       ? { text: `didn't run ${call.tool_name}: you said no`, status: 'error' }
-      : { text: `couldn't run ${call.tool_name}: it did not finish`, status: 'error' };
+      // D-337 slice R — its approval expired: it never ran, and no one said no.
+      : record.expired === true
+        ? { text: `didn't run ${call.tool_name}: no one answered in time`, status: 'error' }
+        : { text: `couldn't run ${call.tool_name}: it did not finish`, status: 'error' };
     case 'interrupted': return {
       text: `stopped part-way: ${call.tool_name}. Recued does not know what happened`, status: 'error',
     };
@@ -120,8 +123,16 @@ const waitedCallRow = (
   }
 };
 
+/** D-337 slice K — a call not asked because a call before it in the turn waited for the owner's
+ *  approval. Nothing failed, ran or waits on it: the conversation makes it once they answer, so it
+ *  is neither an error ("Needs attention") nor ongoing. */
+const notAskedRow = (call: ToolCallLike): Pick<ChatActivityRow & { kind: 'tool' }, 'text' | 'status'> | null =>
+  call.status === 'error' && call.reason === 'not_asked_yet'
+    ? { text: `left until you answer the approval before it: ${call.tool_name}`, status: 'ok' }
+    : null;
+
 const toolCallRow = (call: ToolCallLike, record?: ChatToolCallRecord): ChatActivityRow => {
-  const waited = waitedCallRow(call, record);
+  const waited = waitedCallRow(call, record) ?? notAskedRow(call);
   const progress = call.status === 'started' && record?.state === 'running' && record.progress
     ? ` · ${formatToolProgress(record.progress)}` : '';
   return {
@@ -243,7 +254,9 @@ export const projectSettledCallNotices = (
       : record.state === 'failed'
         ? record.denied === true
           ? `Update: you said no, so ${call.tool_name} did not run.`
-          : `Update: ${call.tool_name} did not finish.`
+          : record.expired === true
+            ? `Update: no one answered in time, so ${call.tool_name} did not run.`
+            : `Update: ${call.tool_name} did not finish.`
         : record.state === 'interrupted'
           ? `Update: ${call.tool_name} stopped part-way. Recued does not know what happened.`
           : null;

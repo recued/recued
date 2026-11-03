@@ -260,3 +260,106 @@ describe('the Reminders tab', () => {
     expect(update).not.toHaveBeenCalled(); expect(cancel).not.toHaveBeenCalled();
   });
 });
+
+describe('addressed reminder details', () => {
+  it('reads a reminder outside the list and restores its filters and loaded pages on Back', async () => {
+    const rows = Array.from({ length: 50 }, (_, index) => view({ reminder_id: 'row-' + index, text: 'Waiting ' + index }));
+    const list = vi.fn<NonNullable<ReminderCallers['list']>>(async args => ({ reminders: args.page?.cursor ? [view({ reminder_id: 'row-last', text: 'Last waiting' })] : rows,
+      count: 51, page: { matched_count: 51, next_cursor: args.page?.cursor ? null : { at: AT, reminder_id: 'row-49' } } }));
+    const get = vi.fn<NonNullable<ReminderCallers['get']>>(async args => ({ reminder: view({ reminder_id: args.reminder_id,
+      text: 'The reminder that rang', state: 'delivered', delivered_at: AT }) }));
+    const { surface } = mount({ list, get, update: vi.fn(), cancel: vi.fn() });
+    surface.handleInput(target({ [REMINDERS_FIELD_ATTR]: 'query' }, 'Waiting'));
+    surface.handleAction('reminders-apply', target({})); await surface.whenLoaded();
+    surface.handleAction('reminders-more', target({})); await surface.whenLoaded();
+    const calls = list.mock.calls.length;
+    expect(surface.open('rem-delivered')).toBe(true); await surface.whenLoaded();
+    expect(get).toHaveBeenCalledWith({ reminder_id: 'rem-delivered' });
+    expect(surface.render()).toContain('The reminder that rang');
+    expect(surface.render()).toContain('America/New_York');
+    expect(surface.render()).toContain('Rang');
+    expect(surface.render()).not.toContain('Edit reminder');
+    expect(surface.open(null)).toBe(true);
+    expect(list).toHaveBeenCalledTimes(calls);
+    expect(surface.render()).toContain('value="Waiting"');
+    expect(surface.render()).toContain('Last waiting');
+    surface.dispose();
+  });
+
+  it('reconciles a retained pending row after its detail confirms it has rung', async () => {
+    let rang = false;
+    const list = vi.fn<NonNullable<ReminderCallers['list']>>(async () => ({ reminders: rang ? [] : [view()], count: rang ? 0 : 1 }));
+    const { surface } = mount({ list, get: async () => ({ reminder: view({ state: 'delivered', delivered_at: AT }) }) });
+    await surface.refresh(); rang = true;
+    surface.open('rem_1'); await surface.whenLoaded();
+    surface.open(null); await surface.whenLoaded();
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(surface.render()).toContain('No reminders waiting');
+    surface.dispose();
+  });
+
+  it('ignores stale item reads after another reminder opens, Back, or disposal', async () => {
+    const replies = new Map<string, (value: { reminder: ReminderView | null }) => void>();
+    const get = vi.fn<NonNullable<ReminderCallers['get']>>(args => new Promise(resolve => replies.set(args.reminder_id, resolve)));
+    const { surface, render } = mount({ list: async () => ({ reminders: [], count: 0 }), get });
+    surface.open('rem-a'); const a = surface.whenLoaded();
+    surface.open('rem-b'); const b = surface.whenLoaded();
+    replies.get('rem-b')!({ reminder: view({ reminder_id: 'rem-b', text: 'Current reminder' }) }); await b;
+    replies.get('rem-a')!({ reminder: view({ reminder_id: 'rem-a', text: 'Late old reminder' }) }); await a;
+    expect(surface.detailId()).toBe('rem-b');
+    expect(surface.render()).toContain('Current reminder');
+    expect(surface.render()).not.toContain('Late old reminder');
+    surface.open('rem-c'); const closed = surface.whenLoaded(); surface.open(null); await surface.whenLoaded();
+    replies.get('rem-c')!({ reminder: view({ reminder_id: 'rem-c', text: 'Closed reminder' }) }); await closed;
+    expect(surface.detailId()).toBeUndefined(); expect(surface.render()).not.toContain('Closed reminder');
+    surface.open('rem-d'); const disposed = surface.whenLoaded(); surface.dispose(); const paints = render.mock.calls.length;
+    replies.get('rem-d')!({ reminder: view({ reminder_id: 'rem-d' }) }); await disposed;
+    expect(render).toHaveBeenCalledTimes(paints);
+  });
+
+  it('keeps a confirmed edit through a failed detail refresh and protects a draft or pending write from Back', async () => {
+    let row = view({ reminder_id: 'rem-outside' });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const get = vi.fn<NonNullable<ReminderCallers['get']>>(async () => {
+      if (get.mock.calls.length > 1) throw new Error('Detail refresh interrupted');
+      return { reminder: row };
+    });
+    const update = vi.fn<NonNullable<ReminderCallers['update']>>(async patch => {
+      await held; row = { ...row, ...patch }; return { updated: true, reminder: row, message: 'Reminder changed.' };
+    });
+    const { surface } = mount({ get, update });
+    surface.open(row.reminder_id); await surface.whenLoaded();
+    const item = target({ 'data-reminder-id': row.reminder_id });
+    surface.handleAction('reminders-edit', item);
+    surface.handleInput(target({ [REMINDERS_FIELD_ATTR]: 'text', 'data-reminder-id': row.reminder_id }, 'Confirmed new words'));
+    expect(surface.open(null)).toBe(false); expect(surface.hasUnsavedChanges()).toBe(true);
+    surface.handleAction('reminders-save', item);
+    expect(surface.open('rem-other')).toBe(false); expect(surface.hasInFlightWork()).toBe(true);
+    release();
+    await vi.waitFor(() => expect(surface.render()).toContain('Detail refresh interrupted'));
+    expect(surface.render()).toContain('Confirmed new words');
+    expect(surface.render()).toContain('Reminder changed.');
+    expect(update).toHaveBeenCalledWith({ reminder_id: row.reminder_id, text: 'Confirmed new words' });
+    expect(surface.hasUnsavedChanges()).toBe(false);
+    surface.dispose();
+  });
+
+  it('distinguishes a failed read from missing history, retries, and directs managed reminders to Yours', async () => {
+    let calls = 0;
+    const { surface } = mount({ get: async args => {
+      if (++calls === 1) throw new Error('Reminder read interrupted');
+      return { reminder: args.reminder_id === 'rem-managed' ? view({ reminder_id: args.reminder_id, managed_by: 'clock' }) : null };
+    }, update: vi.fn(), cancel: vi.fn() });
+    surface.open('rem-missing'); await surface.whenLoaded();
+    expect(surface.render()).toContain('Reminder read interrupted');
+    expect(surface.render()).not.toContain('30-day history has expired');
+    surface.handleAction('reminders-retry', target({})); await surface.whenLoaded();
+    expect(surface.render()).toContain('30-day history has expired');
+    surface.open('rem-managed'); await surface.whenLoaded();
+    expect(surface.render()).toContain('href="#yours"');
+    expect(surface.render()).not.toContain('Edit reminder');
+    expect(surface.render()).not.toContain('reminders-cancel');
+    surface.dispose();
+  });
+});

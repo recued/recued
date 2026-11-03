@@ -29,7 +29,7 @@
 
 import { isEntityFieldPrivacy } from './pii-alias.js';
 import type { EntityFieldPrivacy } from './pii-alias.js';
-import { ACCT_ALIAS_VALUES, CRM_ALIAS_VALUES, assertEngagementFacetShape, isDateGranularity } from './connection-vendors.js';
+import { ACCT_ALIAS_VALUES, CRM_ALIAS_VALUES, engagementFacetFindings, isDateGranularity } from './connection-vendors.js';
 import type { AcctAlias, CrmAlias, DateGranularity, EngagementEntityFacet } from './connection-vendors.js';
 
 /* ──────────────── Projection + schema modes ──────────────── */
@@ -289,8 +289,15 @@ const isWellFormedSourcePath = (v: unknown): v is string =>
  * vendor field with no `meta_field` entry is not an error (recipes persist
  * unmapped fields to `extra.<key>`).
  */
-export function assertEntitySchemaIngredientShape(entry: unknown): string[] {
+export interface EntitySchemaIngredientFinding { message: string; path?: (string | number)[] }
+export function entitySchemaIngredientFindings(entry: unknown): EntitySchemaIngredientFinding[] {
+  const locations = new Map<number, (string | number)[]>();
+  return entitySchemaShape(entry, locations).map((message, index) => ({ message, ...(locations.has(index) ? { path: locations.get(index)! } : {}) }));
+}
+export function assertEntitySchemaIngredientShape(entry: unknown): string[] { return entitySchemaShape(entry); }
+function entitySchemaShape(entry: unknown, locations?: Map<number, (string | number)[]>): string[] {
   const issues: string[] = [];
+  const fieldIssue = (message: string, index: number, key: string) => { locations?.set(issues.length, ['meta_fields', index, key]); issues.push(message); };
   if (!isPlainObject(entry)) return ['expected object'];
   const e = entry;
 
@@ -381,23 +388,23 @@ export function assertEntitySchemaIngredientShape(entry: unknown): string[] {
       }
       const f = raw;
       if (typeof f.key !== 'string' || !META_FIELD_KEY_REGEX.test(f.key)) {
-        issues.push(`meta_fields[${idx}].key must match ${META_FIELD_KEY_REGEX.source}`);
+        fieldIssue(`meta_fields[${idx}].key must match ${META_FIELD_KEY_REGEX.source}`, idx, 'key');
       } else if (seen.has(f.key)) {
-        issues.push(`meta_fields[${idx}].key '${f.key}' duplicates an earlier entry`);
+        fieldIssue(`meta_fields[${idx}].key '${f.key}' duplicates an earlier entry`, idx, 'key');
       } else {
         seen.add(f.key);
       }
       if (!isMetaFieldType(f.type)) {
-        issues.push(`meta_fields[${idx}].type must be one of ${META_FIELD_TYPES.join(' / ')}`);
+        fieldIssue(`meta_fields[${idx}].type must be one of ${META_FIELD_TYPES.join(' / ')}`, idx, 'type');
       }
       if (f.description !== undefined && typeof f.description !== 'string') {
-        issues.push(`meta_fields[${idx}].description must be a string when present`);
+        fieldIssue(`meta_fields[${idx}].description must be a string when present`, idx, 'description');
       }
       if (f.required !== undefined && typeof f.required !== 'boolean') {
-        issues.push(`meta_fields[${idx}].required must be a boolean when present`);
+        fieldIssue(`meta_fields[${idx}].required must be a boolean when present`, idx, 'required');
       }
       if (!isWellFormedSourcePath(f.source_path)) {
-        issues.push(`meta_fields[${idx}].source_path must be a non-empty string (structural JSONPath/dot-path validation resolves against the operation response_schema at install time)`);
+        fieldIssue(`meta_fields[${idx}].source_path must be a non-empty string (structural JSONPath/dot-path validation resolves against the operation response_schema at install time)`, idx, 'source_path');
       }
       if (f.transform !== undefined && !isNonEmptyString(f.transform)) {
         issues.push(`meta_fields[${idx}].transform must be a non-empty string when present`);
@@ -406,7 +413,7 @@ export function assertEntitySchemaIngredientShape(entry: unknown): string[] {
         issues.push(`meta_fields[${idx}].transform_args must be an object when present`);
       }
       if (f.privacy !== undefined && !isEntityFieldPrivacy(f.privacy)) {
-        issues.push(`meta_fields[${idx}].privacy must be a valid EntityFieldPrivacy kind when present (got ${JSON.stringify(f.privacy)})`);
+        fieldIssue(`meta_fields[${idx}].privacy must be a valid EntityFieldPrivacy kind when present (got ${JSON.stringify(f.privacy)})`, idx, 'privacy');
       }
       // G2 request-side datetime filter — `date_granularity` is optional, but when
       // present must be `date` | `datetime` and only valid on a `datetime` field (it
@@ -416,9 +423,9 @@ export function assertEntitySchemaIngredientShape(entry: unknown): string[] {
       // (the registry's `date_ms`).
       if (f.date_granularity !== undefined) {
         if (!isDateGranularity(f.date_granularity)) {
-          issues.push(`meta_fields[${idx}].date_granularity must be 'date' or 'datetime' when present`);
+          fieldIssue(`meta_fields[${idx}].date_granularity must be 'date' or 'datetime' when present`, idx, 'date_granularity');
         } else if (f.type !== 'datetime') {
-          issues.push(`meta_fields[${idx}].date_granularity is only valid on a 'datetime' field (got type '${String(f.type)}')`);
+          fieldIssue(`meta_fields[${idx}].date_granularity is only valid on a 'datetime' field (got type '${String(f.type)}')`, idx, 'date_granularity');
         }
       }
     });
@@ -494,7 +501,10 @@ export function assertEntitySchemaIngredientShape(entry: unknown): string[] {
   // the MERGED registry at lift time (`assertEngagementRegistryInvariants`), not
   // here — one schema carries one entity, so they can't be checked in isolation.
   if (e.engagement !== undefined) {
-    for (const i of assertEngagementFacetShape(e.engagement)) issues.push(i);
+    for (const finding of engagementFacetFindings(e.engagement)) {
+      if (finding.path) locations?.set(issues.length, ['engagement', ...finding.path]);
+      issues.push(finding.message);
+    }
     if (e.crm_alias !== undefined || e.acct_alias !== undefined) {
       issues.push(
         "field 'engagement' is mutually exclusive with 'crm_alias' / 'acct_alias' — an entity is exactly one category",

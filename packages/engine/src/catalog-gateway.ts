@@ -2716,6 +2716,30 @@ const runCatalogOperationInner = async (
     throw denyError(call, resolution, isCliOp ? { principal: cliPrincipal } : undefined);
   }
 
+  // D-336 (spec §53) — the host's look at a change to one record, before it is asked about,
+  // routed or made: a CRM contact the user named only in part, which the run found itself.
+  const recordArg = declaredOp?.record_id_arg;
+  const recordId = recordArg === undefined ? undefined : originalArgs[recordArg];
+  if (ctx.recordChangeCheck !== undefined && declaredOp?.risk_tier !== 'read'
+    && typeof recordId === 'string' && recordId !== '') {
+    let refusal: string | undefined;
+    try {
+      refusal = await ctx.recordChangeCheck({ operation_id: resolution.operation_id, record_id: recordId });
+    } catch {
+      // A look that cannot answer lets the call go, as one with nothing to say does.
+      refusal = undefined;
+    }
+    if (refusal !== undefined) {
+      emitGatewayAudit(ctx, {
+        ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+        outcome: 'failed',
+        failure_mode: 'record_change_unconfirmed',
+      });
+      // `BAD_INPUT`: this call, as given, is not to be made yet; the words say what first.
+      throw codedError(refusal, 'BAD_INPUT');
+    }
+  }
+
   // A model-facing qualified id is routing metadata, not a provider-native
   // argument. Validate the exact declared Source + selected connection and
   // unwrap it before request-schema checks, approval, grants, or dispatch. A

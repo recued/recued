@@ -271,63 +271,65 @@ const fieldNamesIssueMessage = (issue: HeaderAuthIssue): string => {
   }
 };
 
-/** Shape-validate the `auth` descriptor. Returns issue strings (empty ⇒ valid). */
-const validateAuthDescriptor = (auth: unknown): string[] => {
+type ConnectionIssueReporter = (issue: { path: (string | number)[]; message: string }) => void;
+/** Shape-validate the `auth` descriptor. Legacy messages and located issues share one check. */
+const validateAuthDescriptor = (auth: unknown, report?: ConnectionIssueReporter): string[] => {
+  const issues: string[] = [];
+  const add = (path: (string | number)[], message: string) => { issues.push(message); report?.({ path: ['auth', ...path], message }); };
   if (auth == null || typeof auth !== 'object' || Array.isArray(auth)) {
-    return ['auth must be an object'];
+    add([], 'auth must be an object'); return issues;
   }
   const a = auth as Record<string, unknown>;
   const type = a.type;
   if (typeof type !== 'string'
     || !(CONNECTION_AUTH_DESCRIPTOR_TYPES as readonly string[]).includes(type)) {
-    return [`auth.type must be one of ${CONNECTION_AUTH_DESCRIPTOR_TYPES.join('|')}; got ${JSON.stringify(type)}`];
+    add(['type'], `auth.type must be one of ${CONNECTION_AUTH_DESCRIPTOR_TYPES.join('|')}; got ${JSON.stringify(type)}`); return issues;
   }
-  const issues: string[] = [];
   switch (type) {
     case 'oauth2_refresh':
       if (!isValidOAuthEndpointUrl(a.authorize_url)) {
-        issues.push('auth.authorize_url must be a complete HTTPS URL with no embedded username or password and no URL fragment');
+        add(['authorize_url'], 'auth.authorize_url must be a complete HTTPS URL with no embedded username or password and no URL fragment');
       }
       if (!isValidOAuthEndpointUrl(a.token_endpoint)) {
-        issues.push('auth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
+        add(['token_endpoint'], 'auth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
       }
       if (a.authorize_params !== undefined) {
         if (!isStringRecord(a.authorize_params)) {
-          issues.push('auth.authorize_params must be a string→string object when present');
+          add(['authorize_params'], 'auth.authorize_params must be a string→string object when present');
         } else {
           // Mirror assertConnectionVendorProviderShape: a descriptor may not
           // smuggle a reserved OAuth-start key (state / scope / redirect_uri /
           // client_id / …) through this hatch, and every value must be non-empty.
           for (const [k, v] of Object.entries(a.authorize_params as Record<string, string>)) {
             if (AUTHORIZE_PARAM_RESERVED_KEYS.has(k)) {
-              issues.push(`auth.authorize_params may not override the reserved OAuth-start key '${k}'`);
+              add(['authorize_params', k], `auth.authorize_params may not override the reserved OAuth-start key '${k}'`);
             }
             if (v.length === 0) {
-              issues.push(`auth.authorize_params['${k}'] must be a non-empty string`);
+              add(['authorize_params', k], `auth.authorize_params['${k}'] must be a non-empty string`);
             }
           }
         }
       }
       if (a.supports_pkce !== undefined && typeof a.supports_pkce !== 'boolean') {
-        issues.push('auth.supports_pkce must be a boolean when present');
+        add(['supports_pkce'], 'auth.supports_pkce must be a boolean when present');
       }
       break;
     case 'oauth2_client_credentials':
       if (!isValidOAuthEndpointUrl(a.token_endpoint)) {
-        issues.push('auth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
+        add(['token_endpoint'], 'auth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
       }
       if (a.token_auth_style !== undefined
         && a.token_auth_style !== 'body'
         && a.token_auth_style !== 'basic') {
-        issues.push("auth.token_auth_style must be 'body' or 'basic' when present");
+        add(['token_auth_style'], "auth.token_auth_style must be 'body' or 'basic' when present");
       }
       if (a.scope !== undefined && (typeof a.scope !== 'string' || a.scope.trim().length === 0)) {
-        issues.push('auth.scope must be a non-empty string when present');
+        add(['scope'], 'auth.scope must be a non-empty string when present');
       }
       break;
     case 'header':
       if (!Array.isArray(a.header_names)) {
-        issues.push('auth.header_names must be a non-empty array of non-empty strings');
+        add(['header_names'], 'auth.header_names must be a non-empty array of non-empty strings');
       } else {
         // Delegate to the canonical ConnectionAuth header-name guard: it rejects
         // reserved object keys (__proto__ / constructor / prototype), enforces the
@@ -338,12 +340,12 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
         const res = validateHeaderAuthEntries(
           a.header_names.map((n) => ({ header_name: n, value: 'x' })),
         );
-        if (!res.ok) issues.push(headerNamesIssueMessage(res.issue));
+        if (!res.ok) add('index' in res.issue ? ['header_names', res.issue.index] : ['header_names'], headerNamesIssueMessage(res.issue));
       }
       break;
     case 'query':
       if (typeof a.param_name !== 'string' || a.param_name.length === 0) {
-        issues.push('auth.param_name must be a non-empty string');
+        add(['param_name'], 'auth.param_name must be a non-empty string');
       }
       break;
     /** ⚠ Same delegation as `header`, and for the same reason: a descriptor
@@ -353,12 +355,12 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
      *  synthesized per name to reuse the canonical guard. */
     case 'body_field':
       if (!Array.isArray(a.field_names)) {
-        issues.push('auth.field_names must be a non-empty array of non-empty strings');
+        add(['field_names'], 'auth.field_names must be a non-empty array of non-empty strings');
       } else {
         const res = validateBodyFieldAuthEntries(
           a.field_names.map((n) => ({ field_name: n, value: 'x' })),
         );
-        if (!res.ok) issues.push(fieldNamesIssueMessage(res.issue));
+        if (!res.ok) add('index' in res.issue ? ['field_names', res.issue.index] : ['field_names'], fieldNamesIssueMessage(res.issue));
       }
       break;
     /** ⛔ ADDED LATE, and it was missing rather than deliberately absent. The
@@ -369,7 +371,7 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
      *  discriminant-only members are there ON PURPOSE, and this was not one. */
     case 'request_signature':
       if (!isConnectionSigningScheme(a.scheme)) {
-        issues.push(
+        add(['scheme'],
           `auth.scheme must be one of ${CONNECTION_SIGNING_SCHEMES.join('|')}; `
             + `got ${JSON.stringify(a.scheme)}`,
         );
@@ -394,24 +396,25 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
  *  source of truth for descriptor shape, consumed by BOTH the boot-time seed
  *  self-check (below) and the manifest validator (`parseBulkPackManifest` maps
  *  each returned string to a `pack_connection_requirement_invalid` issue). */
-export const validateConnectionRequirementShape = (entry: unknown): string[] => {
+export const validateConnectionRequirementShape = (entry: unknown, report?: ConnectionIssueReporter): string[] => {
+  const issues: string[] = [];
+  const add = (path: (string | number)[], message: string) => { issues.push(message); report?.({ path, message }); };
   if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
-    return ['connection requirement must be an object'];
+    add([], 'connection requirement must be an object'); return issues;
   }
   const r = entry as Record<string, unknown>;
-  const issues: string[] = [];
   // api_base — required https URL (the match key, or a placeholder-host base
   // for a per_org vendor whose real host varies per account).
   if (typeof r.api_base !== 'string' || !r.api_base.startsWith('https://')) {
-    issues.push(`api_base must be an https:// URL; got ${JSON.stringify(r.api_base)}`);
+    add(['api_base'], `api_base must be an https:// URL; got ${JSON.stringify(r.api_base)}`);
   }
   // per_org — optional boolean; flips matching from endpoint-host to vendor tag.
   if (r.per_org !== undefined && typeof r.per_org !== 'boolean') {
-    issues.push('per_org must be a boolean when present');
+    add(['per_org'], 'per_org must be a boolean when present');
   }
   // vendor — required, vendor-slug shape.
   if (typeof r.vendor !== 'string' || !VENDOR_SLUG_RE.test(r.vendor)) {
-    issues.push(`vendor must match ${VENDOR_SLUG_RE.source}; got ${JSON.stringify(r.vendor)}`);
+    add(['vendor'], `vendor must match ${VENDOR_SLUG_RE.source}; got ${JSON.stringify(r.vendor)}`);
   }
   // authority — REQUIRED (non-empty) for an oauth2_refresh descriptor (the OAuth
   // issuer the consent dance narrows to, §3); optional for key/basic/query/none
@@ -421,23 +424,23 @@ export const validateConnectionRequirementShape = (entry: unknown): string[] => 
     : undefined;
   if (authType === 'oauth2_refresh') {
     if (typeof r.authority !== 'string' || r.authority.length === 0) {
-      issues.push('authority (OAuth issuer host) is required for an oauth2_refresh descriptor');
+      add(['authority'], 'authority (OAuth issuer host) is required for an oauth2_refresh descriptor');
     }
   } else if (r.authority !== undefined && (typeof r.authority !== 'string' || r.authority.length === 0)) {
-    issues.push('authority must be a non-empty string when present');
+    add(['authority'], 'authority must be a non-empty string when present');
   }
   // identity_endpoint — optional; https:// URL when present.
   if (r.identity_endpoint !== undefined
     && (typeof r.identity_endpoint !== 'string' || !r.identity_endpoint.startsWith('https://'))) {
-    issues.push('identity_endpoint must be an https:// URL when present');
+    add(['identity_endpoint'], 'identity_endpoint must be an https:// URL when present');
   }
   // auth — required discriminated union.
-  issues.push(...validateAuthDescriptor(r.auth));
+  issues.push(...validateAuthDescriptor(r.auth, report));
   // from_pack — optional; the holder pack's slug (D-320 ruling 11). That it names
   // one of the manifest's dependencies is the manifest validator's check.
   if (r.from_pack !== undefined
     && (typeof r.from_pack !== 'string' || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(r.from_pack))) {
-    issues.push(`from_pack must be a pack slug when present; got ${JSON.stringify(r.from_pack)}`);
+    add(['from_pack'], `from_pack must be a pack slug when present; got ${JSON.stringify(r.from_pack)}`);
   }
   return issues;
 };

@@ -79,6 +79,11 @@ const ADAPTER_ERROR_MAP: Record<
     userCode: 'CALENDAR_RRULE_UNSUPPORTED',
     status: 400,
   },
+  change_unsupported: {
+    rpcCode: 'bad_request',
+    userCode: 'CALENDAR_CHANGE_UNSUPPORTED',
+    status: 400,
+  },
   attendee_not_self: {
     rpcCode: 'bad_request',
     userCode: 'CALENDAR_ATTENDEE_NOT_SELF',

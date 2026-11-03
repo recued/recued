@@ -95,6 +95,9 @@ const conditionalExecuteDepKeys = [
   // response names its channels, so the agent can say "reply to the approval
   // email" as well as "the bell".
   'approvalAskChannels',
+  // ... and for where one would go now: a Telegram or email chat's system prompt names its
+  // own channel as where to answer approvals only while they go there.
+  'approvalChannelsNow',
   // R2 step 6 — the same notification block, threaded as the torn-saga
   // notifier (rides the identical conditional spread as preflightNotifier).
   'sagaNotifier',
@@ -794,6 +797,14 @@ describe('composeExecuteDeps approval ask channels', () => {
     expect(stored?.fanout_channels).toContain('ui');
     await expect(executeDeps.approvalAskChannels!(ask_id)).resolves.toEqual(stored!.fanout_channels);
     await expect(executeDeps.approvalAskChannels!('ask-none')).resolves.toBeUndefined();
+  });
+
+  it('reads where an ask would go now from the block\'s own settings: the app alone, by default', async () => {
+    const { executeDeps, notificationBlock } = composeExecuteDeps(buildDeps(notificationPrereqs()));
+    // Every other channel is off until the owner turns it on (opt-in), and the Bridge takes none.
+    await expect(executeDeps.approvalChannelsNow!()).resolves.toEqual(['ui']);
+    const settings = await notificationBlock!.getNotificationSettings();
+    expect(settings.telegram.approval).toBe(false);
   });
 });
 

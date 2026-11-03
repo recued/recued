@@ -41,7 +41,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-261 — four individually governed durable draft operations.
   // D-315 — + core.mail.fact.get / .list, the mail-fact reads (18 → 20).
   mail: 20,
-  contact: 4,
+  // D-336 slice F — + the NATIVE `core.contact.write`, the grant of the Tier-1 contact write (4 → 5).
+  contact: 5,
   customer: 1,
   notification: 2,
   preapproval: 1,
@@ -105,8 +106,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // mail / file / calendar / webhook / recipe retired 2026-10-05.
   watch: 3,
   // + D-335 slice A `core.dom.inspect`, the page read for an AI, slice B
-  // `core.dom.click`, and slice C `core.dom.tabs` and `core.dom.open`.
-  dom: 6,
+  // `core.dom.click`, slice C `core.dom.tabs` and `core.dom.open`, and slice H
+  // `core.dom.wait`, `core.dom.table` and `core.dom.screenshot`.
+  dom: 9,
 };
 
 describe('D-182 slice 3a — kernel op registry', () => {
@@ -221,6 +223,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.contact.engagements.read|contact|(native)|read',
       'core.contact.resolve|contact|contact-resolve|read',
       'core.contact.upsert|contact|contact-upsert|write',
+      // D-336 slice F — NATIVE verb-op for the Tier-1 `contact.write`.
+      'core.contact.write|contact|(native)|write',
       'core.customer.status|customer|(native)|read',
       'core.data.calendar.create|data|calendar-create|write',
       'core.data.calendar.delete|data|calendar-delete|destructive',
@@ -247,7 +251,10 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.dom.inspect|dom|dom-inspect|read',
       'core.dom.open|dom|dom-open|write',
       'core.dom.read|dom|dom-read|read',
+      'core.dom.screenshot|dom|dom-screenshot|read',
+      'core.dom.table|dom|dom-table|read',
       'core.dom.tabs|dom|dom-tabs|read',
+      'core.dom.wait|dom|dom-wait|read',
       'core.dom.write|dom|dom-write|write',
       'core.kitchen.draft.get|kitchen|kitchen-draft-get|read',
       'core.kitchen.draft.import|kitchen|kitchen-draft-import|write',

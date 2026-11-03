@@ -1139,9 +1139,12 @@ describe("memory.saves — how many times an agent saved a note's claim, for the
       const h = harness();
       const notes: UserMemoryRow[] = [];
       for (const [i, save] of run.entries()) {
+        // The save's words only: a chat records a call's `claim` as the call wrote it, which
+        // is not the claim a note stores (D-336).
         notes.push(await h.store.writeAuthored({
           origin_actor: 'contracted_user', author_contract_id: OWNER_CONTRACT_ID, kind: 'chat_memory',
-          ...save, session: { channel_session_id: `chat-${i}` },
+          summary: save.summary, ...(save.body !== undefined ? { body: save.body } : {}),
+          session: { channel_session_id: `chat-${i}` },
         }));
         if (i < 2) await handleMemoryDelete(h.rpcDeps, { memory_id: notes[i]!.memory_id });
       }

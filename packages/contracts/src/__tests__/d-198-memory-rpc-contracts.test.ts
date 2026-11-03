@@ -55,6 +55,10 @@ describe('D-198 memory rpc registry wiring', () => {
     expect(SERVER_RPC_METHOD_SET.has('memory.saves')).toBe(true);
   });
 
+  it('D-336 slice K — the Memory view asks what the relation list misses by a method of its own, which an older server refuses', () => {
+    expect(SERVER_RPC_METHOD_SET.has('memory.claim_counts')).toBe(true);
+  });
+
   it('does NOT revive the D-157-P0-deleted `audit.*` read family', () => {
     // The management surface is `memory.*`; reviving `audit.list` etc. would
     // regress D-157 P0. The transparent feed is `memory.list`, not `audit.list`.

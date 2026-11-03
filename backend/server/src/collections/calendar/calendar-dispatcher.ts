@@ -380,6 +380,42 @@ export const checkCalendarCreate = (
   input: { slug: string },
 ): { collection: CalendarCollection } => requireWrite(deps, input.slug, 'create_event');
 
+/** D-336 (spec §48) — the calendar a create that names none goes on: the account's own main
+ *  calendar (`is_default`: Google's primary, Outlook's default), or its only writable one.
+ *  ⛔ The chat's `calendar.create` asked every account for the calendar `local`, which only
+ *  the local account has: on Google, Outlook or CalDAV it failed with "not found". A CalDAV
+ *  server names no main calendar, so one with several is refused, naming them. */
+export const defaultCalendarFor = async (
+  deps: CalendarDispatcherDeps,
+  input: { slug: string },
+): Promise<string> => {
+  const { collection } = checkCalendarCreate(deps, input);
+  const list = collection.provider.listWritableCalendars;
+  if (!list) {
+    throw new RpcError('forbidden', `CALENDAR_CAPABILITY_DENIED: instance '${input.slug}' cannot list its calendars`, 403);
+  }
+  const calendars = await callCalendarAdapter(input.slug, 'calendar-list-writable', () => list());
+  const chosen = calendars.find((cal) => cal.is_default === true) ?? (calendars.length === 1 ? calendars[0] : undefined);
+  if (chosen !== undefined) return chosen.calendar_id;
+  if (calendars.length === 0) {
+    throw new RpcError('bad_request', `CALENDAR_NO_WRITABLE_CALENDAR: '${input.slug}' has no calendar a new event can go on`, 400);
+  }
+  const names = calendars.slice(0, 10).map((cal) => `"${cal.name}"`).join(', ');
+  throw new RpcError(
+    'bad_request',
+    `CALENDAR_NO_MAIN_CALENDAR: '${input.slug}' has ${calendars.length} calendars (${names}) and none is its main one, `
+      + 'so an event cannot go on it from here. Tell the user they can add it with New event in Data → Calendar, where they choose the calendar',
+    400,
+  );
+};
+
+/** D-336 (spec §48) — whether a change to this event asks its calendar to tell the guests,
+ *  as the owner's own edit does (`updateOwnerCalendarEvent`): when it has any. ⛔ An AI's or
+ *  a recipe's move or cancel of a Google event changed it for the guests' calendars and told
+ *  no one: Google emails a guest only when the change asks it to (`sendUpdates`), and only
+ *  the owner's edit asked. Outlook and a CalDAV server tell guests themselves. */
+const notifiesGuests = (event: CanonicalEvent): boolean => Boolean(event.attendees?.length);
+
 /** D-329 — what an event update checks before it calls its calendar: the calendar may
  *  update events, the event is on it, and the change leaves it ending after it starts.
  *  `handleCalendarUpdate` runs it, and so does `calendar.update`'s check before the owner
@@ -474,7 +510,7 @@ export const handleCalendarUpdate = async (
     patch: Partial<CanonicalEvent>;
     scope?: CalendarMutationScope;
   },
-): Promise<{ source_id: string }> => {
+): Promise<{ source_id: string; deleted?: true }> => {
   const { collection, existing, patch } = checkCalendarUpdate(deps, input);
   const guarded = currentResourceReview() ? assertReviewedResource(
     captureCalendarResource(deps, 'calendar-update', input as unknown as Record<string, unknown>)) : undefined;
@@ -496,6 +532,7 @@ export const handleCalendarUpdate = async (
           collection.provider.updateEvent({
             calendar_id,
             source_id: input.source_id,
+            ...(notifiesGuests(existing.event) ? { notify_attendees: true } : {}),
             patch,
             scope: 'this_and_future',
           }),
@@ -508,12 +545,33 @@ export const handleCalendarUpdate = async (
 
   const reviewedIo = currentPreapprovalIo();
   const review = currentResourceReview();
+  // D-336 (spec §56) — Outlook keeps no cancelled event: it takes no status in an update, and
+  // cancelling one is deleting it, which on the organizer's calendar sends its guests a
+  // cancellation. So a cancel there deletes it, under the same reviewed version (If-Match).
+  // Before, the update was refused ("To cancel the event, delete it."), and nothing in Recued
+  // could delete an Outlook event (spec §54).
+  if (patch.status === 'cancelled' && collection.provider.kind === 'graph') {
+    if (review) await reviewedIo?.beforeCalendarProvider?.(review, true);
+    await callCalendarAdapter(input.slug, 'calendar-delete', () =>
+      collection.provider.deleteEvent({
+        calendar_id,
+        source_id: input.source_id,
+        ...(expected_etag ? { expected_etag } : {}),
+        ...(notifiesGuests(existing.event) ? { notify_attendees: true } : {}),
+        scope,
+      }),
+    );
+    if (review) reviewedIo?.afterCalendarProvider?.();
+    collection.applyVerifiedDelete(input.source_id, expected_version);
+    return { source_id: input.source_id, deleted: true };
+  }
   if (review) await reviewedIo?.beforeCalendarProvider?.(review, collection.provider.kind !== 'local');
   const payload = await callCalendarAdapter(input.slug, 'calendar-update', () =>
     collection.provider.updateEvent({
       calendar_id,
       source_id: input.source_id,
       ...(expected_etag ? { expected_etag } : {}),
+      ...(notifiesGuests(existing.event) ? { notify_attendees: true } : {}),
       patch,
       scope,
     }),
@@ -550,6 +608,7 @@ const executeThisAndFuture = async (
       collection.provider.updateEvent({
         calendar_id,
         source_id: masterSourceId,
+        ...(notifiesGuests(existing) ? { notify_attendees: true } : {}),
         patch: truncatePatch,
         scope: 'series',
       }),
@@ -560,7 +619,9 @@ const executeThisAndFuture = async (
   // start with the requested patch applied. If this fails, the
   // master series is already truncated — surface the unverified
   // outcome explicitly via io_error.
-  const newSeriesEvent = withAllDayDays(mergeCreateBody(existing, input.patch));
+  const merged = mergeCreateBody(existing, input.patch);
+  // The new series invites the guests the old one had, as the truncation tells them.
+  const newSeriesEvent = withAllDayDays(merged.attendees?.length ? { ...merged, send_invitations: true as const } : merged);
   let newSeries: ProviderEventPayload;
   try {
     newSeries = await callCalendarAdapter(
@@ -621,6 +682,28 @@ const mergeCreateBody = (
   };
 };
 
+/** Prepare a reviewed local deletion and revalidate its binding at commit. */
+export const prepareLocalCalendarDelete = async (deps: CalendarDispatcherDeps,
+  input: { slug: string; source_id: string; scope?: CalendarMutationScope }):
+Promise<import('../../local-transaction.js').PreparedLocalWrite> => {
+  const { collection } = requireWrite(deps, input.slug, 'delete_event');
+  if (collection.provider.kind !== 'local' || collection.stopped || !collection.prepareVerifiedDelete
+    || (input.scope != null && input.scope !== 'this_instance') || !currentResourceReview()) {
+    throw new RpcError('local_changes_unsupported', 'Atomic deletion requires a reviewed single local Calendar event.', 409);
+  }
+  const guarded = assertReviewedResource(captureCalendarResource(deps, 'calendar-delete', input as unknown as Record<string, unknown>));
+  if (guarded?.precondition.kind !== 'local_version') throw new RpcError('local_changes_unsupported', 'A local Calendar version is required.', 409);
+  const row = collection.table.get(input.source_id)!;
+  await collection.provider.deleteEvent({ calendar_id: row.event.calendar_id, source_id: input.source_id, scope: 'this_instance' });
+  const prepared = collection.prepareVerifiedDelete(input.source_id, guarded.precondition.value);
+  return { db: prepared.db, apply: () => {
+    const live = requireWrite(deps, input.slug, 'delete_event').collection;
+    if (live !== collection || live.provider.kind !== 'local' || live.stopped) throw new RpcError('resource_conflict', 'The local Calendar was replaced or stopped.', 409);
+    assertReviewedResource(captureCalendarResource(deps, 'calendar-delete', input as unknown as Record<string, unknown>));
+    prepared.apply();
+  } };
+};
+
 export const handleCalendarDelete = async (
   deps: CalendarDispatcherDeps,
   input: {
@@ -653,6 +736,7 @@ export const handleCalendarDelete = async (
       calendar_id,
       source_id: input.source_id,
       ...(expected_etag ? { expected_etag } : {}),
+      ...(notifiesGuests(existing.event) ? { notify_attendees: true } : {}),
       scope,
     }),
   );

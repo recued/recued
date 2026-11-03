@@ -497,7 +497,9 @@ const runLocalMergeStep = (
   // The contact-store's setMergedInto + linkPlatformId are idempotent
   // (UNIQUE constraints + JSON-array dedup), so re-running yields the
   // same final state.
-  const survivor = ctx.deps.contactStore.get(row.survivor_email);
+  // D-336 slice R — each as it is now: a contact whose address changed since the merge was asked
+  // for is found by the one it had (its second address now), and is merged under its own.
+  const survivor = ctx.deps.contactStore.getByAnyEmail(row.survivor_email);
   if (survivor === null) {
     // D-138 P5 fold-back (Codex F5) — survivor missing after vendor
     // success is a real local-step failure. Use the dedicated
@@ -520,13 +522,14 @@ const runLocalMergeStep = (
   // Apply per-loser absorption identical to contact.merge.confirm.
   const losersAbsorbed: ContactRecord[] = [];
   for (const loserEmail of row.loser_emails) {
-    const loser = ctx.deps.contactStore.get(loserEmail);
+    const loser = ctx.deps.contactStore.getByAnyEmail(loserEmail);
     if (loser === null) continue;
     if (loser.merged_into) continue; // already merged
+    if (loser.contact_id === survivor.contact_id) continue; // never into itself
     losersAbsorbed.push(loser);
     for (const entry of loser.platform_ids ?? []) {
       ctx.deps.contactStore.linkPlatformId({
-        canonical_email: row.survivor_email,
+        canonical_email: survivor.email,
         vendor: entry.vendor,
         platform_id: entry.platform_id,
         state: entry.state,
@@ -538,14 +541,14 @@ const runLocalMergeStep = (
   if (losersAbsorbed.length > 0) {
     ctx.deps.contactStore.setMergedInto(
       losersAbsorbed,
-      row.survivor_email,
+      survivor.email,
       (ctx.deps.now ?? Date.now)(),
     );
   }
   if (ctx.deps.onIdentityChanged) {
     try {
       ctx.deps.onIdentityChanged({
-        survivor_email: row.survivor_email,
+        survivor_email: survivor.email,
         loser_emails: losersAbsorbed.map((c) => c.email),
       });
     } catch {

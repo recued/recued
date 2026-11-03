@@ -1182,11 +1182,25 @@ describe('GcalProvider — createEvent', () => {
     const provider = createGcalProvider({ slug: 'work', config: mkConfig({ calendar_filter: ['work', 'shared', 'read', 'unknown'] }),
       accountStore: seedStore(), providerConfig, fetcher });
     cleanup.push(() => provider.close());
-    expect(await provider.listWritableCalendars!()).toEqual([{ calendar_id: 'work', name: 'Work' }, { calendar_id: 'shared', name: 'Shared' }]);
+    expect(await provider.listWritableCalendars!()).toEqual([{ calendar_id: 'work', name: 'Work', can_invite: true }, { calendar_id: 'shared', name: 'Shared', can_invite: true }]);
+  });
+
+  it('marks the primary calendar as the account\'s main one (D-336 spec §48)', async () => {
+    const { fetcher } = makeRouter([{ match: url => url.includes('/users/me/calendarList'), response: { status: 200, body: { items: [
+      { id: 'team', summary: 'Team', accessRole: 'writer' },
+      { id: 'me@example.com', summary: 'Me', accessRole: 'owner', primary: true },
+    ] } } }]);
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher });
+    cleanup.push(() => provider.close());
+    expect(await provider.listWritableCalendars!()).toEqual([
+      { calendar_id: 'team', name: 'Team', can_invite: true },
+      { calendar_id: 'me@example.com', name: 'Me', can_invite: true, is_default: true },
+    ]);
   });
 
   it('POSTs events.insert and returns a canonical payload', async () => {
     const store = seedStore();
+    const posted: Array<Record<string, unknown>> = [];
     const { fetcher, calls } = makeRouter([
       {
         match: (u, init) =>
@@ -1198,6 +1212,7 @@ describe('GcalProvider — createEvent', () => {
             iCalUID: 'new-1@x',
             status: 'confirmed',
             summary: 'Made it',
+            attendees: [{ email: 'guest@example.com', displayName: 'Guest', responseStatus: 'needsAction' }],
             start: { dateTime: '2026-04-23T15:00:00Z' },
             end: { dateTime: '2026-04-23T16:00:00Z' },
             created: '2026-04-23T14:59:00Z',
@@ -1211,7 +1226,10 @@ describe('GcalProvider — createEvent', () => {
       config: mkConfig(),
       accountStore: store,
       providerConfig,
-      fetcher,
+      fetcher: (url, init) => {
+        if (init?.method === 'POST') posted.push(JSON.parse(init.body ?? '{}'));
+        return fetcher(url, init);
+      },
       scheduler: () => () => undefined,
     });
     cleanup.push(() => provider.close());
@@ -1222,12 +1240,14 @@ describe('GcalProvider — createEvent', () => {
       end_at: Date.parse('2026-04-23T16:00:00Z'),
       timezone: 'UTC',
       is_all_day: false,
-      status: 'confirmed',
+      status: 'confirmed', send_invitations: true,
+      attendees: [{ email: 'guest@example.com', display_name: 'Guest', response_status: 'needs_action' }],
     });
     expect(payload.event.source_id).toBe('new-1');
     expect(payload.event.summary).toBe('Made it');
     const postCall = calls.find((c) => c.method === 'POST');
-    expect(postCall).toBeTruthy();
+    expect(postCall?.url).toMatch(/\/events\?sendUpdates=all$/);
+    expect(posted).toEqual([expect.objectContaining({ attendees: [{ email: 'guest@example.com', displayName: 'Guest', responseStatus: 'needsAction' }] })]);
   });
 
   it("D-315 slice 7 — an event that keeps an emailed invite's UID is IMPORTED, with the UID", async () => {
@@ -1259,7 +1279,8 @@ describe('GcalProvider — createEvent', () => {
       calendar_id: 'primary', summary: 'Quarterly planning', start_at: Date.parse('2026-10-15T14:00:00Z'),
       end_at: Date.parse('2026-10-15T15:00:00Z'), timezone: 'UTC', is_all_day: false, status: 'confirmed' as const,
     };
-    const imported = await provider.createEvent('primary', { ...event, ical_uid: 'abc123@google.com' });
+    const imported = await provider.createEvent('primary', { ...event, ical_uid: 'abc123@google.com', send_invitations: true,
+      attendees: [{ email: 'guest@example.com', response_status: 'needs_action' }] });
     expect(posts[0]!.url).toMatch(/\/calendars\/primary\/events\/import$/);
     expect(posts[0]!.body).toMatchObject({ iCalUID: 'abc123@google.com', summary: 'Quarterly planning' });
     expect(imported.event.ical_uid).toBe('abc123@google.com');
@@ -1465,6 +1486,10 @@ describe('GcalProvider — deleteEvent', () => {
       source_id: 'evt-1',
     });
     expect(calls.find((c) => c.method === 'DELETE')).toBeTruthy();
+    // D-336 (spec §48) — the guests are told only when the delete asks Google to.
+    expect(calls.find((c) => c.method === 'DELETE')!.url).not.toContain('sendUpdates');
+    await provider.deleteEvent({ calendar_id: 'primary', source_id: 'evt-1', notify_attendees: true });
+    expect(calls.filter((c) => c.method === 'DELETE')[1]!.url).toMatch(/\/events\/evt-1\?sendUpdates=all$/);
   });
 
   it('surfaces 404 as event_not_found', async () => {
@@ -1492,6 +1517,29 @@ describe('GcalProvider — deleteEvent', () => {
         source_id: 'gone',
       }),
     ).rejects.toMatchObject({ code: 'event_not_found' });
+  });
+
+  it('D-336 (spec §58): checks the owner\'s delete at its handoff, sends the reviewed version, and a refusal there sends nothing', async () => {
+    const order: string[] = [];
+    const { fetcher, calls } = makeRouter([{
+      match: (u, init) => {
+        if (!(u.includes('/calendars/primary/events/evt-1') && init?.method === 'DELETE')) return false;
+        // The router's type names the method only; the fetcher hands it the whole request.
+        order.push(`sent ${(init as { headers?: Record<string, string> } | undefined)?.headers?.['If-Match']}`);
+        return true;
+      },
+      response: { status: 204, body: '' },
+    }]);
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    await provider.deleteEvent({ calendar_id: 'primary', source_id: 'evt-1', expected_etag: '"v7"',
+      before_send: () => { order.push('checked'); } });
+    expect(order).toEqual(['checked', 'sent "v7"']);
+    await expect(provider.deleteEvent({ calendar_id: 'primary', source_id: 'evt-1',
+      before_send: () => { throw new Error('This calendar connection does not allow deleting events.'); } }))
+      .rejects.toThrow('does not allow deleting');
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
   });
 });
 

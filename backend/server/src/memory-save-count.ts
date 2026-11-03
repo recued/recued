@@ -11,7 +11,9 @@
  *  removed it (deleted, forgotten, hidden or revoked). A copy still in memory stands, so it
  *  is not counted. "Its claim" is the Revoke match's word test, made symmetric
  *  (`sameClaim`): one's summary words, two at least, all among the other's words, with
- *  each naming word in `SAME_CLAIM_WORDS` read as "called" (`claimWords`).
+ *  each naming word in `SAME_CLAIM_WORDS` read as "called" (`claimWords`). D-336 slice B:
+ *  or an equal claim key, which states one claim in any wording or language. A deleted
+ *  save's key is worked out again from the claim its chat records (`claimKeyOf`).
  *
  *  ⛔ A DELETED NOTE'S WORDS ARE NOT IN MEMORY. Delete erased them. The chat the note was
  *  saved in still has them (Delete keeps the chat), in the save: its call row, or the
@@ -30,13 +32,16 @@ import type { planApproval } from '@recued/gateway';
 import type { Collection } from '@recued/storage';
 import { toolCallArgsFromRow } from './chat-tool-row.js';
 import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
+import { claimKeyOfCall } from './memory-claim.js';
 import { claimWords, coversClaim, memoryRowAuthor, noteClaimWords } from './memory-revision.js';
-import type { UserMemoryRow, UserMemoryStore } from './user-memory-store.js';
+import { claimKeysAlike, type UserMemoryRow, type UserMemoryStore } from './user-memory-store.js';
 
 /** One agent save a chat records: the words `memory.write` was called with. */
 export interface ChatSave {
   summary: string;
   body?: string;
+  /** D-336 — the call's `claim` as it wrote it, for the count to work out its key. */
+  claim?: unknown;
 }
 
 /** The saves each chat records, by session id. A chat that could not be read is absent. */
@@ -46,14 +51,17 @@ export type ChatSavesReader = (
 
 const MEMORY_WRITE = 'memory.write';
 
-/** A save's words, as `memory.write` reads them: a summary, trimmed, and a body. */
+/** A save's words, as `memory.write` reads them: a summary, trimmed, a body, and the
+ *  claim the call carried. */
 const saveOf = (args: unknown): ChatSave | undefined => {
   if (args === null || typeof args !== 'object') return undefined;
-  const { summary, body } = args as { summary?: unknown; body?: unknown };
+  const { summary, body, claim } = args as { summary?: unknown; body?: unknown; claim?: unknown };
   if (typeof summary !== 'string' || summary.trim().length === 0) return undefined;
-  return typeof body === 'string' && body.length > 0
-    ? { summary: summary.trim(), body }
-    : { summary: summary.trim() };
+  return {
+    summary: summary.trim(),
+    ...(typeof body === 'string' && body.length > 0 ? { body } : {}),
+    ...(claim !== undefined && claim !== null ? { claim } : {}),
+  };
 };
 
 /** The saves a chat's rows record: each `memory.write` call that ran and succeeded. */
@@ -94,28 +102,37 @@ export const createChatSavesReader = (deps: {
   return out;
 };
 
-/** What a note or a save claims: its summary, and every word it holds. */
+/** What a note or a save claims: its summary, every word it holds, and its claim key
+ *  when it was saved with a claim (D-336). */
 interface ClaimText {
   summary: string;
   words: ReadonlySet<string>;
+  key?: string;
 }
 
-const claimTextOf = (summary: string, body?: string): ClaimText => ({
+const claimTextOf = (summary: string, body?: string, key?: string): ClaimText => ({
   summary,
   words: claimWords(body === undefined ? summary : `${summary} ${body}`),
+  ...(key !== undefined ? { key } : {}),
 });
 
-/** Two notes, or a note and a save, state the same claim: either one's summary is all in
- *  the other's words. The Revoke match asks the word index as well; this asks none,
- *  because a deleted note's words are in none. */
-const sameClaim = (a: ClaimText, b: ClaimText): boolean =>
-  coversClaim(a.summary, b.words) || coversClaim(b.summary, a.words);
+/** Two notes, or a note and a save, state the same claim: their claim keys are equal, or
+ *  either one's summary is all in the other's words. An equal key adds a match and never
+ *  removes one (D-336 §3.4). The Revoke match asks the word index as well; this asks
+ *  none, because a deleted note's words are in none. */
+const sameClaim = (a: ClaimText, b: ClaimText, keysAlike: (x: string, y: string) => boolean = (x, y) => x === y): boolean =>
+  (a.key !== undefined && b.key !== undefined && keysAlike(a.key, b.key))
+  || coversClaim(a.summary, b.words) || coversClaim(b.summary, a.words);
 
 /** A note's claim, while it still holds its words. */
 const noteClaim = (row: UserMemoryRow): ClaimText | undefined =>
   row.summary === undefined || row.summary.length === 0
     ? undefined
-    : { summary: row.summary, words: noteClaimWords(row) };
+    : {
+        summary: row.summary,
+        words: noteClaimWords(row),
+        ...(row.claim_key !== undefined ? { key: row.claim_key } : {}),
+      };
 
 const isAgentNote = (row: UserMemoryRow | null): row is UserMemoryRow =>
   row !== null && row.origin_actor === 'contracted_user';
@@ -130,12 +147,18 @@ export interface MemorySaveCount {
 /** How many times an agent saved `note`'s claim. `note` is an agent's note in memory,
  *  under no mark (`memory.saves` refuses any other). */
 export const countAgentSaves = async (input: {
-  store: Pick<UserMemoryStore, 'getRow' | 'listSession'>;
+  store: Pick<UserMemoryStore, 'getRow' | 'listSession'> & Partial<Pick<UserMemoryStore, 'claimEndsLike'>>;
   redactions: Collection<MemoryRedactionRecord> | undefined;
   readChatSaves?: ChatSavesReader;
+  /** D-336 slice B — the key a chat-recorded save's claim made (`claimKeyOfCall`, with the
+   *  owner's lookups for a linked end). Absent → only a claim of words and "owner" keys. */
+  claimKeyOf?: (claim: unknown) => string | undefined;
   note: UserMemoryRow;
 }): Promise<MemorySaveCount> => {
   const { store, note } = input;
+  const keyOf = input.claimKeyOf ?? ((claim: unknown) => claimKeyOfCall(claim));
+  // Audit 2026-11-01 — a merged contact's saves name it by its own id.
+  const keysAlike = claimKeysAlike(store);
   const claim = noteClaim(note);
   if (claim === undefined) return { saves: 1, agents: 1 };
   const authors = new Set<string>();
@@ -158,7 +181,7 @@ export const countAgentSaves = async (input: {
       continue;
     }
     const other = noteClaim(row);
-    if (other !== undefined && sameClaim(claim, other)) {
+    if (other !== undefined && sameClaim(claim, other, keysAlike)) {
       saves += 1;
       madeBy(row);
     }
@@ -177,12 +200,12 @@ export const countAgentSaves = async (input: {
     const chatSaves = recorded.get(chat);
     if (chatSaves === undefined) continue;
     const restating = chatSaves
-      .filter((save) => sameClaim(claim, claimTextOf(save.summary, save.body))).length;
+      .filter((save) => sameClaim(claim, claimTextOf(save.summary, save.body, keyOf(save.claim)), keysAlike)).length;
     // Each note from this chat still holding words that restate the claim made one of
     // those saves: this note, a live copy, an earlier version, a forgotten one.
     const held = (await store.listSession(chat)).filter((row) => {
       const other = noteClaim(row);
-      return other !== undefined && sameClaim(claim, other);
+      return other !== undefined && sameClaim(claim, other, keysAlike);
     }).length;
     const ofDeleted = Math.min(Math.max(restating - held, 0), deleted.length);
     if (ofDeleted > 0) {

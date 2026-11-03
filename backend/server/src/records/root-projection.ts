@@ -291,10 +291,21 @@ const resolveBatch = (
   baseEntity: string,
   projection: RecordsRootProjection,
   keys: readonly string[],
+  addressesOf?: (key: string) => readonly string[],
 ): Map<string, RecordsRootProjectionResult[]> => {
   const chainDown = [baseEntity, ...projection.via.map(hop => hop.entity)];
   const finalEntity = chainDown[chainDown.length - 1]!;
   const state = new Map<string, KeyState>(keys.map(k => [k, { rows: [], complete: true }]));
+  // D-336 slice R — every address a key answers to, back to the key: a row is the key's
+  // whichever of them it carries. The key's own first, so it is never another's.
+  const keyOf = new Map<string, string>(keys.map(k => [k, k]));
+  for (const key of addressesOf === undefined ? [] : keys) {
+    for (const raw of addressesOf!(key)) {
+      const address = raw.trim().toLowerCase();
+      if (address.length > 0 && !keyOf.has(address)) keyOf.set(address, key);
+    }
+  }
+  const addresses = [...keyOf.keys()];
 
   /** Admit a row to its key's set, enforcing that key's own row budget. */
   const admit = (key: string | undefined, row: Record<string, unknown>) => {
@@ -312,7 +323,7 @@ const resolveBatch = (
     for (const st of state.values()) { st.complete = false; st.reason ??= reason; }
   };
 
-  for (const keyChunk of chunk(keys, ROOT_PROJECTION_MAX_KEYS_PER_QUERY)) {
+  for (const keyChunk of chunk(addresses, ROOT_PROJECTION_MAX_KEYS_PER_QUERY)) {
     const budget = keyChunk.length * ROOT_PROJECTION_MAX_ROWS_PER_LEVEL;
 
     if (projection.via.length === 0) {
@@ -322,7 +333,7 @@ const resolveBatch = (
         [projection.key_field]: { op: 'in', value: keyChunk }, ...(projection.where ?? {}),
       };
       const outcome = streamAll(store, owner, baseEntity, filters, budget, (row) => {
-        admit(String(row[projection.key_field] ?? ''), row);
+        admit(keyOf.get(String(row[projection.key_field] ?? '')), row);
       });
       if (!outcome.complete) taintAll(outcome.reason!);
       continue;
@@ -332,7 +343,10 @@ const resolveBatch = (
     let owning = new Map<string, string>();        // row id -> root key
     const seed = streamAll(
       store, owner, finalEntity, { [projection.key_field]: { op: 'in', value: keyChunk } },
-      budget, (row) => { owning.set(String(row.id), String(row[projection.key_field] ?? '')); });
+      budget, (row) => {
+        const key = keyOf.get(String(row[projection.key_field] ?? ''));
+        if (key !== undefined) owning.set(String(row.id), key);
+      });
     if (!seed.complete) taintAll(seed.reason!);
 
     // 2. walk back down. ⛔ PROVENANCE RIDES ON THE REF FIELD: each row names
@@ -380,6 +394,10 @@ export const readRootProjectionsBatch = (
   store: RecordsStore,
   root: RecordsRootKind,
   rootKeys: readonly string[],
+  /** D-336 slice R — the other addresses a key's identity answers to: a contact's second
+   *  addresses, the one it was changed from among them, and its merged contacts'. Its rows are
+   *  read under all of them, as one answer for the key. Absent ⇒ the key alone. */
+  addressesOf?: (key: string) => readonly string[],
 ): Map<string, RecordsRootProjectionResult[]> => {
   const keys = [...new Set(rootKeys.map(k => k.trim().toLowerCase()).filter(k => k.length > 0))];
   const out = new Map<string, RecordsRootProjectionResult[]>(keys.map(k => [k, []]));
@@ -393,7 +411,7 @@ export const readRootProjectionsBatch = (
       for (const projection of entity.roots ?? []) {
         if (projection.root !== root) continue;
         try {
-          const byKey = resolveBatch(store, owner, schema, entityKind, projection, keys);
+          const byKey = resolveBatch(store, owner, schema, entityKind, projection, keys, addressesOf);
           for (const key of keys) out.get(key)!.push(...byKey.get(key)!);
         } catch (error) {
           // Scoped to this pack, for every key — the same posture as the solo
@@ -431,9 +449,17 @@ export const readRootProjections = (
   store: RecordsStore,
   root: RecordsRootKind,
   rootKey: string,
+  /** As `readRootProjectionsBatch`'s. */
+  addressesOf?: (key: string) => readonly string[],
 ): RecordsRootProjectionResult[] => {
   const key = rootKey.trim().toLowerCase();
   if (key.length === 0) return [];
+  // D-336 slice R — an identity with other addresses is read by the batch path, which tells
+  // whose a row is by the address it carries. One key, so the same answer as the solo walk.
+  const addresses = addressesOf?.(key) ?? [];
+  if (addresses.some(address => address.trim().toLowerCase() !== key)) {
+    return readRootProjectionsBatch(store, root, [key], () => addresses).get(key) ?? [];
+  }
 
   const results: RecordsRootProjectionResult[] = [];
   for (const namespace of store.listNamespaces()) {

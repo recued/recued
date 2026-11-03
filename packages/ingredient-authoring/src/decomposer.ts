@@ -17,6 +17,7 @@ import type {
   RiskTier,
 } from '@recued/contracts';
 import { normalizeBulkPackInstallPlan, RISK_TIER_RANK } from '@recued/contracts';
+import { vendorEntityMetaField } from './vendor-entity-authoring.js';
 import type {
   CompositionIngredient,
   IngredientEntityField,
@@ -447,19 +448,7 @@ const entitySchemas = (composition: CompositionIngredient): EntitySchemaIngredie
           fields: [idField.maps_to],
           template: `${entityId}_{${idField.maps_to}}`,
         },
-        meta_fields: fields.map((field) => ({
-          key: field.maps_to,
-          type: field.type,
-          description: field.description,
-          ...(field.label === undefined ? {} : { label: field.label }),
-          required: field.optional === undefined ? true : !field.optional,
-          source_path: field.field_path,
-          privacy: field.pii,
-          // G2 request-side datetime filter — carry the field's authored date
-          // granularity onto the MetaField (spread so a non-datetime field never
-          // emits a `date_granularity: undefined`).
-          ...(field.date_granularity === undefined ? {} : { date_granularity: field.date_granularity }),
-        })),
+        meta_fields: fields.map(vendorEntityMetaField),
         source_operations: sourceOperationsForEntity(composition, ingredient, entityId, fields),
       });
     }
@@ -769,26 +758,37 @@ const compiledTemplateRecipes = (
  *  `cli` ingredient always takes the catalog path (it has a derived group →
  *  never a plain ingredient); a templated composition needs the catalog its
  *  compiled recipes dispatch operations against. */
-const isOneToOne = (composition: CompositionIngredient): boolean => {
+export interface CompositionLoweringDecision {
+  kind: 'ingredient' | 'catalog' | 'records_catalog';
+  code: string;
+  source_path: (string | number)[];
+  explanation: string;
+}
+/** The compiler and offline review share this decision. It does not validate or install source. */
+export const compositionLoweringDecision = (composition: CompositionIngredient): CompositionLoweringDecision => {
+  const catalog = (code: string, source_path: (string | number)[], explanation: string): CompositionLoweringDecision => ({ kind: 'catalog', code, source_path, explanation });
+  if (isRecordsComposition(composition)) return { kind: 'records_catalog', code: 'records', source_path: ['ingredients', 0], explanation: 'Records declarations use a catalog and local entity schemas. The generated unverified scope is an inert preview carrier; installation supplies verified identities.' };
   const ingredient = primaryIngredient(composition);
-  if (ingredient === undefined) return false;
-  if (ingredient.kind !== 'http' && ingredient.kind !== 'connection') return false;
+  if (ingredient === undefined) return catalog('no_primary_ingredient', ['ingredients'], 'A plain API wrapper requires a primary ingredient.');
+  if (ingredient.kind !== 'http' && ingredient.kind !== 'connection') return catalog('primary_transport', ['ingredients', 0, 'kind'], 'The primary ingredient is not HTTP or connection kind, so it uses catalog lowering.');
   // D-225 Slice 2 — a composition may REFUSE the collapse. The 1x1 wrapper has
   // no operations map and so no op id, which is fatal for a generated pack
   // whose every tool must be contract-grantable. See `force_catalog_lowering`.
-  if (composition.force_catalog_lowering === true) return false;
-  if (composition.catalog_kind !== undefined && composition.catalog_kind !== 'private_byo') return false;
-  if (composition.operations.length !== 1) return false;
+  if (composition.force_catalog_lowering === true) return catalog('forced_catalog', ['force_catalog_lowering'], 'The authored force_catalog_lowering flag keeps a catalog and its operation IDs.');
+  if (composition.catalog_kind !== undefined && composition.catalog_kind !== 'private_byo') return catalog('catalog_kind', ['catalog_kind'], 'The authored catalog kind requires an operation surface.');
+  if (composition.operations.length !== 1) return catalog('operation_count', ['operations'], 'A plain API wrapper requires exactly one operation.');
   // Operation-bound callback injection exists only in the catalog Gateway.
   // Never silently collapse its sole operation to a plain ingredient.
-  if (composition.operations[0]?.operation_bound_webhook !== undefined) return false;
+  if (composition.operations[0]?.operation_bound_webhook !== undefined) return catalog('operation_callback', ['operations', 0, 'operation_bound_webhook'], 'Operation-bound callback injection requires the catalog gateway.');
   if (composition.recipe_templates !== undefined && composition.recipe_templates.length > 0) {
-    return false;
+    return catalog('recipe_templates', ['recipe_templates'], 'Compiled workflow recipes need a catalog to address its operations.');
   }
   const entityCount = new Set(
     composition.ingredients.flatMap((ing) => Object.keys(ing.entities ?? {}).map(normalizeEntityId)),
   ).size;
-  return entityCount <= 1;
+  return entityCount <= 1
+    ? { kind: 'ingredient', code: 'plain_wrapper', source_path: [], explanation: 'One HTTP/connection operation, at most one normalized entity and no workflow templates compile to a plain ingredient. It has no catalog operation map, operation groups or entity schemas.' }
+    : catalog('entity_count', ['ingredients'], 'More than one normalized entity requires catalog entity schemas.');
 };
 
 /** The 1×1 path emits a plain ingredient with NO entity schema, so any
@@ -880,7 +880,8 @@ const decomposeCompositionV1 = (composition: CompositionIngredient): DecomposedA
     throw new Error('composition must declare at least one operation');
   }
   const { recipes, warnings: templateWarnings } = compiledTemplateRecipes(composition);
-  if (isRecordsComposition(composition)) {
+  const lowering = compositionLoweringDecision(composition);
+  if (lowering.kind === 'records_catalog') {
     const catalog = catalogIngredient(composition);
     return {
       catalog,
@@ -892,7 +893,7 @@ const decomposeCompositionV1 = (composition: CompositionIngredient): DecomposedA
       default_grants: defaultGrants(composition),
     };
   }
-  if (isOneToOne(composition)) {
+  if (lowering.kind === 'ingredient') {
     const warnings = [
       ...droppedPrivacyWarning(composition),
       ...droppedCrmAliasWarning(composition),

@@ -395,9 +395,12 @@ describe('makeCollectionHandlers', () => {
       'collection.calendar.enrollBasic',
       'collection.calendar.enrollManagedOAuth',
       'collection.calendar.enrollOAuth',
+      'collection.calendar.event.checkDeletion',
       'collection.calendar.event.create',
+      'collection.calendar.event.delete',
       'collection.calendar.event.destinations',
       'collection.calendar.event.get',
+      'collection.calendar.event.overlaps',
       'collection.calendar.event.respond',
       'collection.calendar.event.update',
       'collection.calendar.list',
@@ -430,7 +433,9 @@ describe('makeCollectionHandlers', () => {
       // SMTP-only accounts (7798c708f, internal design notes).
       'collection.mail.enrollSmtp',
       'collection.mail.list',
+      'collection.mail.message.attachments',
       'collection.mail.message.get',
+      'collection.mail.message.updateState',
       'collection.mail.resync',
       'collection.mail.updateCredentials',
       // D-177 N.12 — `collection.mail.send` is intentionally NOT wired

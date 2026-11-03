@@ -155,6 +155,13 @@ export interface AskCardOptions {
    *  #approvals (full view one) to show the explanation, but for the popover
    *  … maybe not necessary because it takes too much attention away". */
   showSessionGrantTerms?: boolean;
+  /** D-336 slice N — the card in Chat of a held chat write, an in-app route (`#chat/…`) the
+   *  host builds from `ServerPendingAsk.chat_plan`. This card stays read-only (D-270: the link
+   *  owns editing), so it says where the call can be read in its conversation and, where that
+   *  card can change it before the yes (`chatChangeable`), changed. A host with no Chat, the
+   *  Bridge's panel, passes none. */
+  chatHref?: string;
+  chatChangeable?: boolean;
 }
 
 /** Stable hook on the card root — the value is the `ask_id` so a host can
@@ -172,6 +179,9 @@ export const ASK_CARD_BODY_ATTR = 'data-recued-ask-body';
 export const ASK_CARD_ERROR_ATTR = 'data-recued-ask-error';
 /** Stable hook on the D-234 § 234.3 "read it" link (absent when unlinked). */
 export const ASK_CARD_LINK_ATTR = 'data-recued-ask-link';
+/** D-336 slice N — stable hook on the link to a held chat write's card in Chat; the value is
+ *  the `ask_id`. */
+export const ASK_CARD_CHAT_LINK_ATTR = 'data-recued-ask-chat-link';
 /** Concise action/target/highlight projection for generated write asks. */
 export const ASK_CARD_SUMMARY_ATTR = 'data-recued-ask-summary';
 /** Collapsed technical details for generated write asks. */
@@ -667,6 +677,17 @@ export const renderAskCard = (
     link.textContent = 'Open the full details';
     link.setAttribute('aria-label', `Open the full details for ${actionSubject}`);
     card.appendChild(link);
+  }
+  // D-336 slice N — and a held chat write's card in Chat, where it is changed before the yes.
+  // An in-app route only: anything else is not the host's link, and is dropped.
+  if (typeof options.chatHref === 'string' && /^#chat\//.test(options.chatHref)) {
+    const chat = doc.createElement('a');
+    chat.className = 'rx-ask-card-link';
+    chat.setAttribute(ASK_CARD_CHAT_LINK_ATTR, model.ask_id);
+    chat.setAttribute('href', options.chatHref);
+    chat.textContent = options.chatChangeable === true ? 'Change it in Chat' : 'Review in Chat';
+    chat.setAttribute('aria-label', contextualActionLabel(chat.textContent, actionSubject));
+    card.appendChild(chat);
   }
 
   // Inline error line — hidden until a submit fails. Created up front so

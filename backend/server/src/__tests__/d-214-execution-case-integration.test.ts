@@ -1726,7 +1726,8 @@ describe('D-214 retrieval and storage mechanism guards', () => {
       turn_id: 't1',
     });
     const row = (await f.caseStore.listAll())[0]!;
-    const source = createD213ScanCaseCandidateSource(f.caseStore);
+    // This checks text matching; scan-deadline behavior has its own fixture.
+    const source = createD213ScanCaseCandidateSource(f.caseStore, { now: () => 0 });
     const result = await source.findCandidates({
       prompt,
       scope: {

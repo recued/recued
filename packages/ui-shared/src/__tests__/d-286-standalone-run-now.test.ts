@@ -112,14 +112,12 @@ describe('D-286 — what the confirm dialog actually says', () => {
     const html = dialogFor({ is_ai_surface: true, ai_path_available: true });
     expect(html).not.toContain('pure SQL aggregation');
     expect(html).not.toContain('no token cost');
-    // With AI reachable the dialog takes the spend branch, whose phrasing is
-    // "will fire AI calls" — "needs an AI call" belongs to the blocked branch.
-    expect(html).toContain('will fire AI calls');
+    expect(html).toContain('Processing can use your free-pool quota / BYOK budget');
   });
 
   it('says the cost is not knowable instead of quoting a number it does not have', () => {
     const html = dialogFor({ is_ai_surface: true, ai_path_available: true });
-    expect(html).toContain('not known ahead of the run');
+    expect(html).toContain('Estimated cost: unavailable before the run.');
     expect(html).not.toContain('~0 tokens');
   });
 

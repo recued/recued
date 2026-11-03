@@ -200,12 +200,10 @@ const renderRow = (
     const count = enrichment.source_collection_count;
     if (preview.deterministic) {
       return count === undefined
-        ? 'Always the same answer, and it costs nothing.'
-        : `Always the same answer, and it costs nothing (${String(count)} source records).`;
+        ? 'Computed without AI; no token cost.'
+        : `Computed without AI; no token cost (${String(count)} source records).`;
     }
-    // A standalone task declares no source scope, so the sweep size is not
-    // knowable ahead of the run. Naming the per-record cost is the most that
-    // can honestly be said.
+    // Counts and per-record estimates can each be unavailable.
     if (preview.estimated_tokens === undefined) {
       const perRecord = enrichment.token_estimate_per_record;
       return perRecord === undefined
@@ -213,7 +211,7 @@ const renderRow = (
         : `~${perRecord.toLocaleString()} tokens per record; how many records is not known ahead of the run.`;
     }
     if (preview.estimated_cost_usd !== undefined) {
-      return `~${preview.estimated_tokens.toLocaleString()} tokens × ${String(count)} records ≈ $${preview.estimated_cost_usd.toFixed(2)}`;
+      return `~${preview.estimated_tokens.toLocaleString()} tokens (across ${String(count)} source records) ≈ $${preview.estimated_cost_usd.toFixed(2)}`;
     }
     return `~${preview.estimated_tokens.toLocaleString()} tokens (across ${String(count)} source records)`;
   })();

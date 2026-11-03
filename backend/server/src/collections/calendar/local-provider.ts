@@ -169,7 +169,7 @@ export const createLocalCalendarProvider = (
   return {
     kind: 'local',
     slug,
-    async listWritableCalendars() { return [{ calendar_id: 'local', name: 'On this server' }]; },
+    async listWritableCalendars() { return [{ calendar_id: 'local', name: 'On this server', is_default: true as const }]; },
 
     // ── Lifecycle (all no-ops — nothing external) ───────────────────
     async connect(): Promise<void> {

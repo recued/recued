@@ -73,7 +73,7 @@ import {
 import type { GatedActionStore } from '../../gated-action-store.js';
 import type { McpActionStore } from '../../mcp-action-store.js';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
-import { expiredHoldSettlement } from '../../chat-held-writes.js';
+import { expiredHoldSettlement, expiredRunSettlement } from '../../chat-held-writes.js';
 import type { Checkpoint } from '@recued/contracts';
 
 export interface ComposeRetentionPrunersDeps {
@@ -392,16 +392,23 @@ export const composeRetentionPruners = (
           }
         : {}),
       now: nowOf,
-      ...(deps.executionCaseLifecycle
+      ...(deps.executionCaseLifecycle || deps.chatRunSettledSink !== undefined
         ? {
             onExpired: async (entry) => {
+              // D-337 slice R — the conversation that started a held recipe run hears that its
+              // approval expired, as it hears a held write's (`onRawOpExpired` above).
+              if (deps.chatRunSettledSink !== undefined) {
+                const settled = expiredRunSettlement(entry, nowOf());
+                if (settled !== undefined) deps.chatRunSettledSink(settled);
+              }
               const source = entry.execution_source;
               if (
-                source?.channel !== 'chat'
+                deps.executionCaseLifecycle === undefined
+                || source?.channel !== 'chat'
                 || typeof source.chat_session_id !== 'string'
                 || typeof source.turn_id !== 'string'
               ) return;
-              await deps.executionCaseLifecycle?.finalizeTurn({
+              await deps.executionCaseLifecycle.finalizeTurn({
                 session_id: source.chat_session_id,
                 turn_id: source.turn_id,
               });

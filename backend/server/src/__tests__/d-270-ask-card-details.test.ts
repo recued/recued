@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
+import { createAskCardDetailResolver, heldCheckpointDetails } from '../ask-card-held-op-details.js';
 import { HIDDEN_SECRET_VALUE, isSecretShapedKey } from '../ask-card-default-details.js';
 
 const PREFLIGHT = 'gateway.preflight';
@@ -241,5 +241,49 @@ describe('an action whose pack declares nothing reviewable (2026-10-04)', () => 
       'authorization', 'body.user_token', 'api_key', 'body.tokens']) expect([key, isSecretShapedKey(key)]).toEqual([key, true]);
     for (const key of ['body.secret_name', 'secretId', 'token_id', 'tokenId', 'apiCredentialId',
       'body.token_type', 'body.author_id', 'session_id', 'body.entity_id', 'className']) expect([key, isSecretShapedKey(key)]).toEqual([key, false]);
+  });
+});
+
+describe('D-336 (spec §52) — the rows a hold records for its ask, read from its checkpoint as written', () => {
+  const reader = (over: Record<string, unknown> = {}) => ({
+    resolveArgEditSchema: vi.fn(() => schema('to', 'api_key')),
+    ...over,
+  } as never);
+
+  it("are the card's rows, a secret-named value hidden in the copy that leaves Recued", () => {
+    const cp = recipeCheckpoint({ to: 'a@b.c', api_key: 'live-1234' }, {
+      recipe_id: 'pub/r', approved_target: { operation_id: 'pub.mail.send' },
+    });
+    const deps = reader();
+    expect(heldCheckpointDetails(deps, 'UTC', cp, { hideSecrets: true })).toEqual([
+      { label: 'to', value: 'a@b.c' },
+      { label: 'api_key', value: HIDDEN_SECRET_VALUE },
+    ]);
+    expect(isSecretShapedKey('api_key')).toBe(true);
+    // The card, on the owner's own server, shows the value.
+    expect(heldCheckpointDetails(deps, 'UTC', cp)).toEqual([
+      { label: 'to', value: 'a@b.c' },
+      { label: 'api_key', value: 'live-1234' },
+    ]);
+    // Read for the operation the run held.
+    expect((deps as { resolveArgEditSchema: ReturnType<typeof vi.fn> }).resolveArgEditSchema.mock.calls[0]![0]).toBe('pub.mail.send');
+  });
+
+  it("are none for a hold that covers several calls, as the card's", () => {
+    const progress = { step_id: 's1', next_index: 0, source_length: 3, source_hash: 'h', results: [] };
+    expect(heldCheckpointDetails(reader(), 'UTC', recipeCheckpoint({ to: 'a@b.c' }, { foreach_progress: progress }))).toBeNull();
+  });
+
+  it("read a raw op's call by the operation its resume binds", () => {
+    const resolveArgEditSchema = vi.fn((_id: string, _args: unknown) => schema('deal_id'));
+    const rows = heldCheckpointDetails({
+      resolveArgEditSchema,
+      rawOpOperationId: (slug: string, operation: string) => (slug === 'hubspot-catalog' ? `hubspot.${operation}` : undefined),
+    } as never, undefined, {
+      checkpoint_id: 'cp1', run_id: 'run1', step_state: {}, created_at: 0,
+      raw_op: { op_id: 'x', catalog_slug: 'hubspot-catalog', operation: 'deal.update', connection_name: 'crm', op_args: { deal_id: '9001' } },
+    } as never);
+    expect(resolveArgEditSchema.mock.calls[0]![0]).toBe('hubspot.deal.update');
+    expect(rows).toEqual([{ label: 'deal_id', value: '9001' }]);
   });
 });

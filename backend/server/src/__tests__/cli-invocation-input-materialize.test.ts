@@ -14,6 +14,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCliInvocationExecutor } from '../cli-invocation-executor.js';
+import { remoteFileRecordId } from '../file-view-resolver.js';
+import { PREVIEW_CONVERSION_RECIPE_PREFIX, registerPreviewConversionInput } from '../file-preview-conversion-guard.js';
 
 const execPath = process.execPath;
 
@@ -80,6 +82,38 @@ const call = (binding: unknown, args: Record<string, unknown>) => ({
 }) as unknown as Parameters<ReturnType<typeof createCliInvocationExecutor>>[0];
 
 describe('cli_invocation input_materialize', () => {
+  it('checks a preview source before remote fetch and after it, enforces its byte ceiling, and cleans the staged input', async () => {
+    const source = remoteFileRecordId('google.work.file', 'workbook');
+    const recipe = PREVIEW_CONVERSION_RECIPE_PREFIX + 'source-version-test';
+    let valid = true, changeDuringRead = false, bytes = Buffer.from('remote workbook');
+    const reads: Array<[string, number | undefined]> = [];
+    const exec = createCliInvocationExecutor({ tempRoot: TEMP_ROOT, readFileBytes: async (record, maxBytes) => {
+      reads.push([record, maxBytes]); if (changeDuringRead) valid = false;
+      return { bytes, mime_type: 'application/octet-stream', filename: 'Budget.xlsx' };
+    } });
+    const dest = newDest();
+    const invoke = () => exec({ ...call(copyBinding(), { source, dest }), stepMeta: { step_id: 'convert', recipe_id: recipe, run_id: 'preview-run' } });
+    await expect(invoke()).rejects.toThrow('no longer available');
+    expect(reads).toEqual([]); expect(existsSync(dest)).toBe(false);
+    const dispose = registerPreviewConversionInput(recipe, record => {
+      if (!valid || record !== source) throw new Error('selection changed');
+      return 32;
+    });
+    try {
+      valid = false;
+      await expect(invoke()).rejects.toThrow('selection changed'); expect(reads).toEqual([]);
+      valid = true; changeDuringRead = true;
+      await expect(invoke()).rejects.toThrow('selection changed'); expect(existsSync(dest)).toBe(false);
+      valid = true; changeDuringRead = false; bytes = Buffer.alloc(33);
+      await expect(invoke()).rejects.toThrow('download limit'); expect(existsSync(dest)).toBe(false);
+      bytes = Buffer.from('remote workbook');
+      await invoke();
+      expect(readFileSync(dest)).toEqual(bytes);
+      expect(reads).toEqual([[source, 32], [source, 32], [source, 32]]);
+      expect(tmpInDirs()).toEqual([]);
+    } finally { dispose(); }
+  });
+
   it('materializes a file_ref arg to a temp file the cli reads, then cleans up', async () => {
     const reads: string[] = [];
     const exec = createCliInvocationExecutor({

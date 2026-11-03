@@ -34,7 +34,8 @@
  *  Spec: D-177 § N.10 / N.3 / N.4; landing order P5a. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
-import { approvalValueLabel, type ApprovalValueLabels } from './ask-detail-label.js';
+import { ANY_ARGUMENT, approvalValueLabel, nameValuesIn, type ApprovalValueLabels } from './ask-detail-label.js';
+import { describeEncodedEmail } from './encoded-email.js';
 import type { Actor, Channel, ExecutionSource } from './commits.js';
 import type { RiskTier } from './ingredient.js';
 
@@ -491,6 +492,25 @@ const renderInstant = (key: string, v: unknown): string | undefined => {
     + `${seconds !== 0 ? `:${pad2(seconds)}` : ''} UTC`;
 };
 
+/** A value that reads as a person: an address, or a name beside one (`Mia <mia@example.com>`). */
+const PERSON = /^(?:[^<>@\n]+ <)?[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+>?$/;
+
+const PEOPLE_BELOW_MAX = 12;
+const PEOPLE_BELOW_DEPTH = 6;
+
+/** The people below a depth cut, in the order the value holds them: at most a line's worth, as
+ *  deep as `renderInline` would ever read. */
+const addressesBelow = (v: unknown, depth = 0, found: string[] = []): string[] => {
+  if (found.length >= PEOPLE_BELOW_MAX) return found;
+  if (typeof v === 'string') {
+    const person = v.trim();
+    if (PERSON.test(person) && !found.includes(person)) found.push(person);
+  } else if (v !== null && typeof v === 'object' && depth < PEOPLE_BELOW_DEPTH) {
+    for (const member of Array.isArray(v) ? v : Object.values(v)) addressesBelow(member, depth + 1, found);
+  }
+  return found;
+};
+
 /** Render one value on a single line, in words rather than JSON: a
  *  scalar as itself, a list of scalars comma-joined (no brackets — the
  *  reader needs to know WHO gets the mail, not that `to` is an array), a
@@ -501,7 +521,12 @@ const renderInline = (v: unknown, depth = 0): string => {
   }
   if (v === null) return NULL_MARK;
   if (typeof v !== 'object') return clip(String(v), VALUE_CLIP);
-  if (depth >= MAX_INLINE_DEPTH) return '…';
+  if (depth >= MAX_INLINE_DEPTH) {
+    // D-336 (spec §42) — the cut never hides whom a call goes to: the addresses below it read in
+    // its place. SendGrid's `personalizations: 1: {to: 1: …}` hid its every recipient.
+    const people = addressesBelow(v);
+    return people.length > 0 ? clip(people.map(neutralize).join(', '), VALUE_CLIP) : '…';
+  }
   if (Array.isArray(v)) {
     if (v.length === 0) return EMPTY_MARK;
     const body = v.map((e) => renderInline(e, depth + 1)).join(', ');
@@ -546,6 +571,8 @@ interface PreviewField {
   readonly label: string;
   readonly value: unknown;
   readonly rendered: string;
+  /** D-336 (spec §41) — it reads as someone the owner knows: never folded away as an id. */
+  readonly named?: true;
 }
 
 /** Flatten resolved args into labeled leaves, nested plain objects
@@ -554,7 +581,9 @@ interface PreviewField {
  *  projected wire form, i.e. the order the op's author declared.
  *
  *  `labels` renders a top-level value the way the owner knows it (a mailbox
- *  by its address, not its name). `value` stays the raw one. */
+ *  by its address, not its name). D-336 (spec §41) — and a value anywhere that
+ *  the labels name wherever it is (`ANY_ARGUMENT`), such as an attendee's
+ *  address inside a calendar event. `value` stays the raw one. */
 const toFields = (
   args: Record<string, unknown>,
   path: readonly string[] = [],
@@ -569,11 +598,17 @@ const toFields = (
       && isPlainRecord(v)
       && Object.keys(v).length > 0
     ) {
-      out.push(...toFields(v, next, depth + 1));
+      out.push(...toFields(v, next, depth + 1, labels));
       continue;
     }
     const label = next.map(neutralize).join('.');
-    const known = path.length === 0 ? approvalValueLabel(labels, k, v) : undefined;
+    // A nested key's own labels are a top-level argument's, so only `ANY_ARGUMENT` names it.
+    const known = approvalValueLabel(labels, path.length === 0 ? k : ANY_ARGUMENT, v);
+    const inside = known === undefined ? nameValuesIn(v, labels) : v;
+    // D-336 (spec §42) — an encoded email reads as whom it goes to and its subject.
+    const encoded = known === undefined
+      ? describeEncodedEmail(v, (address) => approvalValueLabel(labels, ANY_ARGUMENT, address))
+      : undefined;
     out.push({
       // `id` is the RAW path — identity must not be neutralized (two keys
       // differing only by a middot are different keys). `label` is the
@@ -586,7 +621,10 @@ const toFields = (
       // hoist into "All N share" on the strength of a shared 8-char prefix.
       rendered: known !== undefined
         ? clip(neutralize(known), VALUE_CLIP)
-        : renderInstant(k, v) ?? shortenIdentifiers(label, renderInline(v)),
+        : encoded !== undefined
+          ? clip(neutralize(encoded), VALUE_CLIP)
+          : renderInstant(k, v) ?? shortenIdentifiers(label, renderInline(inside)),
+      ...(known !== undefined || inside !== v ? { named: true as const } : {}),
     });
   }
   return out;
@@ -671,7 +709,8 @@ const foldLabel = (
 const renderFieldLines = (fields: readonly PreviewField[]): string => {
   const isBlank = (f: PreviewField): boolean =>
     f.rendered === NULL_MARK || f.rendered === EMPTY_MARK;
-  const idFields = fields.filter((f) => !isBlank(f) && isIdKey(f.label));
+  // A person named in an id's place is what the call is aimed at, not bookkeeping (D-336 §41).
+  const idFields = fields.filter((f) => !isBlank(f) && isIdKey(f.label) && f.named !== true);
   // Fold only when something else survives to read. Otherwise the fold
   // would hide the entire payload behind the word "ids".
   const foldIds =

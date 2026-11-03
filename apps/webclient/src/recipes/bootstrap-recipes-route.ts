@@ -188,7 +188,8 @@ import type {
 // owned: the panel snapshot, the filter/file state, and every async handler.
 // The panel's attribute vocabulary is re-exported below; tests import it from
 // here and there is no reason to churn them.
-import { renderFilePreviewBody, type FilePreviewCallers } from '../files/file-preview.js';
+import { mountPreviewConversion } from '../files/file-preview-conversion.js';
+import { renderFilePreviewBody, type FilePreviewCallers, type FilePreviewBodyResult } from '../files/file-preview.js';
 
 import {
   RECIPES_ROUTE_ACTION_ATTR,
@@ -4897,7 +4898,9 @@ export const bootstrapRecipesRoute = (
    *  box says nothing, and "could not load" beside a filename is actionable. */
   let filePreviewGeneration = 0;
   const filePreviewUrls = new Set<string>();
+  let filePreviewAbort: AbortController | undefined;
   const releaseFilePreviews = (): void => {
+    filePreviewAbort?.abort(); filePreviewAbort = undefined;
     for (const url of filePreviewUrls) URL.revokeObjectURL(url);
     filePreviewUrls.clear();
   };
@@ -4911,7 +4914,7 @@ export const bootstrapRecipesRoute = (
     releaseFilePreviews();
     const own = filePreviewGeneration;
     if (callers === undefined) return;   // fallback text stays; nothing breaks
-    const controller = new AbortController();
+    const controller = new AbortController(); filePreviewAbort = controller;
     for (const mount of mounts) {
       const element = mount as HTMLElement;
       const recordId = element.getAttribute(RECIPES_FILE_PREVIEW_MOUNT_ATTR);
@@ -4919,6 +4922,21 @@ export const bootstrapRecipesRoute = (
       const filename = element.getAttribute(RECIPES_FILE_PREVIEW_NAME_ATTR) ?? undefined;
       void (async () => {
         const body = doc.createElement('div');
+        let known: FilePreviewBodyResult | undefined, renderFailed = false;
+        const offerConversion = () => {
+          if (!known?.conversion || !known.selection_revision || !callers.convert || body.querySelector('[data-file-preview-conversion]')) return;
+          mountPreviewConversion({ doc, container: body, body, target: { record_id: recordId, selection_revision: known.selection_revision },
+            onSourceHash: () => { element.querySelector('.recipes-result-file-error')?.remove(); },
+            availability: known.conversion, convert: callers.convert, preview: callers.preview,
+            signal: controller.signal, isCurrent: () => own === filePreviewGeneration && element.isConnected });
+        };
+        const failed = (failure: unknown) => {
+          if (own !== filePreviewGeneration || !element.isConnected) return;
+          renderFailed = true;
+          const note = doc.createElement('p'); note.className = 'recipes-result-file-error'; note.setAttribute('role', 'alert');
+          note.textContent = failure instanceof Error ? failure.message : `Could not show ${filename ?? 'this file'}.`;
+          body.replaceChildren(); element.replaceChildren(note, body); offerConversion();
+        };
         try {
           await renderFilePreviewBody({
             doc,
@@ -4931,19 +4949,13 @@ export const bootstrapRecipesRoute = (
             status: () => {},
             signal: controller.signal,
             isCurrent: () => own === filePreviewGeneration,
-            onFailure: () => {},
+            onFailure: failed,
+            onMeta: meta => { known = meta; },
+            offerConversion: () => offerConversion(),
           }, { record_id: recordId, ...(filename !== undefined ? { filename } : {}) }, callers);
           if (own !== filePreviewGeneration || !element.isConnected) return;
-          element.replaceChildren(body);
-        } catch (failure) {
-          if (own !== filePreviewGeneration || !element.isConnected) return;
-          const note = doc.createElement('p');
-          note.className = 'recipes-result-file-error';
-          note.setAttribute('role', 'alert');
-          note.textContent = failure instanceof Error
-            ? failure.message
-            : `Could not show ${filename ?? 'this file'}.`;
-          element.replaceChildren(note);
+          if (!renderFailed) element.replaceChildren(body);
+        } catch (failure) { failed(failure);
         }
       })();
     }

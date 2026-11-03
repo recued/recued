@@ -241,4 +241,7 @@ export const TASK_BULK_STYLES = `
 .work-entity-task-select input { width:1.15rem; height:1.15rem; accent-color:var(--accent); }
 .work-entity-task-select span { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
 @media(max-width:600px) { .task-bulk-results li { grid-template-columns:minmax(0,1fr); gap:.5rem; } .task-bulk-date-actions { flex-basis:100%; border-left:0; border-top:1px solid var(--border); padding:1rem 0 0; margin:.35rem 0 0; } }
+/* On a phone the idle bar is one row, so the first task stays above the fold; what
+   "Select shown" includes is said once a selection starts. */
+@media(max-width:600px) { .task-bulk--idle { margin:.5rem 0; padding:.6rem .75rem; } .task-bulk--idle .task-bulk-heading { flex-wrap:nowrap; } .task-bulk--idle .task-bulk-heading > strong { min-width:0; } .task-bulk--idle > p:not([role=alert]) { display:none; } }
 `;

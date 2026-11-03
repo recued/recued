@@ -220,38 +220,53 @@ export interface RecordsBatchAllow {
 export const isRecordsBatchAction = (value: unknown): value is RecordsBatchAction =>
   typeof value === 'string' && (RECORDS_BATCH_ACTIONS as readonly string[]).includes(value);
 
+/** A path relative to the validated cell. Messages remain compatible with runtime callers. */
+export interface RecordsContractIssue {
+  path: (string | number)[];
+  message: string;
+  target?: 'key';
+}
+
 /** Static validation of a batch's allow-list against the entities that exist.
  *  Returns every problem rather than the first. Empty array = admissible. */
 export const validateRecordsBatchAllow = (
   allow: unknown,
   entityNames: readonly string[],
-): string[] => {
+): string[] => recordsBatchAllowIssues(allow, entityNames).map(issue => issue.message);
+
+export const recordsBatchAllowIssues = (
+  allow: unknown,
+  entityNames: readonly string[],
+): RecordsContractIssue[] => {
   if (!Array.isArray(allow) || allow.length === 0) {
-    return ['allow must be a non-empty array of { entity, action }'];
+    return [{ path: [], message: 'allow must be a non-empty array of { entity, action }' }];
   }
-  const problems: string[] = [];
+  const problems: RecordsContractIssue[] = [];
   const seen = new Set<string>();
   allow.forEach((raw, index) => {
     const at = `allow[${index}]`;
+    const add = (message: string, key?: string, target?: 'key') =>
+      problems.push({ path: key === undefined ? [index] : [index, key], message, ...(target ? { target } : {}) });
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-      problems.push(`${at}: must be an object { entity, action }`);
+      add(`${at}: must be an object { entity, action }`);
       return;
     }
     const entry = raw as Record<string, unknown>;
     for (const key of Object.keys(entry)) {
-      if (!['entity', 'action'].includes(key)) problems.push(`${at}: unknown key '${key}'`);
+      if (!['entity', 'action'].includes(key)) add(`${at}: unknown key '${key}'`, key, 'key');
     }
     if (typeof entry.entity !== 'string' || !entityNames.includes(entry.entity)) {
-      problems.push(`${at}: unknown entity '${String(entry.entity)}'`);
+      add(`${at}: unknown entity '${String(entry.entity)}'`, 'entity');
     }
     if (!isRecordsBatchAction(entry.action)) {
-      problems.push(
+      add(
         `${at}: '${String(entry.action)}' is not a batchable action` +
         ` — a batch admits ${RECORDS_BATCH_ACTIONS.join(', ')} and no reads`,
+        'action',
       );
     }
     const key = `${String(entry.entity)}:${String(entry.action)}`;
-    if (seen.has(key)) problems.push(`${at}: duplicate pair '${key}'`);
+    if (seen.has(key)) add(`${at}: duplicate pair '${key}'`, 'action');
     seen.add(key);
   });
   return problems;

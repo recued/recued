@@ -26,7 +26,10 @@ import {
 // The orchestrator reaches it the same way (`planApproval as planApprovalModule`).
 import { planApproval } from '@recued/gateway';
 import { buildChatTier1Handlers, buildChatToolRegistryInputs, calendarAskLabels } from '../chat-tool-handlers.js';
-import { checkCalendarCreate, checkCalendarUpdate, handleCalendarUpdate } from '../collections/calendar/calendar-dispatcher.js';
+import { calendarEventApprovalLabel, heldCalendarValueLabels } from '../held-calendar-labels.js';
+import {
+  checkCalendarCreate, checkCalendarUpdate, defaultCalendarFor, handleCalendarDelete, handleCalendarUpdate,
+} from '../collections/calendar/calendar-dispatcher.js';
 import { createCalendarTable } from '../collections/calendar/calendar-table.js';
 import type { ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { createReadGrantChecker } from '../read-grant-checker.js';
@@ -316,3 +319,240 @@ describe('D-329 — a calendar write is checked before the owner is asked', () =
     expect(d.__update).not.toHaveBeenCalled();
   });
 });
+
+describe('D-336 (spec §48) — a create on an account goes on its main calendar', () => {
+  /** An instance per account, its calendars as its provider lists them; `readonly` may not
+   *  create events. */
+  const accounts = (calendars: Record<string, ReadonlyArray<{ calendar_id: string; name: string; is_default?: true }>>) => {
+    const known = (slug: string) => slug in calendars || slug === 'readonly';
+    return {
+      instances: { get: (_platform: string, slug: string) => (known(slug)
+        ? { caps: { create_event: slug === 'readonly' ? 'no' : 'yes' }, adapter_type: 'gcal', auth_state: 'healthy' } : null) },
+      getCollection: (slug: string) => (known(slug)
+        ? { provider: { kind: 'gcal', listWritableCalendars: async () => calendars[slug] ?? [] } } : undefined),
+    } as never;
+  };
+
+  it('the main calendar, else the only writable one; several with no main one, or none, are refused', async () => {
+    const deps = accounts({
+      google: [{ calendar_id: 'team', name: 'Team' }, { calendar_id: 'me@example.com', name: 'Me', is_default: true }],
+      caldav: [{ calendar_id: 'home', name: 'Home' }],
+      shared: [{ calendar_id: 'home', name: 'Home' }, { calendar_id: 'work', name: 'Work' }],
+      empty: [],
+    });
+    expect(await defaultCalendarFor(deps, { slug: 'google' })).toBe('me@example.com');
+    expect(await defaultCalendarFor(deps, { slug: 'caldav' })).toBe('home');
+    await expect(defaultCalendarFor(deps, { slug: 'shared' })).rejects.toThrow(
+      'CALENDAR_NO_MAIN_CALENDAR: \'shared\' has 2 calendars ("Home", "Work") and none is its main one, '
+        + 'so an event cannot go on it from here. Tell the user they can add it with New event in Data → Calendar, where they choose the calendar');
+    await expect(defaultCalendarFor(deps, { slug: 'empty' })).rejects.toThrow('CALENDAR_NO_WRITABLE_CALENDAR');
+    await expect(defaultCalendarFor(deps, { slug: 'readonly' })).rejects.toThrow('CALENDAR_CAPABILITY_DENIED');
+  });
+
+  it("⛔ the chat's create puts the event there, and its check refuses an account with no main one before the owner is asked", async () => {
+    // Asked of every account, `local` was found only on the local one: on Google it was "not found".
+    const d = deps();
+    const defaultCalendar = vi.fn(async ({ slug }: { slug: string }) => {
+      if (slug === 'shared') throw new Error("CALENDAR_NO_MAIN_CALENDAR: 'shared' has 2 calendars");
+      return slug === 'google' ? 'me@example.com' : 'local';
+    });
+    const wired = { ...d, getCalendarWriteDeps: () => ({ calendarCreate: d.__create, calendarUpdate: d.__update, defaultCalendar }) } as never;
+    const event = { summary: 'Dentist', start_at: 1_000, end_at: 2_000, timezone: 'Europe/Dublin' };
+    expect((await buildChatTier1Handlers(wired)['calendar.create']!({ ...event, calendar_id: 'google' }, ctx())).ok).toBe(true);
+    expect(d.__create.mock.calls[0]![0]).toMatchObject({
+      slug: 'google', calendar_id: 'me@example.com', event: { calendar_id: 'me@example.com' },
+    });
+    const checks = buildChatToolRegistryInputs(wired).tier1Checks;
+    expect(await checks['calendar.create']!({ ...event, calendar_id: 'google' }, ctx())).toBeNull();
+    expect(await checks['calendar.create']!({ ...event, calendar_id: 'shared' }, ctx()))
+      .toMatchObject({ ok: false, reason: 'invalid_args', detail: expect.stringContaining('CALENDAR_NO_MAIN_CALENDAR') });
+    expect(d.__create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("D-336 (spec §48) — an AI's or a recipe's change to an event with guests tells them", () => {
+  const START = Date.UTC(2026, 9, 27, 14);
+  /** A Google account holding one event, with `attendees` if given, behind the real dispatcher. */
+  const google = (attendees?: ReadonlyArray<{ email: string; response_status: string; is_self?: true }>) => {
+    const db = new Database(':memory:');
+    const table = createCalendarTable({ db, slug: 'google' });
+    table.upsert({ size_bytes: 0, event: { source_id: 'evt-1', ical_uid: 'uid-1', calendar_id: 'me@example.com', summary: 'Review',
+      start_at: START, end_at: START + 3_600_000, timezone: 'UTC', is_all_day: false, status: 'confirmed',
+      ...(attendees !== undefined ? { attendees } : {}), created_at: START, updated_at: START } } as never);
+    const updateEvent = vi.fn(async (_input: Record<string, unknown>) => ({ event: { source_id: 'evt-1' } }));
+    const deleteEvent = vi.fn(async (_input: Record<string, unknown>) => undefined);
+    const createEvent = vi.fn(async (_calendar: string, _event: Record<string, unknown>) => ({ event: { source_id: 'evt-2' } }));
+    const collection = {
+      table, provider: { kind: 'gcal', updateEvent, deleteEvent, createEvent },
+      applyVerifiedUpsert: vi.fn(async () => undefined), applyVerifiedDelete: vi.fn(),
+    };
+    const deps = {
+      instances: { get: () => ({ caps: { update_event: 'yes', delete_event: 'yes' }, adapter_type: 'gcal', auth_state: 'healthy' }) },
+      getCollection: (slug: string) => (slug === 'google' ? collection : undefined),
+    } as never;
+    return { db, deps, table, updateEvent, deleteEvent, createEvent };
+  };
+  const moved = { start_at: START + 3_600_000, end_at: START + 7_200_000 };
+
+  it("moved or cancelled, Google is asked to tell its guests, as the owner's own edit asks; with none, it is not", async () => {
+    const withGuests = google([{ email: 'ana@example.com', response_status: 'accepted' }]);
+    await handleCalendarUpdate(withGuests.deps, { slug: 'google', source_id: 'evt-1', patch: moved });
+    expect(withGuests.updateEvent.mock.calls[0]![0]).toMatchObject({ notify_attendees: true });
+    await handleCalendarDelete(withGuests.deps, { slug: 'google', source_id: 'evt-1' });
+    expect(withGuests.deleteEvent.mock.calls[0]![0]).toMatchObject({ notify_attendees: true });
+    const alone = google();
+    await handleCalendarUpdate(alone.deps, { slug: 'google', source_id: 'evt-1', patch: moved });
+    expect(alone.updateEvent.mock.calls[0]![0]).not.toHaveProperty('notify_attendees');
+    await handleCalendarDelete(alone.deps, { slug: 'google', source_id: 'evt-1' });
+    expect(alone.deleteEvent.mock.calls[0]![0]).not.toHaveProperty('notify_attendees');
+    withGuests.db.close();
+    alone.db.close();
+  });
+
+  it('a series moved from one event on is told too: the old one ends for its guests, and the new one invites them', async () => {
+    const withGuests = google([{ email: 'ana@example.com', response_status: 'accepted' }]);
+    await handleCalendarUpdate(withGuests.deps, { slug: 'google', source_id: 'evt-1', patch: moved, scope: 'this_and_future' });
+    expect(withGuests.updateEvent.mock.calls[0]![0]).toMatchObject({ scope: 'series', notify_attendees: true });
+    expect(withGuests.createEvent.mock.calls[0]![1]).toMatchObject({ send_invitations: true });
+    const alone = google();
+    await handleCalendarUpdate(alone.deps, { slug: 'google', source_id: 'evt-1', patch: moved, scope: 'this_and_future' });
+    expect(alone.updateEvent.mock.calls[0]![0]).not.toHaveProperty('notify_attendees');
+    expect(alone.createEvent.mock.calls[0]![1]).not.toHaveProperty('send_invitations');
+    withGuests.db.close();
+    alone.db.close();
+  });
+
+  it("the owner's ask says Google emails them: on a Google event with guests, never the owner's own place on it", async () => {
+    const wire = { channel: 'mcp_wire', mcp_token_id: 't' } as never;
+    const labelOf = async (kind: string, attendees?: ReadonlyArray<{ email: string; response_status: string; is_self?: true }>) => {
+      const { db, table } = google(attendees);
+      const registry = { ...deps(), getCollectionRegistry: () => ({ list: () => [{ slug: 'google', platform: 'calendar', table, provider: { kind } }] }) } as never;
+      try {
+        return (await calendarAskLabels(registry, { source_id: 'evt-1', calendar_id: 'google' }, wire))?.source_id?.['evt-1'];
+      } finally { db.close(); }
+    };
+    const me = { email: 'me@example.com', response_status: 'accepted', is_self: true as const };
+    const ana = { email: 'ana@example.com', response_status: 'accepted' };
+    const bo = { email: 'bo@example.com', response_status: 'needs_action' };
+    expect(await labelOf('gcal', [me, ana, bo])).toBe('Review (Google emails its 2 guests)');
+    expect(await labelOf('gcal', [me, ana])).toBe('Review (Google emails its guest)');
+    expect(await labelOf('gcal', [me])).toBe('Review');
+    expect(await labelOf('gcal')).toBe('Review');
+    // Outlook tells its guests itself; a local event has no one to tell.
+    expect(await labelOf('graph', [me, ana])).toBe('Review');
+    expect(await labelOf('local', [me, ana])).toBe('Review');
+  });
+
+  it("D-336 (spec §52) — a recipe's held move or cancel says so on its approval too", () => {
+    const { db, table } = google([{ email: 'ana@example.com', response_status: 'accepted' }]);
+    const registry = { list: () => [{ slug: 'google', platform: 'calendar', table, provider: { kind: 'gcal' } }] } as never;
+    const nameOf = (slug: string, source_id: string) => calendarEventApprovalLabel(registry, slug, source_id, 'UTC');
+    try {
+      for (const step of ['calendar-update', 'calendar-delete', 'recued/calendar-update']) {
+        expect(heldCalendarValueLabels(step, { slug: 'google', source_id: 'evt-1', patch: moved }, nameOf))
+          .toEqual({ source_id: { 'evt-1': expect.stringMatching(/^Review, .+ \(Google emails its guest\)$/) } });
+      }
+      // Any other step, an event or calendar not known, an input without both: no label.
+      expect(heldCalendarValueLabels('mail-send', { slug: 'google', source_id: 'evt-1' }, nameOf)).toBeUndefined();
+      expect(heldCalendarValueLabels('calendar-update', { slug: 'google', source_id: 'evt-9' }, nameOf)).toBeUndefined();
+      expect(heldCalendarValueLabels('calendar-update', { slug: 'work', source_id: 'evt-1' }, nameOf)).toBeUndefined();
+      expect(heldCalendarValueLabels('calendar-update', { source_id: 'evt-1' }, nameOf)).toBeUndefined();
+      // A calendar that cannot answer costs the label, never the hold.
+      expect(heldCalendarValueLabels('calendar-update', { slug: 'google', source_id: 'evt-1' }, () => { throw new Error('closed'); }))
+        .toBeUndefined();
+    } finally { db.close(); }
+  });
+});
+
+describe("D-336 (spec §56) — chat cancels an Outlook event by deleting it, and says so", () => {
+  it('a cancel on Outlook deletes the event through the real dispatcher, and the result says it is gone', async () => {
+    const START = Date.UTC(2026, 10, 3, 23);
+    const db = new Database(':memory:');
+    const table = createCalendarTable({ db, slug: 'outlook' });
+    table.upsert({ size_bytes: 0, event: { source_id: 'evt-1', ical_uid: 'uid-1', calendar_id: 'cal-main', summary: 'Recued 5c check',
+      start_at: START, end_at: START + 1_800_000, timezone: 'UTC', is_all_day: false, status: 'confirmed',
+      created_at: START, updated_at: START } } as never);
+    const updateEvent = vi.fn(async () => { throw new Error('a cancel is not an update on Outlook'); });
+    const deleteEvent = vi.fn(async (_input: Record<string, unknown>) => undefined);
+    const collection = {
+      table, provider: { kind: 'graph', updateEvent, deleteEvent, createEvent: vi.fn() },
+      applyVerifiedUpsert: vi.fn(async () => undefined), applyVerifiedDelete: vi.fn(),
+    };
+    const dispatch = {
+      instances: { get: () => ({ caps: { update_event: 'yes', delete_event: 'yes' }, adapter_type: 'graph', auth_state: 'healthy' }) },
+      getCollection: (slug: string) => (slug === 'outlook' ? collection : undefined),
+    } as never;
+    const d = deps();
+    const wired = { ...d, getCalendarWriteDeps: () => ({
+      calendarCreate: d.__create,
+      calendarUpdate: (input: never) => handleCalendarUpdate(dispatch, input),
+    }) } as never;
+    try {
+      const result = await buildChatTier1Handlers(wired)['calendar.update']!(
+        { source_id: 'evt-1', calendar_id: 'outlook', status: 'cancelled' }, ctx(),
+      );
+      expect(result).toEqual({
+        ok: true,
+        result: {
+          cancelled: true, deleted: true, source_id: 'evt-1', calendar: 'outlook',
+          note: 'Outlook keeps no cancelled events, so it was deleted. If the user organized it, '
+            + 'Outlook sends its guests a cancellation.',
+        },
+      });
+      expect(updateEvent).not.toHaveBeenCalled();
+      expect(deleteEvent.mock.calls[0]![0]).toMatchObject({ calendar_id: 'cal-main', source_id: 'evt-1' });
+      expect(collection.applyVerifiedDelete).toHaveBeenCalledWith('evt-1', undefined);
+    } finally { db.close(); }
+  });
+});
+
+describe('D-336 (spec §56) — chat changes an event by the id its search shows', () => {
+  it("calendar.search returns each event's source_id, and calendar.update also takes its record_id, on the event's own calendar", async () => {
+    const START = Date.UTC(2026, 10, 4);
+    const db = new Database(':memory:');
+    const table = createCalendarTable({ db, slug: 'outlook' });
+    table.upsert({ size_bytes: 0, event: { source_id: 'AAMk-outlook-1', ical_uid: 'uid-1', calendar_id: 'cal-main', summary: 'Recued 56 chat',
+      start_at: START, end_at: START + 1_800_000, timezone: 'UTC', is_all_day: false, status: 'confirmed',
+      created_at: START, updated_at: START } } as never);
+    const deleteEvent = vi.fn(async (_input: Record<string, unknown>) => undefined);
+    const collection = {
+      platform: 'calendar', slug: 'outlook', table,
+      provider: { kind: 'graph', updateEvent: vi.fn(), deleteEvent, createEvent: vi.fn() },
+      applyVerifiedUpsert: vi.fn(async () => undefined), applyVerifiedDelete: vi.fn(),
+    };
+    const dispatch = {
+      instances: { get: () => ({ caps: { update_event: 'yes', delete_event: 'yes' }, adapter_type: 'graph', auth_state: 'healthy' }) },
+      getCollection: (slug: string) => (slug === 'outlook' ? collection : undefined),
+    } as never;
+    const d = deps();
+    const wired = {
+      ...d,
+      getCollectionRegistry: () => ({ list: () => [collection] }),
+      getCalendarWriteDeps: () => ({
+        calendarCreate: d.__create,
+        calendarUpdate: (input: never) => handleCalendarUpdate(dispatch, input),
+      }),
+    } as never;
+    try {
+      const handlers = buildChatTier1Handlers(wired);
+      const found = await handlers['calendar.search']!({ query: 'Recued 56' }, ctx());
+      expect(found.ok).toBe(true);
+      const [match] = (found as { result: { matches: Array<Record<string, unknown>> } }).result.matches;
+      expect(match).toMatchObject({ collection_slug: 'outlook', source_id: 'AAMk-outlook-1', record_id: expect.stringMatching(/^cal:/) });
+
+      // Live, the model passed the record_id as `source_id`, naming no calendar (§54, §56).
+      // Its approval names the event, as for its source_id.
+      const labels = await calendarAskLabels(wired, { source_id: match!.record_id, status: 'cancelled' }, ctx());
+      expect(labels?.source_id?.[match!.record_id as string]).toEqual(expect.stringContaining('Recued 56 chat'));
+      const res = await handlers['calendar.update']!({ source_id: match!.record_id, status: 'cancelled' }, ctx());
+      expect(res).toMatchObject({ ok: true, result: { deleted: true, source_id: 'AAMk-outlook-1', calendar: 'outlook' } });
+      expect(deleteEvent.mock.calls[0]![0]).toMatchObject({ source_id: 'AAMk-outlook-1', calendar_id: 'cal-main' });
+
+      // An id no calendar holds is still refused as not found, naming it.
+      const unknown = await handlers['calendar.update']!({ source_id: 'cal:nope', calendar_id: 'outlook', status: 'cancelled' }, ctx());
+      expect(unknown).toMatchObject({ ok: false, detail: expect.stringContaining("CALENDAR_EVENT_NOT_FOUND: 'cal:nope'") });
+      expect(deleteEvent).toHaveBeenCalledTimes(1);
+    } finally { db.close(); }
+  });
+});
+

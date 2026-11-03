@@ -182,6 +182,7 @@ export const YOURS_STYLES = `
 [data-recued-yours] .yours-field-error {color:var(--danger);font-weight:400}
 [data-recued-yours] [aria-invalid=true] {border-color:var(--danger)}
 [data-recued-yours] .yours-muted,[data-recued-yours] small {color:var(--fg-muted)}
+[data-recued-yours] [data-yours-relationship] .yours-muted {white-space:nowrap}
 [data-recued-yours] [data-yours-status]:empty,[data-recued-yours] [data-yours-error]:empty {display:none}
 [data-recued-yours] [data-yours-status],[data-recued-yours] [data-yours-error] {padding:12px 16px;border-radius:var(--wc-radius,9px);background:var(--surface);margin-bottom:16px}
 [data-recued-yours] [role=alert] {color:var(--danger)}

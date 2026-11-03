@@ -59,7 +59,7 @@ test('changes only the wording, keeps the exact repeated-hour instant, and retai
   await expect(field(page, 'at')).toHaveValue('2030-11-03T01:30');
   await field(page, 'text').fill('Call Dr Patel about the invoice');
   await page.evaluate(() => { window.__reminderEdit.holdNextWrite(); window.__reminderEdit.holdNextRead(); window.__reminderEdit.failNextRead(); });
-  await row(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await row(page).getByRole('button', { name: 'Save', exact: true }).press('Enter');
   await expect(field(page, 'text')).toBeDisabled(); await expect(field(page, 'at')).toBeDisabled();
   await expect.poll(() => page.evaluate(() => window.__reminderEdit.writes.length)).toBe(1);
   expect(await page.evaluate(() => window.__reminderEdit.writes)).toEqual([{ reminder_id: 'rem-edit', text: 'Call Dr Patel about the invoice' }]);
@@ -78,14 +78,14 @@ test('keeps both fields on interruption, then reports a reminder that rang befor
   await field(page, 'text').fill('Ask about the invoice');
   await field(page, 'at').fill('2030-11-04T09:15');
   await page.evaluate(() => window.__reminderEdit.nextOutcome('error'));
-  await row(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await row(page).getByRole('button', { name: 'Save', exact: true }).press('Enter');
   await expect(page.getByRole('alert')).toContainText('save was interrupted');
   await expect(field(page, 'text')).toHaveValue('Ask about the invoice');
   await expect(field(page, 'at')).toHaveValue('2030-11-04T09:15');
   await expect(field(page, 'text')).toBeFocused();
   expect(await page.evaluate(() => window.__reminderEdit.writes[0])).toEqual({ reminder_id: 'rem-edit', text: 'Ask about the invoice', at: Date.parse('2030-11-04T14:15:00Z') });
   await page.evaluate(() => window.__reminderEdit.nextOutcome('delivered'));
-  await row(page).getByRole('button', { name: 'Save', exact: true }).click();
+  await row(page).getByRole('button', { name: 'Save', exact: true }).press('Enter');
   await expect(page.locator('[data-recued-reminders-focus="notice"]')).toContainText('already rung');
   await expect(row(page)).toHaveCount(0);
   await page.locator('.reminders-history summary').click();
@@ -123,7 +123,9 @@ test('browses reminders past 200 and searches the complete waiting list with dat
     await expect(items).toHaveCount(50);
     for (const count of [100, 150, 200, 235]) {
       const previousCount = await items.count();
-      await host.getByRole('button', { name: 'Load more', exact: true }).click();
+      // Assert keyboard focus recovery from an action that actually owns focus.
+      // WebKit mouse activation need not focus a button.
+      await host.getByRole('button', { name: 'Load more', exact: true }).press('Enter');
       await expect(items).toHaveCount(count);
       await expect(items.nth(previousCount)).toBeFocused();
       await expect(items.nth(previousCount)).toBeInViewport();
@@ -196,7 +198,7 @@ test('creates a reminder in Data, reconciles a lost reply and retains the result
     await page.evaluate(() => window.__app.setHash('#chat'));
     await expect(form.getByRole('textbox', { name: 'Reminder', exact: true })).toHaveValue('Collect the pharmacy order');
     fixture.loseNextCreate();
-    await form.getByRole('button', { name: 'Set reminder', exact: true }).click();
+    await form.getByRole('button', { name: 'Set reminder', exact: true }).press('Enter');
     await expect(form.getByRole('alert')).toBeVisible();
     await expect(form.getByRole('button', { name: 'Set reminder', exact: true })).toBeFocused();
     expect(fixture.pendingCount()).toBe(1);
@@ -233,7 +235,7 @@ test('creates a reminder in Data, reconciles a lost reply and retains the result
     await form.getByLabel('Date and time (America/New_York)', { exact: true }).fill('2026-11-02T23:00');
     fixture.loseNextCreate();
     fixture.holdNextCreate();
-    await form.getByRole('button', { name: 'Set reminder', exact: true }).click();
+    await form.getByRole('button', { name: 'Set reminder', exact: true }).press('Enter');
     await expect.poll(() => fixture.createPending()).toBe(true);
     await refresh.focus();
     fixture.releaseCreate();
@@ -241,7 +243,7 @@ test('creates a reminder in Data, reconciles a lost reply and retains the result
     await expect(refresh).toBeFocused();
     await fixture.cancelLatestCreated();
     fixture.failNextRead();
-    await form.getByRole('button', { name: 'Set reminder', exact: true }).click();
+    await form.getByRole('button', { name: 'Set reminder', exact: true }).press('Enter');
     await expect(form).toHaveCount(0);
     await expect(notice).toContainText('Reminder history');
     await expect(notice).toContainText('not been scheduled again');

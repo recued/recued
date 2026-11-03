@@ -41,6 +41,7 @@ import type { DependencyReadAdmission } from './work-entity-dependency-admission
 import { WORK_ENTITY_KINDS } from './work-entities.js';
 import { SITUATION_QUERY_SCHEMA, SITUATION_TOOL_MAX_ITEMS } from './situation.js';
 import { ASSET_SEARCH_TERMS } from './asset-search-terms.js';
+import { MEMORY_RELATION_GROUPS, type MemorySaveConflict } from './memory-relations.js';
 
 // ────────────────────────────────────────────────────────────────
 // D-137 § A.1.1 — InternalToolRegistry: tier discriminator + closed
@@ -91,12 +92,14 @@ export const isToolTier = (value: unknown): value is ToolTier =>
 export type Tier1ToolName =
   | 'contact.search'
   | 'contact.read'
+  | 'contact.write'
   | 'mail.search'
   | 'mail.read'
   | 'document.read'
   | 'document.search'
   | 'calendar.search'
   | 'memory.search'
+  | 'memory.relations'
   | 'memory.write'
   | 'memory.forget'
   | 'enrichment.search'
@@ -124,12 +127,14 @@ export type Tier1ToolName =
 export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'contact.search',
   'contact.read',
+  'contact.write',
   'mail.search',
   'mail.read',
   'document.read',
   'document.search',
   'calendar.search',
   'memory.search',
+  'memory.relations',
   'memory.write',
   'memory.forget',
   'enrichment.search',
@@ -170,12 +175,14 @@ export const isTier1ToolName = (value: unknown): value is Tier1ToolName =>
 export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<string>>> = {
   'contact.search': ['contact', 'people', 'lookup', 'identity'],
   'contact.read': ['contact', 'people', 'details', 'birthday'],
+  'contact.write': ['contact', 'people', 'add', 'update', 'birthday', 'anniversary'],
   'mail.search': ['mail', 'email', 'message', 'lookup'],
   'mail.read': ['mail', 'email', 'body', 'attachment'],
   'document.read': ['document', 'attachment', 'file', 'markdown', 'ocr'],
   'document.search': ['document', 'attachment', 'file', 'content', 'text', 'search'],
   'calendar.search': ['calendar', 'event', 'meeting', 'lookup'],
   'memory.search': ['memory', 'history', 'audit', 'recall'],
+  'memory.relations': ['memory', 'relation', 'relationship', 'family', 'claim', 'save'],
   'memory.write': ['memory', 'remember', 'save', 'note'],
   'memory.forget': ['memory', 'forget', 'remove', 'correct'],
   'enrichment.search': ['enrichment', 'derived', 'inference', 'lookup'],
@@ -224,12 +231,19 @@ export const TIER1_CLASSIFICATIONS: Readonly<
 > = {
   'contact.search': 'read',
   'contact.read': 'read',
+  // D-336 slice F — `write`, with every other Tier-1 write: each call is proposed to the
+  // owner (D-329) and runs on their yes or a standing rule they accepted. What it writes is
+  // stored at the owner's rank, so a later import or sync cannot replace it (§3.7).
+  'contact.write': 'write',
   'mail.search': 'read',
   'mail.read': 'read',
   'document.read': 'read',
   'document.search': 'read',
   'calendar.search': 'read',
   'memory.search': 'read',
+  // D-336 — lists the relations a saved fact can name, nothing of the owner's. Its grant
+  // is the memory write's, checked in the handler: the list is read for saving.
+  'memory.relations': 'read',
   // D-329 (2026-10-24) — `write`, with every other Tier-1 write: the owner, of the writes that
   // still ran without asking, *"do the Other writes too"*. D-198 made it `unknown` so a
   // granted caller could contribute without a card, the write being soft, reversible and
@@ -319,6 +333,10 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
 > = {
   'contact.search': true,
   'contact.read': true,
+  // ⛔ Sequential for the shared-identity reason: two writes to one contact in a turn
+  // ("her birthday is …, and her phone is …") would land in either order, and two adds of
+  // one person would make two contacts.
+  'contact.write': false,
   'mail.search': true,
   'mail.read': true,
   // Not an identity race: a call can start a local converter process (Docling
@@ -327,6 +345,7 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   'document.search': false,
   'calendar.search': true,
   'memory.search': true,
+  'memory.relations': true,
   // D-198 — append-only: each write mints its own `umem_` row, so two writes in
   // one turn ("remember A", "remember B") never race a shared key. Batch-safe.
   // A `replaces` write checks then writes under the store's revision lock.
@@ -551,6 +570,11 @@ export interface ChatDispatchContext {
    *  An asset reading it writes is then the owner's own sample, at their rank (their
    *  ruling of 2026-10-25). Absent, a write keeps the AI's own rank. */
   owner_approved?: true;
+  /** D-336 slice E — set by the server, never from a caller: the arguments the owner changed
+   *  on this call's card before approving it (`Checkpoint.arg_overrides`). What they hold is
+   *  the owner's own, read by the owner's rules: `memory.write`'s `claim` is then a claim as
+   *  the owner's forms write it, and may be a relation in their own words (D-336 §3.11). */
+  owner_edits?: readonly string[];
 }
 
 /** § A.1.1 — discriminated dispatch result. `ok: true` carries the
@@ -595,7 +619,13 @@ export type ChatDispatchReason =
   // `detail` carries the user-cancelled, do-NOT-retry posture so the
   // agent resolves with the user instead of re-issuing the call. The
   // tool-loop reads it as a non-retryable error outcome.
-  | 'run_cancelled';
+  | 'run_cancelled'
+  // D-337 slice K — a call that would ask the owner was NOT asked: a call
+  // made earlier in the same turn is waiting for their approval, in a
+  // conversation that carries on once they answer. Nothing was proposed,
+  // held or run. The `detail` tells the agent to make the call then, if it
+  // should still happen (the owner: "AI proposes it after").
+  | 'not_asked_yet';
 
 export const CHAT_DISPATCH_REASONS: ReadonlyArray<ChatDispatchReason> = [
   'not_implemented',
@@ -611,6 +641,8 @@ export const CHAT_DISPATCH_REASONS: ReadonlyArray<ChatDispatchReason> = [
   'plan_cancelled',
   // D-181 § 9 — owner-cancelled run (kill / cancel-in-queue).
   'run_cancelled',
+  // D-337 slice K — not asked while a call of the same turn waits.
+  'not_asked_yet',
 ] as const;
 
 export const CHAT_DISPATCH_REASON_SET: ReadonlySet<ChatDispatchReason> =
@@ -712,7 +744,23 @@ export interface InternalToolRegistry {
     args: unknown,
     ctx: ChatDispatchContext,
   ): Promise<ApprovalValueLabels | undefined>;
+  /** D-336 slice G — what a held write meets, told when it is held and never a refusal: a
+   *  line for the AI, beside "it was sent to the owner", and what the owner's card and ask
+   *  show. `undefined` when there is nothing to tell. */
+  askNotices?(
+    name: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ): Promise<HeldCallNotices | undefined>;
   subscribeRefresh(callback: () => void): () => void;
+}
+
+/** D-336 slice G — what a held call meets (`InternalToolRegistry.askNotices`). */
+export interface HeldCallNotices {
+  /** For the AI: appended to the held answer, so it can tell the user. */
+  readonly agent?: string;
+  /** For the owner: the notes already in memory a held `memory.write` meets (§3.9). */
+  readonly memory_conflicts?: readonly MemorySaveConflict[];
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2257,12 +2305,14 @@ export interface Tier1ToolDescriptor {
 export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'contact.search': 'contact',
   'contact.read': 'contact',
+  'contact.write': 'contact',
   'mail.search': 'mail',
   'mail.read': 'mail',
   'document.read': 'file',
   'document.search': 'file',
   'calendar.search': 'calendar',
   'memory.search': 'memory',
+  'memory.relations': 'memory',
   'memory.write': 'memory',
   'memory.forget': 'memory',
   'enrichment.search': 'enrichment',
@@ -2345,6 +2395,35 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     classification: TIER1_CLASSIFICATIONS['contact.read'],
     topic_tags: TIER1_TOPIC_TAGS['contact.read'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['contact.read'],
+  },
+  // D-336 slice F (§3.7) — the fields the owner's own contact form writes, less the two it
+  // keeps as their controls (a contact's relationship, which decides the sphere its records
+  // are in, and its privacy marks). A title or an address is left out too: the form cannot
+  // change either, and a value at the owner's rank there could then be corrected by nobody.
+  'contact.write': {
+    name: 'contact.write',
+    description:
+      "Add a contact, or change a contact's name, phone, company, birthday or anniversary. A birthday or an anniversary the user tells you goes here, not to memory: add the person if they are not a contact yet. To change a contact, pass its `target_id` from contact.search: only the fields you pass change. It changes the user's own address book only: a contact.search result from a CRM (a target_id like hubspot_contact_…) is changed with that CRM's own contact tool. If the user gave only part of a name, such as a first name, a contact with a fuller name may be someone else: ask them before changing it. Without `target_id` a new contact is added, from `email`, or from `name` alone for someone with no email. ⚠ It is proposed to the user first and runs once they approve it, unless they have let it run without asking: say what you will change, do not claim it is done.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        target_id: {
+          type: 'string',
+          description: 'Leave it out to add a contact. Search first, so that one person is not added twice.',
+        },
+        // D-336 slice M — and an address for a contact that has none (`email: null`); a saved
+        // address stays as it is.
+        email: { type: 'string', description: "A new contact's email. With target_id, it gives one to a contact whose email is null." },
+        name: { type: 'string' },
+        phone: { type: 'string' },
+        company: { type: 'string' },
+        birthday: { type: 'string', description: 'YYYY-MM-DD, or --MM-DD when the year is not known.' },
+        anniversary: { type: 'string', description: 'As birthday.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['contact.write'],
+    topic_tags: TIER1_TOPIC_TAGS['contact.write'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['contact.write'],
   },
   'mail.read': {
     name: 'mail.read',
@@ -2465,7 +2544,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'memory.search': {
     name: 'memory.search',
     description:
-      "Recall saved KNOWLEDGE from the owner's memory pool — facts, decisions, preferences, product/domain notes the owner or you saved with `memory.write`. Its job is CROSS-SESSION recall: knowledge from earlier sessions that the current conversation never carried. A `truncated` entry's full text comes back when you call again with its `memory_id`. READ `match` BEFORE USING THE RESULTS — it says how well they actually matched: `exact` = every word you searched for is present, treat the top result as the answer; `relaxed` = every meaningful word is present, filler words were dropped, still reliable; `loose` = NO entry contained all your terms and these merely share some, so treat them as candidates to weigh, never as the answer, and tell the user the match was approximate; `semantic` = NO entry shared any of your words, so these were found by MEANING alone — check the entry is really about what was asked before relying on it, and say you found it by meaning rather than by wording. `top_margin` (0-1) is how far the first result outscores the second: near 1 the leader clearly wins, near 0 they are interchangeable and you must not silently pick one — say they are equally close, or ask. An entry marked `by_you` is one you saved: only those can you correct (`memory.write` with `replaces`) or remove (`memory.forget`). When entries disagree, the owner's own (`origin_actor` `user_self`) beats an agent's whatever the dates; an entry under `rejected` is one the owner marked wrong, so never state it as true; between agents' entries the newest wins, and you ask the user when the difference matters; a removed note counts for nothing, however often it was saved; and a save met again in old chat (`recall.search`) is only history: its `memory_now` says where that note stands now. Do NOT call it to re-fetch something already said in THIS conversation — this pool holds saved knowledge, not the transcript. Only the last few turns are in front of you; earlier ones are NOT lost — `recall.search` brings them back. It holds no run history, mail, calendar or contacts; those have their own tools.",
+      "Recall saved KNOWLEDGE from the owner's memory pool — facts, decisions, preferences, product/domain notes the owner or you saved with `memory.write`. Its job is CROSS-SESSION recall: knowledge from earlier sessions that the current conversation never carried. A `truncated` entry's full text comes back when you call again with its `memory_id`. To recall what is saved about a person or a thing, pass `about` too: it finds notes by their `claim`, in whatever words or language they were saved. READ `match` BEFORE USING THE RESULTS — it says how well they actually matched: `exact` = every word you searched for is present, treat the top result as the answer; `relaxed` = every meaningful word is present, filler words were dropped, still reliable; `loose` = NO entry contained all your terms and these merely share some, so treat them as candidates to weigh, never as the answer, and tell the user the match was approximate; `semantic` = NO entry shared any of your words, so these were found by MEANING alone — check the entry is really about what was asked before relying on it, and say you found it by meaning rather than by wording; `claim` = each note's claim names what you passed in `about`, either way round. `top_margin` (0-1) is how far the first result outscores the second: near 1 the leader clearly wins, near 0 they are interchangeable and you must not silently pick one — say they are equally close, or ask. An entry marked `by_you` is one you saved: only those can you correct (`memory.write` with `replaces`) or remove (`memory.forget`). When entries disagree, the owner's own (`origin_actor` `user_self`) beats an agent's whatever the dates; an entry under `rejected` is one the owner marked wrong, so never state it as true; between agents' entries the newest wins, and you ask the user when the difference matters; a removed note counts for nothing, however often it was saved; and a save met again in old chat (`recall.search`) is only history: its `memory_now` says where that note stands now. Do NOT call it to re-fetch something already said in THIS conversation — this pool holds saved knowledge, not the transcript. Only the last few turns are in front of you; earlier ones are NOT lost — `recall.search` brings them back. It holds no run history, mail, calendar or contacts; those have their own tools.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -2479,6 +2558,14 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           description:
             'Fetch ONE memory in full. Pass the `memory_id` of an entry that came back `truncated`. Ignores `query`.',
         },
+        about: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 2,
+          items: { anyOf: [{ type: 'string' }, { type: 'object' }] },
+          description:
+            'One name, or two for how two are related, written as a save\'s `claim` writes them ("owner" for the user). With `query` too, its words answer when no claim names them.',
+        },
         since: { type: 'number', description: 'Only memories at/after this epoch-ms.' },
         until: { type: 'number', description: 'Only memories at/before this epoch-ms.' },
         cursor: {
@@ -2491,10 +2578,28 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     topic_tags: TIER1_TOPIC_TAGS['memory.search'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['memory.search'],
   },
+  'memory.relations': {
+    name: 'memory.relations',
+    description:
+      "How to write a fact about a person or a thing as `memory.write`'s `claim`: the relations it can name, which way round each is written, and an example of each. With a `group`, that group's relations; with none, the groups.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        group: {
+          type: 'string',
+          enum: MEMORY_RELATION_GROUPS.map((g) => g.group),
+          description: 'One group, such as `family`; omit to list them.',
+        },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['memory.relations'],
+    topic_tags: TIER1_TOPIC_TAGS['memory.relations'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['memory.relations'],
+  },
   'memory.write': {
     name: 'memory.write',
     description:
-      "Save a durable memory to the user's shared memory pool — a fact, decision, or piece of knowledge worth remembering across sessions. Reach for it when the user says \"remember that …\", or you have derived a fact worth persisting for later recall (readable back via `memory.search`). The entry is transparently attributed to the AI and is visible + reversible in the Memory view. \u26a0 It is proposed to the user first and saved once they approve it, unless they have let it run without asking: say what you will save, do not claim it is saved. ⛔ Everything said in this conversation is ALREADY saved automatically and stays retrievable with `recall.search`, including turns that have scrolled out of view — so \"they only said it here\" or \"it is recorded nowhere else\" is NEVER a reason to save something. Do NOT use it for a fact the user just told you, for transient conversation state, or for a one-off answer. ⛔ Do NOT SAVE any value that can change — a rate, price, levy, surcharge, quota, schedule, deadline, or preference (\"the warehouse levy is N units per pallet\", \"the renewal closes in Q3\", \"prefers morning meetings\", \"always cc Sam\"): this pool never supersedes an entry by itself, so when the value later changes elsewhere BOTH are stored and recall returns them as equally-ranked contradictions it cannot choose between. Save the EVENT that set a value if there is one (\"the Q3 levy was renegotiated on 2026-08-14\"); leave the setting itself to the user. ⚠ This governs what you SAVE, nothing else — a figure you already hold is yours to use and report as normal. To CORRECT an entry you saved (`by_you` in `memory.search`) that is wrong or no longer true, pass its `memory_id` as `replaces` instead of saving a second entry beside it: recall then returns only the new one. That fixes your own entry; it does not make a changing value safe to save. To drop an entry you saved, use `memory.forget`. An entry without `by_you` is the user's or another agent's, and you cannot change it: instead of saving a second entry that contradicts it, which leaves recall with both, tell the user they can change it in the Memory view.",
+      "Save a durable memory to the user's shared memory pool — a fact, decision, or piece of knowledge worth remembering across sessions. Reach for it when the user says \"remember that …\", or you have derived a fact worth persisting for later recall (readable back via `memory.search`). For a fact about a person or a thing, call `memory.relations` and pass `claim` too; the summary stays in the user's own words and language. A birthday or an anniversary is not a memory: it goes on the person's contact, with contact.write. The entry is transparently attributed to the AI and is visible + reversible in the Memory view. \u26a0 It is proposed to the user first and saved once they approve it, unless they have let it run without asking: say what you will save, do not claim it is saved. ⛔ Everything said in this conversation is ALREADY saved automatically and stays retrievable with `recall.search`, including turns that have scrolled out of view — so \"they only said it here\" or \"it is recorded nowhere else\" is NEVER a reason to save something. Do NOT use it for a fact the user just told you, for transient conversation state, or for a one-off answer. ⛔ Do NOT SAVE any value that can change — a rate, price, levy, surcharge, quota, schedule or deadline (\"the warehouse levy is N units per pallet\", \"the renewal closes in Q3\"): this pool never supersedes an entry by itself, so when the value later changes elsewhere BOTH are stored and recall returns them as equally-ranked contradictions it cannot choose between. Save the EVENT that set a value if there is one (\"the Q3 levy was renegotiated on 2026-08-14\"); leave the setting itself to the user. A person's lasting preference or habit is worth saving (\"Dana is vegetarian\", \"I cycle to work\"); a preference for this conversation or task alone (\"keep it short today\") is not. ⚠ This governs what you SAVE, nothing else — a figure you already hold is yours to use and report as normal. To CORRECT an entry you saved (`by_you` in `memory.search`) that is wrong or no longer true, a preference or habit that changed included, pass its `memory_id` as `replaces` instead of saving a second entry beside it: recall then returns only the new one. That fixes your own entry; it does not make a changing value safe to save. To drop an entry you saved, use `memory.forget`. An entry without `by_you` is the user's or another agent's, and you cannot change it: instead of saving a second entry that contradicts it, which leaves recall with both, tell the user they can change it in the Memory view.",
     arg_schema: {
       type: 'object',
       required: ['summary'],
@@ -2502,12 +2607,23 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         summary: {
           type: 'string',
           description:
-            'REQUIRED — a concise, self-contained statement of the memory (the line shown in the feed + recalled later). It must name something that HAPPENED and cannot change, e.g. "The Dublin office moved to Pearse Street in March 2026" or "Acme switched to net-60 terms at the 2026 renegotiation" — never a running value such as a rate, a price, or a renewal date.',
+            'REQUIRED — a concise, self-contained statement of the memory (the line shown in the feed + recalled later). It must name something that HAPPENED and cannot change, e.g. "The Dublin office moved to Pearse Street in March 2026" or "Acme switched to net-60 terms at the 2026 renegotiation", or a lasting fact about a person, a preference or a habit among them ("Dana is vegetarian") — never a running value such as a rate, a price, or a renewal date.',
         },
         body: {
           type: 'string',
           description:
             'Optional longer detail / context for the memory. Omit when the summary already says it all.',
+        },
+        claim: {
+          type: 'object',
+          required: ['subject', 'relation', 'object'],
+          description:
+            'Optional — the summary\'s fact as subject, relation and object, e.g. {"subject": "Mia", "relation": "daughter of", "object": "Dana"}. The relation must be one `memory.relations` lists; leave `claim` out when none fits.',
+          properties: {
+            subject: { anyOf: [{ type: 'string' }, { type: 'object' }] },
+            relation: { type: 'string' },
+            object: { anyOf: [{ type: 'string' }, { type: 'object' }] },
+          },
         },
         provenance_entity_ids: {
           type: 'array',
@@ -2830,7 +2946,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         timezone: { type: 'string', description: "REQUIRED — IANA zone the times are meant in, e.g. 'Europe/Dublin'. Do not default to UTC to avoid asking." },
         description: { type: 'string', description: 'Optional detail / agenda.' },
         is_all_day: { type: 'boolean', description: 'Optional — true for a day-scoped entry (a leave day), false or omitted for a timed one.' },
-        calendar_id: { type: 'string', description: 'Optional — the calendar instance to write to. Omit for the local calendar, which always exists.' },
+        calendar_id: { type: 'string', description: 'Optional — the calendar connection to write to: a `collection_slug` calendar.search returns, not a `calendar_id` it shows. Omit for the local calendar, which always exists.' },
       },
     },
     classification: TIER1_CLASSIFICATIONS['calendar.create'],
@@ -2850,8 +2966,8 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         start_at: { type: 'number', description: 'Optional new start, Unix ms. Send `end_at` too when moving an event, or it keeps its old end.' },
         end_at: { type: 'number', description: 'Optional new end, Unix ms.' },
         timezone: { type: 'string', description: 'Optional IANA zone for the new times. Required when you send a new `start_at` in a different zone.' },
-        status: { type: 'string', enum: ['confirmed', 'cancelled'], description: "Optional — set 'cancelled' to call the event off without deleting the record." },
-        calendar_id: { type: 'string', description: 'Optional — the calendar instance the event lives on. Omit for the local calendar.' },
+        status: { type: 'string', enum: ['confirmed', 'cancelled'], description: "Optional — set 'cancelled' to call the event off. Outlook keeps no cancelled events, so there it deletes the event." },
+        calendar_id: { type: 'string', description: 'Optional — the calendar connection the event is on: the `collection_slug` calendar.search returned for it, not its `calendar_id`. Omit for the local calendar.' },
       },
     },
     classification: TIER1_CLASSIFICATIONS['calendar.update'],
@@ -3659,10 +3775,9 @@ export interface ChatPlanProposal {
   tool: string;
   tier: ToolTier;
   classification: 'read' | 'write' | 'unknown';
-  /** Resolved tool args at proposal time. Mary edits before
-   *  approving (the renderer surfaces a per-arg form per § A.11
-   *  "Mary confirms / edits / cancels"). Edits propagate as a new
-   *  proposal — the original is left as `cancelled` for audit. */
+  /** Resolved tool args at proposal time: what runs on approval. § A.11's "Mary confirms /
+   *  edits / cancels" is built for a held save's arguments so far (`editable_args`): the
+   *  owner's change, made while approving, replaces them here in place and is what runs. */
   args: unknown;
   /** Stable content hash of `args` — load-bearing for the
    *  orchestrator gate so an approval is bound to *exactly* the
@@ -3704,7 +3819,26 @@ export interface ChatPlanProposal {
   /** D-329 — how the owner knows the records `args` names, by their names as they were when
    *  it was proposed (an approval's `value_labels`). Display only: `args` is what runs. */
   value_labels?: ApprovalValueLabels;
+  /** D-336 slice E — the arguments the owner may change on this card while approving it
+   *  (`chat.plan.approve`'s `edited_args`): on a held `memory.write`, `claim` (the
+   *  relationship) and, since the 2026-10-31 audit, `summary` (the words recall returns).
+   *  Set by a server that applies the change; the card offers only the ones named, since a
+   *  server that does not name one would ignore its change and run the original. */
+  editable_args?: readonly string[];
+  /** D-336 slice G (§3.9) — notes already in memory that a held save meets, found when it
+   *  was proposed: ones it contradicts, and others on the same thing. The card shows them;
+   *  they are for the relationship as proposed, so a change of it made on the card drops
+   *  them; a change of the summary alone keeps them. */
+  memory_conflicts?: readonly MemorySaveConflict[];
 }
+
+/** D-336 slice Q — what a completed held write made: the contact `contact.write` added (its
+ *  `target_id` and name, as its result gave them), or the note `memory.write` saved. Kept on the
+ *  receipt so a save and the contact its turn added are linked once both have run, in whichever
+ *  order the owner approves them. */
+export type ChatPlanMade =
+  | { readonly kind: 'contact'; readonly target_id: string; readonly name: string }
+  | { readonly kind: 'memory'; readonly memory_id: string };
 
 /** Durable lifecycle receipt for the single dispatch that consumed a plan.
  * `unknown` is recovery-only: the spend survived but terminal truth could not
@@ -3724,6 +3858,8 @@ export type ChatPlanExecutionReceipt =
       /** Exact durable Logs run when the dispatch produced one. Older
        * receipts and non-run tools legitimately omit it. */
       run_id?: string;
+      /** D-336 slice Q — the record it made, for a held contact add or save. */
+      made?: ChatPlanMade;
     }
   | {
       status: 'held';

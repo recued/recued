@@ -633,6 +633,8 @@ describe('D-137 Trio #A — recipe.run handler', () => {
         config: { entity_id: 'e1' },
         trigger_source: 'chat',
       }),
+      // D-336 (spec §53) — with chat's look at each record change the run makes.
+      { record_change_check: expect.any(Function) },
     );
   });
 
@@ -655,6 +657,25 @@ describe('D-137 Trio #A — recipe.run handler', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expectAwaitingApprovalWrapped(result.result);
+    }
+  });
+
+  it('a recipe.run held from a Telegram chat whose approval goes there says to answer it in Telegram', async () => {
+    // Live, 2026-11-01: told only of the app's bell, a Telegram chat sent the owner there while
+    // the approval sat in that chat with buttons.
+    const execute = vi.fn().mockResolvedValue(
+      buildExecuteResponse('foo/send', { success: false, awaiting_approval: true, approval_channels: ['ui', 'telegram'] }),
+    );
+    const handlers = buildChatTier1Handlers(buildDepsStub({ getExecuteRecipe: () => execute }));
+    const result = await handlers['recipe.run']!({ recipe_id: 'foo/send' }, {
+      ...ctxInternal(),
+      execution_source: { channel: 'messenger', actor: 'user_self', vendor: 'telegram', from: '42' },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const held = result.result as { message?: string; approval_elsewhere?: string };
+      expect(held.message).toContain('This approval request goes to the user on Telegram, where this conversation is');
+      expect(held.message).toContain('They can also answer it in the Recued app');
     }
   });
 
@@ -842,7 +863,38 @@ describe('D-137 Trio #A — Tier 2 dispatch', () => {
         config: { x: 1 },
         trigger_source: 'chat',
       }),
+      { entry_tool_name: 'recued-core/foo/bar', record_change_check: expect.any(Function) },
     );
+  });
+
+  it('runs the recipe under the tool it was called by (`entry_tool_name`), the name a key grants', async () => {
+    // ⛔ D-337 ruling 4, found driving it live: a contracted run (the LLM gateway's) is checked,
+    //   before each local write and when it resumes after an approval, against the grant it ran
+    //   under. Without the tool name it was checked against `<metadata.author>/<recipe_id>`, never
+    //   the `kitchen/<recipe_id>` the key grants, and a Kitchen recipe's calendar write was refused.
+    const recipe = buildRecipe('bar');
+    const execute = vi.fn().mockImplementation(async (req: ExecuteRequest) =>
+      buildExecuteResponse(req.recipe_id ?? 'inline'),
+    );
+    const dispatch = createChatTier2Dispatch(
+      buildDepsStub({
+        getRecipeStore: () =>
+          ({
+            ids: () => ['bar'],
+            get: (id: string) => (id === 'bar' ? recipe : null),
+            getStored: () => null,
+            listStored: () => [],
+          }) as never,
+        getExecuteRecipe: () => execute,
+      }),
+    );
+    await dispatch('kitchen/bar', {}, ctxInternal());
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ recipe_id: 'bar' }),
+      { entry_tool_name: 'kitchen/bar', record_change_check: expect.any(Function) },
+    );
+    // Never from the request: the model's arguments cannot name it.
+    expect(execute.mock.calls[0]![0]).not.toHaveProperty('entry_tool_name');
   });
 
   it('maps the FLAT model args to recipe config (deriveTier2ArgSchema contract)', async () => {
@@ -882,6 +934,7 @@ describe('D-137 Trio #A — Tier 2 dispatch', () => {
         recipe_id: 'foo/send',
         config: { to: 'someone@example.com', subject: 'Hi', body: 'Hello.' },
       }),
+      { entry_tool_name: 'recued-core/foo/send', record_change_check: expect.any(Function) },
     );
     // The nested-envelope shape is NOT silently honoured on the Tier-2 path:
     // a literal top-level `config` key would just be one more flat arg.

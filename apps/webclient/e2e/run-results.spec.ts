@@ -712,11 +712,12 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
         label: number;
         action: number;
       } => {
+        // "Customer review" is a calendar event, shown in the calendar view.
         const value = document.querySelector(
-          '.col-explorer-detail-field dd',
+          '.calendar-event-meta dd',
         );
         const label = document.querySelector(
-          '.col-explorer-detail-field dt',
+          '.calendar-event-meta dt',
         );
         const action = document.querySelector(primarySelector);
         if (value === null || label === null || action === null) {
@@ -751,13 +752,13 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
     expect(theme.action).toBeGreaterThanOrEqual(4.5);
   }
   expect(contrast.pageWidth).toBeLessThanOrEqual(contrast.viewport);
-  const rawDetails = page.locator('.col-explorer-detail-raw');
-  const rawSummary = page.locator('.col-explorer-detail-raw summary');
-  expect((await rawSummary.boundingBox())?.height).toBeGreaterThanOrEqual(36);
-  await rawSummary.focus();
+  const identities = page.locator('.calendar-event-identities');
+  const identitiesSummary = page.locator('.calendar-event-identities summary');
+  expect((await identitiesSummary.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  await identitiesSummary.focus();
   await page.keyboard.press('Enter');
-  await expect(rawDetails).toHaveAttribute('open', '');
-  await expect(rawSummary).toBeFocused();
+  await expect(identities).toHaveAttribute('open', '');
+  await expect(identitiesSummary).toBeFocused();
   expect(await page.evaluate(
     () => document.documentElement.scrollWidth <= window.innerWidth,
   )).toBe(true);

@@ -113,6 +113,7 @@ export {
 export type {
   MemoryListRequest,
   MemoryListEntry,
+  MemoryContradiction,
   MemoryListResponse,
   MemoryGetRequest,
   MemoryGetResponse,
@@ -132,6 +133,10 @@ export type {
   MemoryRevokeResult,
   MemorySavesRequest,
   MemorySavesResult,
+  MemoryClaimsRequest,
+  MemoryClaimsEntry,
+  MemoryClaimsResult,
+  MemoryClaimCountsResult,
 } from './memory.js';
 export {
   MEMORY_LIST_MAX_PAGE_SIZE,

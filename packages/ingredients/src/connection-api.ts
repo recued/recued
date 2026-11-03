@@ -21,9 +21,12 @@
  *        custom auth header injected after input validation, so a
  *        recipe author can't accidentally exfiltrate the token via
  *        `{{step.<id>.headers.authorization}}`).
- *      - body.<k>: structured body fields. They default to JSON; when the
- *        binding pins `Content-Type: application/x-www-form-urlencoded`,
- *        scalar fields (and arrays of scalars) are encoded as form entries.
+ *      - body.<k>: structured body fields. They default to JSON, where a
+ *        dotted name nests (`body.amount.currency` → `{"amount":
+ *        {"currency": …}}`, `nestJsonBodyFields`); when the binding pins
+ *        `Content-Type: application/x-www-form-urlencoded`, scalar fields
+ *        (and arrays of scalars) are encoded as form entries, names as they
+ *        are.
  *      - body_raw: literal string body. Mutually exclusive with
  *        `body.*` — when both appear, `body_raw` wins.
  *      - timeout_ms: per-call timeout override. Clamped via
@@ -285,6 +288,89 @@ const extractDotPrefix = (
     out[name] = val;
   }
   return out;
+};
+
+/** Where a JSON body field sits in the body: `amount.currency` (from `body.amount.currency`)
+ *  is `currency` inside `amount`. ⚠ An OData annotation is one key though it has a dot in it
+ *  (`@odata.id`, `members@odata.bind`), so a segment with `@` in it keeps the rest of the name
+ *  as that one key. A name with an empty segment (`a..b`, `a.`) is kept whole, as it always
+ *  was. `null` when a segment is prototype-sensitive: the field is dropped, as a top-level one
+ *  is. */
+const jsonBodyFieldPath = (name: string): readonly string[] | null => {
+  const segments = name.split('.');
+  if (segments.some((segment) => segment.length === 0)) return [name];
+  const annotation = segments.findIndex((segment) => segment.includes('@'));
+  const path = annotation === -1
+    ? segments
+    : [...segments.slice(0, annotation), segments.slice(annotation).join('.')];
+  return path.some((segment) => PROTOTYPE_SENSITIVE_KEYS.has(segment)) ? null : path;
+};
+
+const isPlainBodyObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** A JSON body built from its `body.<path>` fields, each dotted path nested where it names:
+ *  `body.properties.dealstage` sends `{"properties": {"dealstage": …}}`.
+ *
+ *  ⛔⛔ THIS ONCE SPLIT ONLY THE FIRST `body.` SEGMENT. 415 operations in 71 shipped packs declare
+ *  a nested field this way (`body.amount.currency`, `body.data.attributes.email`,
+ *  `body.fields.summary`), and every one went out as a flat dotted key HubSpot answers with 400
+ *  "No properties found to update" (`{"properties.hs_next_step": …}`). Only the work-entity
+ *  writes worked, because they nest their own body (`work-entity-wire-body.ts`). Found by a live
+ *  HubSpot deal update, 2026-11-02 (D-337 §7.23).
+ *
+ *  A field may name a place inside an object sent for its parent (Asana declares `body.data`
+ *  and `body.data.name`): it goes into a copy of that object. Two fields for the same place, or a
+ *  field under a parent that is not an object, are refused: a silent winner is how a caller ships
+ *  the wrong body and never learns. A key that must keep its dots goes inside its parent's object
+ *  value, whose keys are never split. With no dotted name the fields are the body as they were. */
+const nestJsonBodyFields = (fields: Record<string, unknown>): Record<string, unknown> => {
+  const names = Object.keys(fields);
+  if (!names.some((name) => name.includes('.'))) return fields;
+  const placed = names.flatMap((name) => {
+    const path = jsonBodyFieldPath(name);
+    return path === null ? [] : [{ name, path, value: fields[name] }];
+  });
+  // A parent before the fields inside it, so a field always finds its parent's object placed.
+  placed.sort((a, b) => a.path.length - b.path.length);
+  const root: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const ours = new WeakSet<object>([root]);
+  for (const { name, path, value } of placed) {
+    let node = root;
+    for (const [depth, segment] of path.slice(0, -1).entries()) {
+      const next = node[segment];
+      if (next === undefined) {
+        const created = Object.create(null) as Record<string, unknown>;
+        ours.add(created);
+        node[segment] = created;
+        node = created;
+      } else if (!isPlainBodyObject(next)) {
+        throw new IngredientError(
+          'BAD_INPUT',
+          `connection.api: body field '${path.slice(0, depth + 1).join('.')}' is not an object, so '${name}' has nowhere to go`,
+          { field: name },
+        );
+      } else if (ours.has(next)) {
+        node = next;
+      } else {
+        // The caller's own object, sent for the parent: added to as a copy, never changed.
+        const copy = Object.assign(Object.create(null) as Record<string, unknown>, next);
+        ours.add(copy);
+        node[segment] = copy;
+        node = copy;
+      }
+    }
+    const leaf = path[path.length - 1]!;
+    if (Object.prototype.hasOwnProperty.call(node, leaf)) {
+      throw new IngredientError(
+        'BAD_INPUT',
+        `connection.api: two arguments set the body field '${path.join('.')}' — send it once`,
+        { field: name },
+      );
+    }
+    node[leaf] = value;
+  }
+  return root;
 };
 
 const appendQueryScalar = (
@@ -743,13 +829,16 @@ export const buildConnectionApiBody = (
   if (!hasContentTypeHeader(headers)) {
     headers.set('Content-Type', 'application/json');
   }
+  // A form body above keeps its names as they are (`Parameter1.Name` is one form field); a JSON
+  // body nests them.
+  const body = nestJsonBodyFields(fields);
   if (decimalIntegerSpec !== undefined) {
     return stringifyJsonBodyWithDecimalIntegers(
-      fields,
+      body,
       decimalIntegerSpec,
     );
   }
-  return JSON.stringify(fields);
+  return JSON.stringify(body);
 };
 
 const hasContentTypeHeader = (headers: Headers): boolean =>

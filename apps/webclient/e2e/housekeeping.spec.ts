@@ -10,6 +10,53 @@ import { FIXED_NOW, HARNESS_URL, installFullAppHooks } from './helpers/full-app.
  */
 installFullAppHooks();
 
+test('Settings Housekeeping previews known, empty and unavailable source counts', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const count of [3, 0, undefined]) {
+    await page.goto(`${HARNESS_URL}?housekeeping=ready&settle_reads=1`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate((count) => {
+      Object.assign(window, {
+        __connectionsFixture: async (method: string) => method === 'housekeeping.status.read' ? {
+          result: { tasks: [{
+            meta: { id: 'enrichment.summary', description: 'Mail summary digest', kind: 'enrichment', interruptible: true, idle_eligible: false },
+            enrichment: {
+              is_ai_surface: true, token_estimate_per_record: 600, ai_path_available: true,
+              ...(count === undefined ? {} : { source_collection_count: count }),
+              scope_read: [
+                { collection: 'data.mail', sample_field_paths: ['subject'], ...(count === undefined ? {} : { record_count: count }) },
+                { collection: 'data.contact', sample_field_paths: ['email'] },
+              ],
+            },
+          }] },
+        } : undefined,
+      });
+      window.__app.setHash('#settings/housekeeping');
+    }, count);
+    await page.getByRole('button', { name: 'Run enrichment.summary now' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Run "Mail summary digest"?' });
+    await expect(dialog).toContainText('Estimates cover the full source population');
+    await expect(dialog).toContainText('Record count unavailable');
+    await expect(dialog.getByRole('button', { name: 'Run now', exact: true })).toBeEnabled();
+    if (count === undefined) {
+      await expect(dialog).toContainText('Estimated cost: unavailable before the run');
+      await expect(dialog).toContainText('count unavailable');
+      await expect(dialog).not.toContainText('~0 tokens');
+    } else {
+      await expect(dialog).toContainText(`~${(count * 600).toLocaleString()} tokens`);
+      await expect(dialog).toContainText(`${count} source records`);
+    }
+    if (count === 3) await page.screenshot({ path: testInfo.outputPath('housekeeping-preview-mobile.png'), fullPage: true });
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await page.getByRole('button', { name: 'Expand summary details' }).click();
+    const unknownReadScope = page.locator('.housekeeping-drawer-scope-entry').filter({ hasText: 'data.contact' });
+    await expect(unknownReadScope).toContainText('Record count unavailable');
+    if (count !== undefined) await expect(unknownReadScope).not.toContainText(`${count} records`);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('housekeeping.task.run_now'))).toBe(0);
+  }
+});
+
 test('Settings Housekeeping identifies repeated producer actions', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?housekeeping=ready`);

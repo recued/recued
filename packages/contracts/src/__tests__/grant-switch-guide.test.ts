@@ -129,7 +129,8 @@ describe('grant switch guide — lookups', () => {
       { tool: 'work.create', when: 'to add tasks' },
     ]);
     expect(toolsNeedingSwitch('core.work-entity.read').map((n) => n.tool).sort()).toEqual(['work.read', 'work.search']);
-    expect(toolsNeedingSwitch('core.memory.write').map((n) => n.tool).sort()).toEqual(['memory.forget', 'memory.write']);
+    // D-336 — the relations are read for saving, so saving is what lets an AI read them.
+    expect(toolsNeedingSwitch('core.memory.write').map((n) => n.tool).sort()).toEqual(['memory.forget', 'memory.relations', 'memory.write']);
     // D-325 — adding things you own is also what lets an AI look up their types.
     expect(toolsNeedingSwitch('core.work-entity.asset.create')).toEqual([
       { tool: 'work.type' },

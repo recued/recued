@@ -1000,7 +1000,8 @@ export const createGcalProvider = (
     async listWritableCalendars() {
       return (await selectedCalendars()).filter(cal => cal.accessRole === 'owner' || cal.accessRole === 'writer'
         || cal.accessRole === 'writerWithoutPrivateAccess')
-        .map(cal => ({ calendar_id: cal.id, name: cal.summary || cal.id }));
+        .map(cal => ({ calendar_id: cal.id, name: cal.summary || cal.id, can_invite: true as const,
+          ...(cal.primary === true ? { is_default: true as const } : {}) }));
     },
 
     async connect() {
@@ -1072,7 +1073,8 @@ export const createGcalProvider = (
       // own) is IMPORTED: `events.insert` always assigns its own iCalUID, and
       // `events.import` is Google's way to add a copy of someone else's event.
       const imported = event.ical_uid !== undefined && event.ical_uid.length > 0;
-      const url = `${GCAL_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events${imported ? '/import' : ''}`;
+      const url = `${GCAL_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events${imported ? '/import'
+        : event.send_invitations && event.attendees?.length ? '?sendUpdates=all' : ''}`;
       const data = await gcalMutate<GcalEvent>(
         url,
         'POST',
@@ -1131,11 +1133,12 @@ export const createGcalProvider = (
       }
       const eventId = resolveTargetId(input);
       await gcalMutate<void>(
-        eventUrl(input.calendar_id, eventId),
+        eventUrl(input.calendar_id, eventId) + (input.notify_attendees ? '?sendUpdates=all' : ''),
         'DELETE',
         undefined,
         'events.delete',
         input.expected_etag,
+        input.before_send,
       );
     },
 

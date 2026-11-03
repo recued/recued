@@ -13,7 +13,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
-  isCheckpoint, type Checkpoint, type ExecutionSource, type IngredientManifest, type RecipeDefinition,
+  ANY_ARGUMENT, isCheckpoint, type Checkpoint, type ExecutionSource, type IngredientManifest, type RecipeDefinition,
 } from '@recued/contracts';
 import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
 import {
@@ -27,6 +27,7 @@ import { handleExecute, type ExecuteHandlerDeps } from '../execute-handler.js';
 import type { SendCapableMailbox } from '../mail-senders.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
+import type { ContactStore } from '../storage/contact-store.js';
 
 const MAILBOXES: readonly SendCapableMailbox[] = [
   { name: 'recueddev', address: 'recued.dev@gmail.com', provider: 'Gmail' },
@@ -49,6 +50,7 @@ const hold = async (
   manifest: Record<string, unknown>,
   config: Record<string, unknown>,
   listSendCapableMailboxes?: () => readonly SendCapableMailbox[],
+  extra: Partial<ExecuteHandlerDeps> = {},
 ): Promise<Checkpoint> => {
   const manifests = createManifestRegistry('/nonexistent');
   manifests.register({
@@ -71,6 +73,7 @@ const hold = async (
       ask: vi.fn(async () => ({ ask_id: 'ask-plain' })), registerAskHandler: vi.fn(), notify: vi.fn(async () => undefined),
     },
     ...(listSendCapableMailboxes !== undefined ? { listSendCapableMailboxes } : {}),
+    ...extra,
   };
   const response = await handleExecute(deps, {
     recipe_id: recipe.recipe_id, trigger_source: 'chat', execution_source: owner, config,
@@ -243,5 +246,124 @@ describe('a held send names its mailbox by address', () => {
       expect(await cardRows(bad)).toContainEqual({ label: 'from', value: 'recueddev' });
       expect(await askText([bad])).toContain('\n  sender_mail_instance: recueddev\n');
     }
+  });
+});
+
+/** D-336 (spec §40) — told "Email Mia …" beside a contact Mia Whitfield, the AI emailed her
+ *  without asking in 6 of 6 runs, and the approval showed only her address. The owner chose
+ *  to have the approval name the contact. */
+describe('a held send names whom it goes to as the contact the address is', () => {
+  const CONTACTS: Record<string, { email: string; name?: string }> = {
+    'mia.whitfield@example.test': { email: 'mia.whitfield@example.test', name: 'Mia Whitfield' },
+    'dana@example.com': { email: 'dana@example.com', name: ' Dana ' },
+    'nameless@example.com': { email: 'nameless@example.com', name: '' },
+    // A contact known only by a name keeps a placeholder address, which no mail reaches.
+    'mention-only-ct-1@_recued.invalid': { email: 'mention-only-ct-1@_recued.invalid', name: 'Pat' },
+  };
+  const contactStore = {
+    // A second address of Mia's resolves to her, as a merge does.
+    resolveCanonicalEmail: (email: string) => ({
+      canonical_email: email === 'mia@old.example.test' ? 'mia.whitfield@example.test' : email.toLowerCase(), chain_depth: 0,
+    }),
+    get: (email: string) => CONTACTS[email] ?? null,
+  } as unknown as ContactStore;
+  const sendTo = (to: Record<string, unknown>, store: ContactStore = contactStore) => hold({
+    ...SEND_RECIPE,
+    steps: [{ id: 'send', ingredient: 'mail-send', input: { sender_mail_instance: '{{config.sender_mail_instance}}', subject: 'Late', body: 'hi', ...to } }],
+  } as unknown as RecipeDefinition, { slug: 'mail-send', risk_tier: 'write' }, { sender_mail_instance: 'recueddev' }, () => MAILBOXES,
+  { contactStore: store });
+
+  it('the ask and the card name a recipient who is a contact, the call keeping the address', async () => {
+    const checkpoint = await sendTo({ to: ['mia.whitfield@example.test'] });
+    expect(heldInput(checkpoint).to).toEqual(['mia.whitfield@example.test']);
+    // Recorded by the value, so the address reads as her wherever the call carries it (§41).
+    expect(checkpoint.preflight_context?.value_labels?.[ANY_ARGUMENT]).toEqual({
+      'mia.whitfield@example.test': 'Mia Whitfield <mia.whitfield@example.test>',
+    });
+    expect(isCheckpoint(checkpoint)).toBe(true);
+    const text = await askText([checkpoint]);
+    expect(text).toContain('\n  to: Mia Whitfield <mia.whitfield@example.test>\n');
+    // The sender's label is kept beside it.
+    expect(text).toContain('\n  sender_mail_instance: recued.dev@gmail.com (Gmail)\n');
+    expect(JSON.stringify(await cardRows(checkpoint))).toContain('Mia Whitfield <mia.whitfield@example.test>');
+  });
+
+  it('cc and bcc too, an address alone or a second one; no contact, no name or a placeholder keeps its address', async () => {
+    const checkpoint = await sendTo({
+      to: 'mia@old.example.test', cc: ['dana@example.com', 'stranger@example.com'],
+      bcc: ['nameless@example.com', 'mention-only-ct-1@_recued.invalid'],
+    });
+    expect(checkpoint.preflight_context?.value_labels?.[ANY_ARGUMENT]).toEqual({
+      'mia@old.example.test': 'Mia Whitfield <mia@old.example.test>',
+      'dana@example.com': 'Dana <dana@example.com>',
+    });
+    const text = await askText([checkpoint]);
+    expect(text).toContain('\n  to: Mia Whitfield <mia@old.example.test>\n');
+    expect(text).toContain('\n  cc: 2: Dana <dana@example.com>, stranger@example.com\n');
+    expect(text).toContain('nameless@example.com');
+  });
+
+  it('a contact store that throws costs the label, never the hold', async () => {
+    const broken = { resolveCanonicalEmail: () => { throw new Error('db gone'); }, get: () => null } as unknown as ContactStore;
+    const checkpoint = await sendTo({ to: ['mia.whitfield@example.test'] }, broken);
+    expect(checkpoint.preflight_context?.value_labels).not.toHaveProperty(ANY_ARGUMENT);
+    expect(await askText([checkpoint])).toContain('\n  to: mia.whitfield@example.test\n');
+  });
+
+  // D-336 (spec §41) — and anyone else a held call carries, at any depth: an invite's attendees.
+  it('a calendar invite names its attendee on the ask and on the card', async () => {
+    const checkpoint = await hold({
+      ...SEND_RECIPE, recipe_id: 'invite-mia', variables: {},
+      steps: [{ id: 'send', ingredient: 'calendar-create', input: { calendar_id: 'local', event: {
+        summary: 'Dinner', start_at: 1_792_256_400_000, end_at: 1_792_260_000_000,
+        attendees: [{ email: 'mia.whitfield@example.test' }, { email: 'stranger@example.com' }],
+      } } }],
+      // Destructive, so the owner's own run asks: an ordinary write to their calendar runs.
+    } as unknown as RecipeDefinition, { slug: 'calendar-create', risk_tier: 'destructive' }, {}, () => MAILBOXES, { contactStore });
+    expect(checkpoint.preflight_context?.value_labels?.[ANY_ARGUMENT]).toEqual({
+      'mia.whitfield@example.test': 'Mia Whitfield <mia.whitfield@example.test>',
+    });
+    expect(await askText([checkpoint]))
+      .toContain('attendees: 2: {email: Mia Whitfield <mia.whitfield@example.test>}, {email: stranger@example.com}');
+    expect(JSON.stringify(await cardRows(checkpoint))).toContain('Mia Whitfield <mia.whitfield@example.test>');
+    // The call keeps the address.
+    expect(JSON.stringify(heldInput(checkpoint))).not.toContain('Whitfield <');
+  });
+
+  // D-336 (spec §42) — an email passed encoded reads, on the card too, as whom it goes to.
+  it("an encoded email reads on the card as whom it goes to and its subject", async () => {
+    const raw = Buffer.from('To: Mia <mia.whitfield@example.test>\r\nSubject: Late\r\n\r\nhi', 'utf8').toString('base64url');
+    const checkpoint = await hold({
+      ...SEND_RECIPE, recipe_id: 'send-raw', variables: {},
+      steps: [{ id: 'send', ingredient: 'gmail-send-raw', input: { raw } }],
+    } as unknown as RecipeDefinition, { slug: 'gmail-send-raw', risk_tier: 'destructive' }, {}, () => MAILBOXES, { contactStore });
+    const resolve = createAskCardDetailResolver({
+      getCheckpoint: async (id) => (id === checkpoint.checkpoint_id ? checkpoint : null),
+      getAnchor: async () => ({ commit_status: 'awaiting_approval', recipe_id: checkpoint.recipe_id } as AuditEntry),
+      resolveArgEditSchema: () => ({ fields: [{ key: 'raw', type: 'string', label: 'Message' }] }),
+      timeZone: 'UTC',
+    });
+    const rows = await resolve({
+      ask_id: 'ask-raw', handler_kind: PREFLIGHT_HANDLER_KIND, handler_payload: { checkpoint_id: checkpoint.checkpoint_id },
+    } as unknown as PendingAsk);
+    expect(rows).toContainEqual({ label: 'Message', value: 'An email to Mia Whitfield <mia.whitfield@example.test>; subject: Late' });
+    expect(heldInput(checkpoint).raw).toBe(raw);
+    // With no names recorded at all, it is described by its addresses.
+    const bare = { ...checkpoint, preflight_context: { ...checkpoint.preflight_context, value_labels: undefined } } as Checkpoint;
+    const resolveBare = createAskCardDetailResolver({
+      getCheckpoint: async () => bare,
+      getAnchor: async () => ({ commit_status: 'awaiting_approval', recipe_id: checkpoint.recipe_id } as AuditEntry),
+      resolveArgEditSchema: () => ({ fields: [{ key: 'raw', type: 'string', label: 'Message' }] }),
+      timeZone: 'UTC',
+    });
+    expect(await resolveBare({
+      ask_id: 'ask-raw', handler_kind: PREFLIGHT_HANDLER_KIND, handler_payload: { checkpoint_id: checkpoint.checkpoint_id },
+    } as unknown as PendingAsk)).toContainEqual({ label: 'Message', value: 'An email to mia.whitfield@example.test; subject: Late' });
+  });
+
+  it('two sends in one approval: each names its own recipient, read from its own run', async () => {
+    const text = await askText([await sendTo({ to: ['mia.whitfield@example.test'] }), await sendTo({ to: ['dana@example.com'] })]);
+    expect(text).toContain('Mia Whitfield <mia.whitfield@example.test>');
+    expect(text).toContain('Dana <dana@example.com>');
   });
 });

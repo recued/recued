@@ -42,6 +42,7 @@ import {
   type AsksSubmitAnswerCaller,
 } from './asks-panel.js';
 import {
+  heldAskChatLink,
   pendingChatPlanHref,
   pendingChatPlanResolutionCopy,
   type PendingChatPlan,
@@ -946,6 +947,8 @@ export const bootstrapApprovalsRoute = (
         // The full page has room to say what "Allow this session" lets happen;
         // the top-bar popover does not show it (owner, 2026-10-19).
         showSessionGrantTerms: true,
+        // D-336 slice N — a held chat write's card in Chat, where it is changed.
+        ...heldAskChatLink(ask),
       },
     );
   };

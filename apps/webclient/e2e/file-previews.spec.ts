@@ -1,5 +1,6 @@
 import { test, expect, type Browser } from '@playwright/test';
 import { build } from 'esbuild';
+import { zipSync, strToU8 } from 'fflate';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -87,7 +88,7 @@ test('CSV tables page and switch to original text without changing the draft, do
     await expect(f.viewer.getByRole('status').filter({ hasText: 'Rows 1–50 of 122' })).toBeVisible();
     await f.page.screenshot({ path: testInfo.outputPath('csv-table-desktop.png') });
     const next = f.viewer.getByRole('button', { name: 'Next rows', exact: true });
-    await next.click(); await expect(next).toBeFocused();
+    await next.focus(); await f.page.keyboard.press('Enter'); await expect(next).toBeFocused();
     await expect(f.viewer).toContainText('Rows 51–100 of 122');
     const grid = f.viewer.getByRole('region', { name: 'CSV table scroll area', exact: true });
     const scroll = await grid.evaluate(node => { node.scrollTop = 80; return node.scrollTop; });
@@ -98,7 +99,7 @@ test('CSV tables page and switch to original text without changing the draft, do
     expect(await grid.evaluate(node => node.scrollTop)).toBe(scroll);
     await f.viewer.getByRole('button', { name: 'Table', exact: true }).click();
     expect(await grid.evaluate(node => node.scrollTop)).toBe(scroll);
-    await next.click(); await expect(next).toBeFocused(); await expect(next).toHaveAttribute('aria-disabled', 'true');
+    await next.focus(); await f.page.keyboard.press('Enter'); await expect(next).toBeFocused(); await expect(next).toHaveAttribute('aria-disabled', 'true');
     await expect(f.viewer).toContainText('Rows 101–122 of 122');
     await expect(table.getByRole('rowheader', { name: '122', exact: true })).toBeVisible();
     const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
@@ -124,7 +125,7 @@ test('phone CSV previews retain paging focus and keep malformed CSV readable and
   });
   try {
     await f.page.setViewportSize({ width: 390, height: 844 }); await f.pick();
-    const open = f.picker.getByRole('button', { name: 'Preview Good.csv', exact: true }); await open.click();
+    const open = f.picker.getByRole('button', { name: 'Preview Good.csv', exact: true }); await open.focus(); await f.page.keyboard.press('Enter');
     await expect(f.viewer.getByRole('table')).toBeVisible();
     await expect(f.viewer.getByRole('columnheader', { name: 'Column 1', exact: true })).toBeVisible();
     await expect(f.viewer.getByRole('cell', { name: 'Customer 1', exact: true })).toBeVisible();
@@ -224,10 +225,18 @@ test('picker and composer image previews preserve selections and release their o
 test('remote PDF uses the local worker, pages and zooms on mobile, and Download saves the exact preview', async ({ browser }, testInfo) => {
   const bytes = pdfFixture(); const f = await setup(browser);
   const workerRequests: string[] = []; f.page.on('request', request => { if (request.url().includes('pdf.worker')) workerRequests.push(request.url()); });
+  let releaseReader!: () => void;
+  const readerReady = new Promise<void>(resolve => { releaseReader = resolve; });
+  await f.context.route('**/file-preview/*/pdf.mjs', async route => { await readerReady; await route.continue().catch(() => {}); });
   try {
     await f.page.setViewportSize({ width: 390, height: 844 }); f.fixture.cloudSource!.respond(bytes, 'application/pdf');
     const before = f.fixture.files!.totalBytes(); await f.pick(); await f.picker.getByRole('combobox', { name: 'File source' }).selectOption('google.work.file');
     await f.picker.getByRole('button', { name: 'Preview Cloud report.pdf', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File details', exact: true }).click();
+    releaseReader();
+    await expect(f.viewer.locator('canvas[data-file-preview-rendered]')).toHaveCount(1);
+    await f.viewer.getByRole('button', { name: 'Back to preview', exact: false }).click();
     await expect(f.viewer.locator('canvas[data-file-preview-rendered]')).toBeVisible();
     await expect(f.viewer).toContainText('Temporary preview'); await expect(f.viewer).toContainText('Page 1 of 2');
     await f.viewer.getByRole('button', { name: 'Show page text' }).click();
@@ -249,26 +258,98 @@ test('remote PDF uses the local worker, pages and zooms on mobile, and Download 
     await f.viewer.getByRole('button', { name: 'Close preview' }).click();
     await expect.poll(() => f.resources().then(value => value.terminated)).toBe(1);
     await expect.poll(() => f.resources().then(value => value.urls)).toBe(0);
+  } finally { releaseReader(); await f.close(); }
+});
+
+const docxMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const docx = (body: string) => Buffer.from(zipSync({
+  '[Content_Types].xml': strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'),
+  'word/document.xml': strToU8('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' + body + '</w:body></w:document>'),
+  'word/_rels/document.xml.rels': strToU8('<Relationships><Relationship Target="https://outside.invalid/tracker"/></Relationships>'),
+}));
+
+test('DOCX text, details and origin share one viewer on desktop and phone without running document content', async ({ browser }, testInfo) => {
+  const bytes = docx('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Client proposal</w:t></w:r></w:p>'
+    + '<w:p><w:hyperlink><w:r><w:t>&lt;img src=x onerror=alert(1)&gt;</w:t></w:r></w:hyperlink></w:p>'
+    + '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>00125.50</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+    + '<w:p><w:drawing><w:r><w:t>Hidden object</w:t></w:r></w:drawing></w:p>'
+    + Array.from({ length: 90 }, (_, n) => `<w:p><w:r><w:t>Paragraph ${n + 1}</w:t></w:r></w:p>`).join('')
+    + `<w:p><w:pPr><w:numPr/></w:pPr><w:r><w:t>${'z'.repeat(100_002)}</w:t></w:r></w:p>`);
+  const f = await setup(browser, async fixture => {
+    await fixture.addConversationFile({ id: 'docx', name: 'Proposal.docx', mime_type: docxMime, bytes });
+    await fixture.addConversationFile({ id: 'docx-empty', name: 'Pictures.docx', mime_type: docxMime,
+      bytes: docx('<w:p><w:drawing/></w:p>') });
+  });
+  const outside: string[] = []; f.page.on('request', request => { if (request.url().includes('outside.invalid')) outside.push(request.url()); });
+  try {
+    await f.page.setViewportSize({ width: 1280, height: 900 }); await f.input.fill('Keep this draft');
+    await f.page.getByRole('button', { name: 'Preview Proposal.docx', exact: true }).click();
+    const article = f.viewer.getByLabel('Document text', { exact: true });
+    await expect(article.getByRole('heading', { name: 'Client proposal', level: 1 })).toBeVisible();
+    await expect(article.getByRole('cell', { name: '00125.50', exact: true })).toBeVisible();
+    await expect(article).toContainText('<img src=x onerror=alert(1)>'); await expect(article).not.toContainText('Hidden object');
+    expect((await article.textContent())!.length).toBe(100_000);
+    await expect(f.viewer.getByRole('status').filter({ hasText: 'Showing the first 100,000 characters' })).toBeVisible();
+    expect(await article.locator('img,script,iframe,a').count()).toBe(0);
+    await f.page.screenshot({ path: testInfo.outputPath('file-viewer-docx-desktop.png') });
+    const scroller = f.viewer.locator('.file-preview-content');
+    const position = await scroller.evaluate(node => { node.scrollTop = 600; return node.scrollTop; });
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File details', exact: true }).click();
+    await expect(f.viewer.getByRole('heading', { name: 'File details' })).toBeVisible(); await expect(f.viewer.locator('dd')).toContainText(['Proposal.docx', docxMime]);
+    await f.viewer.getByRole('button', { name: 'Back to preview', exact: false }).click();
+    expect(await scroller.evaluate(node => node.scrollTop)).toBe(position);
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Origin', exact: true }).click();
+    await expect(f.viewer).toContainText('Messenger attachment');
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    const saving = f.page.waitForEvent('download');
+    await f.viewer.getByRole('group', { name: 'File actions', exact: true }).getByRole('button', { name: 'Download file', exact: true }).click();
+    expect(await readFile((await (await saving).path())!)).toEqual(bytes);
+    expect(f.calls.filter(call => call.method === previewMethod)).toHaveLength(1);
+    expect(f.calls.some(call => call.method === 'data.file.read')).toBe(false);
+    await f.viewer.getByRole('button', { name: 'Close preview' }).click(); await expect(f.input).toHaveValue('Keep this draft');
+    await f.page.setViewportSize({ width: 390, height: 844 });
+    await f.page.getByRole('button', { name: 'Preview Proposal.docx', exact: true }).click();
+    await expect(article).toContainText('Client proposal');
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File details', exact: true }).click();
+    await f.page.screenshot({ path: testInfo.outputPath('file-viewer-details-mobile.png') });
+    await expect(f.viewer.getByRole('button', { name: 'Close preview' })).toBeInViewport();
+    await expect(f.viewer.getByRole('button', { name: 'Download file', exact: true })).toBeInViewport();
+    await f.viewer.getByRole('button', { name: 'Close preview' }).click();
+    await f.page.getByRole('button', { name: 'Preview Pictures.docx', exact: true }).click();
+    await expect(f.viewer.getByLabel('Document text', { exact: true })).toContainText('no text to preview');
+    await expect(f.viewer.getByRole('button', { name: 'Download file', exact: true })).toBeEnabled();
+    noWrites(f.calls); expect(outside).toEqual([]); expect((await f.resources()).violations).toEqual([]);
+    await f.viewer.getByRole('button', { name: 'Close preview' }).click();
+    await expect.poll(() => f.resources().then(value => value.terminated)).toBe(3);
   } finally { await f.close(); }
 });
 
-test('Data and its import chooser share a metadata-only fallback until an explicit Download', async ({ browser }) => {
+test('Data and its import chooser preview provider exports and label their independent download', async ({ browser }) => {
+  const bytes = docx('<w:p><w:r><w:t>Exported document content</w:t></w:r></w:p>');
   const f = await setup(browser);
   try {
     f.fixture.cloudSource!.add('one', 'Native plan', { mime_type: 'application/vnd.google-apps.document' });
+    f.fixture.cloudSource!.respond(bytes, docxMime);
     await f.page.evaluate(() => { location.hash = '#data/files'; });
     await f.page.getByRole('button', { name: /Work drive/ }).click();
-    await f.page.locator('[data-collection-record]').filter({ hasText: 'Native plan' }).click();
-    await f.page.getByRole('button', { name: 'Preview file', exact: true }).click();
-    await expect(f.viewer).toContainText('Native plan.docx'); await expect(f.viewer).toContainText('no preview yet');
-    expect(f.fixture.cloudSource!.downloads()).toBe(0); await f.viewer.getByRole('button', { name: 'Close preview' }).click();
+    await f.page.locator('[data-recued-data-action="file-open-preview"]').filter({ hasText: 'Native plan' }).click();
+    await expect(f.viewer.getByLabel('Document text', { exact: true })).toHaveText('Exported document content');
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Origin', exact: true }).click();
+    await expect(f.viewer).toContainText('Work drive'); await expect(f.viewer).toContainText('/Clients/Native plan');
+    expect(f.fixture.cloudSource!.downloads()).toBe(1); await f.viewer.getByRole('button', { name: 'Close preview' }).click();
+    await f.page.getByRole('button', { name: 'Details for Native plan', exact: true }).click();
     await f.page.getByRole('button', { name: 'Import and use in Chat', exact: true }).click();
     const chooser = f.page.getByRole('dialog', { name: 'Import and use in Chat', exact: true });
-    await chooser.getByRole('button', { name: 'Preview file', exact: true }).click();
-    await expect(f.viewer).toContainText('no preview yet');
-    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file' }).click();
-    const download = await saving; expect((await readFile((await download.path())!)).toString()).toBe('native-document-export');
-    expect(download.suggestedFilename()).toBe('Native plan.docx'); expect(f.fixture.cloudSource!.downloads()).toBe(1);
+    await expect(chooser.getByRole('button', { name: 'Preview file', exact: true })).toBeEnabled();
+    await chooser.getByRole('button', { name: 'Preview file', exact: true }).focus(); await f.page.keyboard.press('Enter');
+    await expect(f.viewer.getByLabel('Document text', { exact: true })).toHaveText('Exported document content');
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download exported file', exact: true }).click();
+    const download = await saving; expect(await readFile((await download.path())!)).toEqual(bytes);
+    expect(download.suggestedFilename()).toBe('Native plan.docx'); expect(f.fixture.cloudSource!.downloads()).toBe(2);
     noWrites(f.calls);
     await f.page.keyboard.press('Escape'); await expect(chooser).toBeVisible();
     await expect(chooser.getByRole('button', { name: 'Preview file', exact: true })).toBeFocused();
@@ -297,11 +378,24 @@ test('retry recovers a failed preview and late replies retire on close and navig
   try {
     await f.pick(); f.fail(); await f.picker.getByRole('button', { name: 'Preview Note.txt', exact: true }).click();
     await expect(f.viewer.getByRole('alert')).toContainText('connection interrupted');
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File details', exact: true }).click();
+    await expect(f.viewer.locator('dd').first()).toHaveText('Note.txt');
+    expect(f.calls.some(call => call.method === previewMethod && call.args.metadata_only === true)).toBe(true);
+    expect(f.calls.some(call => call.method === 'data.file.read')).toBe(false);
+    await f.viewer.getByRole('button', { name: 'Back to preview', exact: false }).click();
+    const fallback = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    expect(await readFile((await (await fallback).path())!, 'utf8')).toBe('Retained note');
+    await expect(f.viewer.getByRole('alert')).toContainText('connection interrupted');
     await f.viewer.getByRole('button', { name: 'Retry preview' }).click();
     await expect(f.viewer.getByLabel('File text', { exact: true })).toHaveText('Retained note');
     await f.page.keyboard.press('Escape');
     const release = f.hold(); await f.picker.getByRole('button', { name: 'Preview Note.txt', exact: true }).click();
-    await expect(f.viewer).toContainText('Loading preview'); await f.page.keyboard.press('Escape');
+    await expect(f.viewer).toContainText('Loading preview');
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File details', exact: true }).click();
+    await expect(f.viewer.locator('.file-preview-info')).toContainText('Loading file information');
+    await f.page.keyboard.press('Escape');
     await expect(f.viewer).toHaveCount(0); await expect(f.picker).toBeVisible(); release();
     await f.picker.getByRole('button', { name: 'Preview Note.txt', exact: true }).click();
     await expect(f.viewer.getByLabel('File text', { exact: true })).toHaveText('Retained note');
@@ -350,6 +444,9 @@ test('a changed picker selection reports the conflict before reading or altering
     await f.picker.getByRole('button', { name: 'Preview Selected.txt', exact: true }).click();
     await expect(f.viewer.getByRole('alert')).toContainText('file changed');
     await expect(f.viewer.getByLabel('File text', { exact: true })).toHaveCount(0);
+    await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    await expect(f.viewer.getByRole('alert', { name: 'Download status', exact: true })).toContainText('file changed');
+    expect(f.calls.some(call => call.method === 'data.file.read')).toBe(false);
     await f.page.keyboard.press('Escape'); await f.page.keyboard.press('Escape');
     await expect(f.input).toHaveValue('Still writing'); noWrites(f.calls);
   } finally { await f.close(); }
@@ -358,6 +455,8 @@ test('a changed picker selection reports the conflict before reading or altering
 for (const invalid of [
   { name: 'Broken.pdf', mime: 'application/pdf', bytes: '%PDF-broken', message: 'Invalid PDF' },
   { name: 'Broken.png', mime: 'image/png', bytes: 'not an image', message: 'could not be displayed' },
+  { name: 'Broken.docx', mime: docxMime, bytes: 'not a Word document', message: 'Invalid or oversized DOCX' },
+  { name: 'Malformed.docx', mime: docxMime, bytes: docx('<w:p>'), message: 'could not be read' },
   { name: 'Binary.txt', mime: 'text/plain', bytes: '\0binary', message: 'binary data' },
 ]) test('an unreadable ' + invalid.name + ' still downloads its original bytes', async ({ browser }) => {
   const f = await setup(browser, async fixture => {
@@ -368,7 +467,151 @@ for (const invalid of [
     await expect(f.viewer.getByRole('alert')).toContainText(invalid.message);
     await expect(f.viewer.getByRole('button', { name: 'Download file' })).toBeEnabled();
     const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file' }).click();
-    expect((await readFile((await (await saving).path())!)).toString()).toBe(invalid.bytes);
+    expect(await readFile((await (await saving).path())!)).toEqual(Buffer.from(invalid.bytes));
     noWrites(f.calls);
   } finally { await f.close(); }
+});
+
+
+const workbookMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+test('explicit conversion shows inert document text and keeps the saved original download', async ({ browser }, testInfo) => {
+  const original = 'original workbook bytes';
+  const f = await setup(browser, async fixture => {
+    fixture.previewConversion.readers = ['markitdown', 'docling'];
+    fixture.previewConversion.text = '# Budget\n<img src=x onerror=window.convertedExecuted=true>\n00125.50';
+    await fixture.addConversationFile({ id: 'convert-workbook', name: 'Budget.xlsx', mime_type: workbookMime, bytes: original });
+  });
+  try {
+    await f.input.fill('Keep this draft'); await f.openConversation();
+    await f.conversation.getByRole('button', { name: 'Preview Budget.xlsx', exact: true }).click();
+    const convert = f.viewer.getByRole('button', { name: 'Convert for preview', exact: true });
+    await expect(convert).toBeEnabled(); expect(f.fixture.previewConversion.runs).toBe(0);
+    await expect(f.viewer.getByRole('combobox', { name: 'Document reader' })).toHaveValue('markitdown');
+    await convert.click();
+    await expect(f.viewer.getByLabel('Converted document text', { exact: true })).toContainText('<img src=x');
+    expect(await f.page.evaluate(() => Reflect.get(window, 'convertedExecuted'))).toBeUndefined();
+    expect(f.fixture.previewConversion.input!.toString()).toBe(original);
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    expect((await readFile((await (await saving).path())!)).toString()).toBe(original);
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File details', exact: true }).click();
+    await expect(f.viewer.getByRole('heading', { name: 'File details', exact: true })).toBeVisible();
+    await expect(f.viewer).toContainText(workbookMime);
+    await f.viewer.getByRole('button', { name: 'Back to preview', exact: false }).click();
+    await expect(f.viewer.getByLabel('Converted document text', { exact: true })).toContainText('00125.50');
+    await f.viewer.screenshot({ path: testInfo.outputPath('converted-preview-desktop.png') });
+    await f.viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await expect(f.input).toHaveValue('Keep this draft'); noWrites(f.calls);
+    expect(f.fixture.previewConversion.runs).toBe(1);
+  } finally { await f.close(); }
+});
+
+test('remote conversion waits for approval before downloading and retains no imported source on mobile', async ({ browser }, testInfo) => {
+  const original = Buffer.from('remote workbook original');
+  const f = await setup(browser, async fixture => {
+    fixture.previewConversion.readers = ['markitdown']; fixture.previewConversion.mode = 'hold';
+    fixture.previewConversion.text = 'Approved remote workbook text';
+    fixture.cloudSource!.add('workbook', 'Cloud budget.xlsx', { mime_type: workbookMime, size: original.length });
+    fixture.cloudSource!.respond(original, workbookMime);
+  });
+  try {
+    await f.page.setViewportSize({ width: 390, height: 844 }); const before = f.fixture.files!.totalBytes();
+    await f.pick(); await f.picker.getByRole('combobox', { name: 'File source' }).selectOption('google.work.file');
+    await f.picker.getByRole('button', { name: 'Preview Cloud budget.xlsx', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Convert for preview', exact: true }).click();
+    await expect(f.viewer.getByRole('link', { name: 'Review approval (new tab)', exact: true })).toBeVisible();
+    expect(f.fixture.cloudSource!.downloads()).toBe(0);
+    await f.viewer.screenshot({ path: testInfo.outputPath('converted-preview-approval-mobile.png') });
+    await f.fixture.previewConversion.approve();
+    await expect(f.viewer.getByLabel('Converted document text', { exact: true })).toHaveText('Approved remote workbook text');
+    expect(f.fixture.cloudSource!.downloads()).toBe(1);
+    expect(f.fixture.previewConversion.input).toEqual(original);
+    expect(f.fixture.files!.totalBytes()).toBe(before);
+    await f.viewer.screenshot({ path: testInfo.outputPath('converted-preview-mobile.png') });
+    f.fixture.cloudSource!.respond('provider changed bytes without a mirror update', workbookMime);
+    await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    await expect(f.viewer.getByLabel('Download status', { exact: true })).toContainText('changed');
+    const download = f.calls.filter(call => call.method === 'data.file.read').at(-1)!;
+    expect(download.args.expected_hash).toMatch(/^[a-f0-9]{64}$/);
+    f.fixture.cloudSource!.respond(original, workbookMime);
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    expect(await readFile((await (await saving).path())!)).toEqual(original);
+    noWrites(f.calls);
+  } finally { await f.close(); }
+});
+
+test('missing readers can be rechecked and a failed conversion can be retried explicitly', async ({ browser }) => {
+  const f = await setup(browser, async fixture => {
+    await fixture.addConversationFile({ id: 'missing-reader', name: 'Budget.xlsx', mime_type: workbookMime, bytes: 'workbook' });
+    fixture.previewConversion.mode = 'failure';
+  });
+  try {
+    await f.openConversation(); await f.conversation.getByRole('button', { name: 'Preview Budget.xlsx', exact: true }).click();
+    await expect(f.viewer.getByRole('link', { name: 'Browse reader packs (new tab)', exact: true })).toBeVisible();
+    expect(f.fixture.previewConversion.runs).toBe(0);
+    f.fixture.previewConversion.readers = ['markitdown'];
+    await f.viewer.getByRole('button', { name: 'Check readers', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Convert for preview', exact: true }).click();
+    await expect(f.viewer.getByLabel('Conversion status', { exact: true })).toContainText('could not be converted');
+    await expect(f.viewer).not.toContainText('private-adapter-diagnostic');
+    await expect(f.viewer.getByRole('button', { name: 'Download file', exact: true })).toBeEnabled();
+    f.fixture.previewConversion.mode = 'ready';
+    await f.viewer.getByRole('button', { name: 'Retry conversion', exact: true }).click();
+    await expect(f.viewer.getByLabel('Converted document text', { exact: true })).toContainText('Stored values');
+    f.fixture.previewConversion.mode = 'failure';
+    await f.viewer.getByRole('button', { name: 'Convert again', exact: true }).click();
+    await expect(f.viewer.getByLabel('Conversion status', { exact: true })).toContainText('could not be converted');
+    await expect(f.viewer.getByLabel('Converted document text', { exact: true })).toHaveCount(0);
+    f.fixture.previewConversion.mode = 'ready';
+    await f.viewer.getByRole('button', { name: 'Retry conversion', exact: true }).click();
+    await expect(f.viewer.getByLabel('Converted document text', { exact: true })).toContainText('Stored values');
+    expect(f.fixture.previewConversion.runs).toBe(4);
+  } finally { await f.close(); }
+});
+
+test('a remote source changed during an approval hold is rejected before its bytes are fetched', async ({ browser }) => {
+  const f = await setup(browser, async fixture => {
+    fixture.previewConversion.readers = ['markitdown']; fixture.previewConversion.mode = 'hold';
+    fixture.cloudSource!.add('workbook', 'Cloud budget.xlsx', { mime_type: workbookMime, size: 10 });
+  });
+  try {
+    await f.pick(); await f.picker.getByRole('combobox', { name: 'File source' }).selectOption('google.work.file');
+    await f.picker.getByRole('button', { name: 'Preview Cloud budget.xlsx', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Convert for preview', exact: true }).click();
+    await expect(f.viewer.getByRole('link', { name: 'Review approval (new tab)', exact: true })).toBeVisible();
+    f.fixture.cloudSource!.add('workbook', 'Changed budget.xlsx', { mime_type: workbookMime, revision: 'v2', size: 10 });
+    await f.fixture.previewConversion.approve();
+    await expect(f.viewer.getByLabel('Conversion status', { exact: true })).toContainText('changed');
+    expect(f.fixture.cloudSource!.downloads()).toBe(0);
+    await expect(f.viewer.getByLabel('Converted document text', { exact: true })).toHaveCount(0);
+  } finally { await f.close(); }
+});
+
+test('closing the viewer retires a late conversion status reply', async ({ browser }) => {
+  const f = await setup(browser, async fixture => {
+    fixture.previewConversion.readers = ['markitdown']; fixture.previewConversion.mode = 'hold';
+    await fixture.addConversationFile({ id: 'late-conversion', name: 'Budget.xlsx', mime_type: workbookMime, bytes: 'workbook' });
+  });
+  let release!: () => void, entered!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  await f.context.route('**/existing-files-rpc', async route => {
+    const { method, args } = route.request().postDataJSON();
+    if (method === 'data.file.attachments.convert' && args.action === 'status') { entered(); await pending; }
+    await route.fallback();
+  });
+  try {
+    await f.input.fill('Still my draft'); await f.openConversation();
+    await f.conversation.getByRole('button', { name: 'Preview Budget.xlsx', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Convert for preview', exact: true }).click();
+    await waiting;
+    await f.viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await f.fixture.previewConversion.approve();
+    const replied = f.page.waitForResponse(response => response.url().endsWith('/existing-files-rpc')
+      && response.request().postDataJSON().method === 'data.file.attachments.convert'
+      && response.request().postDataJSON().args.action === 'status');
+    release(); await replied;
+    await expect(f.viewer).toHaveCount(0); await expect(f.input).toHaveValue('Still my draft');
+    await expect(f.page.getByLabel('Converted document text', { exact: true })).toHaveCount(0);
+  } finally { release(); await f.close(); }
 });

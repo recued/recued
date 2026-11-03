@@ -25,6 +25,7 @@ import {
   createChatRawOpSource,
   projectRawOpOutcome,
 } from '../chat-tool-handlers.js';
+import { notAskedYetMessage } from '../chat-carries-on.js';
 import {
   buildDefaultMcpInboundTokenGrants,
   type ExecutionSource,
@@ -690,6 +691,32 @@ describe('D-225 § 9.5.1 step 2b — the chat raw-op DISPATCH', () => {
         op: 'pub.pack.op',
       },
     });
+  });
+
+  it('D-337 slice K — an op not asked tells the agent it was not, and nothing waits on it', () => {
+    expect(projectRawOpOutcome({ kind: 'not_asked', op_id: 'pub.pack.op', waiting: 'recipe.run' }))
+      .toEqual({ ok: false, reason: 'not_asked_yet', detail: notAskedYetMessage('recipe.run') });
+  });
+
+  it('D-329 — a HELD op says where else the owner answers it, as a held run does', () => {
+    const told = projectRawOpOutcome({ kind: 'held', op_id: 'pub.pack.op', run_id: 'r1', approval_channels: ['ui', 'telegram'] });
+    expect(told.ok && (told.result as Record<string, unknown>).approval_elsewhere)
+      .toBe('This approval request also goes to the user on Telegram; they can answer it there too.');
+    const appOnly = projectRawOpOutcome({ kind: 'held', op_id: 'pub.pack.op', run_id: 'r1', approval_channels: ['ui'] });
+    expect(appOnly.ok && appOnly.result).not.toHaveProperty('approval_elsewhere');
+  });
+
+  it('a HELD op asked from a Telegram chat says to answer it there in Telegram', () => {
+    // Live, 2026-11-01: told "also goes to the user on Telegram", a Telegram chat still sent the
+    // owner to the app's bell.
+    const told = projectRawOpOutcome(
+      { kind: 'held', op_id: 'pub.pack.op', run_id: 'r1', approval_channels: ['ui', 'telegram'] },
+      { channel: 'messenger', actor: 'user_self', vendor: 'telegram', from: '42' },
+    );
+    expect(told.ok && (told.result as Record<string, unknown>).approval_elsewhere).toBe(
+      'This approval request also goes to the user on Telegram, where this conversation is: tell them they can '
+      + 'answer it there in Telegram, with the buttons on the approval message.',
+    );
   });
 
   it('⛔ a HELD run is a SUCCESS, never an error envelope', () => {

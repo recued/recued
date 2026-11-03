@@ -10,7 +10,9 @@ const run = async (page: Page, surface: Surface, useDialog = false) => {
     await page.locator('[data-recued-recipes-action="run-defaults"]').click();
   } else {
     if (surface === 'recipes') {
-      await page.locator('[data-recued-recipes-action="open-run"]').filter({ hasText: /^Run$/ }).click();
+      // By its name: the button's text also holds its icon's whitespace.
+      await page.locator('[data-recued-recipes-action="open-run"]')
+        .and(page.getByRole('button', { name: 'Run', exact: true })).click();
     } else {
       await page.locator('[data-recued-pack-app-operation="installed-mail-digest"]').click();
     }

@@ -186,6 +186,7 @@ export const startPreListenerRuntime = async (
   let upstreamMergeRegistry = options.getUpstreamMergeRegistry();
   const rpcContext = composeRpcContext({
     storage: options.storage,
+    collectionRegistry: options.collection.collectionRegistry,
     app: options.app,
     execution: options.execution,
     schedulerRegistry: options.schedulerRegistry,

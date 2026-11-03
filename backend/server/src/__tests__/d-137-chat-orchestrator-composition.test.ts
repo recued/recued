@@ -29,8 +29,10 @@ import {
   type RecallSearchResult,
 } from '../chat-recall-search-tool.js';
 import { renderToolRow } from '../chat-tool-row.js';
+import { noteWaitingInTurn } from '../chat-carries-on.js';
 import type { MemoryRedactionRecord } from '../memory-rpc-handler.js';
 import { createUserMemoryStore, type UserMemoryRow } from '../user-memory-store.js';
+import { createHeldResultTurnStore, createHeldRunWatchStore } from '../storage/chat-held-result-store.js';
 import type { BlobStore } from '../storage/blob-store.js';
 import { isMcpWireRegistryTool } from '../mcp-server.js';
 import { createInMemoryCollection, type AuditLogStore } from '@recued/storage';
@@ -176,6 +178,14 @@ const expectedBundleKeys = [
   // D-318 step 5 — others told of the same settled runs: the email door writes
   // the follow-up of a run its turn left waiting for an approval.
   'onRunSettled',
+  // D-337 — others told when a continuation's turn ends: the email door sends its
+  // answer then, rather than at its next idle look.
+  'onHeldResultTurnEnded',
+  // D-336 slice O's open item — told once a Tier-1 call is held: a later save of a fact
+  // marks the earlier held chat saves of it "Asked again". The execute deps are composed
+  // apart from chat, so they reach it late-bound (`AppContext.tier1HeldRef`), as they
+  // reach `internalRegistry`.
+  'onTier1Held',
   // D-219 — the capture-only argument buffer, surfaced ONLY so the retention
   // pruner can bound it. ⛔ No read path consumes it.
   'executionCaseArgumentStore',
@@ -421,6 +431,61 @@ describe('composeChatOrchestrator', () => {
     expect(heard).toEqual(['run-1']);
   });
 
+  it('D-337 — a run whose email chat carries on is recorded as continued before any listener hears it settled', async () => {
+    // The email door is a listener: it writes its fixed follow-up for a settled run unless the
+    // run continued, so the chat must decide first or the owner gets both.
+    const db = makeDb();
+    const { bundle } = composeHarness({ db });
+    try {
+      const session = 'mail:recued-chat:c1';
+      bundle.chatStore.createSession({ id: session, now: 1 });
+      createHeldRunWatchStore(db).watch({
+        run_id: 'run-mail', session_id: session, turn_id: 'turn-asked', tool_name: 'recipe.run', called_at: 1,
+      });
+      const continued = createHeldResultTurnStore(db);
+      const seen: boolean[] = [];
+      bundle.onRunSettled((settled) => { seen.push(continued.continued(settled.run_id)); });
+      await bundle.runSettledSink({
+        execution_source: { channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'me@owner.example' },
+        run_id: 'run-mail', tool_name: 'recipe.run', result: { success: true }, state: 'succeeded', ts: 2,
+      });
+      expect(seen).toEqual([true]);
+    } finally {
+      bundle.orchestrator.turnQueue?.close();
+    }
+  });
+
+  it('D-337 — tells each listener when a continuation\'s turn ends, as which chat, until it stops', async () => {
+    const db = makeDb();
+    const { bundle } = composeHarness({ db });
+    try {
+      const session = 'mail:recued-chat:c2';
+      bundle.chatStore.createSession({ id: session, now: 1 });
+      createHeldRunWatchStore(db).watch({
+        run_id: 'run-mail', session_id: session, turn_id: 'turn-asked', tool_name: 'recipe.run', called_at: 1,
+      });
+      const ended: unknown[] = [];
+      const stop = bundle.onHeldResultTurnEnded((turn) => { ended.push(turn); });
+      // A listener that throws keeps neither the turn nor another listener from it.
+      bundle.onHeldResultTurnEnded(() => { throw new Error('listener failed'); });
+      const email = { channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'me@owner.example' } as const;
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        await bundle.runSettledSink({
+          execution_source: email, run_id: 'run-mail', tool_name: 'recipe.run', result: { success: true }, state: 'succeeded', ts: 2,
+        });
+        await vi.waitFor(() => expect(ended).toEqual([{ session_id: session, source: email }]), { timeout: 15_000, interval: 20 });
+      } finally {
+        errors.mockRestore();
+      }
+      // No model is composed here, so the turn stored a failure: nothing was told.
+      expect(createHeldResultTurnStore(db).delivered(session).size).toBe(0);
+      stop();
+    } finally {
+      bundle.orchestrator.turnQueue?.close();
+    }
+  }, 30_000);
+
   it('creates every chat SQLite table when composed against an empty in-memory db', () => {
     const db = makeDb();
     composeHarness({ db });
@@ -433,7 +498,9 @@ describe('composeChatOrchestrator', () => {
            'chat_messages',
            'chat_tool_catalog_scope',
            'chat_connection_mcp_annotations',
-           'chat_inbound_tokens'
+           'chat_inbound_tokens',
+           'chat_held_run_watches',
+           'chat_held_result_turns'
          )
        ORDER BY name`,
     ).all() as Array<{ name: string }>;
@@ -442,8 +509,12 @@ describe('composeChatOrchestrator', () => {
     // the per-kind chat scope is retired (D-137 W2.2, 2026-10-04), so a fresh
     // install no longer creates its table. An older install keeps its row,
     // which nothing reads.
+    // D-337 — a run held in a messenger or email chat, and each continuation queued: the email
+    // door's trigger owes a continuation's answer through the second.
     expect(rows.map((row) => row.name)).toEqual([
       'chat_connection_mcp_annotations',
+      'chat_held_result_turns',
+      'chat_held_run_watches',
       'chat_inbound_tokens',
       'chat_messages',
       'chat_sessions',
@@ -912,6 +983,51 @@ describe('composeChatOrchestrator', () => {
     `).get()).toEqual({ count: 1 });
   });
 
+  it('D-329 — each turn reads where approval requests go now, from the execution deps published after it', async () => {
+    let published: { approvalChannelsNow?: () => Promise<readonly string[]> } | undefined;
+    const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
+    compose(buildDeps({}, { ...inertLateGetters(), getExecuteDeps: vi.fn(() => published) as never }));
+    const deps = createChatOrchestratorMock.mock.calls.at(-1)![0] as unknown as {
+      approvalChannels: () => Promise<readonly string[]>;
+    };
+    // Before the notification block exists: the app alone, so the bell.
+    await expect(deps.approvalChannels()).resolves.toEqual([]);
+    published = { approvalChannelsNow: async () => ['ui', 'telegram'] };
+    await expect(deps.approvalChannels()).resolves.toEqual(['ui', 'telegram']);
+  });
+
+  it('D-337 — the composed chat does not list again a call a continuation told the model of', async () => {
+    const db = makeDb();
+    const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
+    const bundle = compose(buildDeps({ db }));
+    const deps = createChatOrchestratorMock.mock.calls.at(-1)![0] as unknown as {
+      buildInFlightContext: (source: unknown, telling?: ReadonlySet<string>) => string | undefined;
+      carriedHeldResults: (session_id: string) => Promise<unknown>;
+    };
+    const source = { channel: 'chat', actor: 'user_self', chat_session_id: 'sess-waited', user_id: 'local' } as const;
+    bundle.chatStore.createSession({ id: 'sess-waited', now: 1 });
+    for (const run of ['run-told', 'run-untold']) {
+      await bundle.chatStore.toolCalls!.start({
+        id: `call-${run}`, session_id: 'sess-waited', turn_id: 'turn-asked', role: 'tool', tool_name: 'recipe.run',
+        content: 'recipe.run({})', target_server: 'self',
+        picker_at_send: { display_name: 'self', signature: { server_kind: 'recued', version: '1', instance_id: 'i' } },
+        model_used: { provider: 'recued', model_id: 'tool-call' }, execution_source: source, ts: 1,
+      });
+      bundle.chatStore.toolCalls!.bind(`call-${run}`, run);
+      bundle.chatStore.toolCalls!.hold(`call-${run}`);
+    }
+    const turns = createHeldResultTurnStore(db);
+    turns.record({ turn_id: 'continuation-1', session_id: 'sess-waited', run_id: 'run-told', origin_turn_id: 'turn-asked' });
+    turns.answered('continuation-1');
+    const told = deps.buildInFlightContext(source) ?? '';
+    expect(told).toContain('run=run-untold');
+    expect(told).not.toContain('run=run-told');
+    // §7.10 — nor one the turn carries: it is in front of the model, with its outcome.
+    expect(deps.buildInFlightContext(source, new Set(['run-untold']))).toBeUndefined();
+    // With no queue to read a call from (this composition stubs the orchestrator), nothing is carried.
+    await expect(deps.carriedHeldResults('sess-waited')).resolves.toBeUndefined();
+  });
+
   it('uses a conditional auditLog spread for orchestrator construction', async () => {
     const { compose, createChatOrchestratorMock } =
       await importComposerWithOrchestratorSpy();
@@ -1215,5 +1331,125 @@ describe('D-198 §13 — the composed recall says where a saved note stands now'
       result.matches.some((m) => m.source === 'interaction' && m.content.includes('is called Mia')),
       'the old chat is recalled too: ' + JSON.stringify(result),
     ).toBe(true);
+  });
+});
+
+describe('D-337 slice O — the composed chat reads a vendor-neutral CRM write on the owner\'s CRM', () => {
+  // ⛔ The handler tests hand the recipe check its CRM operations. This composes them through the
+  // REAL wire, from the run's own stores (the connections, their operation profiles, the
+  // manifests), so a composition that stopped passing them through fails HERE.
+  const OWNER_SOURCE = { channel: 'chat', actor: 'user_self', chat_session_id: 'cs1', user_id: 'owner' };
+  const run = async (approval: 'ask' | 'always') => {
+    const dir = mkdtempSync(join(tmpdir(), 'd137-neutral-write-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const recipes = createRecipeStore(dir, makeDb());
+    recipes.save({
+      recipe_id: 'move-deal',
+      version: 1,
+      metadata: { name: 'Move a deal', description: 'fixture', author: 'recued-core', tags: [] },
+      steps: [{ id: 'moved', op: 'core.crm.deal.update', args: { id: 'd1' } }],
+    } as never, 'recued-core', 'bundled');
+    const hubspot = { slug: 'hubspot-catalog', operations: {
+      'deal.update': { operation_id: 'hubspot.deal.update', risk_tier: 'write', approval },
+    } };
+    const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
+    compose(buildDeps({ recipeStore: recipes }, {
+      ...inertLateGetters(),
+      getExecutorConfig: vi.fn(() => ({ manifests: { get: (slug: string) => (slug === 'hubspot-catalog' ? hubspot : null) } })) as never,
+      getExecuteDeps: vi.fn(() => ({
+        connectionStore: { list: () => [{ name: 'hs' }] },
+        connectionOperationProfiles: { get: () => ({ allowed_operations: ['deal.update'], catalog_slug: 'hubspot-catalog' }) },
+      })) as never,
+    }));
+    const deps = createChatOrchestratorMock.mock.calls.at(-1)![0] as unknown as {
+      registry: { dispatch: (name: string, args: unknown, ctx: unknown) => Promise<unknown> };
+    };
+    // A call of this turn waits for the owner's answer.
+    const turn_state = new Map<string, unknown>();
+    noteWaitingInTurn(turn_state, 'calendar.create');
+    return deps.registry.dispatch('recipe.run', { recipe_id: 'move-deal' }, {
+      channel: 'internal_function_call', session_id: 'cs1', turn_id: 't1', execution_source: OWNER_SOURCE, turn_state,
+    }).catch((error: unknown) => ({ thrown: String(error) }));
+  };
+
+  it('a recipe whose CRM write the owner\'s CRM makes without asking is not held back; one it asks for is', async () => {
+    expect(await run('always')).toMatchObject({ ok: false, reason: 'not_asked_yet' });
+    // Past the check it goes on to run (here into an executor the test stubs).
+    expect(await run('ask')).not.toMatchObject({ reason: 'not_asked_yet' });
+  });
+});
+
+describe('D-337 ruling 4 (a) — the composed gateway wait hears the server\'s settled runs', () => {
+  // ⛔ The orchestrator tests hand the gateway turn its own wait. This composes it through the REAL
+  // wire, so a composition that stopped passing the wait, or stopped telling it of settled runs,
+  // fails HERE: the gateway would then answer "waiting for approval" after the owner approved.
+  const GATEWAY_SOURCE = {
+    channel: 'chat', actor: 'contracted_user', chat_session_id: 'llm_gateway:token-1', user_id: 'customer', contract_id: 'c1',
+  };
+  it('a held gateway call\'s wait ends with the run the run-settled sink is told of', async () => {
+    const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
+    const bundle = compose(buildDeps());
+    const deps = createChatOrchestratorMock.mock.calls.at(-1)![0] as ChatOrchestratorDeps;
+    expect(deps.settleHeldCall).toBeDefined();
+    const held = {
+      ok: true as const, result: { awaiting_approval: true }, run_held: { kind: 'approval' as const }, run_id: 'run-g1',
+    };
+    // Short, so a wiring that never tells it fails as an answer, not as a test timeout.
+    const waiting = deps.settleHeldCall!({ run_id: 'run-g1', held, until: Date.now() + 2_000 });
+    await bundle.runSettledSink({
+      execution_source: GATEWAY_SOURCE,
+      run_id: 'run-g1',
+      tool_name: 'seller/remove-event',
+      result: { success: true, recipe_id: 'seller/remove-event', errors: [], steps: [] },
+      ts: Date.now(),
+    });
+    await expect(waiting).resolves.toMatchObject({ ok: true, run_id: 'run-g1' });
+    await expect(waiting).resolves.not.toHaveProperty('run_held');
+  });
+});
+
+describe('D-337 ruling 4 (a) — the composed chat runs a recipe tool under the name it was called by', () => {
+  // ⛔ The Tier-2 dispatch's own test hands it a fake executor. This runs the dispatch through the
+  //   REAL wire, so a composition that dropped the tool name on its way to `handleExecute` fails
+  //   HERE: a contracted run (the LLM gateway's) would then be checked against
+  //   `<metadata.author>/<recipe_id>` before each local write, and refused.
+  it('hands the run the tool the recipe was called by (`entry_tool_name`)', async () => {
+    vi.resetModules();
+    const handleExecute = vi.fn(async (_deps: unknown, _request: unknown, _internal?: unknown) => ({
+      success: true, recipe_id: 'say-hello', errors: [], steps: [], output: { render: [], sidebar: [] },
+    }));
+    vi.doMock('../execute-handler.js', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../execute-handler.js')>()),
+      handleExecute,
+    }));
+    try {
+      const mod = await import('../composition/bin/wire-chat-orchestrator.js');
+      const dir = mkdtempSync(join(tmpdir(), 'd137-entry-tool-'));
+      cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+      const recipes = createRecipeStore(dir, makeDb());
+      recipes.save({
+        recipe_id: 'say-hello',
+        version: 1,
+        metadata: { name: 'Say hello', description: 'fixture', author: 'someone-else', tags: [] },
+        steps: [{ id: 'card', transform: 'to_summary', fields: [{ label: 'Hello', value: 'there' }] }],
+      } as never, 'kitchen', 'inline');
+      const bundle = mod.composeChatOrchestrator(buildDeps({ recipeStore: recipes }, {
+        ...inertLateGetters(),
+        getExecuteDeps: vi.fn(() => ({})) as never,
+      }));
+      await bundle.internalRegistry.dispatch('kitchen/say-hello', {}, {
+        channel: 'internal_function_call', session_id: 'cs1', turn_id: 't1',
+        execution_source: { channel: 'chat', actor: 'user_self', chat_session_id: 'cs1', user_id: 'owner' },
+      } as never);
+      expect(handleExecute).toHaveBeenCalledTimes(1);
+      expect(handleExecute.mock.calls[0]![1]).toMatchObject({ recipe_id: 'say-hello' });
+      expect(handleExecute.mock.calls[0]![2]).toEqual({
+        entry_tool_name: 'kitchen/say-hello',
+        // D-336 (spec §53) — and chat's look at each record change the run makes.
+        record_change_check: expect.any(Function),
+      });
+    } finally {
+      vi.doUnmock('../execute-handler.js');
+    }
   });
 });

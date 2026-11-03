@@ -34,13 +34,14 @@ export const initialMailComposeState = (): MailComposeState => ({
  *  drafts across opens at PA7. */
 export const openCreateComposeTransition = (
   state: MailComposeState,
-  args: { default_sender_source_id: string },
+  args: { default_sender_source_id: string; to?: readonly string[] },
 ): MailComposeState => ({
   ...state,
   dialog: {
     mode: 'create',
     values: {
       ...EMPTY_MAIL_COMPOSE_VALUES,
+      to: [...(args.to ?? [])],
       sender_source: args.default_sender_source_id,
     },
     errors: {},

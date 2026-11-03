@@ -19,7 +19,7 @@ const item = (record: CollectionRecord): MailConversationItem => {
     from: bounded(hot.from, 1024), subject: bounded(hot.subject, 1024),
     received_at: record.received_at,
     direction: hot.direction === 'inbound' || hot.direction === 'outbound' ? hot.direction : 'unknown',
-    folder: bounded(hot.folder, 256), is_read: hot.is_read === true,
+    folder: bounded(hot.folder, 256), is_read: hot.is_read === true, is_flagged: hot.is_flagged === true,
     has_attachments: hot.has_attachments === true,
     snippet: bounded(record.body_inline, 400).replace(/\s+/g, ' ').trim().slice(0, 160),
   };

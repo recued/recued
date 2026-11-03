@@ -193,7 +193,8 @@ export const composeMailBoot = (
         now: () => Date.now(),
         ...(deps.isOwnSend ? { isOwnSend: deps.isOwnSend } : {}),
         ...(contactStore
-          ? { relationshipsOf: (address: string) => contactStore.get(address)?.network_domain ?? [] }
+          // D-336 slice R — mail from an address the contact was re-keyed off is still theirs.
+          ? { relationshipsOf: (address: string) => contactStore.getByAnyEmail(address)?.network_domain ?? [] }
           : {}),
       })
     : undefined;

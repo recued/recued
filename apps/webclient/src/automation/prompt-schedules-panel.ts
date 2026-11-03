@@ -109,7 +109,7 @@ export const mountPromptSchedulesPanel = (options: {
       [data-prompt-schedules] .prompt-schedule-confirm button{margin:8px 8px 0 0}
       [data-prompt-schedule-compact]>div{max-height:45vh;overflow:auto;padding:4px 2px}
       [data-prompt-schedule-compact] article{padding:14px}
-      @media(max-width:600px){[data-prompt-schedules] form{grid-template-columns:minmax(0,1fr)}[data-prompt-schedules] article{padding:16px}[data-prompt-schedules] button{min-height:44px}[data-prompt-schedules] .prompt-schedule-card-actions>a{flex-basis:100%;justify-content:flex-start;min-height:36px}}
+      @media(max-width:600px){[data-prompt-schedules] form{grid-template-columns:minmax(0,1fr)}[data-prompt-schedules] article{padding:16px}[data-prompt-schedules] button{min-height:44px}[data-prompt-schedules] summary{min-height:44px;box-sizing:border-box;padding-block:11.5px}[data-prompt-schedules] .prompt-schedule-card-actions>a{flex-basis:100%;justify-content:flex-start;min-height:36px}}
       @media(prefers-reduced-motion:no-preference){[data-prompt-schedules] button{transition:background .15s,color .15s}}`;
     doc.head.append(style);
   }

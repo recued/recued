@@ -24,16 +24,28 @@ import {
 
 import {
   createLlmGatewayDirectCompletionProvider,
+  isKernelBackingSlugGranted,
   createLlmGatewayPortHandler,
   createLlmGatewaySharedChatCompletionProvider,
+  LLM_GATEWAY_HELD_WAIT_MS,
+  LLM_GATEWAY_HELD_WAIT_UNSTREAMED_MS,
   LLM_GATEWAY_MAX_IN_FLIGHT_GLOBAL,
   listLlmGatewayCallableRecipeNames,
   resolveLlmGatewayRoute,
+  type LlmGatewayCompletionInput,
   type LlmGatewayCompletionProvider,
   type LlmGatewayHandlerDeps,
 } from '../ports/llm-gateway/handler.js';
 import { SERVER_LEGACY_PATH_ALIASES } from '../server.js';
 import type { LlmGatewayTurnInput } from '../chat-orchestrator.js';
+import { createInMemoryCollection } from '@recued/storage';
+import { createMcpActionStore, type McpActionRecord } from '../mcp-action-store.js';
+import {
+  LLM_GATEWAY_CARRIED_NOTE,
+  LLM_GATEWAY_HELD_MESSAGE,
+  llmGatewayStillWaitingNote,
+  llmGatewayWaitingTrailer,
+} from '../ports/llm-gateway/held-calls.js';
 import { ChatContextLengthError } from '../chat-turn-executor.js';
 import { resolveLlmSystemPrompt } from '../llm-system-prompt.js';
 
@@ -55,6 +67,9 @@ class FakeRes {
   statusCode = 0;
   headers: Record<string, string> = {};
   body: string | null = null;
+  private listeners = new Map<string, Array<() => void>>();
+
+  get writableEnded(): boolean { return this.body !== null; }
 
   setHeader(key: string, value: string): void {
     this.headers[key.toLowerCase()] = value;
@@ -64,8 +79,20 @@ class FakeRes {
     return this.headers[key.toLowerCase()];
   }
 
+  /** `close` follows `end()`, as Node does, so "closed before it answered" means the caller left. */
   end(body?: string): void {
     this.body = body ?? '';
+    this.emit('close');
+  }
+
+  once(event: string, fn: () => void): void {
+    this.listeners.set(event, [...(this.listeners.get(event) ?? []), fn]);
+  }
+
+  emit(event: string): void {
+    const list = this.listeners.get(event) ?? [];
+    this.listeners.delete(event);
+    for (const fn of list) fn();
   }
 }
 
@@ -387,6 +414,49 @@ describe('listLlmGatewayCallableRecipeNames', () => {
       ['document-cli', 'document.convert'],
       ['document-cli', 'document.delete'],
     ]);
+  });
+});
+
+describe('listLlmGatewayCallableRecipeNames — a kernel op granted by its op id (D-232 § 20.20)', () => {
+  // ⛔ An owner can grant a kernel op only by its op id (`chat.inbound_token.issue` refuses its
+  //   ingredient's slug), and this projection read only the slug: a recipe using a kernel
+  //   ingredient was never offered by the gateway. The MCP door and the approval resume join the
+  //   two; found 2026-11-02, driving D-337 ruling 4 live.
+  const entry = (name: string): ToolEntry => ({
+    name,
+    tier: 2,
+    description: `call ${name}`,
+    arg_schema: { type: 'object', properties: {}, additionalProperties: false },
+    classification: 'write',
+    topic_tags: [],
+    concurrency_safe: false,
+  });
+  const removeEvent = {
+    recipe_id: 'remove-event',
+    version: 1,
+    steps: [{ id: 's', ingredient: 'calendar-delete', input: { slug: 'local', source_id: 'e1' } }],
+  } as unknown as RecipeDefinition;
+  const callable = (grants: Record<string, boolean>): string[] => listLlmGatewayCallableRecipeNames({
+    entries: [entry('kitchen/remove-event')],
+    token: makeToken({ grants }),
+    getRecipe: (id) => (id === 'remove-event' ? removeEvent : undefined),
+    resolveIngredientKind: () => 'other',
+    isCliOperationReachable: () => false,
+  });
+
+  it('offers a recipe whose kernel ingredient the key grants by its op', () => {
+    expect(callable({ 'kitchen/remove-event': true, 'core.data.calendar.delete': true }))
+      .toEqual(['kitchen/remove-event']);
+  });
+
+  it('⛔ CONTROL: not without that grant, nor with another op\'s', () => {
+    expect(callable({ 'kitchen/remove-event': true })).toEqual([]);
+    expect(callable({ 'kitchen/remove-event': true, 'core.data.calendar.list': true })).toEqual([]);
+    expect(callable({ 'kitchen/remove-event': true, 'core.data.calendar.delete': false })).toEqual([]);
+  });
+
+  it('a raw slug grant still counts, as before', () => {
+    expect(callable({ 'kitchen/remove-event': true, 'calendar-delete': true })).toEqual(['kitchen/remove-event']);
   });
 });
 
@@ -2413,5 +2483,219 @@ describe('X3 — gateway allowlist authority', () => {
       res as unknown as ServerResponse,
     );
     expect(res.statusCode).not.toBe(200);
+  });
+});
+
+describe('D-337 ruling 4 (a) — a request waits for the owner\'s answer to a call it holds', () => {
+  it('gives an unstreamed turn the shorter limit, 25 s, and the signal that the caller left', async () => {
+    // D-337 slice R — an unstreamed reply sends nothing while it waits, and a proxy cuts a silent
+    //   response at its read timeout (nginx's is 60 s): a cut reply loses the reference design (b)
+    //   needs. A streamed request keeps two minutes (`llm-gateway-streaming.test.ts`).
+    expect(LLM_GATEWAY_HELD_WAIT_UNSTREAMED_MS).toBe(25_000);
+    expect(LLM_GATEWAY_HELD_WAIT_MS).toBe(120_000);
+    const provider = makeProvider();
+    const handler = createLlmGatewayPortHandler(makeDeps({ provider }));
+    await handler(buildReq({ body: makeBody() }), new FakeRes() as unknown as ServerResponse);
+    const wait = firstProviderInput(provider).held_wait;
+    expect(wait?.ms).toBe(LLM_GATEWAY_HELD_WAIT_UNSTREAMED_MS);
+    // It answered: the caller did not leave.
+    expect(wait?.signal?.aborted).toBe(false);
+  });
+
+  it('⛔ CONTROL: a limit of 0 gives the turn none, so a held call returns at once', async () => {
+    const provider = makeProvider();
+    const handler = createLlmGatewayPortHandler(makeDeps({ provider, held_wait_ms: 0 }));
+    await handler(buildReq({ body: makeBody() }), new FakeRes() as unknown as ServerResponse);
+    expect(firstProviderInput(provider).held_wait).toBeUndefined();
+  });
+
+  it('a caller who leaves while the turn runs ends the wait', async () => {
+    const turn = deferred<{ content: string }>();
+    const provider = makeProvider(() => turn.promise);
+    const handler = createLlmGatewayPortHandler(makeDeps({ provider }));
+    const res = new FakeRes();
+    const handled = handler(buildReq({ body: makeBody() }), res as unknown as ServerResponse);
+    for (let i = 0; i < 20 && (provider.complete as unknown as { mock: { calls: unknown[] } }).mock.calls.length === 0; i += 1) {
+      await flush();
+    }
+    const signal = firstProviderInput(provider).held_wait?.signal;
+    expect(signal?.aborted).toBe(false);
+    res.emit('close');
+    expect(signal?.aborted).toBe(true);
+    turn.resolve({ content: 'too late' });
+    await handled;
+  });
+});
+
+describe('isKernelBackingSlugGranted', () => {
+  it('admits an ingredient through a granted kernel op it backs, and nothing else', () => {
+    expect(isKernelBackingSlugGranted({ grants: { 'core.data.calendar.delete': true } }, 'calendar-delete')).toBe(true);
+    expect(isKernelBackingSlugGranted({ grants: { 'core.data.calendar.delete': true } }, 'calendar-list')).toBe(false);
+    expect(isKernelBackingSlugGranted({ grants: {} }, 'calendar-delete')).toBe(false);
+    expect(isKernelBackingSlugGranted({ grants: { 'core.data.calendar.delete': true } }, 'not-a-kernel-ingredient')).toBe(false);
+  });
+
+  it('⛔ never through an op kept from doors, even when a key names it', () => {
+    // `core.ai.*` spends the owner's inference budget (`KERNEL_OP_GRANT_EXCLUSIONS`).
+    expect(isKernelBackingSlugGranted({ grants: { 'core.ai.classify': true } }, 'core-ai-classify')).toBe(false);
+  });
+});
+
+describe('createLlmGatewaySharedChatCompletionProvider — D-337 follow-up 24 (b)', () => {
+  // A call still waiting when its reply goes is found again by the reference that reply carries,
+  // read for the key that sent the request, and told in the conversation's next request, once.
+  const setUp = (input: {
+    readonly messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>;
+    readonly heldActions?: ReturnType<typeof createMcpActionStore>;
+    readonly turn?: Partial<{ assistant_content: string; waiting_refs: string[] }>;
+    readonly tokenId?: string;
+  }) => {
+    const config = baseConfig();
+    const resolved = resolveLlmGatewayRoute(config);
+    if (!resolved.ok) throw new Error(resolved.message);
+    const runLlmGatewayTurn = vi.fn(async (_input: LlmGatewayTurnInput) => ({
+      turn_id: 'turn-b',
+      assistant_content: input.turn?.assistant_content ?? 'answer',
+      ...(input.turn?.waiting_refs !== undefined ? { waiting_refs: input.turn.waiting_refs } : {}),
+    }));
+    const provider = createLlmGatewaySharedChatCompletionProvider({
+      orchestrator: { runLlmGatewayTurn },
+      adapters: () => ({ provider: 'openai', complete: vi.fn() }),
+      quota: createQuotaTracker(),
+      tabProbe: async () => new Set(),
+      ...(input.heldActions !== undefined ? { heldActions: input.heldActions } : {}),
+    });
+    const request: LlmGatewayCompletionInput = {
+      route: resolved.route,
+      system_prompt: 'recued gateway system prompt',
+      system_prompt_direct: 'recued gateway system prompt (raw)',
+      system_role: 'system',
+      emit_caller_application_instructions: true,
+      messages: input.messages,
+      requested_model: 'ignored',
+      model_alias: 'seller-primary',
+      config,
+      now: NOW,
+      system_tools_allowed: true,
+      token: makeToken(input.tokenId !== undefined ? { token_id: input.tokenId } : {}),
+      contract_id: CONTRACT_ID,
+      allowed_tool_names: ['kitchen/remove-event'],
+      input_token_budget: 100_000,
+      resolve_contract_snapshot: () => null,
+    };
+    return { provider, request, runLlmGatewayTurn };
+  };
+  const complete = async (input: Parameters<typeof setUp>[0]) => {
+    const { provider, request, runLlmGatewayTurn } = setUp(input);
+    const result = await provider.complete(request);
+    return { result, turnInput: runLlmGatewayTurn.mock.calls[0]![0] };
+  };
+  const actions = () => createMcpActionStore(createInMemoryCollection<McpActionRecord>());
+
+  it('tells what settled since the latest reply, and keeps naming what still waits', async () => {
+    const store = actions();
+    const settled = (await store.createHeld({ run_id: 'run-s', principal_id: TOKEN_ID, tool_name: 'kitchen/remove-event', kind: 'recipe' })).action_ref;
+    const waiting = (await store.createHeld({ run_id: 'run-w', principal_id: TOKEN_ID, tool_name: 'kitchen/remove-event', kind: 'recipe' })).action_ref;
+    await store.finish('run-s', { status: 'completed', status_message: 'done', result: { removed: 'Dentist' } });
+    const { result, turnInput } = await complete({
+      heldActions: store,
+      messages: [
+        { role: 'user', content: 'remove the dentist event and the gym one' },
+        { role: 'assistant', content: `Both wait for approval.${llmGatewayWaitingTrailer([settled, waiting])}` },
+        { role: 'user', content: 'any news?' },
+      ],
+      turn: { assistant_content: 'The dentist event is removed; the gym one still waits.', waiting_refs: ['mcpact_new'] },
+    });
+    expect(turnInput.held_results).toHaveLength(1);
+    expect(turnInput.held_results![0]).toMatchObject({ tool_name: 'kitchen/remove-event', result: { removed: 'Dentist' } });
+    // D-337 slice S — and the one still waiting, which the turn holds nothing else of.
+    expect(turnInput.in_flight_context).toBe(`${LLM_GATEWAY_CARRIED_NOTE}\n\n${llmGatewayStillWaitingNote(1, true)}`);
+    expect(result.content).toBe(
+      `The dentist event is removed; the gym one still waits.${llmGatewayWaitingTrailer([waiting, 'mcpact_new'])}`,
+    );
+  });
+
+  it('registers a newly held call under the request\'s own key, and words it for the gateway', async () => {
+    const store = actions();
+    const { turnInput } = await complete({ heldActions: store, messages: [{ role: 'user', content: 'remove it' }] });
+    expect(turnInput.held_message).toBe(LLM_GATEWAY_HELD_MESSAGE);
+    const ref = await turnInput.on_held!({ run_id: 'run-new', tool_name: 'kitchen/remove-event' });
+    expect(ref).toMatch(/^mcpact_[0-9a-f]{32}$/);
+    expect(await store.getOwned(ref!, TOKEN_ID)).toMatchObject({
+      run_id: 'run-new', tool_name: 'kitchen/remove-event', kind: 'recipe', status: 'awaiting_approval',
+    });
+    expect(await store.getOwned(ref!, 'tok-someone-else')).toBeNull();
+  });
+
+  it('⛔ another key\'s reference in the history tells nothing and is not carried', async () => {
+    const store = actions();
+    const theirs = (await store.createHeld({ run_id: 'run-x', principal_id: 'tok-someone-else', tool_name: 'kitchen/remove-event', kind: 'recipe' })).action_ref;
+    await store.finish('run-x', { status: 'completed', status_message: 'done', result: { secret: 'theirs' } });
+    const { result, turnInput } = await complete({
+      heldActions: store,
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: `Waiting.${llmGatewayWaitingTrailer([theirs])}` },
+        { role: 'user', content: 'and?' },
+      ],
+      turn: { assistant_content: 'Nothing to report.' },
+    });
+    expect(turnInput.held_results).toBeUndefined();
+    expect(turnInput.in_flight_context).toBeUndefined();
+    expect(result.content).toBe('Nothing to report.');
+  });
+
+  it('D-337 slice S — a call still waiting is told as waiting: the model cannot check on it or write first', async () => {
+    // ⛔ Live, 2026-11-02, before this note: asked again, the model answered "I will let you know as
+    //   soon as I hear back" or "You will be notified once it has been processed", 4 of 6 runs.
+    const store = actions();
+    const waiting = (await store.createHeld({ run_id: 'run-w2', principal_id: TOKEN_ID, tool_name: 'kitchen/remove-event', kind: 'recipe' })).action_ref;
+    const { result, turnInput } = await complete({
+      heldActions: store,
+      messages: [
+        { role: 'user', content: 'remove the gym event' },
+        { role: 'assistant', content: `It waits for approval.${llmGatewayWaitingTrailer([waiting])}` },
+        { role: 'user', content: 'any update?' },
+      ],
+      turn: { assistant_content: 'It is still waiting for approval.' },
+    });
+    expect(turnInput.held_results).toBeUndefined();
+    expect(turnInput.in_flight_context).toBe(llmGatewayStillWaitingNote(1, false));
+    expect(result.content).toBe(`It is still waiting for approval.${llmGatewayWaitingTrailer([waiting])}`);
+  });
+
+  it('counts what the request carries in its context preflight, as its first round holds it', async () => {
+    const store = actions();
+    const ref = (await store.createHeld({ run_id: 'run-p', principal_id: TOKEN_ID, tool_name: 'kitchen/remove-event', kind: 'recipe' })).action_ref;
+    await store.finish('run-p', { status: 'completed', status_message: 'done', result: { removed: 'Dentist' } });
+    const { provider, request, runLlmGatewayTurn } = setUp({
+      heldActions: store,
+      messages: [
+        { role: 'user', content: 'remove the dentist event' },
+        { role: 'assistant', content: `It waits for approval.${llmGatewayWaitingTrailer([ref])}` },
+        { role: 'user', content: 'any news?' },
+      ],
+    });
+    await provider.preflight!(request);
+    const turnInput = runLlmGatewayTurn.mock.calls[0]![0];
+    expect(turnInput.held_results).toHaveLength(1);
+    expect(turnInput.held_results![0]).toMatchObject({ result: { removed: 'Dentist' } });
+    expect(turnInput.in_flight_context).toBe(LLM_GATEWAY_CARRIED_NOTE);
+  });
+
+  it('⛔ CONTROL: with no action records, nothing is carried or registered and the reply is the model\'s', async () => {
+    const { result, turnInput } = await complete({
+      messages: [
+        { role: 'user', content: 'remove it' },
+        { role: 'assistant', content: `Waiting.${llmGatewayWaitingTrailer([`mcpact_${'e'.repeat(32)}`])}` },
+        { role: 'user', content: 'and?' },
+      ],
+      turn: { assistant_content: 'Waiting.' },
+    });
+    expect(turnInput.on_held).toBeUndefined();
+    expect(turnInput.held_results).toBeUndefined();
+    expect(turnInput.in_flight_context).toBeUndefined();
+    expect(turnInput.held_message).toBe(LLM_GATEWAY_HELD_MESSAGE);
+    expect(result.content).toBe('Waiting.');
   });
 });

@@ -271,6 +271,29 @@ describe('scheduled prompt failure notices', () => {
     expect(JSON.stringify(f.notify.mock.calls)).not.toContain('PRIVATE');
   });
 
+  it('D-337 slice R — a held tool whose approval expired is no failure, as one refused is not: no notice', async () => {
+    const f = fixture(), schedule = await f.create(); f.behavior('success'); await f.run(schedule, 'first');
+    const turn = (await f.service.get(schedule.schedule_id)).last_turn_id!;
+    for (const id of ['expired-tool', 'refused-tool']) {
+      await f.store.toolCalls!.start({ id, session_id: schedule.session_id, turn_id: turn,
+        tool_name: 'recipe.run', role: 'tool', content: 'PRIVATE tool request', target_server: 'self',
+        picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: 'fixture', instance_id: 'fixture' } },
+        model_used: { provider: 'fixture', model_id: 'fixture' } });
+      f.store.toolCalls!.hold(id);
+    }
+    f.clock(NOW + 300000); await f.service.tick(); await f.settled(schedule.session_id);
+    const notices = f.runtime(); await notices.tick();
+    // ⚠ The database's trigger still records the expiry as a failure signal (it is created once);
+    //   what keeps it from a notice is the check every signal passes before one opens.
+    settleChatToolCall(f.db, schedule.session_id, { message_id: 'expired-tool', state: 'failed', expired: true }, NOW + 300001);
+    settleChatToolCall(f.db, schedule.session_id, { message_id: 'refused-tool', state: 'failed', denied: true }, NOW + 300001);
+    await notices.tick();
+    expect(f.db.prepare("SELECT COUNT(*) AS n FROM chat_prompt_failure_signals WHERE source_id='expired-tool'").get())
+      .toEqual({ n: 1 });
+    expect(f.notify).not.toHaveBeenCalled();
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_schedule_notices').get()).toEqual({ n: 0 });
+  });
+
   it.each(['action', 'tool'] as const)('lets an in-flight %s record a failure after its schedule is removed', async kind => {
     const f = fixture(), schedule = await f.create(); f.behavior('success'); await f.run(schedule, 'first');
     const turn = (await f.service.get(schedule.schedule_id)).last_turn_id!;

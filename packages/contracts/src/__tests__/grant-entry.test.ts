@@ -114,6 +114,9 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       // `core.memory.audit.read`, which read as part of the knowledge-pool family).
       'core.audit.read',
       'core.contact.engagements.read',
+      // D-336 slice F — the Tier-1 contact write: what it writes stands at the owner's
+      // rank, so a door gets it only when the owner turns it on.
+      'core.contact.write',
       // Slice 2 — the Tier-1 calendar writes (owner-on / door-off). They ALSO
       // carry plan-approval; the grant simply runs first.
       'core.data.calendar.create',

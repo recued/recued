@@ -92,6 +92,10 @@ export interface EntityDetailPanelProps {
   scope: string;
   /** Platform-native or warehouse-canonical id. Opaque to Recued. */
   target_id: string;
+  /** What the header calls the entity when its id means nothing to a person: a contact
+   *  with no address is keyed on a placeholder (D-336 slice I). The id still marks the
+   *  panel (`data-target-id`). */
+  targetLabel?: string;
   /** Vendor-entity registry entry for the scope. Null when the
    *  vendor D hasn't registered yet — header degrades to scope-only,
    *  meta card switches to a raw key/value list (every meta field
@@ -148,6 +152,7 @@ const renderHeader = (
   target_id: string,
   vendorEntity: ConnectionVendorEntity | null,
   headingLevel: EntityDetailPanelHeadingLevel,
+  targetLabel?: string,
 ): string => {
   if (vendorEntity !== null) {
     return `
@@ -173,7 +178,7 @@ const renderHeader = (
       ${renderHeading(
         headingLevel,
         'memory-entity-detail-title',
-        `About <code>${e(target_id)}</code>`,
+        targetLabel !== undefined ? `About ${e(targetLabel)}` : `About <code>${e(target_id)}</code>`,
       )}
       <p class="memory-entity-detail-subtitle">
         <code class="memory-entity-detail-scope">${e(scope)}</code>
@@ -613,7 +618,7 @@ export const renderEntityDetailPanel = (props: EntityDetailPanelProps): string =
     <article class="memory-entity-detail-panel"
              data-scope="${e(props.scope)}"
              data-target-id="${e(props.target_id)}">
-      ${renderHeader(props.scope, props.target_id, props.vendorEntity, headingLevel)}
+      ${renderHeader(props.scope, props.target_id, props.vendorEntity, headingLevel, props.targetLabel)}
       ${props.showMetaSection === false
         ? ''
         : renderMetaSection(

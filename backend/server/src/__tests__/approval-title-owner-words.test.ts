@@ -18,6 +18,9 @@ import { createAuditLogStore, createInMemoryCollection, type ActivityEntry, type
 import { renderAskCard, ASK_CARD_GRANT_ATTR, ASK_CARD_OPTION_ATTR, type AskCardModel } from '@recued/ui-shared/approval-card';
 
 import { createAskActionNamer } from '../ask-card-action-name.js';
+import { heldCheckpointDetails } from '../ask-card-held-op-details.js';
+import { buildResolverDeps } from '../composition/bin/wire-reception-inbox-deps.js';
+import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
 import { handleExecute, type ExecuteHandlerDeps } from '../execute-handler.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
@@ -381,5 +384,155 @@ describe('a body in the owner\'s words, read by the card', () => {
     expect(rows(summaryOf(named.el))[0]).toEqual(['Action', 'Send mail']);
     expect(rows(technicalOf(named.el))).toEqual(expect.arrayContaining([['Action', 'mail-send']]));
     countsItsRows(named.el);
+  });
+});
+
+describe("D-336 (spec §52) — a held run's ask says what it changes, and the card shows it once", () => {
+  const SEND_INPUT = { sender_mail_instance: 'work', to: ['bob@example.com'], subject: 'Renewal\n\nStarted by: you', body: 'hello' };
+  /** The owner's held step (a send, unless told), through the real executor, with the
+   *  composer's row reader. */
+  const heldSend = async (
+    heldCallDetails?: ExecuteHandlerDeps['heldCallDetails'],
+    step: { ingredient: string; input: Record<string, unknown>; risk_tier?: string } = { ingredient: 'mail-send', input: SEND_INPUT },
+    extra: Partial<ExecuteHandlerDeps> = {},
+  ) => {
+    const manifests = createManifestRegistry('/nonexistent');
+    manifests.register({
+      slug: step.ingredient, name: step.ingredient, description: `Test ${step.ingredient} manifest`,
+      author: 'recued', kind: 'storage', risk_tier: step.risk_tier ?? 'write', version: 1,
+      category: 'action', input: {}, output: { message_id: 'message_id' },
+    } as unknown as IngredientManifest);
+    const recipeStore = createRecipeStore('/nonexistent');
+    recipeStore.register({
+      recipe_id: 'send-a-note', version: 1, ttl: 60,
+      metadata: { name: 'Send a note', description: 'One email.', author: 'test', supported_platforms: ['test'] },
+      variables: {}, prefetch_steps: [],
+      steps: [{ id: 'send', ingredient: step.ingredient, input: step.input }],
+      output: { sidebar: [] },
+    } as unknown as RecipeDefinition);
+    const checkpoints: Checkpoint[] = [];
+    const ask = vi.fn(async () => ({ ask_id: 'ask-1' }));
+    const deps: ExecuteHandlerDeps = {
+      recipeStore,
+      executorConfig: { manifests, kernelDispatchers: { mailSend: vi.fn() } as never },
+      baseVault: {},
+      instanceId: 'held-call-details',
+      checkpointStore: {
+        write: vi.fn(async (cp: Checkpoint) => { checkpoints.push(cp); }),
+      } as unknown as ExecuteHandlerDeps['checkpointStore'],
+      auditLog: createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>()),
+      preflightNotifier: { ask, registerAskHandler: vi.fn(), notify: vi.fn(async () => undefined) },
+      ownerTimeZone: () => 'UTC',
+      ...(heldCallDetails !== undefined ? { heldCallDetails } : {}),
+      ...extra,
+    };
+    const owner: ExecutionSource = { channel: 'user', actor: 'user_self', user_id: 'owner-1', client_token_id: 'client-1' };
+    const response = await handleExecute(deps, { recipe_id: 'send-a-note', trigger_source: 'chat', execution_source: owner });
+    expect(response.awaiting_approval).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+    const message = (ask.mock.calls[0] as unknown as [{ title?: string; text: string }])[0];
+    return { checkpoint: checkpoints[0]!, message };
+  };
+  // As `compose-execution-context.ts` reads them: nothing installed, so the built-in send's
+  // own manifest names its fields.
+  const installed = buildResolverDeps({ listManifests: () => [] } as never);
+  const reader: NonNullable<ExecuteHandlerDeps['heldCallDetails']> = (checkpoint, zone) => heldCheckpointDetails({
+    resolveArgEditSchema: (id, args) => resolveArgEditSchema(id, args, installed),
+    lookupRequestSchema: (id) => installed.lookupOperation(id)?.request_schema,
+  }, zone, checkpoint, { hideSecrets: true });
+
+  it('records the rows with the hold, and lists them in the ask, one line each', async () => {
+    const { checkpoint, message } = await heldSend(reader);
+    const recorded = checkpoint.preflight_context?.held_details ?? [];
+    expect(recorded.map((row) => row.value)).toEqual(expect.arrayContaining(['bob@example.com', 'hello']));
+    const lines = message.text.split('\n');
+    for (const row of recorded) {
+      expect(lines.some((line) => line.startsWith('- ') && line.endsWith(`: ${row.value.replace(/\s+/g, ' ').trim()}`))).toBe(true);
+    }
+    // A value that carries a line of its own stays on its row.
+    expect(lines.some((line) => line.trimStart().startsWith('Started by:'))).toBe(false);
+  });
+
+  it('on the card: the rows once, in the summary, and none among the technical bits', async () => {
+    const { checkpoint, message } = await heldSend(reader);
+    const details = checkpoint.preflight_context!.held_details!;
+    const el = renderAskCard(makeFakeDocument() as unknown as Document, {
+      ask_id: 'a1', title: message.title, text: message.text, details,
+      options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+    } as AskCardModel, { onAnswer: () => undefined }) as unknown as FakeEl;
+    const rowsIn = (root: FakeEl, out: Array<[string, string]> = []): Array<[string, string]> => {
+      const dt = root.children.find((ch) => ch.tagName === 'DT');
+      const dd = root.children.find((ch) => ch.tagName === 'DD');
+      if (dt !== undefined && dd !== undefined) out.push([dt.textContent, dd.textContent]);
+      for (const ch of root.children) rowsIn(ch, out);
+      return out;
+    };
+    const summary = rowsIn(collectByAttr(el, 'data-recued-ask-summary')[0]!).map(([, value]) => value);
+    const technical = rowsIn(collectByAttr(el, 'data-recued-ask-details')[0]!).map(([, value]) => value);
+    for (const row of details) {
+      expect(summary.filter((value) => value === row.value)).toHaveLength(1);
+      expect(technical).not.toContain(row.value);
+    }
+  });
+
+  it("an AI's held call: the Approvals card shows its text, so the rows reach it only there", () => {
+    // ⛔ The card shows the server's rows only for a text it reads as a recipe's; an AI's call
+    // opens "An AI agent wants to run …", so its card showed the text alone, rows or none.
+    const rows = [
+      { label: 'Deal ID', value: 'Harbor Line renewal (HubSpot Deal)' },
+      { label: 'Deal stage', value: 'closedwon' },
+    ];
+    const cardFor = (held_details?: typeof rows) => {
+      const ask = buildPreflightAsk({
+        checkpoint: {
+          checkpoint_id: 'cp1', run_id: 'run1', step_state: {}, created_at: 0,
+          preflight_context: held_details !== undefined ? { held_details } : {},
+          raw_op: {
+            op_id: 'recued-core.hubspot.deal.update', catalog_slug: 'hubspot-catalog', operation: 'deal.update',
+            connection_name: 'main-crm', op_args: { deal_id: '9001' },
+            execution_source: { channel: 'mcp', actor: 'contracted_user' }, risk_tier: 'write',
+          },
+        } as unknown as Checkpoint,
+        context: { raw_op: { op_id: 'recued-core.hubspot.deal.update' }, tool_slug: 'deal.update', risk_tier: 'write' },
+      });
+      return renderAskCard(makeFakeDocument() as unknown as Document, {
+        ask_id: 'a1', title: ask.message.title, text: ask.message.text, details: rows,
+        options: [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+      } as AskCardModel, { onAnswer: () => undefined }) as unknown as FakeEl;
+    };
+    // Before: the server's rows were not shown on this card at all.
+    expect(allText(cardFor()).join('\n')).not.toContain('Harbor Line renewal (HubSpot Deal)');
+    // Now its text lists them.
+    const shown = allText(cardFor(rows)).join('\n');
+    expect(shown).toContain('- Deal ID: Harbor Line renewal (HubSpot Deal)');
+    expect(shown).toContain('- Deal stage: closedwon');
+  });
+
+  it('a reader that throws costs the rows, never the hold', async () => {
+    const { checkpoint, message } = await heldSend(() => { throw new Error('catalog unreadable'); });
+    expect(checkpoint.preflight_context?.held_details).toBeUndefined();
+    expect(message.text).not.toMatch(/^- /m);
+  });
+
+  it("a held calendar change names its event as chat's does, guests and all, in its rows and its ask", async () => {
+    const calendarEventLabel = vi.fn((slug: string, source_id: string, zone: string | undefined) =>
+      (slug === 'google' && source_id === 'evt-1' && zone === 'UTC' ? 'Review, Tue 27 Oct 14:00 (Google emails its 2 guests)' : undefined));
+    // A cancel, which asks even in the owner's own chat (`destructive`, as the built-in's is).
+    const { checkpoint, message } = await heldSend(reader, {
+      ingredient: 'calendar-delete', risk_tier: 'destructive',
+      input: { slug: 'google', source_id: 'evt-1' },
+    }, { calendarEventLabel });
+    expect(calendarEventLabel).toHaveBeenCalledWith('google', 'evt-1', 'UTC');
+    expect(checkpoint.preflight_context?.value_labels).toMatchObject({
+      source_id: { 'evt-1': 'Review, Tue 27 Oct 14:00 (Google emails its 2 guests)' },
+    });
+    expect(checkpoint.preflight_context?.held_details?.map((row) => row.value))
+      .toContain('Review, Tue 27 Oct 14:00 (Google emails its 2 guests)');
+    expect(message.text.split('\n').some((line) => line.startsWith('- ')
+      && line.endsWith(': Review, Tue 27 Oct 14:00 (Google emails its 2 guests)'))).toBe(true);
+    // Any other step's input is not read as an event.
+    calendarEventLabel.mockClear();
+    await heldSend(reader, undefined, { calendarEventLabel });
+    expect(calendarEventLabel).not.toHaveBeenCalled();
   });
 });

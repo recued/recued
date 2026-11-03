@@ -2344,7 +2344,7 @@ export const createCalDavProvider = (
           if (object.overrides.length > 1) {
             const ctx = newContext(object);
             ctx.editor.deleteComponent(override.component);
-            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)', false, input.expected_etag);
+            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)', false, input.expected_etag, input.before_send);
             return;
           }
           // Its last occurrence: the file goes.
@@ -2355,7 +2355,7 @@ export const createCalDavProvider = (
             if (key !== null && key > master.startWall) {
               const ctx = newContext(object);
               truncateSeries(ctx, object, master, key);
-              await putEvent(cal, href, ctx.editor.render(), 'PUT (this_and_future truncate)', false, input.expected_etag);
+              await putEvent(cal, href, ctx.editor.render(), 'PUT (this_and_future truncate)', false, input.expected_etag, input.before_send);
               return;
             }
           } else {
@@ -2368,11 +2368,12 @@ export const createCalDavProvider = (
               if (overrideKey(object, o) === k) ctx.editor.deleteComponent(o.component);
             }
             touch(ctx, master.component, master.sequence, true);
-            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)', false, input.expected_etag);
+            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)', false, input.expected_etag, input.before_send);
             return;
           }
         }
       }
+      input.before_send?.();
       const res = await fetcher(absolute(cal.href, href), {
         method: 'DELETE',
         headers: { Authorization: authHeader, ...(input.expected_etag ? { 'If-Match': input.expected_etag } : {}) },

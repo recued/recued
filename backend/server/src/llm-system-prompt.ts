@@ -37,6 +37,7 @@ import {
   CHAT_MAIN_TURN_SYSTEM_PROMPT,
   DEFAULT_CHAT_ROLE_INSTRUCTIONS,
   FEATURE_TEXT_APPROVALS,
+  FEATURE_TEXT_APPROVALS_GATEWAY,
   FEATURE_TEXT_TOOLS,
   RECUED_CORE_TEXT,
   composeSystemPromptBlocks,
@@ -252,6 +253,8 @@ export const buildLlmGatewaySharedSystemPrompt = (input: {
 }): string =>
   composeSystemPromptBlocks({
     role_instructions: input.role_instructions,
+    // D-337 follow-up 25 — the person who runs the service approves, not the gateway's user.
+    approvals_text: FEATURE_TEXT_APPROVALS_GATEWAY,
     trailing_feature_text: [
       buildLlmGatewayPostureLines({ ...input, enforcesAiOutput: true }).join('\n'),
     ],
@@ -393,7 +396,7 @@ export const alwaysOnPromptText = (
     : [
         FEATURE_TEXT_TOOLS,
         RECUED_CORE_TEXT,
-        FEATURE_TEXT_APPROVALS,
+        FEATURE_TEXT_APPROVALS_GATEWAY,
         buildLlmGatewayPostureLines({
           systemToolsAllowed: false,
           callerPolicy: DEFAULT_LLM_GATEWAY_CALLER_SYSTEM_POLICY,

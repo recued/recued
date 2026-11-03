@@ -83,6 +83,9 @@ const installFileDetailFixture = async (page: Page, failures = 0): Promise<void>
     Object.assign(window, { __connectionsFixture: async (method: string, raw: unknown) => {
       const args = raw as { platform?: string } | undefined;
       if (method === 'collection.listInstances') return { result: { instances: [] } };
+      if (method === 'data.file.attachments.list') return { result: { files: [{ file_id: record.record_id,
+        filename: record.hot_fields.filename, mime_type: record.hot_fields.mime_type, size: record.size_bytes,
+        media_class: 'document', selection_revision: 'a'.repeat(64) }] } };
       if (method === 'collection.list' && args?.platform === 'file') return { result: { records: [record] } };
       if (method === 'collection.get' && args?.platform === 'file') {
         if (failures) await new Promise(resolve => setTimeout(resolve, 750));
@@ -2813,6 +2816,196 @@ test('Data protects an unfinished Memory compose from Cancel', async ({ page }) 
   await expect(add).toBeFocused();
 });
 
+/** D-336 slice E — ⛔ typing a relation and pressing Save at once took two clicks: the form
+ *  redrew when the relation field lost focus, replacing Save under the pointer between press
+ *  and release (browser drive, 2026-10-31). What each end can be linked to now changes in
+ *  place as the relation is typed. */
+test('Data saves a Memory relationship on the first click, straight from its relation', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=memory`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  await page.getByRole('button', { name: 'Add memory', exact: true }).click();
+  const form = page.getByRole('form', { name: 'New memory' });
+  await form.getByLabel('Kind').fill('fact');
+  await form.getByLabel('Summary').fill("Mia is Dana's daughter");
+  await form.getByRole('button', { name: 'Add a relationship', exact: true }).click();
+  await form.getByLabel('First part').fill('Mia');
+  await form.getByLabel('Second part').fill('Dana');
+  const relation = form.getByLabel('Relation');
+  await relation.fill('owns');
+  // The relation decides what each end can be linked to, as it is typed.
+  const firstPart = form.locator('[data-memory-claim-part="subject"]');
+  const secondPart = form.locator('[data-memory-claim-part="object"]');
+  await expect(firstPart.getByRole('button', { name: 'Link to a contact', exact: true })).toBeVisible();
+  await expect(firstPart.getByRole('button', { name: 'Link to a thing you own', exact: true })).toBeHidden();
+  await expect(secondPart.getByRole('button', { name: 'Link to a thing you own', exact: true })).toBeVisible();
+  await expect(secondPart.getByRole('button', { name: 'Link to a contact', exact: true })).toBeHidden();
+  await relation.fill('daughter of');
+  await expect(secondPart.getByRole('button', { name: 'Link to a contact', exact: true })).toBeVisible();
+
+  await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('memory.create'))).toBe(1);
+});
+
+/** D-336 slice H — the picker makes the contact (§3.6): "Link to a contact" finds nobody, so
+ *  it offers to add the name, and the relationship links the contact it added. */
+test('Data adds a contact from a Memory relationship when nobody has that name', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=memory`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  await page.getByRole('button', { name: 'Add memory', exact: true }).click();
+  const form = page.getByRole('form', { name: 'New memory' });
+  await form.getByLabel('Kind').fill('fact');
+  await form.getByRole('button', { name: 'Add a relationship', exact: true }).click();
+  await form.getByLabel('First part').fill('Mia');
+  await form.getByLabel('Relation').fill('daughter of');
+  await form.getByLabel('Second part').fill('Dana');
+  const secondPart = form.locator('[data-memory-claim-part="object"]');
+  await secondPart.getByRole('button', { name: 'Link to a contact', exact: true }).click();
+  await expect(secondPart.getByText('No contact matches “Dana”.')).toBeVisible();
+  await secondPart.getByRole('button', { name: 'Add “Dana” as a contact', exact: true }).click();
+
+  const linked = form.locator('[data-memory-claim-linked="object"]');
+  await expect(linked).toContainText('Dana');
+  await expect(linked.getByRole('button', { name: 'Unlink', exact: true })).toBeFocused();
+  await expect(form).not.toContainText('_recued.invalid');
+  // The new note's summary follows the relationship, the contact by its name.
+  await expect(form.getByLabel('Summary')).toHaveValue("Mia is Dana's daughter.");
+  await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('memory.create.linked_added_contact'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.create_by_name'))).toBe(1);
+});
+
+// Audit 2026-11-01 — an add under way was for the name as it was: changed meanwhile, the add
+// is dropped with it, its "Adding…" at once, and its late answer links nothing.
+test('Data drops a contact add under way when the owner changes the name meanwhile', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=memory`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+  await page.evaluate(() => window.__app.holdRpcResponses!('contact.create_by_name'));
+
+  await page.getByRole('button', { name: 'Add memory', exact: true }).click();
+  const form = page.getByRole('form', { name: 'New memory' });
+  await form.getByLabel('Kind').fill('fact');
+  await form.getByRole('button', { name: 'Add a relationship', exact: true }).click();
+  await form.getByLabel('First part').fill('Mia');
+  await form.getByLabel('Relation').fill('daughter of');
+  await form.getByLabel('Second part').fill('Dana');
+  const secondPart = form.locator('[data-memory-claim-part="object"]');
+  await secondPart.getByRole('button', { name: 'Link to a contact', exact: true }).click();
+  await secondPart.getByRole('button', { name: 'Add “Dana” as a contact', exact: true }).click();
+  await expect(secondPart.getByText('Adding “Dana”…')).toBeVisible();
+  await form.getByLabel('Second part').fill('Sam');
+  await expect(secondPart.getByText('Adding “Dana”…')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses!('contact.create_by_name'))).toBe(1);
+  // One task later the answer has been taken: it changed nothing.
+  await page.evaluate(() => new Promise((done) => { setTimeout(done, 0); }));
+  await expect(form.locator('[data-memory-claim-linked="object"]')).toHaveCount(0);
+  await expect(form.getByLabel('Second part')).toHaveValue('Sam');
+});
+
+test('Data gives a contact with no address its email from its Edit form', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=contact-no-address`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.locator(`[${DATA_CONTACT_ROW}="mention-only-ct-mia@_recued.invalid"] button`).click();
+  await expect(page.getByRole('heading', { name: 'About Mia', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit contact' });
+  const email = dialog.getByLabel('Email');
+  await expect(email).toHaveValue('');
+  await expect(email).not.toHaveAttribute('readonly', '');
+  // D-336 slice R — a saved one can be changed now, so the hint no longer says it cannot.
+  await expect(dialog.locator('[data-contact-email-hint]')).toHaveText('No email address yet.');
+  await expect(dialog).not.toContainText('_recued.invalid');
+  await email.fill('Mia@Example.test');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.data-contact-detail-heading .data-row-meta')).toHaveText('mia@example.test');
+  await expect(page.getByRole('heading', { name: 'About mia@example.test', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+  await expect(page).toHaveURL(/#data\/contact\/mia%40example\.test$/u);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.add_email'))).toBe(1);
+  // Only the address changed, so nothing else was saved.
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.upsert'))).toBe(0);
+  // Back goes to the list, never to the address the contact no longer has.
+  await page.goBack();
+  await expect(page).toHaveURL(/#data\/contact$/u);
+});
+
+test('D-336 slice R — Data changes a contact\'s saved address on its Edit form, and keeps the old one as a second address', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contact-saved-address`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.locator(`[${DATA_CONTACT_ROW}="dana@work.example.test"] button`).click();
+  await expect(page.locator('.data-contact-detail-heading .data-row-meta')).toHaveText('dana@work.example.test');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit contact' });
+  const email = dialog.getByLabel('Email');
+  await expect(email).toHaveValue('dana@work.example.test');
+  await expect(email).not.toHaveAttribute('readonly', '');
+  await expect(dialog.locator('[data-contact-email-hint]'))
+    .toHaveText('If you change it, the old address stays with this contact as a second one.');
+  await email.fill('Dana@Home.example.test');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.data-contact-detail-heading .data-row-meta')).toHaveText('dana@home.example.test');
+  await expect(page.getByRole('region', { name: 'Additional contact details' })).toContainText('Other email addresses');
+  await expect(page.getByRole('region', { name: 'Additional contact details' })).toContainText('dana@work.example.test');
+  await expect(page).toHaveURL(/#data\/contact\/dana%40home\.example\.test$/u);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.change_email'))).toBe(1);
+  // Only the address changed, so nothing else was saved.
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.upsert'))).toBe(0);
+  // Nothing overflows the phone's width.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test('D-336 slice P — Data merges a contact with no address into the one that has the address given it', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contact-no-address&taken=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.locator(`[${DATA_CONTACT_ROW}="mention-only-ct-mia@_recued.invalid"] button`).click();
+  await expect(page.getByRole('heading', { name: 'About Mia', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit contact' });
+  await dialog.getByLabel('Email').fill('mia@example.test');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+
+  // The refusal names her, and offers to merge Mia into her.
+  await expect(dialog).toContainText('“mia@example.test” is already Mia Whitfield\'s address.');
+  await expect(dialog).toContainText('This contact\'s notes and details join Mia Whitfield\'s.');
+  // The names differ: the kept contact's is picked to start.
+  await expect(dialog.getByRole('radio', { name: 'Mia Whitfield', exact: true })).toBeChecked();
+  await expect(dialog.getByRole('radio', { name: 'Mia', exact: true })).not.toBeChecked();
+  // Slice P's open item — so do their phones, hers picked to start; the owner keeps Mia's.
+  const phones = dialog.getByRole('group', { name: 'Phone to keep' });
+  await expect(phones.getByRole('radio', { name: '+15550001111', exact: true })).toBeChecked();
+  await phones.getByRole('radio', { name: '+15550002222', exact: true }).check();
+  await expect(phones.getByRole('radio', { name: '+15550002222', exact: true })).toBeChecked();
+  await expect(phones.getByRole('radio', { name: '+15550001111', exact: true })).not.toBeChecked();
+  const merge = dialog.getByRole('button', { name: 'Merge into Mia Whitfield', exact: true });
+  await expect(merge).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await merge.click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(/#data\/contact\/mia%40example\.test$/u);
+  await expect(page.locator('.data-contact-detail-heading .data-row-meta')).toHaveText('mia@example.test');
+  await expect(page.getByRole('heading', { name: 'Mia Whitfield', exact: true, level: 2 })).toBeVisible();
+  await expect(page.locator('[data-recued-data-contact-detail]')).toContainText('+15550002222');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.merge.pair'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.upsert'))).toBe(0);
+});
+
 test('Data protects an unfinished Memory import from Close', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?data=memory`);
@@ -2909,7 +3102,27 @@ test('Data keeps a Memory import visible, focused, and single-flight', async ({ 
   ).toBe(1);
 });
 
-test('Data owns Memory Delete and Forget from review through completion', async ({ page }) => {
+test('D-336 slice K — Data → Memory says what the relation list misses, inside the lens on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=memory-rows`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const line = page.locator('[data-memory-claim-counts]');
+  await expect(line).toBeVisible();
+  await expect(line).toHaveText(
+    '1 of the 2 notes an AI saved has no relationship. Replace one to add it. '
+      + 'Relations in your own words: "taught piano to" (2).',
+  );
+  // It wraps within the lens, and sits above the list.
+  const lineBox = await line.boundingBox();
+  const lensBox = await page.locator('.memory-lens').first().boundingBox();
+  expect(lineBox!.x + lineBox!.width).toBeLessThanOrEqual(lensBox!.x + lensBox!.width + 1);
+  const firstRow = await page.locator('.memory-row').first().boundingBox();
+  expect(lineBox!.y + lineBox!.height).toBeLessThanOrEqual(firstRow!.y);
+});
+
+test('Data owns Memory Delete and Hide from AI from review through completion', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
     `${HARNESS_URL}?data=memory-rows&memory_delete_response=slow`,
@@ -2962,23 +3175,27 @@ test('Data owns Memory Delete and Forget from review through completion', async 
   const add = page.getByRole('button', { name: 'Add memory', exact: true });
   await expect(add).toBeFocused();
 
+  // A run's record cannot be erased (the audit log is signed), so its row
+  // offers Hide from AI, not Delete (87fb85ce0, 2026-10-30), and says so.
   const systemRow = page.locator('.memory-row[data-origin="system"]');
   await expect(systemRow).toContainText('Recipe execution remembered');
-  const forget = systemRow.getByRole('button', {
-    name: 'Forget memory Recipe execution remembered (memory-system-1)',
+  const hide = systemRow.getByRole('button', {
+    name: 'Hide run from AI Recipe execution remembered (memory-system-1)',
     exact: true,
   });
-  await forget.focus();
+  await expect(hide).toHaveText('Hide from AI');
+  await hide.focus();
   await page.keyboard.press('Enter');
-  const forgetConfirm = systemRow.locator(
+  await expect(systemRow).toContainText('Hide this run from AI? Your Logs still show it in full.');
+  const hideConfirm = systemRow.locator(
     'button[data-recued-data-action="memory-delete-confirm"]',
   );
-  await expect(forgetConfirm).toBeFocused();
+  await expect(hideConfirm).toBeFocused();
   await page.keyboard.press('Enter');
-  await expect(forgetConfirm).toHaveText('Forgetting…');
-  await expect(forgetConfirm).toBeFocused();
+  await expect(hideConfirm).toHaveText('Hiding…');
+  await expect(hideConfirm).toBeFocused();
   await expect(systemRow).toHaveClass(/is-redacted/);
-  await expect(systemRow).toContainText('Redacted');
+  await expect(systemRow).toContainText('Hidden from AI. Your Logs still show this run.');
   await expect(add).toBeFocused();
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('memory.delete')),
@@ -3023,6 +3240,35 @@ test('Data keeps a failed Memory Delete retryable and focused', async ({ page })
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('memory.delete')),
   ).toBe(2);
+});
+
+test('D-336 slice T — Memory tells a name in words from a linked contact, and says how to link it', async ({ page }) => {
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`${HARNESS_URL}?data=memory-rows&memory_claims=1`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+    const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
+    const line = row.locator('[data-memory-claim-line]');
+    await expect(line).toBeVisible();
+    const words = line.locator('[data-memory-claim-end-is="words"]');
+    const contact = line.locator('[data-memory-claim-end-is="contact"]');
+    await expect(words).toContainText('“Mia”');
+    await expect(words).toContainText('not linked');
+    await expect(contact).toContainText('Dana Whitfield');
+    await expect(contact).toContainText('contact');
+    // Drawn apart, not by colour alone: the name in words has a dashed edge.
+    expect(await words.evaluate((el) => getComputedStyle(el).borderTopStyle)).toBe('dashed');
+    expect(await contact.evaluate((el) => getComputedStyle(el).borderTopStyle)).toBe('solid');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await row.getByRole('button', { name: 'View memory Concise answers (memory-own-1)', exact: true }).click();
+    const detail = page.getByRole('region', { name: 'Memory detail' });
+    await expect(detail.locator('[data-memory-claim-line]')).toBeVisible();
+    await expect(detail).toContainText('“Mia” is not linked, so Recued matches it only with notes in the same words. To link it, choose Edit.');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
 });
 
 test('Data owns Memory detail loading and returns Back to the exact row', async ({ page }) => {
@@ -4396,7 +4642,7 @@ test('Data keeps file download visible, focused, and single-flight', async ({ pa
   await page.evaluate(() => window.__app.setHash('#data/files'));
 
   const record = page.locator(
-    `[${DATA_COLLECTION_RECORD}="file:0123456789abcdef0123456789abcdef"]`,
+    '[data-file-details-id="file:0123456789abcdef0123456789abcdef"]',
   );
   await record.focus();
   await page.keyboard.press('Enter');
@@ -4556,7 +4802,7 @@ test('Data keeps collection detail recovery focused and retryable', async ({ pag
   await installFileDetailFixture(page, 3);
   await page.goto(`${HARNESS_URL}?file-detail=recovery#data/files`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  const record = page.locator(`[${DATA_COLLECTION_RECORD}="file:${'1'.repeat(32)}"]`);
+  const record = page.locator(`[data-file-details-id="file:${'1'.repeat(32)}"]`);
   await record.focus();
   await page.keyboard.press('Enter');
 
@@ -4626,7 +4872,7 @@ test('Data hands keyboard focus from a record row to its loaded detail', async (
   await installFileDetailFixture(page);
   await page.goto(`${HARNESS_URL}?file-detail=focus#data/files`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  const record = page.locator(`[${DATA_COLLECTION_RECORD}="file:${'1'.repeat(32)}"]`);
+  const record = page.locator(`[data-file-details-id="file:${'1'.repeat(32)}"]`);
   await expect(record).toBeVisible();
   await record.focus();
   await expect(record).toBeFocused();
@@ -4644,7 +4890,7 @@ test('Data returns keyboard focus from record detail to its exact row', async ({
   await installFileDetailFixture(page);
   await page.goto(`${HARNESS_URL}?file-detail=return#data/files`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  const record = page.locator(`[${DATA_COLLECTION_RECORD}="file:${'1'.repeat(32)}"]`);
+  const record = page.locator(`[data-file-details-id="file:${'1'.repeat(32)}"]`);
   await record.focus();
   await page.keyboard.press('Enter');
   await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toBeFocused();
@@ -5060,6 +5306,128 @@ test('project commitments expose blockers, preserve closed history, and review n
   await expect(blockers.getByRole('button', { name: 'Link existing', exact: true })).toBeFocused();
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: testInfo.outputPath('project-blockers-desktop.png'), fullPage: true });
+});
+
+test('projects review task moves and link existing notes without losing their other projects', async ({ page }, testInfo) => {
+  await installProjectOverviewFixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  const overview = page.locator('[data-project-overview="launch"]');
+  const tasks = overview.locator('[data-project-section="task"]');
+  const notes = overview.locator('[data-project-section="note"]');
+  await tasks.getByRole('button', { name: 'Link existing', exact: true }).click();
+  const taskSearch = page.getByRole('searchbox', { name: 'Search tasks', exact: true });
+  await expect(taskSearch).toBeFocused();
+  await taskSearch.fill('Other project task');
+  await page.locator('[data-entity-id="other-task"]').click();
+  const review = page.locator('[data-project-link-review]');
+  await expect(review).toContainText('Other project');
+  await expect(review).toContainText('It will no longer appear in its previous project.');
+  await page.screenshot({ path: testInfo.outputPath('project-task-move-phone.png'), fullPage: true });
+  await review.getByRole('button', { name: 'Back to tasks', exact: true }).click();
+  await expect(taskSearch).toHaveValue('Other project task');
+  expect(await page.evaluate(() => window.__projectOverview.writes)).toEqual([]);
+  await page.locator('[data-entity-id="other-task"]').click();
+  await review.getByRole('button', { name: 'Move task', exact: true }).click();
+  await expect(tasks.locator('[data-project-item-id="other-task"]')).toContainText('Other project task');
+  await expect(tasks.getByRole('button', { name: 'Link existing', exact: true })).toBeFocused();
+
+  await notes.getByRole('button', { name: 'Link existing', exact: true }).click();
+  const noteSearch = page.getByRole('searchbox', { name: 'Search notes', exact: true });
+  await noteSearch.fill('Provider reference note');
+  await page.locator('[data-entity-id="readonly-note"]').click();
+  await expect(review).toContainText('This note is read-only here.');
+  await expect(review.getByRole('button', { name: 'Link to project', exact: true })).toHaveCount(0);
+  await review.getByRole('button', { name: 'Back to notes', exact: true }).click();
+  await noteSearch.fill('Independent launch note');
+  await page.locator('[data-entity-id="standalone"]').click();
+  // A new relationship added since the review must survive this link.
+  await page.evaluate(() => window.__projectOverview.changeLinks('note', 'standalone', ['other']));
+  await review.getByRole('button', { name: 'Link to project', exact: true }).click();
+  await expect(notes.getByRole('button', { name: 'Link existing', exact: true })).toBeFocused();
+  await notes.getByRole('button', { name: 'More notes', exact: true }).click();
+  await expect(notes.locator('[data-project-item-id="standalone"]')).toContainText('Independent launch note');
+  expect(await page.evaluate(() => window.__projectOverview.writes)).toEqual([
+    { method: 'work_entity.upsert', kind: 'task', id: 'other-task', parent_project_id: 'launch' },
+    { method: 'work_entity.upsert', kind: 'note', id: 'standalone', related_project_ids: ['other', 'launch'] },
+  ]);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: testInfo.outputPath('project-existing-links-desktop.png'), fullPage: true });
+});
+
+test('project linking rechecks task moves and source permissions and requires confirmed writes', async ({ page }) => {
+  await installProjectOverviewFixture(page);
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  const overview = page.locator('[data-project-overview="launch"]');
+  await overview.locator('[data-project-section="task"]').getByRole('button', { name: 'Link existing', exact: true }).click();
+  await page.getByRole('searchbox', { name: 'Search tasks', exact: true }).fill('Other project task');
+  await page.locator('[data-entity-id="other-task"]').click();
+  const review = page.locator('[data-project-link-review]');
+  await page.evaluate(() => window.__projectOverview.changeLinks('task', 'other-task', []));
+  await review.getByRole('button', { name: 'Move task', exact: true }).click();
+  await expect(review.getByRole('alert')).toContainText('This task’s project changed.');
+  await expect(review.getByRole('button', { name: 'Link to project', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.__projectOverview.writes)).toEqual([]);
+  await page.evaluate(() => window.__projectOverview.setSourceWritable('task', false));
+  await review.getByRole('button', { name: 'Link to project', exact: true }).click();
+  await expect(review.getByRole('alert')).toContainText('This item can no longer be changed here.');
+  await expect(review.getByRole('button', { name: 'Link to project', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__projectOverview.writes)).toEqual([]);
+  await review.getByRole('button', { name: 'Back to tasks', exact: true }).click();
+  await page.locator('.project-link-context').getByRole('button', { name: 'Back to project', exact: true }).click();
+
+  await overview.locator('[data-project-section="note"]').getByRole('button', { name: 'Link existing', exact: true }).click();
+  await page.getByRole('searchbox', { name: 'Search notes', exact: true }).fill('Independent launch note');
+  await page.locator('[data-entity-id="standalone"]').click();
+  await page.evaluate(() => window.__projectOverview.omitNextLinkConfirmation());
+  await review.getByRole('button', { name: 'Link to project', exact: true }).click();
+  await expect(review.getByRole('alert')).toContainText('The source did not confirm the project link.');
+  expect(await page.evaluate(() => window.__projectOverview.writes)).toHaveLength(1);
+  // A retry first reads the source: the earlier write landed despite its reply.
+  await review.getByRole('button', { name: 'Link to project', exact: true }).click();
+  await expect(overview).toBeVisible();
+  expect(await page.evaluate(() => window.__projectOverview.writes)).toHaveLength(1);
+});
+
+test('project linking holds navigation during a save and distinguishes pending from confirmed links', async ({ page }, testInfo) => {
+  await installProjectOverviewFixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=today#data/project`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-entity-id="launch"]').click();
+  await page.locator('[data-project-section="task"]').getByRole('button', { name: 'Link existing', exact: true }).click();
+  await page.getByRole('searchbox', { name: 'Search tasks', exact: true }).fill('Other project task');
+  await page.locator('[data-entity-id="other-task"]').click();
+  const review = page.locator('[data-project-link-review]');
+  await page.evaluate(() => window.__projectOverview.holdNextLinkWrite());
+  await review.getByRole('button', { name: 'Move task', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__projectOverview.writes.length)).toBe(1);
+  // Exercise the host guards even when an alternate navigation or duplicate
+  // activation reaches them while the source has not replied.
+  await review.getByRole('button', { name: 'Saving…', exact: true }).dispatchEvent('click');
+  await page.getByRole('group', { name: 'Data or Memory', exact: true }).getByRole('button', { name: 'Memory', exact: true }).dispatchEvent('click');
+  await expect(review).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Data or Memory', exact: true }).getByRole('button', { name: 'Data', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(review).toBeVisible();
+  expect(await page.evaluate(() => window.__projectOverview.writes.length)).toBe(1);
+  await page.evaluate(() => window.__projectOverview.releaseLinkWrite());
+  await expect(review.locator('#project-link-description')).toContainText('waiting for source confirmation');
+  await expect(review.getByRole('status')).toContainText('Reopen this task after source confirmation');
+  await expect(review.getByRole('alert')).toHaveCount(0);
+  await expect(review.getByRole('button', { name: /Move task|Link to project/ })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('project-link-pending-phone.png'), fullPage: true });
+  await review.getByRole('button', { name: 'Back to tasks', exact: true }).click();
+  await page.evaluate(() => window.__projectOverview.confirmLink('other-task'));
+  await page.locator('[data-entity-id="other-task"]').click();
+  await expect(review.locator('#project-link-description')).toHaveText('Already linked to Kestrel launch.');
+  expect(await page.evaluate(() => window.__projectOverview.writes.length)).toBe(1);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: testInfo.outputPath('project-link-confirmed-desktop.png'), fullPage: true });
 });
 
 test('project overview pages linked work and returns from editing and creating tasks and notes', async ({ page }) => {
@@ -5609,7 +5977,7 @@ test('Document contents search retires a file handoff after the owner changes so
   await page.locator('[data-collection-slug="other"]').click();
   await page.locator('[data-collection-slug="received"]').click();
   const secondFile = `file:${String(2).padStart(32, '0')}`;
-  await page.locator(`[data-collection-record="${secondFile}"]`).click();
+  await page.locator(`[data-file-details-id="${secondFile}"]`).click();
   const heading = page.locator('[data-recued-collection-detail-heading]');
   await expect(heading).toHaveText('Service agreement.txt');
   await page.evaluate(() => window.__documentSearchDrive.releaseFiles());

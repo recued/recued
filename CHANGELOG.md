@@ -7,6 +7,143 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.11.3 — 2026-11-03
+
+Once you approve something the AI asked for, the conversation carries on by itself with the
+result, and the AI asks for one approval at a time. Memory keeps facts about people as
+relationships, and your AI can add and change contacts with your approval. Data → Calendar can
+delete events on Google, Outlook and CalDAV calendars and invite guests, a file opens straight
+into a viewer that reads Word documents, an email lists its saved attachments, and a new Agenda
+sends your day or your week. Your Browser Bridge can tell you when an approval is waiting.
+
+### Before you update
+
+- **Update Recued before installing or updating Browser Toolkit.** Its new version needs this
+  release. An older Recued refuses it, says to update, and installs nothing; the version you have
+  keeps working.
+- **Some Browser Bridge improvements need a newer Bridge.** Approval notifications, notifications
+  that show at all, and the Bridge asking to pair again when your server no longer accepts it, need
+  Browser Bridge 0.0.6. The new
+  web page recipes, and clicking and typing that work on more pages, need 0.0.5 or later.
+- **The hosted web app's new controls need this release.** On an older server most of them say to
+  update it or do not appear. One does neither: a relationship you add to a note in Data → Memory
+  is saved without it.
+
+### Added
+
+- **Your chat carries on after you approve.** When you answer an approval a chat was waiting on,
+  the AI sees what the action returned and takes the next step or tells you how it went, in the
+  app, in a scheduled request's conversation, in Telegram or Slack, and by email. Approving
+  several at once gives one reply that covers them all. In Telegram, Slack and email, the AI tells
+  you to answer an approval right there.
+- **One approval at a time.** While an action the AI asked for waits for your approval, it asks
+  for nothing more in that reply, so a step you asked to come after another can never run before
+  it, or after you said no to it. A recipe that would ask you partway through waits its turn too.
+- **Approval notifications from your Browser Bridge.** Your Bridge shows a notification on your
+  computer when an approval is waiting, and clicking it opens that approval. Each Bridge has its
+  own Notify switch in Settings → Approval & notifications. The notification shows the approval's
+  name, never its details.
+- **Your LLM gateway answers after you approve.** When an app using your gateway asks for something
+  that needs your approval, the request waits for your answer and says what happened. If you
+  answer later, the app hears how it went the next time it writes in that conversation.
+- **Memory keeps facts about people as relationships.** When an AI saves a fact about someone, such
+  as "Mia is Dana's daughter", it also records the relationship from one shared list, so memory
+  recognises the same fact however it is worded, in any language. A contact's page and a thing's
+  page list Relationships, and your own notes can carry one; Export and Import keep it.
+- **Correct a save before you approve it.** On its card in Chat you can change a memory save that
+  waits for your approval: its words and its relationship. Approvals and the attention list link to
+  that card with Change it in Chat.
+- **Saves that repeat or contradict say so.** A save's card tells you when memory already holds the
+  fact, when another save of it is still waiting, and when it contradicts a note in memory or
+  another waiting save. Data → Memory marks two notes that contradict each other.
+- **Your AI can add and change contacts, with your approval.** It can add a contact from an email
+  address or a name alone, change a contact's details, and give a contact with no email address its
+  email. Each change waits for your yes, and an AI app first needs its new Change your contacts
+  switch turned on.
+- **Give a contact its email address, or change it.** On its Edit form you can give a contact with
+  no email address one, or change a saved address; the old one stays as the contact's second
+  address. If the address belongs to another contact, Edit offers to merge the two and asks which
+  details to keep.
+- **Open a file straight into its viewer.** Choosing a file in Data → Files opens it in the viewer,
+  whose File actions menu has Download file, File details and Origin. Word documents show their
+  headings, paragraphs, lists and tables as text, and Convert for preview turns other work
+  documents into text with the MarkItDown or Docling pack, if you installed one.
+- **Rename, archive or restore saved files.** Manage file → Rename changes a saved file's name, and
+  Saved files can archive or restore up to 100 files at once, after you review where each is used.
+- **Open an email's attachments, and mark email read or starred.** An email in Data → Mail lists
+  the attachments saved on your server, with Open and Download. More marks it read or unread and
+  stars it, once your mailbox confirms.
+- **Delete an event in Data → Calendar.** More → Delete event removes a one-time event from your
+  server's own calendar, or one on Google, Outlook or a CalDAV calendar that you organize or that
+  has no guests. Before you confirm, it says who is told: Google emails the guests, and Outlook
+  sends them a cancellation.
+- **Invite guests to a new event.** On a Google calendar or your primary Outlook calendar, New
+  event can add guests, and an event's details list its guests and their replies.
+- **See what else is on at that time.** While you create or edit an event, Recued lists other
+  saved events that overlap it. It is only a hint, and it does not stop you saving.
+- **Cancel or delete an Outlook event through Recued.** Ask chat to cancel it, or let a recipe
+  delete it; Outlook sends its guests a cancellation if you organized it.
+- **An Agenda: your day, or your week, in time order.** A new message, separate from the Digest,
+  lists a day's events, due tasks and promises, bookings and reminders in time order, today in the
+  morning or tomorrow the evening before, or once a week for the seven days ahead. Turn it on in
+  Settings → Approval & notifications → Agenda.
+- **Choose how far ahead the Digest looks**: today and tomorrow, or the next 3, 7 or 14 days.
+- **Three new Browser Toolkit recipes.** Your AI can wait for part of a web page to show or go,
+  read a table on a page as rows of text, and take a screenshot of a page once you turn on Allow
+  screenshots in the Bridge's side panel. The reading recipes now re-read just the part of a page
+  that changed.
+- **A reminder notification opens that reminder**, where one that has not rung yet can be edited
+  or cancelled.
+- **Copy a whole chat answer** with its formatting and source links, with Copy answer.
+- **Email a contact from their page** with Email, and **link existing tasks and notes to a
+  project** with Link existing.
+
+### Changed
+
+- **Your AI saves lasting preferences and habits**, such as "Dana is vegetarian", but not a
+  preference for one conversation, such as "keep it short today".
+- **A contact with no email address shows none**, instead of a made-up placeholder address, and the
+  New contact form takes one email address on its own.
+- **Google tells guests when the AI or a recipe moves or cancels their event**, as it does for your
+  own edits, and the approval says so.
+- **A Browser Bridge click works like a person's.** Menus and buttons that open when pressed now
+  open, a button something covers is not clicked and the AI is told why, and typing reaches forms
+  built with React. Needs Browser Bridge 0.0.5.
+- **CRM recipes no longer wait for nothing.** A recipe that creates or updates something in HubSpot
+  or Salesforce is no longer held back while another approval from the same reply waits.
+- **The pack check points at more mistakes where they are**, with the same messages.
+
+### Fixed
+
+- **An Outlook event shows the right time as soon as Recued makes or moves it.** It showed at the
+  wrong hour until the next sync from Outlook, such as 8 hours early for an event in Los Angeles.
+- **An event the AI adds to a Google, Outlook or CalDAV account goes on that account's main
+  calendar**, and chat can find the event it needs to change.
+- **An AI app's email no longer fails after you approve it.** With one mailbox that can send,
+  Recued sends from it and the approval names it; with several, the app is told to ask you which.
+- **Changes to HubSpot deals, companies, tasks, notes, meetings and tickets reach HubSpot**, and the
+  same fix reaches every service whose actions set a field inside another.
+- **Approvals are not sent twice.** An approval sent to Telegram, Slack or email is no longer sent
+  again when your server restarts, unlocks, or your quiet hours end.
+- **Recued tries again when no AI could answer after an approval**, a reply cut off by a restart is
+  given again, and a try waiting when Recued restarts is no longer lost.
+- **Notifications from your Browser Bridge show**, reminders included; Chrome had refused every one.
+  Needs Browser Bridge 0.0.6.
+- **One old device can no longer lock out your others.** A sign-in your server keeps refusing is
+  turned away without counting against the address it came from, so behind a proxy or a tunnel
+  your other devices still connect.
+- **A contact's figures from your packs count all its addresses**, and a link to one of a contact's
+  other addresses opens the contact.
+- **The pack check names the right part of a pack that lists recipes**, and refuses an operation
+  whose result path is not text; none of Recued's own packs has one.
+- **Listing your recipes for an AI is quicker on a server with one connection or none.**
+- **Housekeeping's Run now estimates tasks that read more than mail**, and says when a count is
+  unavailable rather than showing zero.
+- **Recipe pages on the marketplace show every setting's default** instead of "[object Object]".
+- **Easier to tap on a phone.** Chat's Scheduled prompts toggle, Kitchen's New recipe and New pack
+  links, and a calendar event's Event identifiers toggle are bigger, and Data → Tasks shows its
+  first task without scrolling.
+
 ## 26.10.31 — 2026-10-31
 
 Your AI can work in web pages through the Browser Bridge: the new Browser Toolkit pack lists your

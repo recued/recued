@@ -89,6 +89,8 @@ export const mountKitchenHomeRoute = (options: KitchenHomeOptions): { dispose():
   };
   const newRecipe = link('New recipe', serializeShellRoute('kitchen', 'new', 'recipe'));
   const newPack = link('New pack', serializeShellRoute('kitchen', 'pack'));
+  // These two stand alone, not in a sentence, so they are a finger's size on a phone.
+  for (const anchor of [newRecipe, newPack]) anchor.style.cssText = 'display:inline-flex;align-items:center;min-height:44px;';
   const saved = doc.createElement('span');
   saved.append('Edit a saved one: ', link('Recipes', serializeShellRoute('recipes')), ' · ', link('Packs', serializeShellRoute('packs')));
   start.append(newRecipe, newPack, saved);

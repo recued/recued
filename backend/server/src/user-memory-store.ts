@@ -29,8 +29,8 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { Actor } from '@recued/contracts';
-import { isFieldQueryable, isOrderedWindowQueryable, type Collection } from '@recued/storage';
+import { memoryClaimEndKey, memoryClaimKey, type Actor, type MemoryClaim } from '@recued/contracts';
+import { isFieldProjectable, isFieldQueryable, isOrderedWindowQueryable, type Collection } from '@recued/storage';
 import {
   createFtsTable,
   markFtsContentFormat,
@@ -85,7 +85,9 @@ export interface UserMemoryRow {
   /** D-198 Slice 3 — the content-dedup key for IMPORTED "other" rows only
    *  (Slice 3 `memory.import`; the D-136 `source_record_hash` precedent).
    *  Absent on owner-authored (`memory.create`) rows — dedup is import-vs-import,
-   *  so it is never computed on the hot create/update path. */
+   *  so it is never computed on the hot create/update path. An import matches it
+   *  with the row's `claim_key` (D-336): the same words with another claim are
+   *  another note, and with no claim the same one. */
   content_hash?: string;
   /** D-198 Slice 4 — the D-161 session provenance of a `writeAuthored` row (the
    *  chat session that authored it). Absent on owner-direct (`user_self`) rows. */
@@ -103,6 +105,17 @@ export interface UserMemoryRow {
    *  The replaced row is never modified; recall skips it while this row is not
    *  forgotten. */
   replaces?: string;
+  /** D-336 — the entry's fact as subject, relation and object: its summary decomposed,
+   *  nothing more. Absent on an entry saved without one. */
+  claim?: MemoryClaim;
+  /** D-336 — `claim` as one key (`memoryClaimKey`), indexed: two entries with one key
+   *  state one claim in any wording. Present exactly when `claim` is. */
+  claim_key?: string;
+  /** D-336 slice C — each end of `claim` as a key (`memoryClaimEndKey`), indexed: recall
+   *  finds the notes whose claim names a person or a thing (`about`). Present exactly when
+   *  `claim` is. */
+  claim_subject?: string;
+  claim_object?: string;
 }
 
 export interface UserMemoryCreateInput {
@@ -113,6 +126,8 @@ export interface UserMemoryCreateInput {
   reason_code?: string;
   event_at?: number;
   provenance_entity_ids?: string[];
+  /** D-336 — already checked by the caller; the store keys it. */
+  claim?: MemoryClaim;
 }
 
 /** D-161 session provenance for a `writeAuthored` row. */
@@ -143,6 +158,12 @@ export interface UserMemoryUpdateInput {
    *  the body unchanged. */
   body?: string;
   event_at?: number;
+  /** D-336 slice E — a claim replaces the note's claim, `null` drops it, absent leaves
+   *  it. Already checked by the caller. */
+  claim?: MemoryClaim | null;
+  /** D-336 — the note's links into the provenance graph, replaced (the caller merges what
+   *  it keeps); absent leaves them. */
+  provenance_entity_ids?: readonly string[];
 }
 
 /** One entry accepted by `import` (the handler coerces the wire body to a
@@ -159,6 +180,8 @@ export interface UserMemoryImportEntry {
   ts?: number;
   event_at?: number;
   provenance_entity_ids?: string[];
+  /** D-336 §3.8 — already read and its linked ends resolved by the handler. */
+  claim?: MemoryClaim;
 }
 
 /** Per-outcome tally from `import`. */
@@ -199,6 +222,24 @@ export interface UserMemoryStore {
   /** D-198 §13 — every row saved in one chat (`channel_session_id`), a deleted note's
    *  content-free row included. Indexed on a db-backed store; the in-memory harness scans. */
   listSession(channel_session_id: string): Promise<UserMemoryRow[]>;
+  /** D-336 — every row whose claim has this key (`memoryClaimKey`), a removed note's
+   *  included: the caller asks the redaction overlay what still stands. A deleted note
+   *  has no key, since Delete erases its claim. Indexed on a db-backed store; the
+   *  in-memory harness scans. */
+  listClaim(claim_key: string): Promise<UserMemoryRow[]>;
+  /** D-336 slice C — every row whose claim has this end (`memoryClaimEndKey`) as its
+   *  subject or its object, a removed note's included: the caller asks the redaction
+   *  overlay what still stands. Indexed on a db-backed store; the in-memory harness scans. */
+  listClaimEnd(end_key: string): Promise<UserMemoryRow[]>;
+  /** D-336 audit 2026-11-01 — the end keys that name what `end_key` names, itself first. A
+   *  merge moves nothing (D-205), so a note saved before one keeps the absorbed contact's id:
+   *  a contact end is its merge group (`sameClaimEnd`). `listClaim` and `listClaimEnd` read
+   *  every one of them, and a caller comparing ends compares by these. */
+  claimEndsLike(end_key: string): readonly string[];
+  /** D-336 slice K (§5) — every row's id, origin, time, claim and `replaces`, and nothing else: what
+   *  the Memory view's count of relationships reads. A db-backed store reads those fields
+   *  alone (`projectFields`), never a body; the in-memory harness lists. */
+  claimTally(): Promise<ReadonlyArray<Pick<UserMemoryRow, 'memory_id' | 'origin_actor' | 'ts' | 'claim' | 'replaces'>>>;
   list(): Promise<UserMemoryRow[]>;
   /** ⛔ A BOUNDED PAGE OF THE FEED, newest-effective-time first.
    *
@@ -220,9 +261,9 @@ export interface UserMemoryStore {
   delete(memory_id: string): Promise<boolean>;
   /** D-198 §13 — remove an entry's TEXT for good, keeping the row as a record of
    *  who saved what kind of note when. Summary, body (inline or its CAS blob),
-   *  preview, size, content hash and links go; origin, kind, times, authorship and
-   *  `replaces` stay, so a lineage that points at it stays valid. Out of word and
-   *  meaning search. The CALLER marks it deleted in the redaction overlay, which is
+   *  preview, size, content hash, links and its claim (D-336) go; origin, kind,
+   *  times, authorship and `replaces` stay, so a lineage that points at it stays
+   *  valid. Out of word and meaning search. The CALLER marks it deleted in the redaction overlay, which is
    *  what keeps readers from returning the empty row. False when the id is unknown. */
   erase(memory_id: string): Promise<boolean>;
   /** Bulk import (§5): `user_self` entries merge-by-`memory_id` (idempotent
@@ -347,7 +388,40 @@ export interface UserMemoryStoreOptions {
    *  linear substring scan over the same relaxation rungs (correct, unranked —
    *  the harness pool is tiny). */
   db?: Database.Database;
+  /** D-336 audit 2026-11-01 — the other end keys that name what `end_key` names: for a
+   *  contact, every contact of its merge group (`contactClaimEnds`). Absent → an end is
+   *  only itself. A lookup that throws is treated as absent. */
+  sameClaimEnd?: (end_key: string) => readonly string[];
 }
+
+/** The end keys naming what `end_key` names, as a set, for a store or a double without
+ *  `claimEndsLike`: then the key alone. */
+export const claimEndsLikeIn = (
+  store: Partial<Pick<UserMemoryStore, 'claimEndsLike'>>,
+  end_key: string,
+): ReadonlySet<string> => new Set(store.claimEndsLike?.(end_key) ?? [end_key]);
+
+/** A claim key's three parts, or `undefined` for a string that is not one. */
+const claimKeyParts = (claim_key: string): [string, string, string] | undefined => {
+  try {
+    const parts: unknown = JSON.parse(claim_key);
+    return Array.isArray(parts) && parts.length === 3 && parts.every((part) => typeof part === 'string')
+      ? parts as [string, string, string] : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** D-336 audit 2026-11-01 — two claim keys stating one claim: the same relation, and each
+ *  end naming the same record (`claimEndsLike`). Equal strings always are. */
+export const claimKeysAlike = (store: Partial<Pick<UserMemoryStore, 'claimEndsLike'>>) =>
+  (a: string, b: string): boolean => {
+    if (a === b) return true;
+    const ours = claimKeyParts(a);
+    const theirs = claimKeyParts(b);
+    return ours !== undefined && theirs !== undefined && ours[1] === theirs[1]
+      && claimEndsLikeIn(store, ours[0]).has(theirs[0]) && claimEndsLikeIn(store, ours[2]).has(theirs[2]);
+  };
 
 /** The FTS5 index over the pool. Rebuilt lazily (see `ensureIndexed`) so a pool
  *  written before the index existed becomes searchable without a boot cost. */
@@ -485,6 +559,27 @@ const applyBodyParts = (row: UserMemoryRow, parts: BodyParts): void => {
   if (parts.body_preview !== undefined) row.body_preview = parts.body_preview;
 };
 
+/** D-336 — put a claim, its key and its ends' keys on a row, together or not at all. */
+const applyClaim = (row: UserMemoryRow, claim: MemoryClaim | undefined): void => {
+  if (claim === undefined) return;
+  row.claim = claim;
+  row.claim_key = memoryClaimKey(claim);
+  row.claim_subject = memoryClaimEndKey(claim.subject);
+  row.claim_object = memoryClaimEndKey(claim.object);
+};
+
+/** Rows found by several queries, each once, in the order first found. */
+const distinctRows = (rows: readonly UserMemoryRow[]): UserMemoryRow[] => {
+  const seen = new Set<string>();
+  const out: UserMemoryRow[] = [];
+  for (const row of rows) {
+    if (seen.has(row.memory_id)) continue;
+    seen.add(row.memory_id);
+    out.push(row);
+  }
+  return out;
+};
+
 export const createUserMemoryStore = (
   collection: Collection<UserMemoryRow>,
   blobs: BlobStore,
@@ -493,6 +588,11 @@ export const createUserMemoryStore = (
   const now = options.now ?? ((): number => Date.now());
   const mintId = options.mintId ?? ((): string => `${USER_MEMORY_ID_PREFIX}${randomUUID()}`);
   const db = options.db;
+  const claimEndsLike = (end_key: string): readonly string[] => {
+    let same: readonly string[] = [];
+    try { same = options.sameClaimEnd?.(end_key) ?? []; } catch { /* a lookup that fails: the end alone */ }
+    return [end_key, ...same.filter((key) => key !== end_key)];
+  };
   // `migrated` = an index existed under a DIFFERENT tokenizer and was dropped.
   // It is load-bearing, not informational — see `ensureIndexed`.
   const migrated =
@@ -518,7 +618,7 @@ export const createUserMemoryStore = (
    *  ⚠ Feature-detected, so the in-memory collection that backs tests keeps
    *  working through the `list()` fallback below. */
   const queryable = isFieldQueryable(collection) ? collection : undefined;
-  queryable?.ensureFieldIndexes(['blob_hash', 'replaces', 'channel_session_id']);
+  queryable?.ensureFieldIndexes(['blob_hash', 'replaces', 'channel_session_id', 'claim_key', 'claim_subject', 'claim_object']);
 
   /** The feed's ordering index. Same feature-detect, same reason: the in-memory
    *  collection keeps working through the sort-in-JS fallback in `listWindow`. */
@@ -683,6 +783,7 @@ export const createUserMemoryStore = (
     }
     if (input.author_contract_id !== undefined) row.author_contract_id = input.author_contract_id;
     if (input.replaces !== undefined) row.replaces = input.replaces;
+    applyClaim(row, input.claim);
     await collection.set(row.memory_id, row);
     indexRow(row.memory_id, row.summary, input.body);
     return row;
@@ -716,6 +817,47 @@ export const createUserMemoryStore = (
       return queryable
         ? queryable.queryByField({ equals: { channel_session_id } })
         : (await collection.list()).filter((r) => r.channel_session_id === channel_session_id);
+    },
+
+    claimEndsLike,
+
+    async claimTally() {
+      const rows = isFieldProjectable(collection)
+        ? await collection.projectFields(['memory_id', 'origin_actor', 'ts', 'claim', 'replaces'])
+        : await collection.list();
+      return rows.flatMap((row) => (typeof row.memory_id !== 'string' || row.origin_actor === undefined || typeof row.ts !== 'number' ? [] : [{
+        memory_id: row.memory_id,
+        origin_actor: row.origin_actor,
+        ts: row.ts,
+        ...(row.claim !== undefined ? { claim: row.claim } : {}),
+        ...(row.replaces !== undefined ? { replaces: row.replaces } : {}),
+      }]));
+    },
+
+    async listClaim(claim_key) {
+      // Every key stating this claim: each end as every key that names the same record.
+      const parts = claimKeyParts(claim_key);
+      const keys = parts === undefined ? [claim_key] : claimEndsLike(parts[0]).flatMap((subject) =>
+        claimEndsLike(parts[2]).map((object) => JSON.stringify([subject, parts[1], object])));
+      if (!queryable) {
+        const wanted = new Set(keys);
+        return (await collection.list()).filter((r) => r.claim_key !== undefined && wanted.has(r.claim_key));
+      }
+      return distinctRows((await Promise.all(keys.map((key) => queryable.queryByField({ equals: { claim_key: key } })))).flat());
+    },
+
+    async listClaimEnd(end_key) {
+      const ends = claimEndsLike(end_key);
+      if (!queryable) {
+        const wanted = new Set(ends);
+        return (await collection.list()).filter((r) =>
+          (r.claim_subject !== undefined && wanted.has(r.claim_subject)) || (r.claim_object !== undefined && wanted.has(r.claim_object)));
+      }
+      const found = await Promise.all(ends.flatMap((end) => [
+        queryable.queryByField({ equals: { claim_subject: end } }),
+        queryable.queryByField({ equals: { claim_object: end } }),
+      ]));
+      return distinctRows(found.flat());
     },
 
     async list() {
@@ -883,6 +1025,17 @@ export const createUserMemoryStore = (
       if (patch.kind !== undefined) next.kind = patch.kind;
       if (patch.summary !== undefined) next.summary = patch.summary;
       if (patch.event_at !== undefined) next.event_at = patch.event_at;
+      if (patch.claim !== undefined) {
+        delete next.claim;
+        delete next.claim_key;
+        delete next.claim_subject;
+        delete next.claim_object;
+        applyClaim(next, patch.claim ?? undefined);
+      }
+      if (patch.provenance_entity_ids !== undefined) {
+        if (patch.provenance_entity_ids.length > 0) next.provenance_entity_ids = [...patch.provenance_entity_ids];
+        else delete next.provenance_entity_ids;
+      }
 
       let priorBlob: string | undefined;
       if (patch.body !== undefined) {
@@ -937,6 +1090,10 @@ export const createUserMemoryStore = (
       delete next.body_preview;
       delete next.content_hash;
       delete next.provenance_entity_ids;
+      delete next.claim;
+      delete next.claim_key;
+      delete next.claim_subject;
+      delete next.claim_object;
       await collection.set(memory_id, next);
       unindexRow(memory_id);
       // After the row lands without the hash, so the refcount sees it gone — and
@@ -950,8 +1107,18 @@ export const createUserMemoryStore = (
     async import(entries) {
       const existing = await collection.list();
       const byId = new Map(existing.map((r) => [r.memory_id, r] as const));
-      const seenHashes = new Set<string>();
-      for (const r of existing) if (r.content_hash !== undefined) seenHashes.add(r.content_hash);
+      // D-336 — an imported note is one already here when its words are and its claim adds
+      // nothing: two notes saying "Sam likes cycling" of two different Sams are two notes,
+      // and the same notes from a file without claims add none. The stored `content_hash`
+      // stays the words' alone, so a note imported before still matches.
+      const words = new Set<string>();
+      const claims = new Set<string>();
+      const claimed = (hash: string, claim_key: string): string => JSON.stringify([hash, claim_key]);
+      for (const r of existing) {
+        if (r.content_hash === undefined) continue;
+        words.add(r.content_hash);
+        if (r.claim_key !== undefined) claims.add(claimed(r.content_hash, r.claim_key));
+      }
 
       let merged = 0;
       let inserted = 0;
@@ -987,6 +1154,7 @@ export const createUserMemoryStore = (
           if (entry.provenance_entity_ids !== undefined && entry.provenance_entity_ids.length > 0) {
             row.provenance_entity_ids = [...entry.provenance_entity_ids];
           }
+          applyClaim(row, entry.claim);
           await collection.set(id, row);
           indexRow(id, row.summary, entry.body);
           byId.set(id, row);
@@ -1006,7 +1174,8 @@ export const createUserMemoryStore = (
         // as engine-authored on this server, §5). The `content_hash` rides the
         // row as the dedup key.
         const hash = contentHash(entry.summary, entry.body);
-        if (seenHashes.has(hash)) {
+        const claimKey = entry.claim !== undefined ? memoryClaimKey(entry.claim) : undefined;
+        if (claimKey === undefined ? words.has(hash) : claims.has(claimed(hash, claimKey))) {
           deduped += 1;
           continue;
         }
@@ -1027,9 +1196,11 @@ export const createUserMemoryStore = (
         if (entry.provenance_entity_ids !== undefined && entry.provenance_entity_ids.length > 0) {
           row.provenance_entity_ids = [...entry.provenance_entity_ids];
         }
+        applyClaim(row, entry.claim);
         await collection.set(id, row);
         indexRow(id, row.summary, entry.body);
-        seenHashes.add(hash);
+        words.add(hash);
+        if (claimKey !== undefined) claims.add(claimed(hash, claimKey));
         byId.set(id, row);
         inserted += 1;
       }

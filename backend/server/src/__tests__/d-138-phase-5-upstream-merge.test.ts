@@ -1038,6 +1038,61 @@ describe('D-138 P5 fold-back — local_step_failed (Codex F5)', () => {
   });
 });
 
+describe('D-336 slice R — a contact whose address changed while the merge was in flight', () => {
+  it('the local step merges the contacts as they are now, under the addresses they have', async () => {
+    seedContact('survivor@old.example.com', 'Survivor', [{ vendor: 'hubspot', platform_id: 'm' }]);
+    seedContact('loser@old.example.com', 'Loser', [{ vendor: 'hubspot', platform_id: 'v' }]);
+    const registry = new Map<UpstreamMergeObjectType, VendorMergeClient>([
+      ['hubspot:contact', makeFakeMerger('hubspot:contact').client],
+    ]);
+    const idem_input: UpstreamMergeIdempotencyInput = {
+      vendor: 'hubspot', object_type: 'hubspot:contact', candidate_ids: ['cand_1'],
+      survivor_email: 'survivor@old.example.com', vendor_pairs: [{ survivor_platform_id: 'm', loser_platform_id: 'v' }],
+    };
+    store.insert({
+      id: 'rekeyed', approval_id: 'app_rekeyed', vendor: 'hubspot', object_type: 'hubspot:contact',
+      candidate_ids: ['cand_1'], survivor_email: 'survivor@old.example.com', loser_emails: ['loser@old.example.com'],
+      vendor_pairs: idem_input.vendor_pairs as { survivor_platform_id: string; loser_platform_id: string }[],
+      idempotency_key: computeUpstreamMergeIdempotencyKey(idem_input, realSha),
+      state: 'vendor_merge_succeeded', attempts: 1, created_at: Date.now(), updated_at: Date.now(),
+    });
+    // The owner changes both addresses on their Edit forms before the local step runs.
+    contactStore.changeVerifiedEmail({ contact_id: contactStore.get('survivor@old.example.com')!.contact_id!, email: 'survivor@new.example.com' });
+    contactStore.changeVerifiedEmail({ contact_id: contactStore.get('loser@old.example.com')!.contact_id!, email: 'loser@new.example.com' });
+
+    const result = await runUpstreamMergeRecoverySweep(buildDeps(registry), () => 'main');
+    expect(result.failed).toBe(0);
+    expect(store.get('rekeyed')?.state).toBe('local_merge_committed');
+    expect(contactStore.get('loser@new.example.com')?.merged_into).toBe('survivor@new.example.com');
+    expect(contactStore.lookupPlatformLink('hubspot', 'v')).toBe('survivor@new.example.com');
+    expect(cascade).toEqual([{ survivor_email: 'survivor@new.example.com', loser_emails: ['loser@new.example.com'] }]);
+  });
+
+  it('⛔ a loser address that now names the survivor itself merges nothing into itself', async () => {
+    seedContact('survivor@old.example.com', 'Survivor', [{ vendor: 'hubspot', platform_id: 'm' }]);
+    const registry = new Map<UpstreamMergeObjectType, VendorMergeClient>([
+      ['hubspot:contact', makeFakeMerger('hubspot:contact').client],
+    ]);
+    const idem_input: UpstreamMergeIdempotencyInput = {
+      vendor: 'hubspot', object_type: 'hubspot:contact', candidate_ids: ['cand_1'],
+      survivor_email: 'survivor@new.example.com', vendor_pairs: [{ survivor_platform_id: 'm', loser_platform_id: 'v' }],
+    };
+    contactStore.changeVerifiedEmail({ contact_id: contactStore.get('survivor@old.example.com')!.contact_id!, email: 'survivor@new.example.com' });
+    store.insert({
+      id: 'self', approval_id: 'app_self', vendor: 'hubspot', object_type: 'hubspot:contact',
+      candidate_ids: ['cand_1'], survivor_email: 'survivor@new.example.com', loser_emails: ['survivor@old.example.com'],
+      vendor_pairs: idem_input.vendor_pairs as { survivor_platform_id: string; loser_platform_id: string }[],
+      idempotency_key: computeUpstreamMergeIdempotencyKey(idem_input, realSha),
+      state: 'vendor_merge_succeeded', attempts: 1, created_at: Date.now(), updated_at: Date.now(),
+    });
+    await runUpstreamMergeRecoverySweep(buildDeps(registry), () => 'main');
+    expect(contactStore.get('survivor@new.example.com')?.merged_into).toBeUndefined();
+    expect(contactStore.resolveCanonicalEmail('survivor@new.example.com').canonical_email).toBe('survivor@new.example.com');
+    // Nor is it told to the cascade as a loser (the store also refuses the cycle itself).
+    expect(cascade).toEqual([{ survivor_email: 'survivor@new.example.com', loser_emails: [] }]);
+  });
+});
+
 // ────────────────────────────────────────────────────────────────
 // Fold-back surface — phantom-approval guard on idempotent replay
 // ────────────────────────────────────────────────────────────────

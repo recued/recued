@@ -9,6 +9,7 @@ import {
 } from '../composition/bin/wire-mcp-http-transport.js';
 import {
   createLlmGatewaySharedChatCompletionProvider,
+  isKernelBackingSlugGranted,
   listLlmGatewayCallableRecipeNames,
 } from '../ports/llm-gateway/handler.js';
 import {
@@ -27,6 +28,8 @@ import {
   createFileViewResolverFromRegistry,
 } from '../file-view-resolver.js';
 import { handleExecute } from '../execute-handler.js';
+import { reconcileMcpAction } from '../mcp-server.js';
+import type { McpActionRecord } from '../mcp-action-store.js';
 import { isMirroredCollection } from '../collections/mirrored-collection.js';
 import {
   isVerifiedWebclientBundlePresent,
@@ -481,6 +484,16 @@ export const composeIngressRpcContext = async (
             adapters: app.llmAdapterRegistry,
             quota: app.llmQuota,
             tabProbe: app.emptyTabProbe,
+            // D-337 follow-up 24 — a call still waiting when its reply goes is told in the
+            // conversation's next request, found by the MCP action reference the reply carries,
+            // and read as the MCP door's status read reads it (an approval that expired is told).
+            ...(execution.executeDeps.mcpActionStore !== undefined
+              ? {
+                  heldActions: execution.executeDeps.mcpActionStore,
+                  reconcileHeldAction: (record: McpActionRecord) =>
+                    reconcileMcpAction(execution.executeDeps, record),
+                }
+              : {}),
           }),
           quota: app.llmQuota,
           systemToolsAllowed: ({ token }) =>
@@ -491,7 +504,10 @@ export const composeIngressRpcContext = async (
             const allowed = manifests.slugs().filter(
               (slug) =>
                 token.grants[slug] === true
-                || token.grants[`${MCP_INGREDIENT_TOOL_PREFIX}${slug}`] === true,
+                || token.grants[`${MCP_INGREDIENT_TOOL_PREFIX}${slug}`] === true
+                // D-232 § 20.20 — a kernel op granted by its op id, as the MCP door's snapshot
+                // and the approval resume's admit it (`isKernelBackingSlugGranted`).
+                || isKernelBackingSlugGranted(token, slug),
             );
             const principal = token.contract_id;
             if (principal) {

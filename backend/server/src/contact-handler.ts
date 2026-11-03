@@ -1,11 +1,13 @@
 /** D-121 Phase 1 — rpc handlers for `contact.*`.
  *
- *  Seven methods:
+ *  Nine methods:
  *    - search.local: paired-owner saved-identifier search
  *    - upsert / list / get / delete: warehouse CRUD (D-121 P1)
  *    - resolve: identifier → contact_id resolver (D-145 PA8 follow-on)
  *    - contributions: the per-source value view (D-205 merge-review item 3) — every
  *      source's assertion behind each projected field, not just the winner
+ *    - create_by_name: a contact from a name alone (D-336 slice H)
+ *    - add_email: a contact with no address gets its email (D-336 slice I)
  *
  *  The mail / calendar derivation paths populate `data.contact`
  *  automatically; this surface covers manual UI entry plus convenience
@@ -14,12 +16,14 @@
  *  happens inside the store. */
 
 import {
+  MEMORY_CLAIM_PART_MAX,
   RpcError,
   isContactAliasPlatform,
   resolveContributionsByKind,
   sanitizeNetworkDomains,
   normalizeAliasPattern,
   canonicalizeEmail,
+  isMailboxAddress,
 } from '@recued/contracts';
 import type {
   Actor,
@@ -70,6 +74,10 @@ export interface ContactRpcDeps {
    *  `readRootProjections`" is the N+1 this exists to avoid, and it would look
    *  identical from here. */
   rollupsForKeys?: (emails: readonly string[]) => Record<string, TimelineRollup[]>;
+  /** D-336 slice R — what follows a contact to its new address outside the contact store,
+   *  once `contact.change_email` has re-keyed it. Best-effort: the old address stays the
+   *  contact's alias, so anything this misses still finds the contact. */
+  onEmailChanged?: (change: { contact_id: string; from_email: string; to_email: string }) => Promise<void> | void;
 }
 
 const isValidSource = (s: unknown): s is ContactSource =>
@@ -80,6 +88,151 @@ const isValidSource = (s: unknown): s is ContactSource =>
 
 const isStringArray = (v: unknown): v is string[] =>
   Array.isArray(v) && v.every((entry) => typeof entry === 'string');
+
+/** D-336 slice H — `contact.create_by_name`: the owner adds a contact from a name alone,
+ *  where a relationship's "Link to a contact" found nobody (§3.6, "the picker can make the
+ *  contact"). A mention-only contact (`createMentionOnlyContact`): its name at the owner's
+ *  rank, its origin the paired client's from `deps`, never `args`. A name never merges into
+ *  a contact already there; two contacts for one person are left to the merge suggestions. */
+export const handleContactCreateByName = async (
+  deps: ContactRpcDeps,
+  args: { name: string },
+): Promise<{ contact: ContactRecord }> => {
+  const name = typeof args?.name === 'string' ? args.name.trim() : '';
+  if (name === '') throw new RpcError('bad_request', 'Write the name first.', 400);
+  if (name.length > MEMORY_CLAIM_PART_MAX) {
+    throw new RpcError('bad_request', `A name can be at most ${MEMORY_CLAIM_PART_MAX} characters.`, 400);
+  }
+  const contact = deps.store.createMentionOnlyContact({ name }, deps.now?.(), {
+    ...(deps.origin_actor !== undefined ? { origin_actor: deps.origin_actor } : {}),
+    ...(deps.origin_actor !== undefined && deps.origin_contract_id !== undefined
+      ? { origin_contract_id: deps.origin_contract_id }
+      : {}),
+    ...(deps.origin_surface !== undefined ? { origin_surface: deps.origin_surface } : {}),
+  });
+  return { contact };
+};
+
+/** D-336 slice I — `contact.add_email`: the owner gives a contact with no address its
+ *  email, from the contact's Edit form. The store's promotion re-keys it, the step a
+ *  contact import and a contact book's sync take: the contact keeps its id, so its notes,
+ *  relationships and fields stay, and the placeholder stays its alias, so a reference
+ *  that holds it still reaches the contact. An address already another contact's is
+ *  refused with their name: one address is one contact, and two for one person are a
+ *  merge. */
+export const handleContactAddEmail = async (
+  deps: ContactRpcDeps,
+  args: { contact_id: string; email: string },
+): Promise<{ contact: ContactRecord }> => {
+  const contactId = typeof args?.contact_id === 'string' ? args.contact_id.trim() : '';
+  if (contactId === '') throw new RpcError('bad_request', 'contact.add_email: contact_id is required', 400);
+  const typed = typeof args?.email === 'string' ? args.email.trim() : '';
+  if (typed === '') throw new RpcError('bad_request', 'Write the email address first.', 400);
+  const email = canonicalizeEmail(typed);
+  // `canonicalizeEmail` is no address parser: it keeps a display name and angle brackets,
+  // and a contact keyed on "mia<mia@…>" cannot be put right (audit 2026-11-01).
+  if (!isMailboxAddress(email)) {
+    throw new RpcError('bad_request', 'Write the email address alone, like dana@example.com.', 400);
+  }
+  const contact = deps.store.getByContactId(contactId);
+  if (contact === null) throw new RpcError('not_found', 'This contact is no longer there.', 404);
+  if (contact.merged_into !== undefined) {
+    throw new RpcError('conflict', 'This contact was merged into another. Add the address there.', 409);
+  }
+  if (!isMentionOnlyEmail(contact.email)) {
+    // The same address again (a retried save) is the contact as it is.
+    if (contact.email === email) return { contact };
+    throw new RpcError('conflict', 'This contact already has an email address.', 409);
+  }
+  let promoted: ContactRecord;
+  try {
+    promoted = deps.store.promoteMentionOnlyToVerified({ contact_id: contactId, email }, deps.now?.());
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.startsWith('promote_email_already_attached')) throw err;
+    throw addressTaken(deps, email);
+  }
+  // D-336 slice R — and what was keyed on the placeholder outside the store, as a change carries it.
+  await carryOutsideTheStore(deps, contactId, contact.email, promoted.email);
+  return { contact: promoted };
+};
+
+const carryOutsideTheStore = async (deps: ContactRpcDeps, contact_id: string, from_email: string, to_email: string) => {
+  try {
+    await deps.onEmailChanged?.({ contact_id, from_email, to_email });
+  } catch (err) {
+    console.warn('[contact] a changed address was not carried to every record that held the old one', err);
+  }
+};
+
+/** D-336 slice R — `contact.change_email`: the owner changes a contact's saved email, from the
+ *  contact's Edit form. The store re-keys the contact onto the new address
+ *  (`changeVerifiedEmail`): it keeps its id, so its notes, relationships and fields stay, and
+ *  the old address stays its second address, so mail from it still finds the contact (the
+ *  owner: "Keep as second address"). The owner's only: `contact.write` refuses an AI (the
+ *  owner: "You only"). */
+export const handleContactChangeEmail = async (
+  deps: ContactRpcDeps,
+  args: { contact_id: string; email: string },
+): Promise<{ contact: ContactRecord }> => {
+  const contactId = typeof args?.contact_id === 'string' ? args.contact_id.trim() : '';
+  if (contactId === '') throw new RpcError('bad_request', 'contact.change_email: contact_id is required', 400);
+  const typed = typeof args?.email === 'string' ? args.email.trim() : '';
+  if (typed === '') throw new RpcError('bad_request', 'Write the email address first.', 400);
+  const email = canonicalizeEmail(typed);
+  if (!isMailboxAddress(email)) {
+    throw new RpcError('bad_request', 'Write the email address alone, like dana@example.com.', 400);
+  }
+  const contact = deps.store.getByContactId(contactId);
+  if (contact === null) throw new RpcError('not_found', 'This contact is no longer there.', 404);
+  if (contact.merged_into !== undefined) {
+    throw new RpcError('conflict', 'This contact was merged into another. Change the address there.', 409);
+  }
+  if (isMentionOnlyEmail(contact.email)) {
+    throw new RpcError('conflict', 'This contact has no email address yet. Add one instead.', 409);
+  }
+  // The same address again (a retried save) is the contact as it is.
+  if (contact.email === email) return { contact };
+  let changed: ContactRecord;
+  try {
+    changed = deps.store.changeVerifiedEmail({ contact_id: contactId, email }, deps.now?.(), {
+      ...(deps.origin_actor !== undefined ? { origin_actor: deps.origin_actor } : {}),
+      ...(deps.origin_surface !== undefined ? { origin_surface: deps.origin_surface } : {}),
+    });
+  } catch (err) {
+    if (!(err instanceof Error) || !err.message.startsWith('change_email_already_attached')) throw err;
+    throw addressTaken(deps, email);
+  }
+  await carryOutsideTheStore(deps, contactId, contact.email, changed.email);
+  return { contact: changed };
+};
+
+/** An address another contact has, refused with their name: one address is one contact. */
+const addressTaken = (deps: ContactRpcDeps, email: string): RpcError => {
+  let owner: ContactRecord | null = null;
+  try { owner = deps.store.get(deps.store.resolveCanonicalEmail(email).canonical_email); } catch { /* named by its address alone */ }
+  const whose = owner?.name?.trim() ? `${owner.name.trim()}'s` : "another contact's";
+  // D-336 slice P — and which contact it is, so the form can offer to merge the two.
+  const details = owner === null || owner.merged_into !== undefined
+    ? { reason: 'address_taken' }
+    : { reason: 'address_taken', contact_email: owner.email, ...(owner.name?.trim() ? { contact_name: owner.name.trim() } : {}) };
+  return new RpcError('conflict', `“${email}” is already ${whose} address.`, 409, undefined, details);
+};
+
+/** Audit 2026-11-01 (second) — a contact a paired client adds is keyed on its address for good,
+ *  so it must be one mailbox address alone, as `contact.add_email` and `contact.write` take one:
+ *  the New contact form took `Mia <mia@example.test>` whole. An address that is a contact's
+ *  already (its own, or a second one) is an edit of that contact, whatever it holds. The
+ *  recipe and booking doors (`handleContactUpsert` called directly) are not changed here. */
+export const requireMailboxForNewContact = (store: ContactStore, raw: unknown): void => {
+  const email = typeof raw === 'string' ? canonicalizeEmail(raw) : '';
+  if (email === '') return; // `handleContactUpsert` refuses it.
+  let known = email;
+  try { known = store.resolveCanonicalEmail(email).canonical_email; } catch { /* a broken chain: as new */ }
+  if (store.get(known) !== null) return;
+  if (!isMailboxAddress(email)) {
+    throw new RpcError('bad_request', 'Write the email address alone, like dana@example.com.', 400);
+  }
+};
 
 export const handleContactUpsert = async (
   deps: ContactRpcDeps,
@@ -265,6 +418,20 @@ export const handleContactSearchLocal = async (
   return { contacts, total, ...(rollups !== undefined ? { rollups } : {}) };
 };
 
+/** D-336 slice I — the contact a placeholder named before it got an address. Promotion
+ *  keeps the placeholder as the contact's alias, and no vendor owns a `_recued.invalid`
+ *  mailbox, so it names that one contact for good: a page or a chat that holds it still
+ *  opens the contact. Any other address reads its own row only. */
+const retiredPlaceholder = (store: ContactStore, email: string): ContactRecord | null => {
+  if (!isMentionOnlyEmail(canonicalizeEmail(email))) return null;
+  try {
+    const { canonical_email } = store.resolveCanonicalEmail(email);
+    return canonical_email === canonicalizeEmail(email) ? null : store.get(canonical_email);
+  } catch {
+    return null;
+  }
+};
+
 export const handleContactGet = async (
   deps: ContactRpcDeps,
   args: { email: string },
@@ -274,7 +441,8 @@ export const handleContactGet = async (
   }
   // D-325 — a reference by contact id (Today, an occasion) reads the same
   // record as one by email.
-  const contact = !args.email.includes('@') ? deps.store.getByContactIdResolved(args.email.trim()) ?? deps.store.get(args.email) : deps.store.get(args.email);
+  const contact = !args.email.includes('@') ? deps.store.getByContactIdResolved(args.email.trim()) ?? deps.store.get(args.email)
+    : deps.store.get(args.email) ?? retiredPlaceholder(deps.store, args.email);
   const aliases = contact?.contact_id ? deps.store.listResolvedContactAliases(contact.contact_id) : [];
   const identifiers = {
     emails: [...new Map(aliases.filter(row => row.kind === 'email_alias' && !isMentionOnlyEmail(row.alias_pattern)
@@ -483,6 +651,9 @@ export const handleContactResolve = async (
 
 type ContactMethods =
   | 'contact.upsert'
+  | 'contact.create_by_name'
+  | 'contact.add_email'
+  | 'contact.change_email'
   | 'contact.search.local'
   | 'contact.list'
   | 'contact.get'
@@ -510,6 +681,9 @@ export const makeContactHandlers = (
   return {
     methods: [
       'contact.upsert',
+      'contact.create_by_name',
+      'contact.add_email',
+      'contact.change_email',
       'contact.list',
       'contact.search.local',
       'contact.get',
@@ -522,8 +696,20 @@ export const makeContactHandlers = (
         if (!client.instance_id) throw new RpcError('unauthorized', 'Searching saved contacts requires a paired client.', 401);
         return handleContactSearchLocal(deps, args);
       },
-      'contact.upsert': async (args) =>
-        handleContactUpsert(upsertDeps, args as Parameters<typeof handleContactUpsert>[1]),
+      'contact.upsert': async (args) => {
+        // Audit 2026-11-01 (second) — the New contact form keys a contact on what it was given.
+        requireMailboxForNewContact(deps.store, (args as { email?: unknown }).email);
+        return handleContactUpsert(upsertDeps, args as Parameters<typeof handleContactUpsert>[1]);
+      },
+      // D-336 slice H — the owner's paired client too, so the same origin.
+      'contact.create_by_name': async (args) =>
+        handleContactCreateByName(upsertDeps, args as Parameters<typeof handleContactCreateByName>[1]),
+      // D-336 slice I — the owner's Edit form, so the owner's paired client.
+      'contact.add_email': async (args) =>
+        handleContactAddEmail(upsertDeps, args as Parameters<typeof handleContactAddEmail>[1]),
+      // D-336 slice R — the owner's Edit form too.
+      'contact.change_email': async (args) =>
+        handleContactChangeEmail(upsertDeps, args as Parameters<typeof handleContactChangeEmail>[1]),
       'contact.list': async (args) =>
         handleContactList(deps, args as Parameters<typeof handleContactList>[1]),
       'contact.get': async (args) =>

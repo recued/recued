@@ -81,7 +81,14 @@ describe('D-177 rule 5 slice E — 5.g posture copy ratchet', () => {
     },
   );
 
-  it.each(EVERY_SHIPPED_CHAT_PROMPT)(
+  // The owner's next steps — a grant proposal card, the Contracts view, the bell — are the owner's.
+  // ⛔ D-337 follow-up 25 (2026-11-02): the gateway carried them too, and a customer's follow-up was
+  //   answered "You can check or grant it from the bell icon at the top of the Recued app", which
+  //   they cannot do. The gateway's posture is pinned below instead.
+  const OWNER_PROMPTS: ReadonlyArray<readonly [string, string]> = EVERY_SHIPPED_CHAT_PROMPT
+    .filter(([label]) => !label.startsWith('gateway'));
+
+  it.each(OWNER_PROMPTS)(
     'carries BOTH next-step affordances (%s)',
     (_label, prompt) => {
       expect(prompt).toContain('grant proposal card');
@@ -94,6 +101,13 @@ describe('D-177 rule 5 slice E — 5.g posture copy ratchet', () => {
       expect(prompt).toContain('not from the Contracts view');
     },
   );
+
+  it('the gateway, even with a hostile owner and a stranger on `replace`, names the person who runs the service, never the owner\'s places', () => {
+    expect(HOSTILE_GATEWAY_PROMPT).toContain('wait for approval in Recued by the person who runs this service');
+    expect(HOSTILE_GATEWAY_PROMPT).toContain('do not tell them where or how to approve');
+    expect(HOSTILE_GATEWAY_PROMPT).not.toContain('bell');
+    expect(HOSTILE_GATEWAY_PROMPT).not.toContain('Contracts view');
+  });
 
   it('the hostile block is genuinely APPLIED — this ratchet is not vacuous', () => {
     // Without this, the two rows above would pass just as happily against a

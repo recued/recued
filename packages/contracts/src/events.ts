@@ -733,6 +733,12 @@ export type ServerEvent =
       /** D-329 — how the owner knows the records `args` names (`ChatPlanProposal.value_labels`).
        *  An older client ignores it and shows the ids. */
       value_labels?: import('./ask-detail-label.js').ApprovalValueLabels;
+      /** D-336 slice E — what the owner may change while approving
+       *  (`ChatPlanProposal.editable_args`). An older client ignores it and approves as shown. */
+      editable_args?: readonly string[];
+      /** D-336 slice G — notes already in memory a held save meets
+       *  (`ChatPlanProposal.memory_conflicts`). An older client ignores it. */
+      memory_conflicts?: readonly import('./memory-relations.js').MemorySaveConflict[];
       cursor: number;
     }
   | {

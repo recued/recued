@@ -53,6 +53,7 @@ import { resolveChatInputTokenBudget } from '../../chat-context-budget.js';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
 import { buildPriorToolPointers } from '../../chat-orchestrator.js';
 import { createChatRunSettledSink } from '../../chat-run-settled-sink.js';
+import { createHeldRunWaiters, settledHeldCallResult } from '../../held-run-waiters.js';
 import { buildWaitedCallsContext, joinInFlightContexts } from '../../chat-waited-calls-context.js';
 import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
@@ -173,6 +174,7 @@ import {
   deriveBoundCrmConnections,
   syncedAtFromReconcileState,
   liveVendorRegistry,
+  vendorNeutralWriteTargets,
 } from '../../connection-convention-families.js';
 import { createHousekeepingStateStore, type HousekeepingStateStore } from '../../housekeeping/state-store.js';
 import { reconciliationTaskId } from '../../housekeeping/reconciliation/vendor-reconciler.js';
@@ -243,6 +245,7 @@ import type { EventBus } from '../../events/bus.js';
 import type { KeyManager } from '../../key-manager.js';
 import type { ContactStore } from '../../storage/contact-store.js';
 import type { MemoryEmbedder, UserMemoryStore } from '../../user-memory-store.js';
+import type { ClaimRecordLookups } from '../../memory-claim.js';
 import type { MemoryRedactionRecord } from '../../memory-rpc-handler.js';
 import { describeMemoryNow } from '../../memory-revision.js';
 import { createCorrectionEventsStore } from '../../storage/correction-events-store.js';
@@ -264,6 +267,20 @@ import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import { handleExecute } from '../../execute-handler.js';
 import { createHeldChatWrites, createHoldTier1Write, settleChatRun } from '../../chat-held-writes.js';
+import { createClaimLinker } from '../../claim-link.js';
+import { createWaitingSaveMarker } from '../../waiting-save-marks.js';
+import { createClaimLinkLedger } from '../../storage/claim-link-ledger.js';
+import { listWaitingTier1Calls } from '../../raw-op-dispatch.js';
+import {
+  createCarriedHeldResults,
+  createHeldResultContinuations,
+  createHeldRunReply,
+  createWatchedRunSettlement,
+  HELD_RESULT_QUEUE_FAMILY,
+  watchHeldRunsIn,
+} from '../../chat-held-results.js';
+import { createHeldResultTurnStore, createHeldRunWatchStore } from '../../storage/chat-held-result-store.js';
+import { recipeToolTitle } from '../../recipe-tool-name.js';
 import { useWriteRule } from '../../write-rules.js';
 import { recipeConnectionChoices } from '../../recipe-connection-choices.js';
 import type { ScheduleHandlerDeps } from '../../schedule-handler.js';
@@ -329,6 +346,9 @@ export interface ComposeChatOrchestratorDeps {
   /** D-198 Slice 4 — the redaction-marker store so `memory.search` omits
    *  "forgotten" rows from recall. Late-bound alongside the user_memory store. */
   getMemoryRedactionStore?: () => Collection<MemoryRedactionRecord> | undefined;
+  /** D-336 slice E — the owner's lookups for a claim's linked ends: a held `memory.write`
+   *  whose claim the owner changed on its card checks it by them when it runs. */
+  getOwnerClaimRecords?: () => ClaimRecordLookups;
   /** RUNG 4 — the query embedder `memory.search` falls through to when NO
    *  lexical rung matched. Late-bound + optional: absent leaves rung 4 off and
    *  keeps the tool a zero-token SQL read. */
@@ -379,6 +399,10 @@ export interface ComposeChatOrchestratorDeps {
   getWorkEntityEdgeStore?: () => Pick<WorkEntityEdgeStore, 'listByOwner'> | undefined;
 }
 
+/** Told that a continuation's turn ended, in which conversation and as which chat (D-337). */
+export type HeldResultTurnEndedListener =
+  (ended: { readonly session_id: string; readonly source?: ExecutionSource }) => void;
+
 /** Everything `bin.ts` retains on the module-scope `let`-bindings. */
 export interface ChatOrchestratorBundle {
   /** D-137 — writes the RESULT half of a paired tool call when a held run
@@ -389,11 +413,17 @@ export interface ChatOrchestratorBundle {
    *  it: the email door writes the follow-up of a run its turn left waiting for
    *  an approval. Returns the way to stop. */
   readonly onRunSettled: (listener: (settled: PreflightRunSettled) => void) => () => void;
+  /** D-337 — be told when a continuation's turn has ended: the email door sends its answer then,
+   *  as it does after its own turns. Returns the way to stop. */
+  readonly onHeldResultTurnEnded: (listener: HeldResultTurnEndedListener) => () => void;
 
   chatStore: ChatStore;
   connectionMcpStore: ChatConnectionMcpStore;
   inboundTokenStore: ChatInboundTokenStore;
   internalRegistry: InternalToolRegistry;
+  /** D-336 slice O's open item — a Tier-1 call was held (the execute deps' `onTier1Held`): a
+   *  later save of a fact marks the earlier held chat saves of it "Asked again". */
+  onTier1Held: (call: { tool: string; args: Record<string, unknown>; run_id: string }) => Promise<void>;
   ownerDocumentSearch: OwnerDocumentSearch;
   orchestrator: ChatOrchestrator;
   chatDeps: ChatRpcDeps;
@@ -451,6 +481,7 @@ export const composeChatOrchestrator = (
     getEnrichmentStore,
     getUserMemoryStore,
     getMemoryRedactionStore,
+    getOwnerClaimRecords,
     getMemoryEmbedder,
     getCrmRecordMirror,
     getConnectionStore,
@@ -526,6 +557,19 @@ export const composeChatOrchestrator = (
     db,
     chatKeyProvider,
   );
+  // D-336 slice Q — what each contact add and save made, by its turn or its AI app, and the
+  // link a save gets to the contact the same place added under the same name.
+  const claimLinkLedger = createClaimLinkLedger(db);
+  const claimLinker = createClaimLinker({
+    ledger: () => claimLinkLedger,
+    memory: () => getUserMemoryStore?.(),
+    contacts: () => getContactStore(),
+    ownerRecords: () => getOwnerClaimRecords?.() ?? {},
+    redactions: () => getMemoryRedactionStore?.(),
+    bus: () => eventBus,
+    // A turn that carries the conversation on after an approval is the reply it continues.
+    rootTurnOf: (turn_id) => heldResultTurnStore.rootTurnOf?.(turn_id),
+  });
   // D-174 R28 Slice A — onboarding default (model source). When a provider IS
   // configured but the user has never chosen a chat-model default, seed it to
   // the FIRST configured source (`slot_1` → `slot_2` → `free_pool`) so chat
@@ -762,6 +806,16 @@ export const composeChatOrchestrator = (
     // reads; the gate still decides per op (`isOpGranted`), and lean-core, the
     // default, lists none of them: they are found through `tools.search`.
     scanInstalledPacks: () => getExecuteDeps()?.contractScan?.('installed_pack', []) ?? [],
+    // D-337 slice L — the owner's standing rulings, for a recipe read before it runs.
+    getContractScan: () => getExecuteDeps()?.contractScan,
+    neutralWriteTargets: (crmAlias, verb) => {
+      const execute = getExecuteDeps();
+      return execute === undefined ? undefined : vendorNeutralWriteTargets({
+        connectionStore: execute.connectionStore,
+        profiles: execute.connectionOperationProfiles,
+        localManifestStore: execute.localManifestStore,
+      }, crmAlias, verb);
+    },
     // D-172 P2 — `file.search`'s DEFAULT (session) scope reads this session's
     // own message rows for their attachments. Without it the tool would have
     // only the owner-wide scope, which is the one we deliberately made
@@ -776,6 +830,11 @@ export const composeChatOrchestrator = (
     // memory write live-refreshes paired Memory lenses.
     ...(getUserMemoryStore ? { getUserMemoryStore } : {}),
     ...(getMemoryRedactionStore ? { getMemoryRedactionStore } : {}),
+    ...(getOwnerClaimRecords ? { getOwnerClaimRecords } : {}),
+    // D-336 slice O — the saves still waiting for the owner, which a held save is told of.
+    getWaitingCalls: (tool: string) => listWaitingTier1Calls(getExecuteDeps() ?? {}, tool),
+    // D-336 slice Q — a save linked to the contact its turn, or its AI app, added.
+    onRecordMade: claimLinker.recordMade,
     ...(getMemoryEmbedder ? { getMemoryEmbedder } : {}),
     getEventBus: () => eventBus,
     getEnrichmentStore,
@@ -792,7 +851,7 @@ export const composeChatOrchestrator = (
     getExecuteRecipe: () => {
       const executeDeps = getExecuteDeps();
       return executeDeps
-        ? (req) => handleExecute(executeDeps, req)
+        ? (req, internal) => handleExecute(executeDeps, req, internal)
         : undefined;
     },
     // D-193 amendment — `recipe.schedule`: the same handler the Run dialog uses,
@@ -1019,7 +1078,7 @@ export const composeChatOrchestrator = (
       opKindLookup,
       true,
       // The owner's own catalog: it names each slot's connections (D-320 ruling
-      // 12), and leaves "Send from" optional, since the owner's run fills it.
+      // 12), and its "Send from" hint says a refusal names the mailboxes.
       true,
     ).filter((entry) => reachable(entry.name));
   };
@@ -1040,6 +1099,8 @@ export const composeChatOrchestrator = (
     // the MCP door's holds both call `checkBeforeAsking`.
     tier1Checks: chatToolRegistryInputs.tier1Checks,
     tier1AskLabels: chatToolRegistryInputs.tier1AskLabels,
+    // D-336 slice G — what a held write meets, told to the AI and shown on its card and ask.
+    tier1AskNotices: chatToolRegistryInputs.tier1AskNotices,
     // ⛔⛔ D-228 slice 5 — the contract gates Tier-1 primitives on the INTERNAL
     // chat channel too, not only `mcp_wire`. `buildInternalDispatchCtx` always
     // sets `execution_source` (a `(chat, user_self)` source), and
@@ -1451,6 +1512,16 @@ export const composeChatOrchestrator = (
   // storage context, because this module is also the one a db-less harness
   // skips: no db, no store, no dep, unchanged behaviour.
   const serverTimeZoneStore = createServerTimeZoneStore(db);
+  // D-337 — runs held in the owner's messenger and email chats, which keep no tool-call rows.
+  const heldRunWatchStore = createHeldRunWatchStore(db);
+  // D-337 — each continuation's turn: the email door owes its answer by it, and a chat's next
+  // turns are not told again of a call it has carried on from.
+  const heldResultTurnStore = createHeldResultTurnStore(db);
+  // D-337 ruling 4, design (a) — an LLM gateway request waits for the owner's answer to a call it
+  // holds; every settled run is told to it (`runSettledSink` below).
+  const heldRunWaiters = createHeldRunWaiters();
+  // D-337 §7.10 — bound once the queue exists: the orchestrator's next turns carry untold calls.
+  let carryHeldResults: ReturnType<typeof createCarriedHeldResults> | undefined;
 
   const executionOrchestrator = withChatSessionBusy(createChatOrchestrator({
     chatStore,
@@ -1512,14 +1583,20 @@ export const composeChatOrchestrator = (
         turn_id,
       );
     },
-    buildInFlightContext: (source: ExecutionSource) => joinInFlightContexts(
+    buildInFlightContext: (source: ExecutionSource, telling?: ReadonlySet<string>) => joinInFlightContexts(
       getExecuteDeps()?.inFlightRegistry?.promptContext(
         deriveChannelSessionId(source),
       ),
       // Calls that stopped to wait and have since settled (or still wait):
       // without this the model repeats its own "queued" after the run is done.
-      buildWaitedCallsContext(chatStore.toolCalls, source),
+      // D-337 — not one a continuation has carried this chat on from: it was told then. Nor one this
+      // turn carries (`telling`): it is in front of the model now.
+      buildWaitedCallsContext(chatStore.toolCalls, source, (session_id) =>
+        new Set([...heldResultTurnStore.delivered(session_id), ...(telling ?? [])])),
     ),
+    // D-337 §7.10 — the calls no model was told of (their continuation's model did not answer): the
+    // conversation's next turn carries them. Bound once the queue exists, below.
+    carriedHeldResults: (session_id: string) => carryHeldResults?.(session_id) ?? Promise.resolve(undefined),
     // Pre-seed INDEX. Probes the ordinary Tier-1 read handlers for the owner's
     // own distinctive terms and reports only WHICH STORES answered — never a
     // row, a title or a count. Two gates apply and neither is re-implemented
@@ -1689,6 +1766,11 @@ export const composeChatOrchestrator = (
     resolveInputTokenBudget: (route) =>
       resolveChatInputTokenBudget(getLlmConfig(), route),
     forwardedSenderIndex,
+    heldRunWatches: watchHeldRunsIn(heldRunWatchStore),
+    settleHeldCall: async ({ run_id, held, until, signal }) => {
+      const settled = await heldRunWaiters.wait(run_id, until, signal);
+      return settled === undefined ? undefined : settledHeldCallResult(settled, held);
+    },
     getScopedGrantParseDeps,
     getSpanAnchorDeps,
     getExecutionCaseLifecycle:
@@ -1765,6 +1847,10 @@ export const composeChatOrchestrator = (
     // `chat` surface is resolved through here — the gateway resolves its own in
     // the HTTP handler, where `system_tools_allowed` is authoritative.
     resolveSystemPrompt,
+    // Where approval requests go now, read each turn: a Telegram or email chat's prompt names
+    // its own channel as where to answer them while they go there. The notification block is
+    // composed after the chat, so it is read through the execution deps.
+    approvalChannels: async () => (await getExecuteDeps()?.approvalChannelsNow?.()) ?? [],
     broadcast,
     ...(auditLog ? { auditLog } : {}),
     selfSignature,
@@ -2429,12 +2515,59 @@ export const composeChatOrchestrator = (
 
   // Source-scoped late outcomes for previously held owner-chat calls; and the
   // email door's, through its listener (D-318 step 5).
-  const chatRunSettledSink = createChatRunSettledSink(chatStore, selfSignature, broadcast);
+  // D-337 — an answered approval continues its conversation, as an AI app's would: queued in
+  // the conversation's own order, run on the base orchestrator (the queue's worker owns it).
+  const heldResultTurnListeners = new Set<HeldResultTurnEndedListener>();
+  // Recued's own line, in the turn that made the call or the continuation the server stopped in.
+  const heldRunReply = createHeldRunReply({ chatStore, signature: selfSignature, broadcast });
+  const heldResults = orchestrator.turnQueue !== undefined
+    ? createHeldResultContinuations({
+        queue: orchestrator.turnQueue,
+        runTurn: (input) => executionOrchestrator.runTurn(input),
+        turns: heldResultTurnStore,
+        // D-337 §7.9 — a continuation the server stopped in after it began acting is not run again:
+        // a messenger or email chat is told what became of each call, once.
+        note: (note) => heldRunReply({
+          run_id: `interrupted:${note.turn_id}`, session_id: note.session_id, turn_id: note.turn_id,
+          tool_name: HELD_RESULT_QUEUE_FAMILY, called_at: 0,
+        }, note.content, note.source),
+        // The email door sends a continuation's answer as soon as its turn ends, as after its own.
+        afterTurn: (ended) => {
+          for (const listener of heldResultTurnListeners) {
+            try { listener(ended); } catch (error) { console.error('[chat] continuation listener failed', error); }
+          }
+        },
+      })
+    : undefined;
+  carryHeldResults = orchestrator.turnQueue !== undefined
+    ? createCarriedHeldResults({ turns: heldResultTurnStore, queue: orchestrator.turnQueue })
+    : undefined;
+  const heldRunTitle = (tool_name: string): string | undefined => recipeToolTitle(recipeStore, tool_name);
+  const chatRunSettledSink = createChatRunSettledSink(chatStore, selfSignature, broadcast,
+    heldResults !== undefined
+      ? { continueWith: heldResults.continueWith, toolTitle: heldRunTitle }
+      : undefined);
+  // D-337 — "all channels should behave the same": a run held in a messenger or email chat
+  // carries that conversation on too, found by its watch.
+  const watchedRunSettlement = heldResults !== undefined
+    ? createWatchedRunSettlement({
+        watches: heldRunWatchStore,
+        continueWith: heldResults.continueWith,
+        toolTitle: heldRunTitle,
+        reply: heldRunReply,
+      })
+    : undefined;
   // D-329 — a chat's held Tier-1 write settles onto its card and replies in its chat; its
-  // run has no tool call to close.
+  // run has no tool call to close. D-337 — or its conversation continues instead.
+  // D-336 slices O and S — a save, once held, marks the saves still waiting that it asks again
+  // or contradicts.
+  const markWaitingSaves = createWaitingSaveMarker({
+    plans: planApprovalStoreShared, broadcast, ownerRecords: () => getOwnerClaimRecords?.() ?? {},
+  });
   const settleRun = settleChatRun(createHeldChatWrites({
     plans: planApprovalStoreShared, chatStore, broadcast, signature: selfSignature,
-  }), chatRunSettledSink);
+    ...(heldResults !== undefined ? { continueConversation: heldResults.continueWith } : {}),
+  }), chatRunSettledSink, watchedRunSettlement);
   const runSettledListeners = new Set<(settled: PreflightRunSettled) => void>();
   const ownerDocumentSearch = createOwnerDocumentSearch({
     dispatch: async (args, ctx) => {
@@ -2448,20 +2581,34 @@ export const composeChatOrchestrator = (
   return {
     ownerDocumentSearch,
     chatStore,
-    runSettledSink: (settled) => {
+    runSettledSink: async (settled) => {
       ownerDocumentSearch.settled(settled);
-      for (const listener of runSettledListeners) {
-        try { listener(settled); } catch (error) { console.error('[chat] run-settled listener failed', error); }
+      // D-337 — the chat settles first, the listeners after. A run whose conversation carries on
+      // is recorded as continued (in its turn's admission) before the email door hears of it, so
+      // the door never also writes its fixed follow-up for it (`follow-ups.ts`).
+      try {
+        await settleRun(settled);
+      } catch (error) {
+        console.error('[chat] run settlement failed', error);
+      } finally {
+        try { heldRunWaiters.settled(settled); } catch (error) { console.error('[chat] held-run waiter failed', error); }
+        for (const listener of runSettledListeners) {
+          try { listener(settled); } catch (error) { console.error('[chat] run-settled listener failed', error); }
+        }
       }
-      return settleRun(settled);
     },
     onRunSettled: (listener) => {
       runSettledListeners.add(listener);
       return () => { runSettledListeners.delete(listener); };
     },
+    onHeldResultTurnEnded: (listener) => {
+      heldResultTurnListeners.add(listener);
+      return () => { heldResultTurnListeners.delete(listener); };
+    },
     connectionMcpStore,
     inboundTokenStore,
     internalRegistry,
+    onTier1Held: markWaitingSaves,
     orchestrator,
     chatDeps,
     executionCaseLifecycle: executionCases.lifecycle,

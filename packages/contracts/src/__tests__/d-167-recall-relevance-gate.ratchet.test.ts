@@ -42,10 +42,23 @@ describe('memory.search — match / top_margin agent guidance', () => {
   const memorySearchDescription =
     TIER1_TOOL_DESCRIPTORS['memory.search'].description;
 
-  it('names all four match kinds', () => {
-    for (const kind of ['exact', 'relaxed', 'loose', 'semantic']) {
+  it('names all five match kinds', () => {
+    // D-336 slice C — +1: `claim`, a recall by the notes' claims (`about`).
+    for (const kind of ['exact', 'relaxed', 'loose', 'semantic', 'claim']) {
       expect(memorySearchDescription).toContain(`\`${kind}\``);
     }
+  });
+
+  /** D-336 slice C (owner: "do slice C") — recall by a claim's ends, in any wording or
+   *  language. A note saved with no claim has none to find, so the words stay. */
+  it('sends a recall about a person or a thing to `about`, which finds notes by their claim', () => {
+    expect(memorySearchDescription).toMatch(/To recall what is saved about a person or a thing, pass `about` too: it finds notes by their `claim`, in whatever words or language they were saved\./);
+    expect(memorySearchDescription).toMatch(/`claim` = each note's claim names what you passed in `about`, either way round/);
+    const about = (TIER1_TOOL_DESCRIPTORS['memory.search'].arg_schema as {
+      properties: { about: { description: string; maxItems: number } };
+    }).properties.about;
+    expect(about.maxItems).toBe(2);
+    expect(about.description).toMatch(/With `query` too, its words answer when no claim names them/);
   });
 
   it('⛔ tells the agent a SEMANTIC hit shares no words and must be checked', () => {
@@ -80,7 +93,16 @@ describe('memory.search — match / top_margin agent guidance', () => {
    * of their own preferences is current, forever.
    *
    * Removing the invitation is not enough on its own: "a fact worth
-   * persisting" still describes a preference, so the ban has to be explicit. */
+   * persisting" still describes a preference, so the ban has to be explicit.
+   *
+   * 🔑 2026-10-31 — THE OWNER RE-DREW THE PREFERENCE LINE: *"maybe long term
+   * preferences or habits is worth saving, session preferences aren't worth
+   * saving"*. The fear above has three answers it lacked when it was written:
+   * every agent save waits on the owner's card (D-329), an agent replaces its own
+   * note when a fact changes (D-198 §10), and recall takes the newest of agents'
+   * notes (D-198 §13). So a person's lasting preference or habit is saved, one
+   * for this conversation is not, and the FIGURES stay banned: they were 128 of
+   * the 129 saves below, and nothing about them changed. */
   /** ⛔⛔ 2026-09-10 — THIS PINNED THE WORD "PREFERENCES" AND THAT WAS THE HOLE.
    *  The rule always read "PREFERENCES **or any setting with a current value**",
    *  which covers a levy or a rate — but the LABEL and BOTH EXAMPLES were
@@ -110,16 +132,31 @@ describe('memory.search — match / top_margin agent guidance', () => {
     expect(write).not.toMatch(/movable unit/i);
     expect(write).not.toMatch(/never the running value/i);
     expect(write).not.toMatch(/leave the value to the user/i);
-    // Preferences remain covered — as a MEMBER of the class, not as the class.
-    expect(write).toMatch(/preference/i);
-    // …and a movable FIGURE is named too, which is the 99% case.
+    // A movable FIGURE is named, which is the 99% case. Since 2026-10-31 a lasting
+    // preference is out of the class, and its own test below pins where it stands.
     expect(write).toMatch(/levy|surcharge|\brate\b/i);
     expect(write).toMatch(/never supersedes/i);
     // The reason travels with the rule; a bare prohibition gets rationalised away.
     expect(write).toMatch(/contradiction/i);
-    // …and the invitation is genuinely gone, not just counter-balanced.
-    expect(write).not.toMatch(/states a lasting preference/i);
+    // The opening still invites knowledge, not preferences in general.
     expect(write).not.toMatch(/a fact, decision, preference/i);
+  });
+
+  /** 🔑 Owner, 2026-10-31: *"maybe long term preferences or habits is worth saving,
+   *  session preferences aren't worth saving"*. Both halves are pinned, since a dropped
+   *  half is a dropped rule, and so is where a changed preference goes. */
+  it("saves a person's lasting preference or habit, never a preference for this conversation alone", () => {
+    const write = TIER1_TOOL_DESCRIPTORS['memory.write'].description;
+    expect(write).toMatch(/A person's lasting preference or habit is worth saving/);
+    expect(write).toMatch(/a preference for this conversation or task alone \("keep it short today"\) is not/);
+    expect(write).toMatch(/a preference or habit that changed included, pass its `memory_id` as `replaces`/);
+    // ⛔ The ban's examples are figures only. A preference there is what taught the
+    // model to read the ban as a preference rule (2026-09-10).
+    expect(write).not.toMatch(/prefers morning meetings|always cc Sam/i);
+    const schema = TIER1_TOOL_DESCRIPTORS['memory.write'].arg_schema as {
+      properties: { summary: { description: string } };
+    };
+    expect(schema.properties.summary.description).toMatch(/a lasting fact about a person, a preference or a habit among them/);
   });
 
   /** ⛔ D-198 §10 — AN ENTRY THE AGENT DID NOT SAVE IS NOT ITS TO CORRECT, AND A

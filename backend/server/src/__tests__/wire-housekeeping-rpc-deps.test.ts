@@ -26,6 +26,9 @@ const housekeepingMocks = vi.hoisted(() => ({
 
 vi.mock('../housekeeping/index.js', () => housekeepingMocks);
 
+import { collectionTableName } from '../collections/table.js';
+import { handleHousekeepingStatusRead } from '../housekeeping-handler.js';
+
 import { composeHousekeepingRpcDeps } from '../composition/bin/wire-housekeeping-substrate.js';
 
 let db: Database.Database | undefined;
@@ -73,6 +76,7 @@ const makeRpcDeps = (overrides: Record<string, any> = {}) => {
   const { stores: storeOverrides, ...rest } = overrides;
   return {
     db,
+    collectionRegistry: { list: () => [{ platform: 'mail', slug: 'first' }, { platform: 'mail', slug: 'second' }] },
     stores: {
       configStore,
       stateStore,
@@ -122,11 +126,11 @@ const addProducer = (
 
 const seedMailTables = () => {
   db!.exec(`
-    CREATE TABLE "collection_mail_77777777aa" (id TEXT);
-    CREATE TABLE "collection_mail_88888888bb" (id TEXT);
+    CREATE TABLE "${collectionTableName('mail', 'first')}" (id TEXT);
+    CREATE TABLE "${collectionTableName('mail', 'second')}" (id TEXT);
     CREATE TABLE "collection_contact_alpha" (id TEXT);
-    INSERT INTO "collection_mail_77777777aa" (id) VALUES ('a1'), ('a2');
-    INSERT INTO "collection_mail_88888888bb" (id) VALUES ('b1');
+    INSERT INTO "${collectionTableName('mail', 'first')}" (id) VALUES ('a1'), ('a2');
+    INSERT INTO "${collectionTableName('mail', 'second')}" (id) VALUES ('b1');
     INSERT INTO "collection_contact_alpha" (id) VALUES ('c1'), ('c2'), ('c3');
   `);
 };
@@ -260,7 +264,7 @@ describe('composeHousekeepingRpcDeps getEnrichmentInfo', () => {
     const producer = addProducer('enrichment.zero', {
       estimate_per_record_tokens: vi.fn().mockReturnValue(0),
       scope_read_declaration: [
-        { collection: 'mail', sample_field_paths: ['subject'] },
+        { collection: 'data.mail', sample_field_paths: ['subject'] },
         { collection: 'calendar', sample_field_paths: ['summary'] },
       ],
     });
@@ -276,8 +280,8 @@ describe('composeHousekeepingRpcDeps getEnrichmentInfo', () => {
       is_ai_surface: false,
       source_collection_count: 3,
       scope_read: [
-        { collection: 'mail', sample_field_paths: ['subject'], record_count: 3 },
-        { collection: 'calendar', sample_field_paths: ['summary'] },
+        { collection: 'data.mail', sample_field_paths: ['subject'], record_count: 3 },
+        { collection: 'calendar', sample_field_paths: ['summary'], record_count: 0 },
       ],
     });
     expect(housekeepingMocks.probeAiPathAvailability).not.toHaveBeenCalled();
@@ -373,14 +377,14 @@ describe('composeHousekeepingRpcDeps getEnrichmentInfo', () => {
     expect(result.global_byok_allowed).toBe(true);
   });
 
-  it('maps scope_read record_count only for positive counts or the producer source scope', async () => {
+  it('preserves canonical declarations, known zero counts and unavailable source counts', async () => {
     seedMailTables();
     addProducer('enrichment.scope', {
       source_scope: 'contact',
       estimate_per_record_tokens: vi.fn().mockReturnValue(0),
       scope_read_declaration: [
-        { collection: 'contact', sample_field_paths: ['display_name'] },
-        { collection: 'mail', sample_field_paths: ['subject'] },
+        { collection: 'data.contact', sample_field_paths: ['display_name'] },
+        { collection: 'data.mail', sample_field_paths: ['subject'] },
         { collection: 'calendar', sample_field_paths: ['summary'] },
       ],
     });
@@ -388,11 +392,50 @@ describe('composeHousekeepingRpcDeps getEnrichmentInfo', () => {
 
     const result = await deps.getEnrichmentInfo('enrichment.scope');
 
-    expect(result.source_collection_count).toBe(0);
+    expect(result).not.toHaveProperty('source_collection_count');
     expect(result.scope_read).toEqual([
-      { collection: 'contact', sample_field_paths: ['display_name'], record_count: 0 },
-      { collection: 'mail', sample_field_paths: ['subject'], record_count: 3 },
-      { collection: 'calendar', sample_field_paths: ['summary'] },
+      { collection: 'data.contact', sample_field_paths: ['display_name'] },
+      { collection: 'data.mail', sample_field_paths: ['subject'], record_count: 3 },
+      { collection: 'calendar', sample_field_paths: ['summary'], record_count: 0 },
     ]);
+  });
+
+  it('provides a positive AI estimate for contacts without executing the producer, and refreshes counts on the next read', async () => {
+    db!.exec("CREATE TABLE contacts (email TEXT); INSERT INTO contacts VALUES ('a@example.com'), ('b@example.com')");
+    const producer = addProducer('enrichment.role', {
+      source_scope: 'contact',
+      estimate_per_record_tokens: vi.fn().mockReturnValue(600),
+      scope_read_declaration: [{ collection: 'data.contact', sample_field_paths: ['email'] }],
+    });
+    const deps = composeWithDeps();
+    expect(await deps.getEnrichmentInfo('enrichment.role')).toMatchObject({
+      token_estimate_per_record: 600, source_collection_count: 2,
+      scope_read: [{ collection: 'data.contact', sample_field_paths: ['email'], record_count: 2 }],
+    });
+    db!.exec("INSERT INTO contacts VALUES ('c@example.com')");
+    expect(await deps.getEnrichmentInfo('enrichment.role')).toMatchObject({ source_collection_count: 3 });
+    expect(producer.produce).not.toHaveBeenCalled();
+    expect(getScheduler).not.toHaveBeenCalled();
+  });
+
+  it('counts each source once across a status response, while subsequent responses see new records', async () => {
+    db!.close();
+    const queries: string[] = [];
+    db = new Database(':memory:', { verbose: (sql) => { queries.push(String(sql)); } });
+    db.exec("CREATE TABLE contacts (email TEXT); INSERT INTO contacts VALUES ('a@example.com'), ('b@example.com')");
+    const ids = ['enrichment.role', 'enrichment.company'];
+    for (const id of ids) addProducer(id, { source_scope: 'contact',
+      scope_read_declaration: [{ collection: 'data.contact', sample_field_paths: ['email'] }] });
+    housekeepingMocks.listHousekeepingTasks.mockReturnValue(ids.map(id => ({
+      meta: { id, kind: 'enrichment', description: id, interruptible: true },
+    })));
+    const deps = composeWithDeps({ stores: { stateStore: { get: () => null } } });
+    const first = await handleHousekeepingStatusRead(deps);
+    expect(first.tasks.map(task => task.enrichment?.source_collection_count)).toEqual([2, 2]);
+    expect(queries.filter(sql => sql.startsWith('SELECT COUNT(*)'))).toHaveLength(1);
+    db.exec("INSERT INTO contacts VALUES ('c@example.com')");
+    const next = await handleHousekeepingStatusRead(deps);
+    expect(next.tasks.map(task => task.enrichment?.source_collection_count)).toEqual([3, 3]);
+    expect(queries.filter(sql => sql.startsWith('SELECT COUNT(*)'))).toHaveLength(2);
   });
 });

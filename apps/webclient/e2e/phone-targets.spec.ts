@@ -290,9 +290,9 @@ const STATES: State[] = [
     shows: (page) => page.getByRole('form', { name: 'Import memory' }),
   },
   {
-    name: 'Memory › Forget',
+    name: 'Memory › Hide from AI',
     at: '?data=memory-rows#data/memory',
-    open: press(/^Forget memory/),
+    open: press(/^Hide run from AI/),
     shows: (page) => page.getByRole('button', { name: 'Confirm' }),
   },
   {

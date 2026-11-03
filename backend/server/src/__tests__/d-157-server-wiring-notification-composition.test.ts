@@ -46,7 +46,9 @@ import {
   composeNotificationBlock,
   raiseInDoubtForSweptCommits,
   recoverNotificationBlockAtBoot,
+  recoverPendingAsksOnceRunning,
 } from '../composition/bin/wire-notification-block.js';
+import { createLifecycleStateMachine } from '../lifecycle/lifecycle-state.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import {
   createGatedActionStore,
@@ -373,7 +375,7 @@ describe('composeNotificationBlock', () => {
 });
 
 describe('recoverNotificationBlockAtBoot', () => {
-  it('freezes interrupted dispatches before replaying answered asks', async () => {
+  it('freezes interrupted dispatches at boot, and leaves answered asks to the running server', async () => {
     const order: string[] = [];
     const block = recoveryBlock(vi.fn(async () => {
       order.push('recover');
@@ -397,7 +399,9 @@ describe('recoverNotificationBlockAtBoot', () => {
       gatedActionStore,
     });
 
-    expect(order).toEqual(['receipt', 'recover', 'sweep']);
+    // D-158 P3 — the asks are swept once the server runs (`recoverPendingAsksOnceRunning`), so
+    // the freeze still comes first: the boot completes before the server runs.
+    expect(order).toEqual(['receipt', 'sweep']);
     expect(gatedActionStore.finish).toHaveBeenCalledWith(
       'action-1',
       expect.objectContaining({ status: 'in_doubt' }),
@@ -464,7 +468,11 @@ describe('recoverNotificationBlockAtBoot', () => {
     });
   });
 
-  it('runs recoverPendingAsks before sweeping awaiting checkpoints', async () => {
+  it('sweeps awaiting checkpoints at boot, and leaves the asks to the running server', async () => {
+    // D-158 P3 — run here, before `startCollectionAdapters`, the asks' email was refused and an
+    // approval answered while the server stopped resumed its run without its mailboxes. The
+    // checkpoint sweep pairs through the durable index of unresolved asks (open and answered),
+    // so running first it mints no replacement for an ask that is not swept yet.
     const order: string[] = [];
     const block = recoveryBlock(vi.fn(async () => {
       order.push('recover');
@@ -482,8 +490,8 @@ describe('recoverNotificationBlockAtBoot', () => {
       auditLog: log,
     });
 
-    expect(order).toEqual(['recover', 'sweep']);
-    expect(block.recoverPendingAsks).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['sweep']);
+    expect(block.recoverPendingAsks).not.toHaveBeenCalled();
     expect(sweepAwaitingCheckpointsMock).toHaveBeenCalledWith({
       checkpointStore: checkpoints,
       auditLog: log,
@@ -495,22 +503,6 @@ describe('recoverNotificationBlockAtBoot', () => {
     expect(block.listUnresolvedAsks).toHaveBeenCalledTimes(1);
   });
 
-  it('swallows recoverPendingAsks failures and still runs the sweep', async () => {
-    const block = recoveryBlock(
-      vi.fn().mockRejectedValue(new Error('recover failed')),
-    );
-
-    await expect(recoverNotificationBlockAtBoot({
-      block,
-      checkpointStore: stubCheckpointStore(),
-      auditLog: stubAuditLog(),
-    })).resolves.toBeUndefined();
-
-    expect(sweepAwaitingCheckpointsMock).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(
-      'recoverPendingAsks failed at boot',
-    ));
-  });
 
   it('swallows awaiting-checkpoint sweep failures', async () => {
     sweepAwaitingCheckpointsMock.mockRejectedValueOnce(new Error('sweep failed'));
@@ -556,6 +548,57 @@ describe('recoverNotificationBlockAtBoot', () => {
     });
 
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('recoverPendingAsksOnceRunning (D-158 P3)', () => {
+  const block = () => ({ recoverPendingAsks: vi.fn(async () => undefined) });
+
+  it('sweeps once, at the flip to running', () => {
+    const b = block();
+    const machine = createLifecycleStateMachine('booting');
+    recoverPendingAsksOnceRunning({ block: b, lifecycle: { machine } });
+    expect(b.recoverPendingAsks).not.toHaveBeenCalled();
+    machine.transition('running');
+    expect(b.recoverPendingAsks).toHaveBeenCalledTimes(1);
+    machine.transition('draining');
+    expect(b.recoverPendingAsks).toHaveBeenCalledTimes(1);
+  });
+
+  it('sweeps at once when the server runs already, or has no lifecycle', () => {
+    const running = block();
+    const machine = createLifecycleStateMachine('booting');
+    machine.transition('running');
+    recoverPendingAsksOnceRunning({ block: running, lifecycle: { machine } });
+    expect(running.recoverPendingAsks).toHaveBeenCalledTimes(1);
+    const bare = block();
+    recoverPendingAsksOnceRunning({ block: bare });
+    expect(bare.recoverPendingAsks).toHaveBeenCalledTimes(1);
+  });
+
+  it('never sweeps when the boot ends another way, or when cancelled first', () => {
+    const crashed = block();
+    const failing = createLifecycleStateMachine('booting');
+    recoverPendingAsksOnceRunning({ block: crashed, lifecycle: { machine: failing } });
+    failing.transition('crashed');
+    expect(crashed.recoverPendingAsks).not.toHaveBeenCalled();
+    const cancelled = block();
+    const machine = createLifecycleStateMachine('booting');
+    const cancel = recoverPendingAsksOnceRunning({ block: cancelled, lifecycle: { machine } });
+    cancel();
+    machine.transition('running');
+    expect(cancelled.recoverPendingAsks).not.toHaveBeenCalled();
+  });
+
+  it('a sweep that fails is told, not thrown into the boot', async () => {
+    const warn = vi.fn();
+    recoverPendingAsksOnceRunning({
+      block: { recoverPendingAsks: vi.fn(async () => { throw new Error('store locked'); }) }, warn,
+    });
+    // A block that cannot sweep at all fails the same way, not the composition.
+    expect(() => recoverPendingAsksOnceRunning({ block: {} as never, warn })).not.toThrow();
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+    expect(warn.mock.calls.map(([message]) => String(message)).join('\n')).toContain('store locked');
   });
 });
 

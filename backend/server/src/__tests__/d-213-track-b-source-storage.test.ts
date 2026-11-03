@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { deriveSubDEK } from '@recued/crypto';
 import type { ExecutionSource } from '@recued/contracts';
@@ -570,19 +570,25 @@ describe('D-213 Track B — split encrypted source storage', () => {
       ts: 21,
     });
 
-    const result = await store.harvestPiiSources!({
-      session_id: 'current',
-      max_rows: 256,
-      max_bytes: 1_048_576,
-      max_candidates: 1_024,
-    });
-    expect(result.partial).toBe(true);
-    expect(result.rows).toEqual([
-      expect.objectContaining({
-        message_id: 'later-readable',
-        content: 'later source',
-      }),
-    ]);
-    expect(result.next_cursor).toBeUndefined();
+    // This case exercises byte accounting and continued scanning, rather than
+    // the wall-clock budget. Keep host contention from ending the read early.
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const result = await store.harvestPiiSources!({
+        session_id: 'current',
+        max_rows: 256,
+        max_bytes: 1_048_576,
+        max_candidates: 1_024,
+      });
+      expect(result.partial).toBe(true);
+      expect(result.rows).toEqual([
+        expect.objectContaining({
+          message_id: 'later-readable',
+          content: 'later source',
+        }),
+      ]);
+      expect(result.next_cursor).toBeUndefined();
+    } finally { clock.mockRestore(); }
   });
 });

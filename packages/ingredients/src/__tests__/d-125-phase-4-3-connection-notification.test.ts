@@ -974,3 +974,55 @@ describe('D-125 P4.3 — adapter integration', () => {
     });
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// D-336 (spec §46) — an action named for one channel sends through that channel only
+// ────────────────────────────────────────────────────────────────
+
+describe('D-336 — slack-post and mail-post send through their own channel only', () => {
+  it('slack-post through a Telegram, Discord, email or in-app connection is refused, and nothing is sent', async () => {
+    for (const subtype of ['telegram', 'discord', 'email', 'in-app'] as const) {
+      const { fetch, calls } = captureFetch(() => okJson({ ok: true }));
+      const mailRpc = { send: vi.fn(async () => ({ message_id: 'm1' })) };
+      const emitInApp = vi.fn();
+      const handler = createConnectionNotificationHandler({ ...mkDeps({ fetchImpl: fetch, emitInApp }), mailRpc } as never);
+      for (const slug of ['slack-post', 'core-slack-post']) {
+        await expect(handler(mkRow({ subtype, name: `my-${subtype}` }), { text: 'hi', recipient: 'someone@example.com' }, mkCall({ slug })))
+          .rejects.toMatchObject({ code: 'CONNECTION_KIND_INVALID', message: expect.stringContaining(`is ${subtype}. Choose a slack connection`) });
+      }
+      expect(calls).toHaveLength(0);
+      expect(mailRpc.send).not.toHaveBeenCalled();
+      expect(emitInApp).not.toHaveBeenCalled();
+    }
+  });
+
+  it('mail-post through a non-email connection is refused, even with the `text` that would carry it', async () => {
+    const { fetch, calls } = captureFetch(() => okJson({ ok: true }));
+    const handler = createConnectionNotificationHandler(mkDeps({ fetchImpl: fetch, decodeAuth: async () => telegramBearer }));
+    await expect(handler(mkRow({ subtype: 'telegram' }), { text: 'hi', to: ['a@example.com'], subject: 's', body: 'b' }, mkCall({ slug: 'mail-post' })))
+      .rejects.toMatchObject({ code: 'CONNECTION_KIND_INVALID' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('other actions keep every channel, and slack-post keeps Slack', async () => {
+    const { fetch, calls } = captureFetch(() => okJson({ ok: true, result: { message_id: 7 } }));
+    const handler = createConnectionNotificationHandler(mkDeps({ fetchImpl: fetch, decodeAuth: async () => telegramBearer }));
+    await handler(mkRow({ subtype: 'telegram' }), { text: 'hi', recipient: '42' }, mkCall({ slug: 'notification-send' }));
+    expect(calls).toHaveLength(1);
+    const slack = captureFetch(() => okJson({ ok: true, ts: '1', channel: 'C' }));
+    const slackHandler = createConnectionNotificationHandler(mkDeps({ fetchImpl: slack.fetch, decodeAuth: async () => slackBearer }));
+    await slackHandler(mkRow(), { text: 'hi' }, mkCall({ slug: 'slack-post' }));
+    expect(slack.calls).toHaveLength(1);
+  });
+
+  it('a step cannot switch slack-post to another kind of connection', async () => {
+    const { createConnectionAdapter } = await import('../connection.js');
+    const mcp = vi.fn();
+    const adapter = createConnectionAdapter({ store: { get: () => mkRow({ kind: 'mcp', name: 'tools' }) }, handlers: { mcp } as never });
+    for (const connection_kind of ['mcp', 'api']) {
+      await expect(adapter(mkCall({ slug: 'slack-post', input: { connection_kind, connection: 'tools', text: 'hi' } })))
+        .rejects.toMatchObject({ code: 'CONNECTION_KIND_INVALID' });
+    }
+    expect(mcp).not.toHaveBeenCalled();
+  });
+});

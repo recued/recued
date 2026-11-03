@@ -80,6 +80,7 @@ import {
 } from '@recued/gateway';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { EventBus } from '../../events/bus.js';
+import type { LifecycleStateMachine } from '../../lifecycle/lifecycle-state.js';
 import { createSQLiteCollection } from '../../sqlite-collection.js';
 import type { AnnotationStore } from '../../storage/annotation-store.js';
 import type { ClientTokenStore } from '../../pairing/client-tokens.js';
@@ -991,20 +992,26 @@ const repairTerminalPeerFailureReceiptsAtBoot = async (
   return repaired;
 };
 
-/** Freeze interrupted dispatch claims, re-deliver outstanding asks, then re-raise asks
- *  for any `awaiting_approval` audit anchors whose `ask_id` is
- *  missing. Runs once at boot BEFORE live traffic so the bus replay
- *  reaches paired clients ahead of any new event. Best-effort
- *  per-failure — a thrown call surfaces as a `console.warn` so the
- *  daemon boot proceeds.
+/** Freeze interrupted dispatch claims, then re-raise asks for any
+ *  `awaiting_approval` audit anchors whose `ask_id` is missing. Runs once at
+ *  boot, before live traffic. Best-effort per-failure — a thrown call surfaces
+ *  as a `console.warn` so the daemon boot proceeds.
+ *
+ *  ⛔ D-158 P3 (2026-11-02): the asks themselves — open ones re-delivered,
+ *  answered ones carried out — are no longer swept here but once the server
+ *  runs (`recoverPendingAsksOnceRunning`). This step runs before
+ *  `startCollectionAdapters` registers the mailboxes and calendars, so an email
+ *  the sweep sent here was refused and an approval answered while the server
+ *  stopped resumed its run without them.
  *
  *  Ordering: peer-specific terminal repair and generic interrupted-claim
- *  reconciliation run BEFORE answered asks replay. A recipe receipt left
- *  `dispatching` across restart has lost its only live owner; freezing it as
- *  `in_doubt` is what prevents the surviving answered ask from dispatching the
- *  effect again. Exactly replayable peer-journal dispatches are exempted by the
- *  reconciler predicate. The checkpoint sweep remains last so it cannot mint a
- *  replacement before persisted asks replay. */
+ *  reconciliation run here, BEFORE any answered ask is carried out. A recipe
+ *  receipt left `dispatching` across restart has lost its only live owner;
+ *  freezing it as `in_doubt` is what prevents the surviving answered ask from
+ *  dispatching the effect again. Exactly replayable peer-journal dispatches are
+ *  exempted by the reconciler predicate. The checkpoint sweep mints no
+ *  replacement for a persisted ask it runs ahead of: it pairs through the
+ *  durable index of unresolved asks, open and answered. */
 export const recoverNotificationBlockAtBoot = async (
   deps: NotificationBlockBootRecoveryDeps,
 ): Promise<void> => {
@@ -1055,16 +1062,6 @@ export const recoverNotificationBlockAtBoot = async (
   }
 
   try {
-    await block.recoverPendingAsks();
-  } catch (e) {
-    console.warn(
-      '[notification] recoverPendingAsks failed at boot — outstanding '
-        + 'asks remain durable, next boot will retry: '
-        + (e instanceof Error ? e.message : String(e)),
-    );
-  }
-
-  try {
     const sweepResult = await sweepAwaitingCheckpoints({
       ...(deps.canPublishReviewedCheckpoint ? { canPublishReviewedCheckpoint: deps.canPublishReviewedCheckpoint } : {}),
       checkpointStore,
@@ -1107,6 +1104,54 @@ export const recoverNotificationBlockAtBoot = async (
         + (e instanceof Error ? e.message : String(e)),
     );
   }
+};
+
+/** D-158 P3 — the block's sweep (`recoverPendingAsks`: open asks re-delivered,
+ *  answers recorded while the server was down or stopping carried out,
+ *  reminders re-sent), once the server is running. Its channels and handlers
+ *  reach what the boot wires after its recovery step: the mailboxes and
+ *  calendars `startCollectionAdapters` registers, the listeners, the
+ *  schedulers. Run in that step, the sweep's email was refused
+ *  (`COLLECTION_NOT_FOUND`) and an approval answered while the server stopped
+ *  resumed its run without them. The messenger supervisor waits for the same
+ *  flip.
+ *
+ *  Once: at the flip to `running`; at once when the server is running already
+ *  or has no lifecycle (a dbless server, a harness); never when the boot ends
+ *  another way. The returned function cancels a sweep that has not started
+ *  (the listeners closing first). The vault's unlock and quiet hours' end run
+ *  the sweep again, as before. */
+export const recoverPendingAsksOnceRunning = (deps: {
+  readonly block: Pick<NotificationBlock, 'recoverPendingAsks'>;
+  readonly lifecycle?: { readonly machine: Pick<LifecycleStateMachine, 'state' | 'onStateChange'> };
+  readonly warn?: (message: string) => void;
+}): (() => void) => {
+  const warn = deps.warn ?? ((message: string) => console.warn(message));
+  // Never throws into the boot: a failure is told, and the asks stay durable.
+  const sweep = (): void => {
+    (async () => deps.block.recoverPendingAsks())().catch((e: unknown) => {
+      warn(
+        '[notification] the sweep after boot failed — outstanding asks remain '
+          + 'durable for the next one: '
+          + (e instanceof Error ? e.message : String(e)),
+      );
+    });
+  };
+  const machine = deps.lifecycle?.machine;
+  if (machine === undefined || machine.state === 'running') {
+    sweep();
+    return () => undefined;
+  }
+  let stop: (() => void) | undefined = machine.onStateChange((_prev, next) => {
+    if (next === 'booting') return;
+    stop?.();
+    stop = undefined;
+    if (next === 'running') sweep();
+  });
+  return () => {
+    stop?.();
+    stop = undefined;
+  };
 };
 
 /** Raise one `notification.ask` per swept-to-in-doubt commit

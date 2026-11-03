@@ -100,7 +100,11 @@ export interface HousekeepingRpcDeps {
    *  synchronous shortcut. Returns undefined when the task is not an
    *  enrichment producer (or when bin.ts hasn't populated the
    *  producer registry yet — pre-P7 startup). */
-  getEnrichmentInfo?: (task_id: string) => Promise<HousekeepingEnrichmentInfo | undefined>;
+  getEnrichmentInfo?: (
+    task_id: string,
+    /** Counts shared only within one status response; never cached across reads. */
+    sourceCounts?: Map<string, number | undefined>,
+  ) => Promise<HousekeepingEnrichmentInfo | undefined>;
   /** D-132 P4 — per-topic trust state store. Drives trust.read /
    *  trust.write / trust.dismiss_promotion + the promotion-suggest
    *  hook on successful manual fires. Optional so tests that don't
@@ -259,11 +263,12 @@ export const handleHousekeepingStatusRead = async (
   deps: HousekeepingRpcDeps,
 ): Promise<{ tasks: ReadonlyArray<HousekeepingTaskStatus> }> => {
   const tasks: HousekeepingTaskStatus[] = [];
+  const sourceCounts = new Map<string, number | undefined>();
   for (const task of deps.registry()) {
     const stateRow = deps.state.get(task.meta.id);
     const enrichment =
       task.meta.kind === 'enrichment' && deps.getEnrichmentInfo
-        ? await deps.getEnrichmentInfo(task.meta.id)
+        ? await deps.getEnrichmentInfo(task.meta.id, sourceCounts)
         : undefined;
     tasks.push({
       meta: task.meta,

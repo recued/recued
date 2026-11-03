@@ -1,6 +1,6 @@
 import { connectionIdentity, connectionRevisionGuard } from './connection-revision.js';
 import { canonicalJsonString } from '@recued/recipes';
-import { collectRefs } from '@recued/contracts';
+import { collectRefs, mergeValueLabels } from '@recued/contracts';
 import { createReadScope, assertKernelReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
 /** Recipe execution handler for the headless server.
  *
@@ -213,7 +213,10 @@ import {
   withSlotSettings,
   type PackOpResolution,
 } from '@recued/recipes';
-import { heldSenderValueLabels, settleMailSenders, type SendCapableMailbox } from './mail-senders.js';
+import { heldSenderValueLabels, mailSenderAudienceOf, settleMailSenders, type SendCapableMailbox } from './mail-senders.js';
+import { heldPeopleValueLabels } from './held-people-labels.js';
+import { heldRecordArgument, heldRecordValueLabels } from './held-record-labels.js';
+import { heldCalendarValueLabels } from './held-calendar-labels.js';
 import { describeHeldBrowserTarget, heldBrowserValueLabels } from './bridges/dom-adapter.js';
 import {
   buildAuditEntry,
@@ -361,6 +364,7 @@ import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
 import { createDataMemoryLookup } from './data-memory-lookup.js';
 import type { AnnotationStore } from './storage/annotation-store.js';
 import type { ContactStore } from './storage/contact-store.js';
+import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import { createEnrichmentReader } from './storage/enrichment-resolver.js';
 import { createStoredRowOriginResolver } from './stored-root-origin.js';
@@ -491,7 +495,7 @@ const UNREGISTERED_CLIENT_TOKEN_ID = 'unregistered';
  *  full contracts substrate, open question #21). Source identifiers
  *  fall through gracefully so unregistered / legacy clients still
  *  produce an inspectable source. */
-const buildRpcUserExecutionSource = (
+export const buildRpcUserExecutionSource = (
   client: WsClient,
 ): import('@recued/contracts').ExecutionSource => ({
   channel: 'user',
@@ -1171,6 +1175,20 @@ export interface ExecuteHandlerDeps {
    *  Optional: absent ⇒ contact-record roots stay `'stored'` (tainted →
    *  pinned), the pre-follow-on behavior. */
   contactStore?: ContactStore;
+  /** D-336 (spec §50) — the CRM records a held call changes, named on its approval by the
+   *  copy Recued keeps of them (`heldRecordValueLabels`). Absent ⇒ they show by their ids. */
+  crmRecordMirror?: Pick<CrmRecordMirrorStore, 'listForConnection'>;
+  /** D-336 (spec §52) — what a single held call changes, as its approval card shows it (its
+   *  operation's declared fields, named, secrets hidden), recorded with the hold so the ask
+   *  every channel receives says it. Absent ⇒ the ask names the action only, as before. */
+  heldCallDetails?: (
+    checkpoint: Checkpoint,
+    zone: string | undefined,
+  ) => ReadonlyArray<{ readonly label: string; readonly value: string }> | null;
+  /** D-336 (spec §52) — the event a held `calendar-update` or `calendar-delete` step changes,
+   *  as its approval names it: its title and when, and on a Google event with guests, that
+   *  Google emails them (`calendarEventApprovalLabel`). Absent ⇒ its id reads as passed. */
+  calendarEventLabel?: (slug: string, source_id: string, zone: string | undefined) => string | undefined;
   /** D-120 Phase 3 — raw SQLite handle for `recipe_insights` lookup
    *  + `links` writes. When omitted, link emission is skipped (test
    *  / no-DB modes). When present, the handler resolves the
@@ -1389,6 +1407,15 @@ export interface ExecuteHandlerDeps {
    *  email, as well as the bell in the app. Absent, or a read that fails ⇒ the
    *  response names none, as before. */
   approvalAskChannels?: (ask_id: string) => Promise<readonly string[] | undefined>;
+  /** D-336 slice O's open item — told once a Tier-1 call is held (`holdTier1Call`), chat's or an
+   *  AI app's: a later save of a fact marks the earlier saves of it still waiting ("Asked
+   *  again"). Late-bound from the chat bundle. Absent ⇒ nothing is told. */
+  onTier1Held?: (call: { tool: string; args: Record<string, unknown>; run_id: string }) => Promise<void>;
+  /** The channels an approval ask would go to now: each whose approval is on in Settings →
+   *  Notifications, as the block's fan-out reads it. Not read here: the chat reads it through
+   *  these deps, so a Telegram or email conversation's system prompt names its own channel as
+   *  where approvals are answered only while they go there (D-329). */
+  approvalChannelsNow?: () => Promise<readonly string[]>;
   /** Reception's live address/key/offer validator, wired after composition.
    * Protected reminder mail refuses dispatch while this seam is unavailable. */
   getQuoteSignoffReminderService?: () => import('./quote-signoff-reminder-service.js').QuoteSignoffReminderService;
@@ -1464,10 +1491,10 @@ export interface ExecuteHandlerDeps {
    *  block do NOT depend on this seam. */
   pickNotifier?: PickNotifier;
   /** The mailboxes that can send right now, each by name, address and
-   *  provider (`sendCapableMailboxes`). Read once per owner run that sends mail
-   *  from a "Send from" setting (`mailSenderSettings`), to fill an empty one or
-   *  refuse it naming these. Absent ⇒ no run is filled or refused for it, as
-   *  before. */
+   *  provider (`sendCapableMailboxes`). Read once per owner or door run that
+   *  sends mail from a "Send from" setting (`mailSenderSettings`), to fill an
+   *  empty one or refuse it (an owner's refusal naming these). Absent ⇒ no run
+   *  is filled or refused for it, as before. */
   listSendCapableMailboxes?: () => readonly SendCapableMailbox[];
   /** D-192 Slice 6b — the D-158 notification block, threaded as the narrow
    *  `ContainerPickNotifier` seam. When wired AND a work-entity create in the run
@@ -2817,24 +2844,30 @@ const handleExecuteInner = async (
   }
 
   // The owner's run sends from the only mailbox that can (owner, 2026-10-10:
-  // with one, Chat should not have to ask which). An empty "Send from" is
-  // settled HERE, after the dish's settings and before anything reads the
-  // config: filled when exactly one mailbox can send, refused naming them
-  // otherwise (`mail-senders.ts`). So the approval names the mailbox, the
-  // anchor records it, and a resume sends from it. Like the connection pick
-  // below, the owner's run only: a door's run is unchanged, and an
-  // automation's too, since a headless sender that floated to whichever one
-  // mailbox existed would move when a second connects. A resumed run
-  // (`internal.run_id`) carries its approved config, so it is not settled again.
+  // with one, Chat should not have to ask which), and so does a run through a
+  // door (owner, 2026-11-03: an AI app's send over MCP was held, approved, and
+  // only then failed for want of a mailbox its caller had no way to know). An
+  // empty "Send from" is settled HERE, after the dish's settings and before
+  // anything reads the config: filled when exactly one mailbox can send,
+  // refused otherwise (`mail-senders.ts`), the owner's refusal naming the
+  // mailboxes and a door's naming none. So the approval names the mailbox, the
+  // anchor records it, and a resume sends from it. A door's send asks by
+  // default (its contract's ceiling holds a write; the owner may raise it), and
+  // with a second mailbox it is refused, never guessed. An automation's run is
+  // unchanged: a headless sender that floated to whichever one mailbox existed
+  // would move when a second connects, the connection pick's rule. A resumed
+  // run (`internal.run_id`) carries its approved config, so it is not settled
+  // again.
+  const senderAudience = mailSenderAudienceOf(request.execution_source);
   if (
     internal.run_id === undefined
-    && request.execution_source?.actor === 'user_self'
+    && senderAudience !== undefined
     && deps.listSendCapableMailboxes !== undefined
   ) {
     const senderSettings = mailSenderSettings(recipe);
     if (senderSettings.size > 0) {
       const config = request.config ?? {};
-      const settled = settleMailSenders(recipe, config, senderSettings, deps.listSendCapableMailboxes());
+      const settled = settleMailSenders(recipe, config, senderSettings, deps.listSendCapableMailboxes(), senderAudience);
       if (settled !== config) request = { ...request, config: settled };
     }
   }
@@ -3989,7 +4022,9 @@ const handleExecuteInner = async (
               // not one this surface serves.
               rollupsForRecord: async (collection: string, id: string) => {
                 assertNamespaceScope(); return collection === 'contact'
-                  ? readRootProjections(deps.recordsStore!, 'contact', id).map(toTimelineRollup)
+                  // D-336 slice R — under every address the contact answers to.
+                  ? readRootProjections(deps.recordsStore!, 'contact', id,
+                    deps.contactStore === undefined ? undefined : (email) => deps.contactStore!.addressSet(email)).map(toTimelineRollup)
                   : [];
               },
             }
@@ -6225,6 +6260,8 @@ const handleExecuteInner = async (
     const execution = executeRecipe({
       ...(internal.regression_capture ? { onTestCaptureInput: internal.regression_capture.input } : {}),
       ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
+      // D-336 (spec §53) — a chat door's look at each record change the run makes.
+      ...(internal.record_change_check !== undefined ? { recordChangeCheck: internal.record_change_check } : {}),
       ...(grantedByRecipe !== undefined ? { governing_recipe_grant: grantedByRecipe } : {}),
       recipe,
       ...(reviewed ? { reviewedExecution: reviewed.reviewedExecution, preapprovalAddressing: reviewed.preapprovalAddressing } : {}),
@@ -7421,12 +7458,42 @@ const handleExecuteInner = async (
           const heldCall = heldStep !== null && typeof heldStep === 'object'
             ? heldStep as { input?: unknown; args?: unknown }
             : {};
-          const valueLabels = heldSenderValueLabels([
+          const heldCalls = [
             heldCall.input,
             heldCall.args,
             awaitingApproval.args_preview,
             ...(foreachCover?.items ?? []).map((item) => item.args_preview),
-          ], deps.listSendCapableMailboxes);
+          ];
+          // D-336 (spec §40–§41) — and the people it carries, by the contacts they are; §50,
+          // and the CRM records it changes, by the names Recued keeps of them.
+          const valueLabels = mergeValueLabels(
+            mergeValueLabels(
+              mergeValueLabels(
+                heldSenderValueLabels(heldCalls, deps.listSendCapableMailboxes),
+                heldPeopleValueLabels(heldCalls, deps.contactStore),
+              ),
+              // §52 — and the calendar event it changes, saying when Google emails its guests.
+              heldCalendarValueLabels(
+                awaitingApproval.ingredient_slug,
+                heldCall.input,
+                deps.calendarEventLabel === undefined ? undefined
+                  : (slug, source_id) => deps.calendarEventLabel!(slug, source_id, deps.ownerTimeZone?.()),
+              ),
+            ),
+            heldRecordValueLabels(heldCalls, {
+              mirror: deps.crmRecordMirror,
+              registry: liveVendorRegistry(deps.localManifestStore),
+            }, heldRecordArgument(
+              // The gate records the operation by its key or by its declared id.
+              awaitingApproval.operation_id === undefined
+                ? undefined
+                : Object.entries(heldManifest?.operations ?? {}).find(([key, spec]) =>
+                  key === awaitingApproval.operation_id || spec.operation_id === awaitingApproval.operation_id)?.[1]
+                  ?.record_id_arg,
+              awaitingApproval.connection_name,
+              deps.connectionStore,
+            )),
+          );
           // D-335 slice B — a held browser write or click names its element the
           // way the page shows it, read live from the Bridge. Bounded: the ask
           // waits for it (`HELD_BROWSER_DESCRIBE_TIMEOUT_MS`), and says so when
@@ -7498,7 +7565,7 @@ const handleExecuteInner = async (
                 }
               : {}),
           };
-          const checkpoint: Checkpoint = {
+          const heldCheckpoint: Checkpoint = {
             ...(awaitingApproval.resource_review ? { resource_review: awaitingApproval.resource_review } : {}),
             checkpoint_id: randomUUID(),
             run_id,
@@ -7579,6 +7646,18 @@ const handleExecuteInner = async (
               : {}),
             created_at: Date.now(),
           };
+          // D-336 (spec §52) — what a single held call changes, as its approval card will show
+          // it, recorded with the hold so the ask every channel receives says it too. Display
+          // only: a failure to read it holds the run all the same, saying the action alone.
+          let heldDetails: ReturnType<NonNullable<ExecuteHandlerDeps['heldCallDetails']>> | undefined;
+          try {
+            heldDetails = deps.heldCallDetails?.(heldCheckpoint, deps.ownerTimeZone?.());
+          } catch (err) {
+            console.warn(`[execute-handler] held call details unreadable for run ${run_id}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          const checkpoint: Checkpoint = heldDetails !== undefined && heldDetails !== null && heldDetails.length > 0
+            ? { ...heldCheckpoint, preflight_context: { ...heldCheckpoint.preflight_context, held_details: heldDetails } }
+            : heldCheckpoint;
           if (internal.preapproval_run !== undefined) await deps.preapprovalRuntime!.writeCheckpoint(internal.preapproval_run, checkpoint);
           else if (internal.preapproval_candidate !== undefined) await deps.preapprovalRuntime!.writeCandidateCheckpoint(internal.preapproval_candidate, checkpoint);
           else await deps.checkpointStore.write(checkpoint);

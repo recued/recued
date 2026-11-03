@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type { Page } from '@playwright/test';
-import { defaultQuietHoursPolicy, type ReminderListRequest } from '@recued/contracts';
+import { defaultQuietHoursPolicy, type ReminderListRequest, type ReminderState } from '@recued/contracts';
 import { createReminderStore } from '../../../../backend/server/src/storage/reminder-store.js';
 import { createReminderDispatchers } from '../../../../backend/server/src/reminders/reminder-service.js';
 import { makeReminderHandlers } from '../../../../backend/server/src/reminders/reminder-rpc-handler.js';
@@ -24,6 +24,9 @@ export const installReminderWorkspaceFixture = async (page: Page, empty = false)
       clock: { occurrence_id: 'occ-' + index, point_key: 'point-' + index, ask_id: 'ask-' + index } }, now);
   }
   const reads: ReminderListRequest[] = [];
+  const detailReads: string[] = [];
+  let failDetail = false, holdDetail: string | null = null;
+  let releaseDetail: (() => void) | undefined;
   const creates: { text: string; at: number; creation_id: string }[] = [];
   let loseCreate = false, failRead = false, holdQuery: string | null = null;
   let latestCreated: string | undefined;
@@ -40,6 +43,17 @@ export const installReminderWorkspaceFixture = async (page: Page, empty = false)
         if (holdQuery !== null && args.page?.query === holdQuery) {
           holdQuery = null;
           await new Promise<void>(done => { release = done; });
+        }
+        return { result };
+      }
+      if (method === 'reminder.get') {
+        const args = raw as { reminder_id: string };
+        detailReads.push(args.reminder_id);
+        if (failDetail) { failDetail = false; return { error: { code: 'unavailable', message: 'The reminder detail read was interrupted.' } }; }
+        const result = await handlers['reminder.get'](args, client);
+        if (holdDetail === args.reminder_id) {
+          holdDetail = null;
+          await new Promise<void>(done => { releaseDetail = done; });
         }
         return { result };
       }
@@ -64,11 +78,26 @@ export const installReminderWorkspaceFixture = async (page: Page, empty = false)
   });
   await page.addInitScript(() => {
     Object.assign(window, { __connectionsFixture: (method: string, args: unknown) =>
-      ['server.timezone.get', 'reminder.list', 'reminder.create', 'reminder.update', 'reminder.cancel'].includes(method)
+      ['server.timezone.get', 'reminder.list', 'reminder.get', 'reminder.create', 'reminder.update', 'reminder.cancel'].includes(method)
         ? (window as unknown as { __reminderWorkspaceRpc(method: string, args: unknown): Promise<unknown> }).__reminderWorkspaceRpc(method, args)
         : Promise.resolve(undefined) });
   });
-  return { reads, creates, pendingCount: () => store.countPending(),
+  return { reads, detailReads, creates,
+    seed: (input: { text: string; at?: number; state?: ReminderState; managed?: boolean; finishedAt?: number }) => {
+      const clock = input.managed ? { occurrence_id: 'occ-detail-' + input.text, point_key: 'point', ask_id: 'ask-detail-' + input.text } : undefined;
+      const row = clock ? store.ensureClock({ text: input.text, at: input.at ?? now + 3_600_000, time_zone: zone, origin: {}, clock }, now)
+        : store.create({ text: input.text, at: input.at ?? now + 3_600_000, time_zone: zone, origin: {} }, now);
+      if (input.state === 'delivered') store.markDelivered(row.reminder_id, input.finishedAt ?? now, ['in_app']);
+      if (input.state === 'cancelled') store.cancel(row.reminder_id, input.finishedAt ?? now);
+      return row.reminder_id;
+    },
+    get: (id: string) => store.get(id),
+    deliver: (id: string) => store.markDelivered(id, now, ['in_app']),
+    failNextDetailRead: () => { failDetail = true; },
+    holdNextDetailRead: (id: string) => { holdDetail = id; },
+    detailReadPending: () => releaseDetail !== undefined,
+    releaseDetailRead: () => { if (!releaseDetail) throw new Error('No detail read is waiting.'); const done = releaseDetail; releaseDetail = undefined; done(); },
+    pendingCount: () => store.countPending(),
     loseNextCreate: () => { loseCreate = true; },
     holdNextCreate: () => { holdCreate = true; },
     createPending: () => releaseCreate !== undefined,
@@ -81,6 +110,6 @@ export const installReminderWorkspaceFixture = async (page: Page, empty = false)
     holdNextQuery: (query: string) => { holdQuery = query; },
     readPending: () => release !== undefined,
     releaseRead: () => { if (!release) throw new Error('No reminder read is waiting.'); const done = release; release = undefined; done(); },
-    dispose: () => { release?.(); releaseCreate?.(); db.close(); },
+    dispose: () => { release?.(); releaseCreate?.(); releaseDetail?.(); db.close(); },
   };
 };

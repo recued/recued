@@ -409,6 +409,23 @@ describe('scheduled prompts use durable conversations', () => {
     expect(f.inputs).toHaveLength(1);
   });
 
+  it('D-337 slice R — reads a held call whose approval expired as that, as a held write\'s, not as a failed tool', async () => {
+    const f = fixture(); const schedule = (await f.service.create(once, 'tool-expired'))!;
+    f.clock(NOW + 60000); await f.service.tick(); await f.settled(schedule.session_id);
+    const finished = await f.service.get(schedule.schedule_id);
+    const message = { id: 'scheduled-expired', session_id: schedule.session_id, turn_id: finished.last_turn_id!,
+      role: 'tool' as const, content: 'Tool call', target_server: 'self',
+      picker_at_send: { display_name: 'Self', signature }, model_used: { provider: 'test', model_id: 'test' } };
+    const calls = f.store.toolCalls!;
+    await calls.start({ ...message, tool_name: 'recipe.run' });
+    calls.hold(message.id);
+    await f.store.appendMessage({ ...message, id: 'expired-result', content: 'Its approval expired.',
+      tool_call_settlements: [{ message_id: message.id, state: 'failed', expired: true }] });
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ last_status: 'completed',
+      last_outcome: { status: 'needs_attention', reason: 'approval_expired' } });
+    expect(f.inputs).toHaveLength(1);
+  });
+
   it('reports a failed approved action even when its chat turn finished, without applying it to a later occurrence', async () => {
     const f = fixture(); const schedule = (await f.service.create(recurring, 'action-failure'))!;
     f.clock(NOW + 300000); await f.service.tick(); await f.settled(schedule.session_id);

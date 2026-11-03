@@ -73,6 +73,7 @@ const MIME_BY_EXT: Readonly<Record<string, string>> = {
   '.cjs': 'text/javascript',
   '.css': 'text/css',
   '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',

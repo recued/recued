@@ -104,6 +104,9 @@ export interface SituationReadContext {
   projectClusterItems?: (items: readonly SituationItem[]) => readonly SituationItem[] | null;
   /** Host-only opt-in for the ordinary owner Chat prefetch. */
   citeAssetDetails?: true;
+  /** Host-only: a surface that lists a whole day (the Agenda, §15.7) keeps every group and
+   *  every item in it. The one inferred item a group may carry still holds. Never an input. */
+  everyItem?: true;
   signal?: AbortSignal;
 }
 export interface SituationQueryDeps {
@@ -471,7 +474,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   // A tool caller asked a question, so it gets every match; the owner's surfaces (Today, the
   // digest, a push, the chat's prefetch) show the few that fit them.
   const tool = (query.surface ?? 'tool') === 'tool';
-  const maxItems = tool ? query.limit_items ?? Infinity : Math.min(3, query.limit_items ?? 3);
+  const maxItems = tool ? query.limit_items ?? Infinity : context.everyItem ? Infinity : Math.min(3, query.limit_items ?? 3);
   const clusters: Array<SituationCluster & { score: number }> = [...groups.values()].flatMap(group => {
     group.sort((a, b) => score(b) - score(a) || refKey(a.ref).localeCompare(refKey(b.ref)));
     const allSubjects = uniqueRefs(group.flatMap(fact => fact.subjects));
@@ -510,7 +513,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   // One tool call returns at most SITUATION_TOOL_MAX_ITEMS items, best first. A group it cuts
   // counts the rest in its own `omitted`, as the result's `omitted` counts every match not shown.
   let room = SITUATION_TOOL_MAX_ITEMS;
-  const visibleClusters = !tool ? clusters.slice(0, Math.min(query.surface === 'push' ? 2 : 5, query.limit_clusters ?? 5))
+  const visibleClusters = !tool ? context.everyItem ? clusters : clusters.slice(0, Math.min(query.surface === 'push' ? 2 : 5, query.limit_clusters ?? 5))
     : clusters.slice(0, query.limit_clusters ?? clusters.length).flatMap(cluster => {
       if (room <= 0) return [];
       const items = cluster.items.slice(0, room); room -= items.length;

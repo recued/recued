@@ -35,6 +35,7 @@ import type {
   AsksSubmitAnswerCaller,
 } from '../approvals/asks-panel.js';
 import {
+  heldAskChatLink,
   pendingChatPlanHref,
   pendingChatPlanResolutionCopy,
   type PendingChatPlan,
@@ -74,6 +75,9 @@ export const ATTENTION_GATEWAY_ASK_ROW_ATTR =
 /** D-270 — the held operation's resolved values on a gateway-ask row. */
 export const ATTENTION_GATEWAY_ASK_DETAILS_ATTR =
   'data-recued-attention-gateway-ask-details';
+/** D-336 slice N — a held chat write's link to its card in Chat, on its gateway-ask row. */
+export const ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR =
+  'data-recued-attention-gateway-ask-chat-link';
 export const ATTENTION_CHAT_PLAN_LINK_ATTR =
   'data-recued-attention-chat-plan-link';
 export const ATTENTION_CHAT_PLAN_RESOLUTION_ATTR =
@@ -1234,7 +1238,11 @@ const splitGatewayAskBody = (
   const lines = text.split(/\r?\n/);
   // The ids line ("Technical: recipe …, step …, action ….") is a reference, not
   // the question: it goes behind the disclosure with the payload.
-  const isPayload = (line: string): boolean => /^\s{2,}\S/.test(line) || /^Technical: /.test(line);
+  // D-336 (spec §52) — so do a single held call's rows ("- Deal ID: Harbor Line renewal
+  // (HubSpot Deal)"): the row above shows them from the server already
+  // (`renderGatewayAskDetails`), and in the open they would read twice.
+  const isPayload = (line: string): boolean =>
+    /^\s{2,}\S/.test(line) || /^Technical: /.test(line) || /^- \S/.test(line);
   const payloadLines = lines.filter(isPayload);
   if (payloadLines.length === 0) {
     return { prose: text, payload: '', fieldCount: 0 };
@@ -1332,6 +1340,19 @@ const renderGatewayAskRow = (
       `;
     })
     .join('');
+  // D-336 slice N — a held chat write links to its card in Chat, where it can be changed
+  // before the yes: this row stays read-only (D-270). It closes the tray as the chat plan's
+  // "Review in Chat" does (`open-chat-plan`).
+  const { chatHref, chatChangeable } = heldAskChatLink(ask);
+  const chatLabel = chatChangeable === true ? 'Change it in Chat' : 'Review in Chat';
+  const chatLink = chatHref === undefined ? '' : `
+        <a class="attention-row-action attention-row-action--link"
+          href="${escapeHtml(chatHref)}"
+          data-action="open-chat-plan"
+          aria-label="${escapeHtml(`${chatLabel}: ${title}`)}"
+          ${ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR}="${escapeHtml(ask.ask_id)}">
+          ${chatLabel}
+        </a>`;
   // R20 — asks resolve INLINE via their options; the old per-row "Review"
   // route to #approvals is dropped (the footer "See all" still opens the full
   // queue).
@@ -1345,7 +1366,7 @@ const renderGatewayAskRow = (
         ${renderGatewayAskDetails(ask)}
         ${showBody ? renderGatewayAskBody(ask.text) : ''}
       </div>
-      <div class="attention-row-actions">
+      <div class="attention-row-actions">${chatLink}
         ${optionButtons}
       </div>
     </li>

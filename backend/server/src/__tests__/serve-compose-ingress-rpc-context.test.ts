@@ -41,6 +41,11 @@ import {
 } from '../serve/compose-ingress-rpc-context.js';
 import type { ExposureStateMachine } from '../exposure/index.js';
 import type { WsServerHandle } from '../ws-server.js';
+import { createInMemoryCollection } from '@recued/storage';
+import { createMcpActionStore, type McpActionRecord } from '../mcp-action-store.js';
+import { resolveLlmGatewayRoute } from '../ports/llm-gateway/handler.js';
+import { llmGatewayWaitingTrailer } from '../ports/llm-gateway/held-calls.js';
+import { HELD_WRITE_EXPIRED_MESSAGE } from '../chat-held-writes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..', '..', '..');
@@ -385,6 +390,157 @@ describe('composeIngressRpcContext', () => {
       }),
     );
     expect(ingressMocks.logMcpHttpBootBanner).not.toHaveBeenCalled();
+  });
+});
+
+describe('composeIngressRpcContext — the gateway snapshot admits a kernel op granted by its op id', () => {
+  // ⛔ D-232 § 20.20 at the gateway: the slugs its contract snapshot allows are what the engine's
+  //   policy gate reads, so a key granted `core.data.calendar.delete` must allow `calendar-delete`,
+  //   as the MCP door's snapshot and the approval resume's do. Without it a gateway step of the
+  //   ingredient died `tool_not_in_contract` (found 2026-11-02, driving D-337 ruling 4 live).
+  const allowedFor = async (grants: Record<string, boolean>): Promise<ReadonlyArray<string>> => {
+    const execution = {
+      executeDeps: {
+        executorConfig: {
+          manifests: { slugs: () => ['calendar-delete', 'calendar-list', 'mail-read'], get: () => undefined },
+        },
+      },
+    } as unknown as ComposeIngressRpcContextOptions['execution'];
+    const context = await composeIngressRpcContext(makeOptions({ execution }));
+    return context.llmGatewayDeps!.listContractAllowedToolSlugs!({ grants } as never);
+  };
+
+  it('allows the ingredient of a granted kernel op', async () => {
+    expect(await allowedFor({ 'core.data.calendar.delete': true })).toEqual(['calendar-delete']);
+  });
+
+  it('⛔ CONTROL: nothing without the grant; a raw slug grant still counts', async () => {
+    expect(await allowedFor({})).toEqual([]);
+    expect(await allowedFor({ 'mail-read': true })).toEqual(['mail-read']);
+  });
+});
+
+describe('composeIngressRpcContext — the gateway tells a late outcome from the server\'s action records', () => {
+  // ⛔ The provider tests hand it the action records. This composes it through the REAL ingress
+  //   wire, from the execute deps' own store (the one the resumer settles), so a composition that
+  //   stopped passing it fails HERE: a call answered after its request ended would reach nobody.
+  /** The conversation's next request, its latest reply naming `ref`, through the composed gateway. */
+  const nextRequest = async (executeDeps: Record<string, unknown>, ref: string) => {
+    const app = makeApp();
+    const runLlmGatewayTurn = vi.fn(async () => ({ turn_id: 't', assistant_content: 'It was removed.' }));
+    (app as unknown as { chatOrchestratorRef: { runLlmGatewayTurn: unknown } }).chatOrchestratorRef.runLlmGatewayTurn =
+      runLlmGatewayTurn;
+    const execution = {
+      executeDeps: { ...executeDeps, executorConfig: { manifests: { slugs: () => [], get: () => undefined } } },
+    } as unknown as ComposeIngressRpcContextOptions['execution'];
+    const context = await composeIngressRpcContext(makeOptions({ app, execution }));
+    const config = {
+      llm_gateway_default_route: 'slot:slot_1',
+      llm_gateway_model_alias: 'seller-primary',
+      slot_1: { provider: 'openai', model: 'gpt-4o-mini', api_key: 'sk-test', speed: 'fast', supports_json: true, context_window_tokens: 128_000 },
+    } as never;
+    const resolved = resolveLlmGatewayRoute(config);
+    if (!resolved.ok) throw new Error(resolved.message);
+    const result = await context.llmGatewayDeps!.completionProvider.complete({
+      route: resolved.route,
+      system_prompt: 'p', system_prompt_direct: 'p', system_role: 'system',
+      emit_caller_application_instructions: false,
+      messages: [
+        { role: 'user', content: 'remove the dentist event' },
+        { role: 'assistant', content: `It waits for approval.${llmGatewayWaitingTrailer([ref])}` },
+        { role: 'user', content: 'done yet?' },
+      ],
+      requested_model: 'x', model_alias: 'seller-primary', config, now: 1_000, system_tools_allowed: true,
+      token: { token_id: 'tok-1', grants: {} } as never,
+      contract_id: 'ct-1', allowed_tool_names: [], input_token_budget: 100_000,
+      resolve_contract_snapshot: () => null,
+    });
+    const turnInput = (runLlmGatewayTurn.mock.calls as unknown as Array<[{ held_results?: unknown[] }]>)[0]![0];
+    return { turnInput, content: result.content };
+  };
+  const heldAs = async (run_id: string) => {
+    const mcpActionStore = createMcpActionStore(createInMemoryCollection<McpActionRecord>());
+    const ref = (await mcpActionStore.createHeld({
+      run_id, principal_id: 'tok-1', tool_name: 'kitchen/remove-event', kind: 'recipe',
+    })).action_ref;
+    return { mcpActionStore, ref };
+  };
+
+  it('a settled call the latest reply named opens the next request\'s turn', async () => {
+    const { mcpActionStore, ref } = await heldAs('run-late');
+    await mcpActionStore.finish('run-late', { status: 'completed', status_message: 'done', result: { removed: 'Dentist' } });
+    const { turnInput } = await nextRequest({ mcpActionStore }, ref);
+    expect(turnInput.held_results).toHaveLength(1);
+    expect(turnInput.held_results![0]).toMatchObject({ tool_name: 'kitchen/remove-event', result: { removed: 'Dentist' } });
+  });
+
+  it('⛔ an approval that expired is told as expired, though retention retired only its run', async () => {
+    // `checkpoint-retention` retires a recipe run nobody answered in time (its anchor `failed`,
+    // `RECIPE_APPROVAL_TIMEOUT`) and deletes its checkpoint, but never touches the record. Through
+    // the REAL wire the gateway reads the record as the MCP door's status read does
+    // (`reconcileMcpAction`), from the execute deps' own audit log and checkpoints.
+    const { mcpActionStore, ref } = await heldAs('run-expired');
+    const auditLog = {
+      get: async (run_id: string) => run_id === 'run-expired'
+        ? {
+            run_id, commit_status: 'failed', finished_at: Date.now() - 60_000,
+            // As `checkpoint-retention`'s `buildExpiryEntry` writes it.
+            errors: [{
+              code: 'RECIPE_APPROVAL_TIMEOUT',
+              message: "Preflight approval at step 'remove' was not answered within 30 days — the staleness guard expired the paused run. Re-run the recipe to try again.",
+            }],
+          }
+        : null,
+    };
+    const checkpointStore = { get: async () => null, listByRun: async () => [] };
+    const { turnInput, content } = await nextRequest({ mcpActionStore, auditLog, checkpointStore }, ref);
+    expect(turnInput.held_results).toHaveLength(1);
+    expect(turnInput.held_results![0]).toMatchObject({ reason: 'plan_cancelled', detail: HELD_WRITE_EXPIRED_MESSAGE });
+    expect((await mcpActionStore.getOwned(ref, 'tok-1'))?.status).toBe('failed');
+    expect(content).not.toContain(ref);
+  });
+
+  it('⛔ CONTROL: a call whose run still waits for the owner stays waiting, its reference on the reply', async () => {
+    const { mcpActionStore, ref } = await heldAs('run-waiting');
+    const checkpoint = { checkpoint_id: 'cp-1', run_id: 'run-waiting' };
+    const auditLog = {
+      get: async (run_id: string) => ({ run_id, commit_status: 'awaiting_approval', checkpoint_id: 'cp-1' }),
+    };
+    const checkpointStore = { get: async () => checkpoint, listByRun: async () => [checkpoint] };
+    const { turnInput, content } = await nextRequest({ mcpActionStore, auditLog, checkpointStore }, ref);
+    expect(turnInput.held_results).toBeUndefined();
+    expect(content).toBe(`It was removed.${llmGatewayWaitingTrailer([ref])}`);
+    expect((await mcpActionStore.getOwned(ref, 'tok-1'))?.status).toBe('awaiting_approval');
+  });
+
+  /** A run retired a moment ago: the door's reconcile keeps a grace after a run's terminal record,
+   *  for the answer path to write its exact result. */
+  const retiredJustNow = async (run_id: string, code: string) => {
+    const { mcpActionStore, ref } = await heldAs(run_id);
+    const auditLog = {
+      get: async (id: string) => ({
+        run_id: id, commit_status: 'failed', finished_at: Date.now(),
+        errors: [{ code, message: code === 'RECIPE_APPROVAL_TIMEOUT'
+          ? "Preflight approval at step 'remove' was not answered within 30 days — the staleness guard expired the paused run. Re-run the recipe to try again."
+          : 'The calendar could not be reached.' }],
+      }),
+    };
+    const checkpointStore = { get: async () => null, listByRun: async () => [] };
+    return { ref, ...(await nextRequest({ mcpActionStore, auditLog, checkpointStore }, ref)) };
+  };
+
+  it('⛔ D-337 slice T — an approval that expired a moment ago is told at once: retention writes nothing the grace waits for', async () => {
+    // Live, 2026-11-02: the gateway's next request, 15 s after the expiry, still said "waiting".
+    const { ref, turnInput, content } = await retiredJustNow('run-expired-now', 'RECIPE_APPROVAL_TIMEOUT');
+    expect(turnInput.held_results).toHaveLength(1);
+    expect(turnInput.held_results![0]).toMatchObject({ reason: 'plan_cancelled', detail: HELD_WRITE_EXPIRED_MESSAGE });
+    expect(content).not.toContain(ref);
+  });
+
+  it('⛔ CONTROL: a run that failed a moment ago waits out the grace, for the answer path\'s own result', async () => {
+    const { ref, turnInput, content } = await retiredJustNow('run-failed-now', 'CONNECTION_UNAVAILABLE');
+    expect(turnInput.held_results).toBeUndefined();
+    expect(content).toContain(ref);
   });
 });
 

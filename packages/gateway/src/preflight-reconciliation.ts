@@ -53,6 +53,7 @@ import {
   RISK_TIERS,
   approvalFieldLabel,
   approvalValueLabel,
+  askDetailLabel,
   isApprovalWorkflowOperation,
   isOperationSpecHash,
   kernelWriteStaysInRecued,
@@ -697,6 +698,42 @@ const renderOpenGrantBlock = (
   return [opening, ...lines].join('\n') + closing;
 };
 
+/** D-336 (spec §52) — at most this many of a held call's rows go in its ask, the rest by count:
+ *  its card shows them all. */
+const HELD_DETAILS_MAX_ROWS = 12;
+/** …each value this long at most. An email's body is its card's to show whole. */
+const HELD_DETAIL_VALUE_CLIP = 200;
+
+/** A single held call's recorded rows (`preflight_context.held_details`) as its ask's lines.
+ *  Read defensively: they are stored JSON, and display only.
+ *
+ *  ⛔ FLUSH-LEFT `- ` LINES, NOT THE INDENTED ARGUMENT LINES A BATCH LISTS. The approval card
+ *  reads an indented `  key: value` line as an argument the call sent and puts it in its
+ *  technical bits (`projectGeneratedApprovalAsk`, `@recued/ui-shared`), and it shows these rows
+ *  from the server already. Each value is one line, its whitespace collapsed, so no value can
+ *  open a line of its own: a `Reason:` or `Started by:` line, or the question's paragraph. */
+const renderHeldDetailsBlock = (rows: unknown): string => {
+  if (!Array.isArray(rows)) return '';
+  const lines = rows.flatMap((row: unknown) => {
+    if (row === null || typeof row !== 'object') return [];
+    const { label, value } = row as { label?: unknown; value?: unknown };
+    if (typeof label !== 'string' || typeof value !== 'string') return [];
+    const shownLabel = oneLine(askDetailLabel(label));
+    const shownValue = oneLine(value);
+    if (shownLabel === '' || shownValue === '') return [];
+    const clipped = shownValue.length > HELD_DETAIL_VALUE_CLIP
+      ? `${shownValue.slice(0, HELD_DETAIL_VALUE_CLIP - 1)}…`
+      : shownValue;
+    return [`- ${shownLabel}: ${clipped}`];
+  });
+  if (lines.length === 0) return '';
+  const more = lines.length - HELD_DETAILS_MAX_ROWS;
+  return `\n\n${[
+    ...lines.slice(0, HELD_DETAILS_MAX_ROWS),
+    ...(more > 0 ? [`- and ${more} more in Recued`] : []),
+  ].join('\n')}`;
+};
+
 /** What "Allow this session" lets happen when the grant is EXACT, or a raw op's,
  *  which is exact too: the same call again, inputs and all. Only the open grant
  *  had a sentence (`renderOpenGrantBlock`), so for these the button said nothing
@@ -1006,6 +1043,12 @@ export const buildPreflightAsk = (args: {
 
   const resourceBlock = checkpoint.resource_review
     ? '\n\nReview the exact before/after values in Recued before approving.' : '';
+  // D-336 slice N's open item — where a held call can be changed before it is approved: its
+  // chat's card. Named, never linked (the owner: "Name the chat, no link"), so no id leaves
+  // Recued and it reads the same whichever web app the owner uses.
+  const chatTitle = checkpoint.preflight_context?.change_in_chat;
+  const changeBlock = tier1 !== undefined && typeof chatTitle === 'string' && chatTitle.trim() !== ''
+    ? `\n\nTo change it first, open the chat “${chatTitle.trim()}” in Recued.` : '';
   const clampWarning = context.approval_clamped_from !== undefined
     ? `\n\nWarning: stored approval '${context.approval_clamped_from}' is below `
       + `the ${context.risk_tier ?? 'operation'} risk floor and was clamped. `
@@ -1019,7 +1062,8 @@ export const buildPreflightAsk = (args: {
   // and leaves its `kind` to the title.
   const tier1Shown = tier1 === undefined
     ? undefined
-    : { title: tier1.title, ...tier1CallDetails(tier1.tool, tier1.args, valueLabels) };
+    // D-336 slice G — and a held save's notes in memory it meets ("Contradicts").
+    : { title: tier1.title, ...tier1CallDetails(tier1.tool, tier1.args, valueLabels, checkpoint.preflight_context?.memory_conflicts) };
   const itemsBlock =
     tier1Shown !== undefined
       ? `\n\n${renderBatchItemsBlock([{ summary: tier1Shown.title, args_preview: tier1Shown.args }], tier1Shown.labels)}`
@@ -1027,7 +1071,12 @@ export const buildPreflightAsk = (args: {
       ? `\n\n${renderBatchItemsBlock(batch.items, valueLabels)}`
       : cover?.items !== undefined
         ? `\n\n${renderBatchItemsBlock(cover.items, valueLabels)}`
-        : '';
+        // D-336 (spec §52) — a single held call lists what it changes, as its card shows it,
+        // from the rows the server recorded when it held the call. It listed nothing, so an
+        // ask answered in Telegram, Slack or email named the action alone.
+        : count === 1
+          ? renderHeldDetailsBlock(checkpoint.preflight_context?.held_details)
+          : '';
 
   // D-177 P5b (N.11 rule 7) — an OPEN offer renders its confirm sentence:
   // every clause maps 1:1 onto an enforced bound (use budget → `max_uses`,
@@ -1099,7 +1148,7 @@ export const buildPreflightAsk = (args: {
     title,
     text:
       `${opening}\n${held}${technicalLine}${startedByLine}${browserBlock}${egressBoundLine}${reasonLine}`
-      + `${resourceBlock}${clampWarning}${itemsBlock}${grantBlock}\n\n${question}`,
+      + `${resourceBlock}${clampWarning}${itemsBlock}${changeBlock}${grantBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {
     kind: PREFLIGHT_HANDLER_KIND,

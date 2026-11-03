@@ -128,6 +128,10 @@ describe('the server’s own composition', () => {
         accountStore: storage.accountStore, eventBus: storage.eventBus, keys: app.keys, connectionStore: app.connectionStoreRef,
         workEntityStore: storage.workEntityStoreRef, enrichmentCascade: app.enrichmentCascadeRef });
       const context = await composeExecutionContext({ storage, app, collection, baseVault: storage.baseVault, lateBound, env: {} });
+      // D-158 P3 — the composed channels keep what they send in the server's own database, so a
+      // restart neither sends an open approval again nor leaves one with its buttons. Email too.
+      expect(storage.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('messenger_prompt_records', 'email_prompt_records') ORDER BY name").all())
+        .toEqual([{ name: 'email_prompt_records' }, { name: 'messenger_prompt_records' }]);
       for (const [name, enrolled_at] of [['telegram', 1], ['private', 2]] as const) {
         app.connectionStoreRef!.upsert({ kind: 'notification', name, subtype: 'telegram', display_name: name,
           config_json: JSON.stringify({ chat_id: `${name}-chat` }), enrolled_at, updated_at: enrolled_at,

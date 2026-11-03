@@ -1,7 +1,7 @@
-/** Shared presentation for the five notification cards. Each panel keeps
+/** Shared presentation for the six notification cards. Each panel keeps
  * ownership of its settings, pending work, feedback and focus. */
 const section = '[data-recued-settings-section="notifications"]';
-const cards = `${section} :is([data-recued-notifications-panel], [data-recued-kind-policy-panel], [data-situation-delivery], [data-recued-quiet-hours-panel], [data-household-delivery])`;
+const cards = `${section} :is([data-recued-notifications-panel], [data-recued-kind-policy-panel], [data-situation-delivery], [data-situation-agenda], [data-recued-quiet-hours-panel], [data-household-delivery])`;
 
 export const NOTIFICATIONS_WORKSPACE_STYLES = `
 ${section} {
@@ -26,7 +26,7 @@ ${cards} {
 ${cards} :is(h3, .notif-title) { margin: 0; font-size: 18px; line-height: 1.4; font-weight: 650; }
 ${cards} :is(h4, .notif-phrase-heading) { font-size: 16px; line-height: 1.4; font-weight: 650; }
 ${cards} :is(.notif-lede, .kp-lede, .sd-lede, .hd-lede) { margin: 0; font-size: 14px; line-height: 1.55; }
-${cards} :is(.notif-row-status, .notif-email-steps, .notif-phrase-hint, .notif-bridge-empty, .kp-note, .qh-hint, .sd-hint, .hd-hint, .hd-note, [data-overview-results]) { font-size: 13px; line-height: 1.55; }
+${cards} :is(.notif-row-status, .notif-email-steps, .notif-phrase-hint, .notif-bridge-empty, .kp-note, .qh-hint, .sd-hint, .hd-hint, .hd-note, [data-overview-results], [data-agenda-results]) { font-size: 13px; line-height: 1.55; }
 ${cards} :is(.notif-row, .hd-block) { gap: 12px; padding: 16px; border-radius: 8px; background: var(--surface-sunk); }
 ${cards} .notif-list { gap: 12px; }
 ${cards} .notif-row-header { gap: 10px; }
@@ -99,9 +99,9 @@ ${cards} .sd-field { min-width: 0; }
 ${cards} :is(.sd-field, .hd-field) > span { font-size: 13px; line-height: 1.5; font-weight: 600; color: var(--fg); }
 ${cards} :is(form, .hd-detail) { gap: 16px; }
 ${cards} :is(.sd-field, .hd-field) > :is(input, select) { width: 100%; }
-${cards} :is(.hd-more, [data-overview-results]) summary { min-width: 44px; min-height: 44px; padding: 10px 0; font-size: 13px; line-height: 1.55; }
+${cards} :is(.hd-more, [data-overview-results], [data-agenda-results]) summary { min-width: 44px; min-height: 44px; padding: 10px 0; font-size: 13px; line-height: 1.55; }
 ${cards} :is(.sd-sent, .hd-note) { padding: 12px; border-radius: 8px; }
-${cards} :is(.notif-error, .notif-row-error, [data-recued-kind-policy-error], [data-recued-quiet-hours-blocked], [data-recued-quiet-hours-error], [data-situation-delivery-message][role="alert"], [data-household-read-status][role="alert"], .hd-note-issue):not(:empty) {
+${cards} :is(.notif-error, .notif-row-error, [data-recued-kind-policy-error], [data-recued-quiet-hours-blocked], [data-recued-quiet-hours-error], [data-situation-delivery-message][role="alert"], [data-agenda-message][role="alert"], [data-household-read-status][role="alert"], .hd-note-issue):not(:empty) {
   padding: 12px;
   border: 1px solid var(--danger);
   border-radius: 8px;

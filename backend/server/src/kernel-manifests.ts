@@ -2864,7 +2864,7 @@ const MANIFESTS = [
   {
     "slug": "dom-write",
     "name": "DOM Write",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a `value`, and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the write to it (D-335) — types the value into the element on the page actuated by the paired Browser Bridge — an input or textarea, a list (the option whose value or text matches), a checkbox or radio button (`true`/`false`), or a rich-text editor — and fails DOM_WRITE_FAILED when the element does not end up holding it; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a `value`, and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the write to it (D-335) — types the value into the element on the page actuated by the paired Browser Bridge — an input or textarea (focused, and set through its own value setter, so a React-built form hears it), a list (the option whose value or text matches), a checkbox or radio button (`true`/`false`), or a rich-text editor — and fails DOM_WRITE_FAILED when the element does not end up holding it; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "authoring",
@@ -2924,7 +2924,7 @@ const MANIFESTS = [
   {
     "slug": "dom-click",
     "name": "DOM Click",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.click` op (D-335). Given a `target` URL pattern and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the click to it — clicks the element on the page actuated by the paired Browser Bridge, the way a person would. Returns `{ clicked: 1 }` once the click is dispatched; what the page does with it is the page's. A page or ref that has gone since it was inspected fails DOM_SELECTOR_NOT_FOUND and nothing is clicked; a click whose answer the page took with it (a navigation) fails ACTION_DELIVERY_UNCERTAIN. write-tier: approval-gated, and a click cannot be undone.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.click` op (D-335). Given a `target` URL pattern and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the click to it — clicks the element on the page actuated by the paired Browser Bridge, the way a person would: scrolled into view and pressed at its centre, with the pointer and mouse events, the focus and the click a person's click sends. A disabled element, or one something else on the page covers (a dialog, a banner), fails DOM_WRITE_FAILED with the reason and nothing is clicked. Returns `{ clicked: 1 }` once the click is dispatched; what the page does with it is the page's. A page or ref that has gone since it was inspected fails DOM_SELECTOR_NOT_FOUND and nothing is clicked; a click whose answer the page took with it (a navigation) fails ACTION_DELIVERY_UNCERTAIN. write-tier: approval-gated, and a click cannot be undone.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "authoring",
@@ -2998,6 +2998,103 @@ const MANIFESTS = [
       "page": "page",
       "url": "url",
       "title": "title"
+    }
+  },
+  {
+    "slug": "dom-wait",
+    "name": "DOM Wait",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.wait` op (D-335 slice H). Given a `target` URL pattern, a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered) and a CSS `selector`, waits in that page of the paired Browser Bridge until an element matching the selector is shown — or, with `until: \"gone\"`, until none is — holding `text` when given (case and spacing ignored), for at most `timeout_seconds` (default 10, at most 30). Returns `{ page, url, title, found, waited_ms }`; `found: false` means it was not met in time, which is an answer, not an error. A page that reloads or goes to another address while waiting fails DOM_SELECTOR_NOT_FOUND: list the tabs for its new handle. read-tier: changes nothing on the page.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "read"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "selector": null,
+      "until": null,
+      "text": null,
+      "timeout_seconds": null
+    },
+    "output": {
+      "page": "page",
+      "url": "url",
+      "title": "title",
+      "found": "found",
+      "waited_ms": "waited_ms"
+    }
+  },
+  {
+    "slug": "dom-table",
+    "name": "DOM Table",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.table` op (D-335 slice H). Given a `target` URL pattern and a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered), reads one table in that page of the paired Browser Bridge — a `<table>`, or an ARIA table or grid: the one `ref` or `selector` names, the first shown one inside it, or the one it is in; with neither, the page's first shown table — as `{ page, url, title, columns, rows, truncated }`. `columns` are the header rows' text (`column N` without one); each row is the text a person sees in each cell, a cell spanning several filling each, and a form field's value read (a password, hidden, sign-in code or payment card field's left out). At most 500 rows and 40,000 characters, with `truncated: true` when the table did not fit. Hidden rows and text are not read. read-tier: changes nothing on the page.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "read"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "ref": null,
+      "selector": null
+    },
+    "output": {
+      "page": "page",
+      "url": "url",
+      "title": "title",
+      "columns": "columns",
+      "rows": "rows",
+      "truncated": "truncated"
+    }
+  },
+  {
+    "slug": "dom-screenshot",
+    "name": "DOM Screenshot",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.screenshot` op (D-335 slice H). Needs Browser Bridge 0.0.5 with \"Allow screenshots\" turned on in its side panel (Chrome captures a tab only for an extension holding `<all_urls>`, which the owner grants there); without it the step fails ROLE_RESTRICTION, saying how to turn it on, and no tab moves. Given a `target` URL pattern and a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered), takes a picture of that page as Chrome draws it in the browser of the paired Browser Bridge: the visible part of the page, or the element `ref` or `selector` names, scrolled into view when it is not. Chrome only pictures the tab in front, so the Bridge brings the tab forward for a moment and then puts back the tab the owner was on. The picture is a JPEG of at most 1568 pixels on its longer side, and it pictures the page as shown, embedded frames and form fields included. Returns `{ page, url, title, image, width, height }`, where `image` is `{ type: \"image\", image_id, mime_type, width, height }`: the server keeps the picture for 10 minutes, an AI app connected over MCP receives it as an image beside the result, and the run's history keeps only this reference. A minimized Chrome window fails ROLE_RESTRICTION. read-tier: does not ask.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "read"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "ref": null,
+      "selector": null
+    },
+    "output": {
+      "page": "page",
+      "url": "url",
+      "title": "title",
+      "image": "image",
+      "width": "width",
+      "height": "height"
     }
   },
   {
@@ -3946,7 +4043,7 @@ const MANIFESTS = [
     "risk_tier": "write",
     "permission": "mail_send",
     "authority_args": [
-      "event_source_id",
+      "booking_id",
       "sender_mail_instance"
     ],
     "tags": [

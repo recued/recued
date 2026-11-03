@@ -425,6 +425,9 @@ describe('a call that stopped to wait reads as what it is now', () => {
     expect(rowFor({ state: 'succeeded' })).toMatchObject({ text: `used ${tool} ${checkMark}`, status: 'ok' });
     expect(rowFor({ state: 'failed', denied: true })).toMatchObject({ text: `didn't run ${tool}: you said no`, status: 'error' });
     expect(rowFor({ state: 'failed' })).toMatchObject({ text: `couldn't run ${tool}: it did not finish`, status: 'error' });
+    // D-337 slice R — its approval expired: it never ran, and no one said no.
+    expect(rowFor({ state: 'failed', expired: true })).toMatchObject({
+      text: `didn't run ${tool}: no one answered in time`, status: 'error' });
     expect(rowFor({ state: 'interrupted' })).toMatchObject({ status: 'error' });
     // No record ⇒ exactly the row it always was.
     expect(projectMessageActivity(message)[0]).toMatchObject({ text: `used ${tool} ${checkMark}`, status: 'ok' });
@@ -438,6 +441,8 @@ describe('a call that stopped to wait reads as what it is now', () => {
     expect(notices({ state: 'failed', denied: true })).toEqual([
       { run_id: 'run-1', text: `Update: you said no, so ${tool} did not run.` }]);
     expect(notices({ state: 'failed' })).toEqual([{ run_id: 'run-1', text: `Update: ${tool} did not finish.` }]);
+    expect(notices({ state: 'failed', expired: true })).toEqual([
+      { run_id: 'run-1', text: `Update: no one answered in time, so ${tool} did not run.` }]);
     // A call that never waited needs no update: its ✓ is already the truth.
     const { held_at: _never, ...neverWaited } = record({ state: 'succeeded' });
     expect(projectSettledCallNotices(message, { 'run-1': neverWaited })).toEqual([]);

@@ -54,10 +54,12 @@ import type { UpstreamMergeRpcDeps } from '../upstream-merge-handler.js';
 import type { AppContext } from './compose-app-context.js';
 import type { ExecutionContext } from './compose-execution-context.js';
 import type { StorageContext } from './compose-storage-context.js';
+import type { CollectionRegistry } from '../collections/registry.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { forgetUnusedRetirements } from '../retired-settings.js';
 
 export interface ComposeRpcContextOptions {
+  collectionRegistry?: CollectionRegistry;
   storage: Pick<
     StorageContext,
     | 'db'
@@ -222,6 +224,7 @@ export const composeRpcContext = (
 
   const housekeepingRpcDeps = composeHousekeepingRpcDeps({
     db: storage.db,
+    ...(options.collectionRegistry ? { collectionRegistry: options.collectionRegistry } : {}),
     stores: {
       configStore: app.housekeepingConfigRef,
       stateStore: app.housekeepingStateRef,

@@ -221,20 +221,21 @@ export const validateConnectionHintShape = (
         'connection hint declares no values');
     }
     for (const key of keys) {
+      const fieldPath = `${path}.values` + (/^[A-Za-z_][\w]*$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`);
       if (!APPLICABLE_GUIDE_FIELD_KEYS.has(key)) {
-        add('pack_connection_hint_field_unknown', `${path}.values.${key}`,
+        add('pack_connection_hint_field_unknown', fieldPath,
           `'${key}' is not a pre-fillable connection field; admitted: `
           + `${[...APPLICABLE_GUIDE_FIELD_KEYS].join(', ')}`);
         continue;
       }
       const value = values[key];
       if (typeof value !== 'string') {
-        add('pack_connection_hint_value_shape', `${path}.values.${key}`,
+        add('pack_connection_hint_value_shape', fieldPath,
           'a suggested value must be a string');
         continue;
       }
       if (!canApplyConnectionSetupGuideSuggestion(key, value)) {
-        add('pack_connection_hint_value_rejected', `${path}.values.${key}`,
+        add('pack_connection_hint_value_rejected', fieldPath,
           `'${key}' value is not admissible — endpoint fields must be a public `
           + 'https URL carrying no credentials, and every value is capped at 500 characters');
       }

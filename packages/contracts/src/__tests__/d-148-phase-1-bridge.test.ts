@@ -24,9 +24,20 @@ import {
   BRIDGE_IDEMPOTENCY_TTL_MS,
   isPatternWithinGrantedOrigins,
   isCommandWithinIngredientGrant,
+  bridgeRunsAction,
   type BridgeIngredientGrant,
   type BridgeIngredientRef,
 } from '../bridge.js';
+
+describe('D-335 slice H — waits, tables and screenshots ride the shipped action list', () => {
+  // Screenshots need the owner's "Allow screenshots" (<all_urls>, I-9 as amended
+  // 2026-11-01); a Bridge without it refuses the capture itself, naming the switch.
+  it('a Bridge with the shipped action list runs a wait, a table and a screenshot by page', () => {
+    expect(bridgeRunsAction({ supported_actions: [...BRIDGE_ACTIONS] }, 'screenshot_page')).toBe(true);
+    expect(bridgeRunsAction({ supported_actions: [...BRIDGE_ACTIONS] }, 'wait_for_element')).toBe(true);
+    expect(bridgeRunsAction({ supported_actions: [...BRIDGE_ACTIONS] }, 'read_table')).toBe(true);
+  });
+});
 
 describe('D-148 P1 — BRIDGE_ACTIONS closed list', () => {
   it('matches spec § A.3.1', () => {
@@ -43,7 +54,11 @@ describe('D-148 P1 — BRIDGE_ACTIONS closed list', () => {
       'open_tab',
       'os_notification',
       'read_dom',
+      // D-335 slice H, on a page handle: a table, a picture and a wait.
+      'read_table',
       'screenshot',
+      'screenshot_page',
+      'wait_for_element',
       'wait_for_selector',
     ]);
   });
@@ -142,9 +157,10 @@ describe('D-148 P1 — BRIDGE_PROHIBITED_CHROME_PERMISSIONS', () => {
 });
 
 describe('D-148 P1 + D-169 P0 Slice 2B — BRIDGE_LOCAL_STORAGE_FIELDS', () => {
-  it('matches spec § A.3.4 closed list of 9 fields (post-Slice-2B, plus D-335 slice G\'s blocked sites)', () => {
-    expect(BRIDGE_LOCAL_STORAGE_FIELDS.length).toBe(9);
+  it('matches spec § A.3.4 closed list of 10 fields (post-Slice-2B, plus D-335 slice G\'s blocked sites and the approvals shown)', () => {
+    expect(BRIDGE_LOCAL_STORAGE_FIELDS.length).toBe(10);
     expect([...BRIDGE_LOCAL_STORAGE_FIELDS].sort()).toEqual([
+      'approval_notices_shown',
       'blocked_sites',
       'cert_pin_state',
       'chrome_permissions_state',

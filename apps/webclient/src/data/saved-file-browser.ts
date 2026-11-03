@@ -70,29 +70,38 @@ export const createSavedFileBrowser = (list: SavedFileListCaller | undefined, ch
       generation++; loading = false; files = []; query = ''; archived = false;
       cursor = undefined; pages = 0; error = undefined; failed = undefined; unsupported = false;
     },
+    rename(id: string, filename: string) {
+      // Keep a confirmed name if the next list read fails. Retire pending reads;
+      // the keyset cursor still safely resumes after its original time/id even
+      // when a loaded row moves earlier in the server's modified_at order.
+      generation++; loading = false;
+      const fold = (text: string): string => text.replace(/[A-Z]/g, char => char.toLowerCase()); // SQLite lower().
+      files = files.map(file => file.file_id === id ? { ...file, filename } : file)
+        .filter(file => !query || fold(file.filename).includes(fold(query)));
+    },
     remove(ids: ReadonlySet<string>) { files = files.filter(file => !ids.has(file.file_id)); },
     dispose() { disposed = true; generation++; },
   };
 };
 
 type SavedFileState = ReturnType<ReturnType<typeof createSavedFileBrowser>['snapshot']>;
-export const renderSavedFileSearch = (state: SavedFileState, input: string, action: string): string => {
+export const renderSavedFileSearch = (state: SavedFileState, input: string, action: string, locked = false): string => {
   if (state.unsupported) return `<p role="status">Update your Recued server to search saved files and load more results.
     <button type="button" class="data-button" ${action}="file-saved-check"${state.loading ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.loading ? 'Checking…' : 'Check again'}</button></p>`;
   const scope = `${state.archived ? 'archived saved file' : 'saved file'}${state.files.length === 1 ? '' : 's'}`;
   return `<div data-saved-file-search>
     <label>Search file names <input class="data-input" type="search" maxlength="200"
-      aria-label="Search saved files" ${action}="file-saved-query" value="${e(input)}" /></label>
-    <button type="button" class="data-button" ${action}="file-saved-search">Search files</button>
+      aria-label="Search saved files" ${action}="file-saved-query" value="${e(input)}"${locked ? ' disabled' : ''} /></label>
+    <button type="button" class="data-button" ${action}="file-saved-search"${locked ? ' disabled' : ''}>Search files</button>
     <p role="status" data-saved-file-status>${state.pages > 0
       ? `${state.files.length} ${scope} shown${state.query ? ` for “${e(state.query)}”` : ''}.${state.loading ? ' Loading…' : ''}`
       : state.loading ? 'Loading saved files…' : ''}</p>
   </div>`;
 };
 
-export const renderSavedFileFooter = (state: SavedFileState, action: string, hasConfirmedResults = state.pages > 0): string => state.error
+export const renderSavedFileFooter = (state: SavedFileState, action: string, hasConfirmedResults = state.pages > 0, locked = false): string => state.error
   ? `<p role="alert">Saved files could not be loaded. ${e(state.error)}${hasConfirmedResults ? ' The previous results are still shown.' : ''}
-      <button type="button" class="data-button" ${action}="file-saved-retry">Retry</button></p>`
+      <button type="button" class="data-button" ${action}="file-saved-retry"${locked ? ' disabled' : ''}>Retry</button></p>`
   : state.cursor && !state.unsupported
-    ? `<button type="button" class="data-button" ${action}="file-saved-more"${state.loading ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.loading ? 'Loading…' : 'Load more files'}</button>`
+    ? `<button type="button" class="data-button" ${action}="file-saved-more"${locked ? ' disabled' : ''}${state.loading ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.loading ? 'Loading…' : 'Load more files'}</button>`
     : '';

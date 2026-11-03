@@ -432,6 +432,17 @@ export interface ExecutionContext {
    * path admits. Absent means Records fails closed. */
   resourceReview?: import('@recued/contracts').ResourceReviewHooks;
   localMutations?: import('@recued/contracts').LocalMutationHooks;
+  /** D-336 (spec §53) — the host's look at a change to one record, before the call is asked
+   *  about, routed or made: its operation and the record's id as the call carries it (D-190),
+   *  for an operation that names its record argument (`record_id_arg`) and is not a read. Its
+   *  words refuse the call (`BAD_INPUT`, audited `record_change_unconfirmed`); undefined lets it
+   *  go, and so does a look that fails. A chat run sets it so a CRM contact the user named only
+   *  in part is asked about when the run found the contact itself, as one known before the run
+   *  is. Absent ⇒ no look. */
+  recordChangeCheck?: (call: {
+    readonly operation_id: string;
+    readonly record_id: string;
+  }) => Promise<string | undefined>;
   recordsOperationExecutor?: RecordsOperationExecutor;
   /** D-232 — in-process dispatch for an `mcp` binding that names a LOCAL
    *  recipe. There is no separate declaration for local vs remote: the binding

@@ -489,6 +489,32 @@ describe('composeListeners', () => {
     expect(closed.messengerIngressSupervisor?.status('telegram', 'telegram')).toBeNull();
   });
 
+  it('sweeps the notification asks once the boot completes, and never when the listeners close first', async () => {
+    // D-158 P3 — an open ask's email and an approved run reach the mailboxes and calendars that
+    // `startCollectionAdapters` registers after the boot's recovery step.
+    const base = makeOptions();
+    const block = createNotificationBlock({ askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+      settingsStore: createNotificationSettingsStore(createInMemoryCollection<NotificationSettings>()),
+      channels: [createUiChannel({ busSink: () => undefined })] });
+    const sweep = vi.spyOn(block, 'recoverPendingAsks');
+    const compose = (machine: LifecycleStateMachine) => composeListeners(makeOptions({
+      execution: { ...base.execution, notificationBlock: block },
+      lifecycle: { machine, handlerSlice: undefined, supervisor: { mode: 'none' } } as unknown as Lifecycle }));
+    const booting = createLifecycleStateMachine('booting');
+    const held = await compose(booting);
+    try {
+      expect(sweep).not.toHaveBeenCalled();
+      booting.transition('running');
+      expect(sweep).toHaveBeenCalledTimes(1);
+    } finally { await held.server.close(); }
+    sweep.mockClear();
+    const ending = createLifecycleStateMachine('booting');
+    const closed = await compose(ending);
+    await closed.server.close();
+    ending.transition('running');
+    expect(sweep).not.toHaveBeenCalled();
+  });
+
   it('reconciles installed packs before composing any intake surface, then validates the result', async () => {
     const contractStore = createContractStore(storageDb, { now: () => 1 });
     contractStore.seedSchema(D165_CONTRACT_SCHEMA);
@@ -731,9 +757,35 @@ describe('composeListeners', () => {
 
   it('opens the mail-fact events held since the mailboxes started, once', async () => {
     const options = makeOptions();
-    await composeListeners(options);
+    const result = await composeListeners(options);
     const { open } = (options.collection as unknown as { mailFactEvents: { open: ReturnType<typeof vi.fn> } }).mailFactEvents;
-    expect(open).toHaveBeenCalledTimes(1);
+    try {
+      // Live facts open asynchronously, after replaying the older parked events.
+      await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    } finally { await result.server.close(); }
+  });
+
+  it('D-336 (spec §48) — hands the chat the calendar stack\'s own writes, their checks and its default calendar', async () => {
+    const stack = {
+      enrollDeps: { tag: 'calendar-enroll' },
+      listLive: () => [],
+      instances: { tag: 'calendar-instances' },
+      kernelDispatchers: { calendarCreate: vi.fn(), calendarUpdate: vi.fn() },
+      writeChecks: { create: vi.fn(), update: vi.fn() },
+      defaultCalendar: vi.fn(),
+    };
+    const base = makeOptions();
+    const options = makeOptions({ collection: { ...(base.collection as unknown as object), calendarStack: stack } });
+    const result = await composeListeners(options);
+    try {
+      expect((options.app as unknown as { calendarWriteDepsRef: { current: unknown } }).calendarWriteDepsRef.current).toEqual({
+        calendarCreate: stack.kernelDispatchers.calendarCreate,
+        calendarUpdate: stack.kernelDispatchers.calendarUpdate,
+        checkCalendarCreate: stack.writeChecks.create,
+        checkCalendarUpdate: stack.writeChecks.update,
+        defaultCalendar: stack.defaultCalendar,
+      });
+    } finally { await result.server.close(); }
   });
 
   it('D-318 P23 — binds the email-approval reply check, once', async () => {
@@ -930,6 +982,8 @@ describe('composeListeners', () => {
   it('D-318 step 5 — owes each email turn’s answer by email, over the server’s own database', async () => {
     const stopListening = vi.fn();
     const onChatRunSettled = vi.fn((_listener: (settled: unknown) => void) => stopListening);
+    const stopContinued = vi.fn();
+    const onChatHeldResultTurnEnded = vi.fn((_listener: (ended: unknown) => void) => stopContinued);
     ensureChatSchema(storageDb);
     createChatTurnQueueStore(storageDb);
     const base = makeOptions();
@@ -939,6 +993,7 @@ describe('composeListeners', () => {
         chatOrchestratorRef: { turnQueue: { register: vi.fn() }, runMessengerTurn: vi.fn(), sessionStore: {} },
         chatStoreRef: createChatStore(storageDb),
         onChatRunSettled,
+        onChatHeldResultTurnEnded,
       },
       collection: {
         ...(base.collection as unknown as Record<string, unknown>),
@@ -953,10 +1008,14 @@ describe('composeListeners', () => {
       // Part 2 — it hears of each run that settles after its turn.
       expect(onChatRunSettled).toHaveBeenCalledTimes(1);
       expect(onChatRunSettled.mock.calls[0]![0]).toBeTypeOf('function');
+      // D-337 — and of each continuation's turn ending, to send an email chat's answer then.
+      expect(onChatHeldResultTurnEnded).toHaveBeenCalledTimes(1);
+      expect(onChatHeldResultTurnEnded.mock.calls[0]![0]).toBeTypeOf('function');
     } finally {
       await result.server.close().catch(() => undefined);
     }
     expect(stopListening).toHaveBeenCalledTimes(1);
+    expect(stopContinued).toHaveBeenCalledTimes(1);
   });
 
   it('D-318 step 3 — without chat, nothing is bound and the proof still starts', async () => {
@@ -3755,7 +3814,7 @@ describe('composeListeners — the port-mapping supervisor is wired to teardown'
   it('⛔⛔ closeServer DRAINS it — it was started and never stopped', () => {
     // Its renewal timer and config subscription outlived listener teardown, so a
     // reconcile could be writing its record while the database closed underneath.
-    const drains = SRC.slice(SRC.indexOf('const closeServer'), SRC.indexOf('const closeServer') + 2500);
+    const drains = SRC.slice(SRC.indexOf('const closeServer'), SRC.indexOf('const closeServer') + 3000);
     expect(drains).toMatch(/portMappingSupervisorRef\?\.stop\(\)/);
   });
 

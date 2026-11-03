@@ -102,6 +102,7 @@ import {
   executionSourceHasContract,
   isExternallyExposableIngredient,
   isPreflightRequiredSignal,
+  mergeValueLabels,
   parseOpId,
   PlatformRecordIdError,
   QualifiedWorkEntityIdError,
@@ -110,6 +111,7 @@ import {
   routeQualifiedWorkEntityOperationArgs,
   stampPlatformRecordIds,
   type ApprovalValueLabels,
+  type MemorySaveConflict,
 } from '@recued/contracts';
 import {
   deriveChannelSessionId,
@@ -132,6 +134,9 @@ import { runCatalogOperation, resolveCatalogRecordsPath } from '@recued/engine';
 type RawOpStepMeta = Parameters<typeof runCatalogOperation>[7];
 import type { CheckpointStore } from '@recued/storage';
 import { buildPackOpResolution } from './pack-inventory.js';
+import { heldPeopleValueLabels } from './held-people-labels.js';
+import { heldRecordArgument, heldRecordValueLabels } from './held-record-labels.js';
+import { liveVendorRegistry } from './connection-convention-families.js';
 import { resolveConnectionVendor } from './storage/connection-store.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
@@ -153,6 +158,7 @@ import {
   createGatewayAuditEmitter,
   createNamespaceStores,
 } from './server-executor.js';
+import { ownerEditsFor } from './chat-plan-edits.js';
 
 /** The reserved op-args key naming the enrolled connection a raw op binds
  *  (Model 1). Stripped from the op args before dispatch; the Inc D catalog tool
@@ -244,6 +250,22 @@ export type RawOpDispatchDeps = Pick<
   | 'gatedActionStore'
   // D-329 — a held Tier-1 tool call resumes through the tool registry.
   | 'tier1Registry'
+  // D-336 slice O's open item — told once a Tier-1 call is held.
+  | 'onTier1Held'
+  // D-329 — where a hold's ask went (its own record's channels), so a model told of the hold
+  // can say where else it is answered. Absent ⇒ nowhere else is named.
+  | 'approvalAskChannels'
+  // D-336 (spec §41) — the people a held call carries, named on its approval by the contacts
+  // they are. Absent ⇒ they read as passed.
+  | 'contactStore'
+  // D-336 (spec §50) — and the CRM records it changes, by the copy Recued keeps of them, read
+  // against every vendor connected here. Absent ⇒ they read as passed.
+  | 'crmRecordMirror'
+  | 'localManifestStore'
+  // D-336 (spec §52) — what a held call changes, recorded with the hold for its ask, in the
+  // owner's zone. Absent ⇒ the ask names the action only.
+  | 'heldCallDetails'
+  | 'ownerTimeZone'
 > & {
   /** Test seam — substitute the IO executor UNDER the gateway (mirrors
    *  `CanonicalPollDeps.buildExecutor`): tests script wire responses while the
@@ -287,6 +309,11 @@ export interface RawOpDispatchRequest {
    *  `handleExecute`). Optional on the type only for a hypothetical
    *  contract-free caller. */
   contractSnapshot?: ContractSnapshot;
+  /** D-337 slice K — asked where the op would be held, before anything is minted: the call of
+   *  the caller's turn that still waits for the owner's answer, so this one is not asked yet
+   *  (`not_asked`), or `undefined` to hold it as ever. A chat's own turn passes it
+   *  (`askAfterWaiting`); MCP does not. */
+  askAfter?: () => string | undefined;
 }
 
 /** The outcome of a raw-op dispatch — a discriminated union so the route maps
@@ -302,11 +329,23 @@ export interface RawOpDispatchRequest {
  *      silent fail).
  *    - `refused` → `err(message)` (a structural refusal: bad id / not installed
  *      / op undeclared / catalog unloaded / §8-fenced / policy deny).
+ *    - `not_asked` → (D-337 slice K) an op that would be held was NOT: the
+ *      caller's `askAfter` named a call of its turn still waiting for the
+ *      owner's answer. Nothing was minted, asked or run. Only a chat that
+ *      carries on passes `askAfter`; MCP never does.
  *  A gateway DENY (e.g. `no_connection_profile`) is THROWN by
  *  `runCatalogOperation` and surfaced by the route's outer catch as `err(...)`. */
 export type RawOpDispatchOutcome =
   | { kind: 'result'; result: unknown }
-  | { kind: 'held'; op_id: string; run_id: string }
+  | { kind: 'not_asked'; op_id: string; waiting: string }
+  | {
+      kind: 'held';
+      op_id: string;
+      run_id: string;
+      /** The channels its ask went to, once raised (`approvalAskChannels`); absent when they
+       *  could not be read, or the hold joined one already waiting. */
+      approval_channels?: readonly string[];
+    }
   | { kind: 'ask'; op_id: string; message: string }
   | {
       kind: 'refused';
@@ -487,6 +526,9 @@ const dispatchRawOpOnce = async (
   if (admission.verdict === 'ask') {
     const waiting = await waitingRun();
     if (waiting !== undefined) return { kind: 'held', op_id: opId, run_id: waiting };
+    // D-337 slice K — not asked while a call of the caller's turn waits for the owner.
+    const after = req.askAfter?.();
+    if (after !== undefined) return { kind: 'not_asked', op_id: opId, waiting: after };
     // Inc B-writes — the contract policy cell escalated this op to approval.
     // HOLD it durably (a recipe-less checkpoint + the D-158 ask). No
     // action-identity hashes are available here (admission runs BEFORE the
@@ -534,6 +576,9 @@ const dispatchRawOpOnce = async (
   if (dispatch.kind === 'preflight') {
     const waiting = await waitingRun();
     if (waiting !== undefined) return { kind: 'held', op_id: opId, run_id: waiting };
+    // D-337 slice K — not asked while a call of the caller's turn waits for the owner.
+    const after = req.askAfter?.();
+    if (after !== undefined) return { kind: 'not_asked', op_id: opId, waiting: after };
     // The catalog gateway held this op (a write / ask-tier OP). Build the
     // durable recipe-less hold off the signal's action identity — its hashes
     // make a `raw_op` grant mintable on an `allow_session` answer.
@@ -1217,9 +1262,18 @@ interface RawOpHoldInput {
   runId?: string;
   /** D-329 — the chat session a held chat write came from (`RawOpCheckpoint.tier1_session_id`). */
   tier1SessionId?: string;
+  /** D-336 slice Q — the turn it was asked in, for a source that names none
+   *  (`RawOpCheckpoint.tier1_turn_id`). */
+  tier1TurnId?: string;
   /** D-329 — how the owner knows the records the call names, shown on its ask and card
    *  (`PreflightCheckpointContext.value_labels`). Display only. */
   valueLabels?: ApprovalValueLabels;
+  /** D-336 slice G — the notes in memory a held save meets, shown on its ask
+   *  (`PreflightCheckpointContext.memory_conflicts`). Display only. */
+  memoryConflicts?: readonly MemorySaveConflict[];
+  /** D-336 slice N's open item — the chat whose card can change the held call
+   *  (`PreflightCheckpointContext.change_in_chat`). Display only. */
+  changeInChat?: string;
 }
 
 /** Resolve the `raw_op` session-grant offer for a hold — the `(mcp ×
@@ -1277,7 +1331,19 @@ const buildRawOpHold = async (
   const newId = deps.newId ?? randomUUID;
   const createdAt = (deps.now ?? Date.now)();
   const run_id = hold.runId ?? newId();
-  const checkpoint: Checkpoint = {
+  // The caller's names for the records it points at, then the people it carries (D-336 §41).
+  const heldLabels = mergeValueLabels(
+    mergeValueLabels(hold.valueLabels, heldPeopleValueLabels([hold.opArgs], deps.contactStore)),
+    heldRecordValueLabels([hold.opArgs], {
+      mirror: deps.crmRecordMirror,
+      registry: liveVendorRegistry(deps.localManifestStore),
+    }, heldRecordArgument(
+      deps.executorConfig.manifests.get(hold.catalogSlug)?.operations?.[hold.operation]?.record_id_arg,
+      hold.connectionName,
+      deps.connectionStore,
+    )),
+  );
+  const heldCheckpoint: Checkpoint = {
     checkpoint_id: newId(),
     run_id,
     step_state: {},
@@ -1313,12 +1379,21 @@ const buildRawOpHold = async (
       ...(ctx.authorization_provenance !== undefined
         ? { authorization_provenance: ctx.authorization_provenance }
         : {}),
-      ...(hold.valueLabels !== undefined ? { value_labels: hold.valueLabels } : {}),
+      ...(heldLabels !== undefined ? { value_labels: heldLabels } : {}),
+      ...(hold.memoryConflicts !== undefined && hold.memoryConflicts.length > 0
+        ? { memory_conflicts: hold.memoryConflicts }
+        : {}),
+      ...(hold.changeInChat !== undefined && hold.changeInChat.trim() !== ''
+        ? { change_in_chat: hold.changeInChat.trim() }
+        : {}),
     },
     raw_op: {
       ...(hold.tier1Tool !== undefined ? { tier1_tool: hold.tier1Tool } : {}),
       ...(hold.tier1Tool !== undefined && hold.tier1SessionId !== undefined
         ? { tier1_session_id: hold.tier1SessionId }
+        : {}),
+      ...(hold.tier1Tool !== undefined && hold.tier1TurnId !== undefined && hold.tier1TurnId !== ''
+        ? { tier1_turn_id: hold.tier1TurnId }
         : {}),
       op_id: hold.opId,
       catalog_slug: hold.catalogSlug,
@@ -1344,6 +1419,20 @@ const buildRawOpHold = async (
     },
     created_at: createdAt,
   };
+  // D-336 (spec §52) — what the call changes, as its approval card will show it, recorded so
+  // the ask every channel receives says it too. A held AI tool's ask lists its call already.
+  // Display only: unreadable, the call is held all the same.
+  let heldDetails: ReturnType<NonNullable<RawOpDispatchDeps['heldCallDetails']>> | undefined;
+  if (hold.tier1Tool === undefined) {
+    try {
+      heldDetails = deps.heldCallDetails?.(heldCheckpoint, deps.ownerTimeZone?.());
+    } catch (err) {
+      console.warn(`[raw-op-dispatch] held call details unreadable for ${hold.opId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const checkpoint: Checkpoint = heldDetails !== undefined && heldDetails !== null && heldDetails.length > 0
+    ? { ...heldCheckpoint, preflight_context: { ...heldCheckpoint.preflight_context, held_details: heldDetails } }
+    : heldCheckpoint;
   try {
     await deps.checkpointStore.write(checkpoint);
   } catch (e) {
@@ -1408,6 +1497,7 @@ const buildRawOpHold = async (
       ? { authorization_provenance: ctx.authorization_provenance }
       : {}),
   };
+  let approvalChannels: readonly string[] | undefined;
   try {
     const { ask_id } = await raisePreflightAsk(
       deps.preflightNotifier,
@@ -1422,6 +1512,13 @@ const buildRawOpHold = async (
             + (error instanceof Error ? error.message : String(error)),
         );
       }
+    }
+    // D-329 — where the ask went, as a held run reports it, so the model told of this hold
+    // can say where else the owner answers it. Best effort: a failed read names nowhere else.
+    try {
+      approvalChannels = await deps.approvalAskChannels?.(ask_id);
+    } catch {
+      approvalChannels = undefined;
     }
   } catch (e) {
     if (actionRef !== undefined) {
@@ -1449,14 +1546,23 @@ const buildRawOpHold = async (
     );
     return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId) };
   }
-  return { kind: 'held', op_id: hold.opId, run_id };
+  return {
+    kind: 'held',
+    op_id: hold.opId,
+    run_id,
+    ...(approvalChannels !== undefined ? { approval_channels: approvalChannels } : {}),
+  };
 };
+
+/** A source that carries the turn it was made in: a chat's, or a scheduled one's. */
+const sourceNamesTurn = (source: ExecutionSource): source is ExecutionSource & { turn_id: string } =>
+  (source.channel === 'chat' || source.channel === 'schedule') && source.turn_id !== undefined;
 
 /** D-329 — hold a Tier-1 tool call (`calendar.create`, `work.update`, …) for the owner, the
  *  way a write raw op is held: a recipe-less checkpoint carrying the tool and its arguments,
  *  the receipt an AI app's `action_ref` follows, and the D-158 ask fanned out to every
  *  approval channel. Approving runs it through the tool registry ({@link resumeRawOp}). */
-export const holdTier1Call = (
+export const holdTier1Call = async (
   deps: RawOpDispatchDeps,
   call: {
     tool: string;
@@ -1466,22 +1572,41 @@ export const holdTier1Call = (
     correlationId?: string;
     runId?: string;
     sessionId?: string;
+    /** D-336 slice Q — the turn it was asked in, kept where its source names none. */
+    turnId?: string;
     valueLabels?: ApprovalValueLabels;
+    memoryConflicts?: readonly MemorySaveConflict[];
+    /** D-336 slice N's open item — the chat whose card can change it, named on its ask. */
+    changeInChat?: string;
   },
-): Promise<RawOpDispatchOutcome> => buildRawOpHold(deps, {
-  opId: call.tool,
-  catalogSlug: TIER1_HOLD_CATALOG_SLUG,
-  operation: call.tool,
-  opArgs: call.args,
-  connectionName: '',
-  executionSource: call.executionSource,
-  ...(call.contractSnapshot !== undefined ? { contractSnapshot: call.contractSnapshot } : {}),
-  ...(call.correlationId !== undefined ? { correlationId: call.correlationId } : {}),
-  ...(call.runId !== undefined ? { runId: call.runId } : {}),
-  ...(call.sessionId !== undefined ? { tier1SessionId: call.sessionId } : {}),
-  ...(call.valueLabels !== undefined ? { valueLabels: call.valueLabels } : {}),
-  tier1Tool: call.tool,
-}, { risk_tier: 'write' });
+): Promise<RawOpDispatchOutcome> => {
+  const outcome = await buildRawOpHold(deps, {
+    opId: call.tool,
+    catalogSlug: TIER1_HOLD_CATALOG_SLUG,
+    operation: call.tool,
+    opArgs: call.args,
+    connectionName: '',
+    executionSource: call.executionSource,
+    ...(call.contractSnapshot !== undefined ? { contractSnapshot: call.contractSnapshot } : {}),
+    ...(call.correlationId !== undefined ? { correlationId: call.correlationId } : {}),
+    ...(call.runId !== undefined ? { runId: call.runId } : {}),
+    ...(call.sessionId !== undefined ? { tier1SessionId: call.sessionId } : {}),
+    // A chat's source carries its own turn; a messenger's does not, so the hold keeps it.
+    ...(call.turnId !== undefined && !sourceNamesTurn(call.executionSource) ? { tier1TurnId: call.turnId } : {}),
+    ...(call.valueLabels !== undefined ? { valueLabels: call.valueLabels } : {}),
+    ...(call.memoryConflicts !== undefined ? { memoryConflicts: call.memoryConflicts } : {}),
+    ...(call.changeInChat !== undefined ? { changeInChat: call.changeInChat } : {}),
+    tier1Tool: call.tool,
+  }, { risk_tier: 'write' });
+  // D-336 slice O's open item — once held, the earlier saves of the same fact still waiting
+  // hear of it. Never a reason the hold fails.
+  if (outcome.kind === 'held' && deps.onTier1Held !== undefined) {
+    await deps.onTier1Held({ tool: call.tool, args: call.args, run_id: outcome.run_id }).catch((error: unknown) => {
+      console.warn(`[raw-op] the saves waiting beside held ${call.tool} were not told of it`, error);
+    });
+  }
+  return outcome;
+};
 
 /** D-329 — the run of a call still waiting for the owner that this call repeats: a held
  *  checkpoint for the same op (and Tier-1 tool), connection and arguments, from the same AI
@@ -1532,6 +1657,53 @@ export const findWaitingHold = async (
     if (receipt === null || receipt.status === 'awaiting_approval') return checkpoint.run_id;
   }
   return undefined;
+};
+
+/** D-336 slice O — one held Tier-1 call still waiting for the owner: its arguments as they
+ *  will run, the owner's change on its card applied (`ownerEditsFor`, as the resume applies
+ *  it), and who asked for it. */
+export interface WaitingTier1Call {
+  readonly run_id: string;
+  readonly args: Record<string, unknown>;
+  readonly execution_source: ExecutionSource;
+  readonly created_at: number;
+}
+
+/** D-336 slice O — the held calls of the Tier-1 `tool` still waiting for the owner, any
+ *  caller's, oldest first. Waiting as for {@link findWaitingHold}: a checkpoint whose receipt
+ *  says it was answered is not, and neither is one whose receipt cannot be read. A store that
+ *  cannot be read gives none. */
+export const listWaitingTier1Calls = async (
+  stores: Pick<RawOpDispatchDeps, 'checkpointStore' | 'gatedActionStore'>,
+  tool: string,
+): Promise<WaitingTier1Call[]> => {
+  if (stores.checkpointStore === undefined) return [];
+  let checkpoints: Checkpoint[];
+  try {
+    checkpoints = await stores.checkpointStore.list();
+  } catch {
+    return [];
+  }
+  const waiting: WaitingTier1Call[] = [];
+  for (const checkpoint of checkpoints) {
+    const raw = checkpoint.raw_op;
+    if (raw === undefined || raw.tier1_tool !== tool) continue;
+    let receipt: Awaited<ReturnType<NonNullable<RawOpDispatchDeps['gatedActionStore']>['getBySubject']>>;
+    try {
+      receipt = await stores.gatedActionStore?.getBySubject(checkpoint.run_id, RAW_OP_STEP_ID) ?? null;
+    } catch {
+      continue;
+    }
+    if (receipt !== null && receipt.status !== 'awaiting_approval') continue;
+    const edits = ownerEditsFor(tool, checkpoint.arg_overrides);
+    waiting.push({
+      run_id: checkpoint.run_id,
+      args: edits === undefined ? raw.op_args : { ...raw.op_args, ...edits },
+      execution_source: raw.execution_source,
+      created_at: checkpoint.created_at,
+    });
+  }
+  return waiting.sort((a, b) => a.created_at - b.created_at);
 };
 
 /** D-329 — an AI app's identical calls (its MCP token and contract, the tool, the arguments),
@@ -1630,11 +1802,16 @@ export const resumeRawOp = async (
  *  the owner approved; the call runs on authority re-read now, as a fresh call would meet it:
  *  the bearer and its contract (D-196 R2), the bound contract's liveness, and the tool's own
  *  switch (`primitive.<tool>`). The handler then checks its op grants as on any call. A call
- *  that throws once running may have written, so it is reported in doubt, never retried. */
+ *  that throws once running may have written, so it is reported in doubt, never retried.
+ *
+ *  D-336 slice E — `overrides`, what the owner changed on the card while approving
+ *  (`chat-plan-edits.ts`), replace those arguments, for the keys the tool takes a change to
+ *  only; the tool is told they are the owner's (`owner_edits`). */
 const dispatchResumedTier1Call = async (
   deps: RawOpDispatchDeps,
   raw: RawOpHold,
   tool: string,
+  overrides?: unknown,
 ): Promise<RawOpResumeOutcome> => {
   if (!deps.approvalResumeAuthority) {
     console.warn(`[tier1-resume] '${tool}' approval-resume authority resolver is unavailable — not running`);
@@ -1696,23 +1873,29 @@ const dispatchResumedTier1Call = async (
   // A chat's call runs as the chat ran it, in its session (`work.create` records its origin
   // from `session_id`, `memory.write` its conversation); an AI app's as its wire did.
   const session_id = raw.tier1_session_id ?? (source.channel === 'chat' ? source.chat_session_id : undefined);
+  // D-336 slice Q — and in its turn: a chat's own, or the one its hold kept for a source naming
+  // none (a messenger's), so a save it makes pairs with the contact its turn added.
+  const turn_id = sourceNamesTurn(source) ? source.turn_id : raw.tier1_turn_id;
   // D-325 — the owner answered this ask: an AI app's, or their own chat's (a chat under a
   // contract keeps the plain card and is never held). An asset reading the call writes is
   // then their own sample.
   const approved = ownerApprovesCallsOf(source) ? { owner_approved: true as const } : {};
+  const edits = ownerEditsFor(tool, overrides);
+  const edited = edits === undefined ? {} : { owner_edits: Object.keys(edits) };
   const ctx: ChatDispatchContext = source.channel === 'mcp'
-    ? { channel: 'mcp_wire', mcp_token_id: source.mcp_token_id, execution_source: source, ...snapshot, ...approved }
+    ? { channel: 'mcp_wire', mcp_token_id: source.mcp_token_id, execution_source: source, ...snapshot, ...approved, ...edited }
     : {
         channel: 'internal_function_call',
         ...(session_id !== undefined ? { session_id } : {}),
-        ...((source.channel === 'chat' || source.channel === 'schedule') && source.turn_id !== undefined ? { turn_id: source.turn_id } : {}),
+        ...(turn_id !== undefined ? { turn_id } : {}),
         execution_source: source,
         ...snapshot,
         ...approved,
+        ...edited,
       };
   let result: Awaited<ReturnType<typeof registry.dispatch>>;
   try {
-    result = await registry.dispatch(tool, raw.op_args, ctx);
+    result = await registry.dispatch(tool, edits === undefined ? raw.op_args : { ...raw.op_args, ...edits }, ctx);
   } catch (error) {
     console.warn(`[tier1-resume] '${tool}' threw while running: `
       + (error instanceof Error ? error.message : String(error)));
@@ -1789,8 +1972,11 @@ const dispatchResumedRawOp = async (
     };
   }
 
-  // D-329 — a held Tier-1 tool call has no catalog binding to re-resolve.
-  if (raw.tier1_tool !== undefined) return dispatchResumedTier1Call(deps, raw, raw.tier1_tool);
+  // D-329 — a held Tier-1 tool call has no catalog binding to re-resolve. Its owner's change
+  // (D-336 slice E) is read off the checkpoint as claimed, the one the approval answered.
+  if (raw.tier1_tool !== undefined) {
+    return dispatchResumedTier1Call(deps, raw, raw.tier1_tool, existing.arg_overrides);
+  }
 
   // 2 — re-resolve the op (the pack may have been uninstalled while paused) +
   //     §8 KIND fence.

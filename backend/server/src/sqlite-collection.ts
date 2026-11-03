@@ -10,6 +10,7 @@ import type Database from 'better-sqlite3';
 import { prefixUpperBound } from './storage/prefix-range.js';
 import type {
   Collection,
+  FieldProjectableCollection,
   FieldQuery,
   FieldQueryableCollection,
   OrderedWindowCollection,
@@ -61,7 +62,7 @@ const buildWhere = (spec: FieldQuery): { sql: string; params: unknown[] } => {
 export const createSQLiteCollection = <V>(
   db: Database.Database,
   table: string,
-): FieldQueryableCollection<V> & OrderedWindowCollection<V> => {
+): FieldQueryableCollection<V> & OrderedWindowCollection<V> & FieldProjectableCollection<V> => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${table} (
       key  TEXT NOT NULL PRIMARY KEY,
@@ -137,6 +138,27 @@ export const createSQLiteCollection = <V>(
         .prepare(`SELECT data FROM ${table} WHERE ${sql}`)
         .all(...params) as { data: string }[];
       return rows.map((r) => JSON.parse(r.data) as V);
+    },
+
+    /** D-336 slice K — the named fields of every row, the rest of each row unparsed. One
+     *  `json_extract` with several paths answers a JSON array that keeps each value's type
+     *  (an object as an object, a missing field as `null`); with one path it would answer the
+     *  bare value, so a single field is asked for twice. */
+    async projectFields(fields) {
+      if (fields.length === 0) return [];
+      const paths = fields.map((field) => `'$.${assertField(field)}'`);
+      const asked = paths.length === 1 ? [paths[0], paths[0]] : paths;
+      const rows = db
+        .prepare(`SELECT json_extract(data, ${asked.join(', ')}) AS fields FROM ${table}`)
+        .all() as { fields: string }[];
+      return rows.map((row) => {
+        const values = JSON.parse(row.fields) as unknown[];
+        const value: Record<string, unknown> = {};
+        fields.forEach((field, i) => {
+          if (values[i] !== null && values[i] !== undefined) value[field] = values[i];
+        });
+        return value as Partial<Pick<V, (typeof fields)[number]>>;
+      });
     },
 
     async countByField(spec) {

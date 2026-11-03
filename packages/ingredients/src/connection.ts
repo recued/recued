@@ -118,6 +118,15 @@ export interface ConnectionHandlerCtx {
  *  output / fallback access, and an optional ctx hook for audit
  *  telemetry (P4.2 — handlers populate bytes_in/bytes_out via
  *  `ctx.setBytes`). */
+/** D-336 (spec §46) — the actions named for one notification channel, and that channel. Nothing
+ *  tied `slack-post` to Slack: bound to an email connection it emailed its `recipient`, to a
+ *  Telegram one it messaged that chat, while its approval said it posted to Slack. `mail-post`
+ *  likewise. Keyed on the manifest's slug, which a step cannot change. */
+export const CHANNEL_SLUGS: ReadonlyMap<string, 'slack' | 'email'> = new Map([
+  ['slack-post', 'slack'],
+  ['mail-post', 'email'],
+]);
+
 export type ConnectionKindHandler = (
   record: ConnectionRow,
   params: Record<string, unknown>,
@@ -459,6 +468,18 @@ export const createConnectionAdapter = (
     const input = call.input;
     const connection_kind = input.connection_kind;
     const connection = input.connection;
+
+    // D-336 (spec §46) — an action named for one channel takes a notification connection: a step
+    // that switched `connection_kind` would reach another handler (an MCP tool at this tier).
+    const channel = (typeof call.slug === 'string' ? CHANNEL_SLUGS.get(stripCorePrefix(call.slug)) : undefined);
+    if (channel !== undefined && connection_kind !== 'notification') {
+      throw new IngredientError(
+        'CONNECTION_KIND_INVALID',
+        `connection adapter: '${call.slug}' sends through a ${channel} notification connection, not a `
+          + `'${String(connection_kind)}' one.`,
+        { slug: call.slug, connection_kind },
+      );
+    }
 
     if (!isConnectionKind(connection_kind)) {
       // No emit — without a valid kind there's no `connection_<kind>`

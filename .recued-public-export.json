@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "efcad76cc1554101c7a4dd2d9d604c8343484cfb",
-    "tree": "3c7d304298330f340954c0f500ce8d12e087eda6",
-    "committed_at": "2026-10-31T07:16:47-07:00"
+    "commit": "d251ede4582082e1be6e63998d18037b2e72be3c",
+    "tree": "4bf37c0eee13b74362c06db77752183e271c512e",
+    "committed_at": "2026-11-03T10:46:16-08:00"
   },
-  "export_manifest_sha256": "93c2cd832b376f78089c6c2c2800c9e1b9d49a8101a43b7c145c718f6417cd5f",
-  "version": "26.10.31",
+  "export_manifest_sha256": "1d9f1f5d55ac24fdaf58ea35bce5b9297c9d14d96211fb61d410c70c7b57855d",
+  "version": "26.11.3",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -99,6 +99,7 @@
       "backend/server/src/__tests__/bills-pack-live.test.ts",
       "backend/server/src/__tests__/bookings-pack-live.test.ts",
       "backend/server/src/__tests__/bridge-dom-idempotency.test.ts",
+      "backend/server/src/__tests__/bridge-page-capture-browser.test.ts",
       "backend/server/src/__tests__/bridge-page-fields-browser.test.ts",
       "backend/server/src/__tests__/bridge-page-inspect-browser.test.ts",
       "backend/server/src/__tests__/broadcast-kind-reachability.test.ts",
@@ -301,6 +302,9 @@
       "backend/server/src/__tests__/d-325-travel-documents.test.ts",
       "backend/server/src/__tests__/d-325-yours.test.ts",
       "backend/server/src/__tests__/d-333-kitchen-pack-edit.test.ts",
+      "backend/server/src/__tests__/d-336-contact-write-fields.test.ts",
+      "backend/server/src/__tests__/d-336-crm-named-in-part.test.ts",
+      "backend/server/src/__tests__/d-336-held-record-labels.test.ts",
       "backend/server/src/__tests__/dependency-manifest.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
@@ -321,6 +325,7 @@
       "backend/server/src/__tests__/foundation-pack-op-step-pre-install.test.ts",
       "backend/server/src/__tests__/foundation-pack-visibility.test.ts",
       "backend/server/src/__tests__/fundamentals-watch-drive.test.ts",
+      "backend/server/src/__tests__/headless-client-diagnostics.test.ts",
       "backend/server/src/__tests__/held-foreach-approval-cover.test.ts",
       "backend/server/src/__tests__/held-run-result-for-the-page.test.ts",
       "backend/server/src/__tests__/helpers/customer-account-payment-harness.ts",
@@ -336,6 +341,7 @@
       "backend/server/src/__tests__/home-assistant-camera-alert-webhook-capstone.test.ts",
       "backend/server/src/__tests__/home-assistant-pack-semi-live.test.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
+      "backend/server/src/__tests__/hubspot-write-wire-body.test.ts",
       "backend/server/src/__tests__/install-names-the-packs-it-needs.test.ts",
       "backend/server/src/__tests__/install-sh-local-feed.test.ts",
       "backend/server/src/__tests__/installer-env-var-goes-on-sh.test.ts",
@@ -880,7 +886,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "12e8e65d6908637c27a63dfd1f8babcdf00566f8cf48ec2d60145ed030244eb3",
+    "sha256": "a36eac2e3b18a8644081fbb181a264d12285aff6c7704f8c19a45c863f5f6e5a",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -897,11 +903,11 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1129,
+    "files_changed": 1133,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1058
+        "comments_rewritten": 1062
       },
       {
         "id": "internal-design-document",
@@ -1028,7 +1034,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 8044,
-    "sha256": "f55a683e65f96de79260f9594bcd4d0499f156e9a2f9d20f76a41f42a8b4e9a3"
+    "file_count": 8161,
+    "sha256": "2476d649a27a9eac57a2cb065283caf3e08c435aab98a242a7636f1da132b0c5"
   }
 }

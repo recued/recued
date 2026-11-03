@@ -142,6 +142,7 @@ import {
   SITUATION_DELIVERY_PANEL_STYLES,
   type SituationDeliveryPanelOptions,
 } from './situation-delivery-panel.js';
+import { AGENDA_PANEL_STYLES, mountAgendaPanel, type AgendaPanelOptions } from './agenda-panel.js';
 import { mountLastTimePanel, type LastTimePanelOptions } from './last-time-panel.js';
 import {
   HOUSEHOLD_DELIVERY_PANEL_STYLES,
@@ -673,6 +674,9 @@ export interface BootstrapSettingsRouteOptions {
   kindPolicyGetCaller?: KindPolicyGetCaller;
   kindPolicySetCaller?: KindPolicySetCaller;
   situationDelivery?: Omit<SituationDeliveryPanelOptions, 'host' | 'document'>;
+  /** D-325 §15.7 amendment (2026-11-02, later) — the Agenda, a card of its own under the Digest.
+   *  It leaves the page by itself when the server has no Agenda. */
+  agendaDelivery?: Omit<AgendaPanelOptions, 'host' | 'document'>;
   /** D-325 §15.7 — "last time" in Privacy → Learning. */
   lastTime?: Omit<LastTimePanelOptions, 'host' | 'document'>;
   householdDelivery?: Omit<HouseholdDeliveryPanelOptions, 'host' | 'document'>;
@@ -1527,6 +1531,7 @@ export const bootstrapSettingsRoute = (
       // D-325 — and the two its overview and household parts added did the
       // same, rendering unpadded browser defaults under the styled cards.
       SITUATION_DELIVERY_PANEL_STYLES,
+      AGENDA_PANEL_STYLES,
       HOUSEHOLD_DELIVERY_PANEL_STYLES,
       // D-318 step 7 — Settings → Email chat. Scoped to its own panel
       // attribute, so inert when its callers are absent.
@@ -2585,6 +2590,7 @@ export const bootstrapSettingsRoute = (
   let serverTimeZone: ServerTimeZonePanelMount | null = null;
   let quietHours: QuietHoursPanelMount | null = null;
   let situationDelivery: ReturnType<typeof mountSituationDeliveryPanel> | null = null;
+  let agendaDelivery: ReturnType<typeof mountAgendaPanel> | null = null;
   let householdDelivery: ReturnType<typeof mountHouseholdDeliveryPanel> | null = null;
   let kindPolicy: KindPolicyPanelMount | null = null;
   const canMountNotifications =
@@ -2665,6 +2671,12 @@ export const bootstrapSettingsRoute = (
     if (opts.situationDelivery) {
       const host = doc.createElement('div'); notifSection.appendChild(host);
       situationDelivery = mountSituationDeliveryPanel({ host, document: doc, ...opts.situationDelivery });
+    }
+    // §15.7 amendment (2026-11-02, later) — the Agenda answers the same question for one day,
+    // apart from the Digest, so it sits right under it.
+    if (opts.agendaDelivery) {
+      const host = doc.createElement('div'); notifSection.appendChild(host);
+      agendaDelivery = mountAgendaPanel({ host, document: doc, ...opts.agendaDelivery });
     }
 
     // D-269 step 3 — quiet hours joins the section that already pairs approval
@@ -3485,6 +3497,7 @@ export const bootstrapSettingsRoute = (
       if (notifications?.hasInFlightWork() === true) return true;
       if (quietHours?.hasInFlightWork() === true) return true;
       if (situationDelivery?.hasInFlightWork() === true) return true;
+      if (agendaDelivery?.hasInFlightWork() === true) return true;
       if (householdDelivery?.hasInFlightWork() === true) return true;
       if (serverTimeZone?.isSaving() === true) return true;
       if (tlsCertificates?.hasInFlightWork() === true) return true;
@@ -3509,6 +3522,7 @@ export const bootstrapSettingsRoute = (
       return notifications?.hasUnsavedChanges() === true
         || quietHours?.hasUnsavedChanges() === true
         || situationDelivery?.hasUnsavedChanges() === true
+        || agendaDelivery?.hasUnsavedChanges() === true
         || householdDelivery?.hasUnsavedChanges() === true
         || serverTimeZone?.hasUnsavedChanges() === true
         || tlsCertificates?.hasUnsavedChanges() === true
@@ -3523,6 +3537,7 @@ export const bootstrapSettingsRoute = (
       }
       if (quietHours?.hasUnsavedChanges() === true) return 'Discard the unsaved quiet hours window?';
       if (situationDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved digest settings?';
+      if (agendaDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved agenda settings?';
       if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household delivery settings?';
       if (serverTimeZone?.hasUnsavedChanges() === true) return 'Discard the unsaved server timezone?';
       if (tlsCertificates?.hasUnsavedChanges() === true) return 'Discard the unsaved certificate upload?';
@@ -3539,6 +3554,7 @@ export const bootstrapSettingsRoute = (
       }
       if (quietHours?.hasInFlightWork() === true) return 'A quiet hours setting is still updating. Leave Settings anyway?';
       if (situationDelivery?.hasInFlightWork() === true) return 'A digest action is still in progress. Leave Settings anyway?';
+      if (agendaDelivery?.hasInFlightWork() === true) return 'An agenda action is still in progress. Leave Settings anyway?';
       if (householdDelivery?.hasInFlightWork() === true) return 'Household Telegram is still updating. Leave Settings anyway?';
       if (serverTimeZone?.isSaving() === true) return 'The server timezone is still updating. Leave Settings anyway?';
       if (tlsCertificates?.hasInFlightWork() === true) return 'A certificate change is still in progress. Leave Settings anyway?';
@@ -3604,6 +3620,7 @@ export const bootstrapSettingsRoute = (
       if (serverTimeZone !== null) serverTimeZone.dispose();
       if (quietHours !== null) quietHours.dispose();
       situationDelivery?.dispose();
+      agendaDelivery?.dispose();
       householdDelivery?.dispose();
       lastTime?.dispose();
       if (mailChatDoor !== null) mailChatDoor.dispose();

@@ -26,6 +26,10 @@ export interface ChatToolCallRecord {
   /** Set on a `failed` call that never ran because its approval was refused, so
    *  "you said no" and "it broke" do not read the same. */
   denied?: true;
+  /** Set on a `failed` call that never ran because no one answered its approval
+   *  before it expired (D-337 slice R): "no one answered in time" is neither "you
+   *  said no" nor "it broke". */
+  expired?: true;
 }
 
 export const isChatToolCallRecord = (value: unknown): value is ChatToolCallRecord => {
@@ -41,5 +45,6 @@ export const isChatToolCallRecord = (value: unknown): value is ChatToolCallRecor
       || typeof row[key] === 'number' && Number.isFinite(row[key]))
     && (row.stalled === undefined || typeof row.stalled === 'boolean')
     && (row.progress === undefined || isToolProgress(row.progress))
-    && (row.denied === undefined || row.denied === true);
+    && (row.denied === undefined || row.denied === true)
+    && (row.expired === undefined || row.expired === true);
 };

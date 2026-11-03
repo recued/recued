@@ -1,21 +1,25 @@
 /** Owner edits reuse the dispatcher's binding and atomic local-version guard. */
 import {
-  CALENDAR_EVENT_EDIT_LIMITS,
+  CALENDAR_EVENT_EDIT_LIMITS, CALENDAR_EVENT_GUEST_LIMITS,
   DAY_MS,
   RpcError,
   type CalendarCollectionCaps,
   type CalendarEventRef,
   type CalendarEventSnapshot,
   type CalendarEventUpdateRequest,
+  type CalendarEventDeleteRequest,
+  type CalendarEventDeleteResult,
+  type CalendarEventDeletionCheckRequest,
+  type CalendarEventDeletionState,
 } from '@recued/contracts';
 import { resourceReviewHash, withResourceReview } from '../../resource-review.js';
 import { commitLocalTransaction } from '../../local-transaction.js';
-import { prepareLocalCalendarUpdate, type CalendarDispatcherDeps } from './calendar-dispatcher.js';
+import { prepareLocalCalendarUpdate, prepareLocalCalendarDelete, type CalendarDispatcherDeps } from './calendar-dispatcher.js';
 import { captureCalendarResource } from './resource-review.js';
 import { snapshotToCollectionRecord } from './calendar-collection.js';
 
 const invalid = (message: string): never => { throw new RpcError('invalid_args', message, 400); };
-const refOf = (input: CalendarEventRef): CalendarEventRef => {
+export const refOf = (input: CalendarEventRef): CalendarEventRef => {
   if (!input || typeof input.slug !== 'string' || !input.slug || input.slug.length > 256
     || typeof input.source_id !== 'string' || !input.source_id || input.source_id.length > 4096) {
     return invalid('A calendar and event identity are required.');
@@ -59,9 +63,17 @@ export const getCalendarEvent = (deps: CalendarDispatcherDeps, input: CalendarEv
       ...(truncated ? { description_truncated: true as const } : {}),
       location: event.location ?? '', start_at: event.start_at, end_at: event.end_at, updated_at: event.updated_at,
       timezone: event.timezone, is_all_day: event.is_all_day, status: event.status, is_recurring,
+      ...(event.attendees?.length ? { attendees: event.attendees.slice(0, CALENDAR_EVENT_GUEST_LIMITS.count).map(attendee => ({
+        email: attendee.email, ...(attendee.display_name ? { display_name: attendee.display_name } : {}),
+        response_status: attendee.response_status,
+      })), attendee_count: event.attendees.length } : {}),
     },
     record: snapshotToCollectionRecord(row),
     resource_version: row.resource_version, incarnation, editable: reason === undefined,
+    ...(collection.provider.kind === 'local' && instance.adapter_type === 'local' && !collection.stopped
+      && !is_recurring && instance.auth_state === 'healthy' && instance.config.native_write_enabled !== false
+      && (instance.caps as CalendarCollectionCaps).delete_event === 'yes' && incarnation && row.resource_version
+      ? { deletable: true as const } : {}),
     ...(reason ? { read_only_reason: reason } : {}),
   };
 };
@@ -117,4 +129,57 @@ export const updateCalendarEvent = async (
     commitLocalTransaction(prepared.db, () => prepared.apply());
   });
   return getCalendarEvent(deps, ref);
+};
+
+const boundLocalCalendar = (deps: CalendarDispatcherDeps, input: CalendarEventDeletionCheckRequest) => {
+  const ref = refOf(input);
+  if (typeof input.expected_incarnation !== 'string' || !input.expected_incarnation) {
+    return invalid('The local calendar identity is required.');
+  }
+  const instance = deps.instances.get('calendar', ref.slug);
+  if (!instance || deps.instances.getIncarnation?.('calendar', ref.slug) !== input.expected_incarnation) {
+    throw new RpcError('resource_changed', 'This calendar was removed or replaced. Reopen it before deleting an event.', 409);
+  }
+  const collection = deps.getCollection(ref.slug);
+  if (!collection || collection.stopped) throw new RpcError('unavailable', 'This calendar is unavailable. Check again when it is running.', 503);
+  if (collection.provider.kind !== 'local' || instance.adapter_type !== 'local') {
+    throw new RpcError('forbidden', 'Only single events on a local calendar can be deleted here.', 403);
+  }
+  return { ref, collection };
+};
+
+/** A read, never a retry of the write. Missing connections cannot prove deletion. */
+export const checkCalendarEventDeletion = (
+  deps: CalendarDispatcherDeps, input: CalendarEventDeletionCheckRequest,
+): CalendarEventDeletionState => {
+  const { ref, collection } = boundLocalCalendar(deps, input);
+  return { ...ref, incarnation: input.expected_incarnation,
+    snapshot: collection.table.get(ref.source_id) ? getCalendarEvent(deps, ref) : null };
+};
+
+export const deleteCalendarEvent = async (
+  deps: CalendarDispatcherDeps, input: CalendarEventDeleteRequest,
+): Promise<CalendarEventDeleteResult> => {
+  const { ref } = boundLocalCalendar(deps, input);
+  const snapshot = getCalendarEvent(deps, ref);
+  if (!snapshot.deletable) throw new RpcError('forbidden', 'This event cannot be deleted here. Only single events on a writable local calendar are supported.', 403);
+  if (typeof input.expected_version !== 'string' || !input.expected_version) return invalid('The event version is required.');
+  if (snapshot.resource_version !== input.expected_version) {
+    throw new RpcError('resource_changed', 'This event changed since you reviewed it. Check its saved details before deleting it.', 409);
+  }
+  const dispatchInput = { ...ref, scope: 'this_instance' as const };
+  const resource = captureCalendarResource(deps, 'calendar-delete', dispatchInput);
+  await withResourceReview({
+    schema_version: 1, operation: 'calendar-delete', input_hash: resourceReviewHash(dispatchInput),
+    captured_at: (deps.now ?? Date.now)(), resources: [resource],
+  }, async () => {
+    const prepared = await prepareLocalCalendarDelete(deps, dispatchInput);
+    commitLocalTransaction(prepared.db, () => {
+      // Native-write permissions can change while the provider check awaits.
+      boundLocalCalendar(deps, input);
+      if (!getCalendarEvent(deps, ref).deletable) throw new RpcError('forbidden', 'Deletion is no longer available for this event.', 403);
+      prepared.apply();
+    });
+  });
+  return { ...ref, incarnation: input.expected_incarnation, deleted: true };
 };

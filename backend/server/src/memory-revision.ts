@@ -346,7 +346,9 @@ export interface RevokedClaimMatch {
 }
 
 /** D-198 §13 — does a new save restate a claim the owner REVOKED? Matched against
- *  revoked notes only, by their words, both ways round:
+ *  revoked notes only. D-336 slice B: first by the save's claim key, when it has one — a
+ *  revoked note with an equal key states the claim in any wording or language. Then by
+ *  their words, both ways round, which an equal key only adds to:
  *    - the save's words are all in a revoked note: the memory search, at its exact or
  *      relaxed rung (a loose rung only shares some words, so it never counts);
  *    - a revoked note's content words are all in the save: the same claim restated
@@ -359,9 +361,10 @@ export interface RevokedClaimMatch {
  *  measured. A miss behaves as before: the save is held for the owner's approval
  *  anyway, unless a standing rule lets it run. A wrong match costs one question. */
 export const matchRevokedClaim = async (
-  store: Pick<UserMemoryStore, 'getRow' | 'search'>,
+  store: Pick<UserMemoryStore, 'getRow' | 'search' | 'listClaim'>,
   redactions: Collection<MemoryRedactionRecord> | undefined,
   text: string,
+  claimKey?: string,
 ): Promise<RevokedClaimMatch | undefined> => {
   if (redactions === undefined) return undefined;
   const revoked = new Map(
@@ -375,6 +378,10 @@ export const matchRevokedClaim = async (
       ? undefined
       : { memory_id, summary: row.summary ?? row.body_preview ?? '', revoked_at: mark.redacted_at };
   };
+  if (claimKey !== undefined) {
+    const keyed = (await store.listClaim(claimKey)).find((row) => revoked.has(row.memory_id));
+    if (keyed !== undefined) return matchOf(keyed.memory_id);
+  }
   const searched = await store.search(text, 20);
   if (searched.match === 'exact' || searched.match === 'relaxed') {
     const hit = searched.hits.find((h) => revoked.has(h.memory_id));

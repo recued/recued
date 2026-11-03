@@ -37,6 +37,7 @@ import {
   composeVendorEntityScope,
   getVendorEntityByCrmAlias,
   vendorEntitiesFromComposition,
+  type ConnectionOperationProfile,
   type ConnectionVendorEntity,
   type CrmAlias,
   type EnrichmentScope,
@@ -131,6 +132,39 @@ export const liveCatalogVendors = (
     registry: thirdParty.length === 0 ? CONNECTION_VENDOR_ENTITIES : [...CONNECTION_VENDOR_ENTITIES, ...thirdParty],
     vendorForCatalog: (slug) => firstParty(slug) ?? byCatalog.get(slug),
   };
+};
+
+/** D-337 slice O — the vendor operations a vendor-neutral CRM write (`core.crm.<alias>.<verb>`)
+ *  can run on: for each catalog an enrolled `kind: 'api'` connection serves (its operation
+ *  profile, as the run binds it), the catalog's vendor (the live registry), that vendor's entity
+ *  for the alias, and `<entity>.<verb>`, as the run lowers it (`connection-agnostic.ts`). A
+ *  catalog whose vendor does not model the alias is left out: the run cannot write there. Deduped.
+ *  `undefined` when the stores are not there: not known. */
+export const vendorNeutralWriteTargets = (deps: {
+  readonly connectionStore: Pick<ConnectionStoreSqlite, 'list'> | undefined;
+  readonly profiles: { get(connection_name: string): ConnectionOperationProfile | null } | undefined;
+  readonly localManifestStore: Pick<LocalManifestStore, 'listManifests' | 'getEntitySchemas'> | undefined;
+}, crmAlias: string, verb: string): ReadonlyArray<{ catalog_slug: string; operation: string }> | undefined => {
+  if (deps.connectionStore === undefined || deps.profiles === undefined) return undefined;
+  const { registry, vendorForCatalog } = liveCatalogVendors(deps.localManifestStore);
+  const targets = new Map<string, { catalog_slug: string; operation: string }>();
+  for (const row of deps.connectionStore.list({ kind: 'api' })) {
+    const profile = deps.profiles.get(row.name);
+    if (profile === null) continue;
+    const catalogs = new Set([
+      ...(profile.catalog_slug !== undefined ? [profile.catalog_slug] : []),
+      ...Object.keys(profile.catalogs ?? {}),
+    ]);
+    for (const catalog_slug of catalogs) {
+      const vendor = vendorForCatalog(catalog_slug);
+      const entity = vendor === undefined ? undefined
+        : getVendorEntityByCrmAlias(vendor, crmAlias as CrmAlias, registry)?.entity;
+      if (entity === undefined) continue;
+      const operation = `${entity}.${verb}`;
+      targets.set(`${catalog_slug} ${operation}`, { catalog_slug, operation });
+    }
+  }
+  return [...targets.values()];
 };
 
 /** Derive the set of kernel-convention families (`crm` / `acct`) with a vendor

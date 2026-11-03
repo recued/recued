@@ -33,6 +33,33 @@ for (const width of [280, 1280]) {
   });
 }
 
+for (const width of [280, 1280]) {
+  test('D-336 slice N — a held save\'s approval leads to its card in Chat, from Approvals and the tray, at width ' + width, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`${HARNESS_URL}?attention=pending&ask_chat_plan=save#approvals`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const name = 'Change it in Chat: Send the customer follow-up?';
+    const href = '#chat/session/chat-attention-1/plan/plan-attention-1';
+    const card = page.locator('[data-recued-approvals-focus="ask-attention-1"]');
+    const link = card.getByRole('link', { name, exact: true });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute('href', href);
+    // The card stays read-only (D-270), and its answers stay there to press.
+    await expect(card.getByRole('button', { name: 'Approve: Send the customer follow-up?', exact: true })).toBeEnabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    // The tray's row has it too, and following it closes the tray and opens Chat.
+    await page.locator('[data-action="open-attention"]').click();
+    const row = page.locator('[data-recued-attention-gateway-ask="ask-attention-1"]');
+    const trayLink = row.getByRole('link', { name, exact: true });
+    await expect(trayLink).toBeVisible();
+    await expect(trayLink).toHaveAttribute('href', href);
+    await trayLink.click();
+    await expect(row).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => location.hash)).toBe(href);
+  });
+}
+
 test('Approvals focuses an exact decision card and preserves it through a queue repaint', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?attention=pending`);

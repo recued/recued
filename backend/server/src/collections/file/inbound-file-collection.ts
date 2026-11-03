@@ -12,6 +12,7 @@ import type { AuditLogStore } from '@recued/storage';
 import { RpcError, isFileCloudCapture, type FileCloudCapture } from '@recued/contracts';
 import type {
   FileLifecycleMutation,
+  FileRenameRequest,
   CollectionHealth,
   CollectionListQuery,
   CollectionRecord,
@@ -131,6 +132,7 @@ export type StoredFileIngestInput = Omit<InboundFileIngestInput, 'bytes' | 'src_
 export interface InboundFileCollection extends Collection {
   attachmentLifecycle?: FileAttachmentLifecycle;
   mutateLifecycle?(input: FileLifecycleMutation): FileLifecycleResult;
+  renameLifecycle?(input: FileRenameRequest): FileLifecycleResult;
   ingest(input: InboundFileIngestInput): Promise<DataFileRecord>;
   /** A receipt can wrap publication in its transaction; events fire after commit. */
   ingestStored(input: StoredFileIngestInput, transaction?: (publish: () => DataFileRecord) => DataFileRecord): DataFileRecord;
@@ -656,6 +658,26 @@ export const createInboundFileCollection = (
     ingest,
     ingestStored,
     attachmentLifecycle,
+    renameLifecycle(input) {
+      const filename = input.filename.normalize('NFC').trim();
+      if (!filename || filename === '.' || filename === '..' || /[\\/\x00-\x1f\x7f]/.test(input.filename)) {
+        throw new RpcError('bad_request', 'Enter a filename without slashes or control characters.', 400);
+      }
+      if (Buffer.byteLength(filename, 'utf8') > FILENAME_MAX_BYTES) {
+        throw new RpcError('bad_request', 'This filename is too long. Try a shorter name.', 400);
+      }
+      let changed: CollectionRecord | undefined;
+      const result = attachmentLifecycle.mutate(input.record_id, 'rename', input.revision, id => {
+        const previous = table.get(id);
+        if (previous?.hot_fields.filename === filename) return;
+        db.prepare(`UPDATE ${quoteSqliteIdent(table.tableName)} SET hot_fields=json_set(hot_fields,'$.filename',?),
+          modified_at=MAX(modified_at+1,?) WHERE record_id=?`).run(filename, Date.now(), id);
+        synchronizePreapprovalIdentity(db, 'file_source', `${slug}:${id}`, filePreapprovalMaterial(hydrate(table.get(id))!));
+        changed = previous ?? undefined;
+      }, filename);
+      if (changed) emitter.updated(result.record_id, changed.hot_fields, ['filename'], { record: table.get(result.record_id)!.hot_fields });
+      return result;
+    },
     mutateLifecycle(input) {
       const changed: CollectionRecord[] = [];
       let result: FileLifecycleResult;
@@ -712,6 +734,11 @@ export const createInboundFileCollection = (
     },
     list(query: CollectionListQuery) {
       return table.list({ ...query, filters: { ...query.filters, archived: query.filters?.archived ?? 0 } }).map((record) => hydrate(record)!);
+    },
+    countRecords() {
+      const row = db.prepare(`SELECT COUNT(*) AS n FROM ${quoteSqliteIdent(table.tableName)}
+        WHERE json_extract(hot_fields, '$.archived') = 0`).get() as { n: number };
+      return row.n;
     },
     search(query: CollectionSearchQuery): CollectionSearchMatch[] {
       return table.search(query);

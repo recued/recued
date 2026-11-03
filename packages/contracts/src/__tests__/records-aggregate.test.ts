@@ -14,6 +14,9 @@ import {
   evaluateRecordsAggregate,
   evaluateRecordsGroupedAggregate,
   validateRecordsAggregateSelect,
+  recordsAggregateSelectIssues,
+  recordsBatchAllowIssues,
+  validateRecordsBatchAllow,
   validateRecordsGroupBy,
   type RecordsFieldKind,
 } from '../index.js';
@@ -28,6 +31,26 @@ const KINDS: Record<string, RecordsFieldKind> = {
   billable: 'boolean',
   engagement_ref: 'ref',
 };
+
+describe('structured Records declaration findings', () => {
+  it('retains validator messages and attaches literal output/key paths and batch indices', () => {
+    const select = { 'bad.name': { fn: 'typo' }, total: { fn: 'sum', field: 'task', extra: true } };
+    const findings = recordsAggregateSelectIssues(select, KINDS);
+    expect(findings.map(row => row.message)).toEqual(validateRecordsAggregateSelect(select, KINDS));
+    expect(findings.map(row => ({path: row.path, target: row.target}))).toEqual([
+      {path: ['bad.name'], target: 'key'}, {path: ['bad.name', 'fn'], target: undefined},
+      {path: ['total', 'extra'], target: 'key'}, {path: ['total', 'field'], target: undefined},
+    ]);
+    const allow = [{entity: 'task', action: 'create'}, {entity: 'task', action: 'create'}, {entity: 'missing', action: 'get'}];
+    expect(recordsBatchAllowIssues(allow, ['task']).map(row => row.message)).toEqual(validateRecordsBatchAllow(allow, ['task']));
+    expect(recordsBatchAllowIssues(allow, ['task']).map(row => row.path)).toEqual([[1, 'action'], [2, 'entity'], [2, 'action']]);
+  });
+  it('does not accept inherited prototype properties as declared fields or ordering/grouping keys', () => {
+    expect(validateRecordsAggregateSelect({x: {fn: 'sum', field: 'constructor'}}, KINDS)).toEqual(["select.x: unknown field 'constructor'"]);
+    expect(validateRecordsAggregateSelect({x: {fn: 'latest', field: 'task', by: '__proto__'}}, KINDS)).toEqual(["select.x: unknown ordering field '__proto__'"]);
+    expect(validateRecordsGroupBy('constructor', KINDS)).toEqual(["group_by: unknown field 'constructor'"]);
+  });
+});
 
 const run = (rows: Record<string, unknown>[], select: Parameters<typeof evaluateRecordsAggregate>[1]) =>
   evaluateRecordsAggregate(rows, select, KINDS);

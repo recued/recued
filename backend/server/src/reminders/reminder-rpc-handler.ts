@@ -13,7 +13,7 @@ import type { WsClient } from '../ws-server.js';
 import { ReminderInputError, type ReminderDispatchers } from './reminder-service.js';
 import { ReminderCreationConflictError, ReminderLimitError } from '../storage/reminder-store.js';
 
-type ReminderMethods = 'reminder.create' | 'reminder.list' | 'reminder.update' | 'reminder.cancel';
+type ReminderMethods = 'reminder.create' | 'reminder.list' | 'reminder.get' | 'reminder.update' | 'reminder.cancel';
 
 /** The owner's webclient only, as the Data screens' other rpc are: never a
  *  Bridge, the CLI or MCP. */
@@ -67,7 +67,7 @@ export const makeReminderHandlers = (
   if (!deps) return undefined;
   const { dispatchers } = deps;
   return {
-    methods: ['reminder.create', 'reminder.list', 'reminder.update', 'reminder.cancel'],
+    methods: ['reminder.create', 'reminder.list', 'reminder.get', 'reminder.update', 'reminder.cancel'],
     handlers: {
       'reminder.create': async (args, client) => {
         requireClient(client);
@@ -88,6 +88,12 @@ export const makeReminderHandlers = (
           ...(typeof input.limit === 'number' && Number.isFinite(input.limit) ? { limit: input.limit } : {}),
           ...(input.page !== undefined ? { page: listPage(input.page) } : {}),
         });
+      },
+      'reminder.get': async (args, client) => {
+        requireClient(client);
+        const reminder_id = requireId(args, 'reminder.get');
+        if (reminder_id.length > 128) throw new RpcError('bad_request', 'The reminder ID is too long.');
+        return dispatchers.reminderGet({ reminder_id });
       },
       'reminder.update': async (args, client) => {
         requireClient(client);

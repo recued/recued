@@ -111,6 +111,9 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // seller grants a customer tier in per §3 (fail-closed, opt-in write + read).
   'core.memory.write',
   'core.memory.read',
+  // D-336 slice F — the Tier-1 `contact.write`: an AI adding or changing a contact, whose
+  // values then stand at the owner's rank. Owner-on / door-off, as the memory write is.
+  'core.contact.write',
   // The Tier-1 `work.create` writes — OWNER-on / door-off, the same posture as
   // `core.memory.write` beside it and `core.work-entity.read` below.
   //

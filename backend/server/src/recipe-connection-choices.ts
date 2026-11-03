@@ -173,6 +173,10 @@ export const recipeConnectionSlots = (
 export const recipeConnectionChoices = (
   deps: RecipeConnectionChoicesDeps,
 ): ((recipe: RecipeDefinition) => Tier2ConnectionSlot[]) => {
+  // Every candidate list is restricted to these enrolled names, including
+  // vendor-neutral families. With fewer than two, no recipe can offer a choice;
+  // avoid scanning the pack corpus and settling every recipe's connections.
+  if (deps.enrolled.size < 2) return () => [];
   const read = slotsReader(deps, 2);
   return (recipe) => read(recipe).map(({ slot, connections }) => ({ slot, connections }));
 };

@@ -1,4 +1,4 @@
-import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, type Asset, type AssetClassPreset, type AssetRule, type Commitment, type ContactRecord, type Episode, type EpisodeInput, type FileAttachmentSelection, type Link, type Occasion, type ProactiveProposal, type ProactiveSuppression, type ProactiveToday, type SituationCluster, type SituationDeliveryStatus, type YoursAssetSummary, type YoursCommand, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
+import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, type Asset, type AssetClassPreset, type AssetRule, type Commitment, type ContactRecord, type Episode, type EpisodeInput, type FileAttachmentSelection, type Link, type Occasion, type ProactiveProposal, type ProactiveSuppression, type ProactiveToday, type SituationAgendaStatus, type SituationCluster, type SituationDeliveryStatus, type YoursAssetSummary, type YoursCommand, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
 import type { ChatQueuedTurn } from '@recued/contracts';
 
 /** UI fixture only. The independent server drive uses the real SQLite stores. */
@@ -27,6 +27,11 @@ export const createYoursFixture = () => {
   let handoffStale = new URLSearchParams(location.search).has('yours_handoff_stale') ? 1 : 0;
   const chatCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
   (globalThis as { __assetChatCalls?: typeof chatCalls }).__assetChatCalls = chatCalls;
+  // D-336 (spec §45) — under `yours_claims=link`, the calls "Link to this thing" makes, and the
+  // notes it changed, so the next read of the Relationships shows them linked.
+  const memoryLinkCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+  (globalThis as { __memoryLinkCalls?: typeof memoryLinkCalls }).__memoryLinkCalls = memoryLinkCalls;
+  const linkedNotes = new Map<string, { memory_id: string; origin_actor: 'user_self'; claim: unknown }>();
   // UI-only withdrawal state; the independent queue harness proves durable admission.
   const assetQueue = new URLSearchParams(location.search).has('yours_asset_queue');
   let queuedAssetQuestion: ChatQueuedTurn | undefined;
@@ -242,7 +247,8 @@ export const createYoursFixture = () => {
   }
   const placementFor = (ref: { collection: string; id: string }): Omit<YoursSnapshot['sphere_placements'][number], 'ref'> => spherePlacements.get(JSON.stringify([ref.collection, ref.id])) ?? { reason: 'unsorted', pinned: false };
   const sourceSpheres = new Map<string, 'personal' | 'professional'>([['mail:personal', 'personal'], ['calendar:work', 'professional']]);
-  let delivery: SituationDeliveryStatus = { settings: { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true }, last_run: null, last_sent: null };
+  let delivery: SituationDeliveryStatus = { settings: { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true, look_ahead_days: 7 }, last_run: null, last_sent: null };
+  let agenda: SituationAgendaStatus = { settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 }, last_run: null, last_sent: null, pending: 0, uncertain: 0 };
   let householdTelegram: NonNullable<YoursSnapshot['household']>['telegram'] = null;
   let householdHA: import('@recued/contracts').HouseholdHomeAssistantSelection | null = null;
   const familyGroup = () => ({ connection_name: 'Family', connection_enrolled_at: 200, recipient: '-100123', selected_at: time });
@@ -402,6 +408,9 @@ export const createYoursFixture = () => {
     if (input.action === 'household.home_assistant') householdHA = input.connection_name === null ? null : {
       connection_name: input.connection_name, connection_enrolled_at: input.connection_enrolled_at!, entity_id: input.entity_id!, base_url: 'http://ha.local:8123', selected_at: time };
     if (input.action === 'delivery.update') delivery = { ...delivery, settings: { ...delivery.settings, ...input.settings } };
+    if (input.action === 'agenda.update') agenda = { ...agenda, settings: { ...agenda.settings, ...input.settings } };
+    if (input.action === 'agenda.send_now') { const row = { at: time, mode: 'agenda_manual', state: 'sent', text: '06:30 Jogging\n09:00 Morning briefing · prep notes ready', delivered_to: ['in_app'] };
+      agenda = { ...agenda, last_run: row, last_sent: row }; }
     if (input.action === 'occasion.save') { const id = input.occasion.id ?? `occasion-${++number}`; const old = occasions.get(id);
       occasions.set(id, { ...input.occasion, id, created_at: old?.created_at ?? time, updated_at: time, rules: input.occasion.rules.length || old ? input.occasion.rules : [{ ...rule, id: 'date', title: input.occasion.title,
         when: { kind: 'expiry', field: 'next_on' }, consequence: 'routine', expiry_policy: 'strict_expire', reaction: { notify: true, occurrence: 'notice', emit: false }, schedule: { before: [{ amount: 1, unit: 'weeks' }], on_day: true } }] }); }
@@ -528,6 +537,7 @@ export const createYoursFixture = () => {
     }
     if (method === 'yours.today') return { result: today(raw as { now: number; before: number }) };
     if (method === 'yours.delivery') return { result: delivery };
+    if (method === 'yours.agenda') return { result: agenda };
     if (method === 'yours.learning') return { result: { last_time: lastTime, classes: recallRates,
       asked: lastTime === 'unasked' && new URLSearchParams(location.search).has('yours_last_time_asked') } };
     if (method === 'yours.context') {
@@ -571,6 +581,47 @@ export const createYoursFixture = () => {
     if (method === 'contact.list') return { result: { contacts: [ana], total: 1 } };
     if (demo && method === 'contact.get') return { result: { contact: ana } };
     if (method === 'link.forRecord') return { result: { links: fileLinks.filter(row => row.from_id === (raw as { id: string }).id) } };
+    // D-336 slice D — a thing's Relationships section: under `yours_claims`, two notes
+    // whose claims name it, one by its record and one by its name; otherwise none, the
+    // plain state (an unanswered read would hold the page at loading).
+    // D-336 (spec §45) — two notes that name the passport only in words: the owner's own, and an
+    // AI's. Linking one writes it here; the next read lists it by its record.
+    if (new URLSearchParams(location.search).get('yours_claims') === 'link') {
+      const NOTES: Record<string, { memory_id: string; origin_actor: 'user_self' | 'contracted_user'; kind: string; summary: string; body: string;
+        claim: { subject: unknown; relation: string; object: unknown } }> = {
+        umem_lent: { memory_id: 'umem_lent', origin_actor: 'user_self', kind: 'note', summary: 'Ana’s passport is lent to Dana.', body: '',
+          claim: { subject: { text: 'Ana’s passport' }, relation: 'lent to', object: { text: 'Dana' } } },
+        umem_gift: { memory_id: 'umem_gift', origin_actor: 'contracted_user', kind: 'chat_memory', summary: 'Ana’s passport was a gift from Rosa.', body: 'From chat.',
+          claim: { subject: { text: 'Ana’s passport' }, relation: 'gift from', object: { text: 'Rosa' } } },
+        // Its name where "friend of" takes a person: not this thing, so nothing to link.
+        umem_friend: { memory_id: 'umem_friend', origin_actor: 'user_self', kind: 'note', summary: 'Ana’s passport, a friend of Rosa.', body: '',
+          claim: { subject: { text: 'Ana’s passport' }, relation: 'friend of', object: { text: 'Rosa' } } },
+      };
+      if (method === 'memory.claims') {
+        return { result: { claims: Object.values(NOTES).map((note) => {
+          const linked = linkedNotes.get(note.memory_id);
+          return linked !== undefined
+            ? { memory_id: linked.memory_id, origin_actor: linked.origin_actor, ts: time, by: 'record', claim: linked.claim }
+            : { memory_id: note.memory_id, origin_actor: note.origin_actor, ts: time, by: 'name', claim: note.claim };
+        }) } };
+      }
+      if (method === 'memory.get') return { result: { ...NOTES[(raw as { memory_id: string }).memory_id]!, ts: time } };
+      if (method === 'memory.update' || method === 'memory.replace') {
+        const args = raw as { memory_id: string; claim: unknown };
+        memoryLinkCalls.push({ method, args: args as unknown as Record<string, unknown> });
+        const next = method === 'memory.replace' ? `${args.memory_id}_mine` : args.memory_id;
+        linkedNotes.set(args.memory_id, { memory_id: next, origin_actor: 'user_self', claim: args.claim });
+        return { result: { memory_id: next, provenance_edges_written: 0 } };
+      }
+    }
+    if (method === 'memory.claims') {
+      return { result: { claims: new URLSearchParams(location.search).has('yours_claims') ? [
+        { memory_id: 'umem_rel_1', origin_actor: 'contracted_user', ts: time - 1_000, by: 'record',
+          claim: { subject: { text: 'Mia' }, relation: 'owns', object: { asset_id: (raw as { asset: string }).asset, name: 'the blue bicycle' } } },
+        { memory_id: 'umem_rel_2', origin_actor: 'user_self', ts: time - 2_000, by: 'name',
+          claim: { subject: { text: 'the blue bicycle' }, relation: 'kept at', object: { text: 'the boat club' } } },
+      ] : [] } };
+    }
     if (method === 'data.file.attachments.list') {
       const args = raw as { query?: string; cursor?: string }; const query = args.query?.trim().toLowerCase() ?? '';
       const matching = retainedFiles.filter(file => file.filename.toLowerCase().includes(query));

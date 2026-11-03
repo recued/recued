@@ -15,14 +15,15 @@
  *  chat orchestrator — same read, separate dispatcher, no shared rpc envelope. */
 
 import type Database from 'better-sqlite3';
-import { RpcError, type HandlerSlice, type ServerRpcRegistry, type FileContentReadRequest, type FileContentReadResponse } from '@recued/contracts';
+import { RpcError, isFileCloudCapture, type HandlerSlice, type ServerRpcRegistry, type FileContentReadRequest, type FileContentReadResponse } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
 import { handleFileRead, type FileReadDeps } from './collections/file/file-read-handler.js';
 import { createCloudFileAttachments, type CloudFileAttachmentDeps } from './cloud-file-attachments.js';
 import type { InboundFileCollection } from './collections/file/inbound-file-collection.js';
 import { parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
 import { createFolderFileAttachments, watchedFileSelection } from './folder-file-attachments.js';
-import { previewFile } from './file-preview.js';
+import { previewFile, type PreviewSelection } from './file-preview.js';
+import { createFilePreviewConversions, type FilePreviewConversionDeps } from './file-preview-conversion.js';
 
 export interface FileReadRpcDeps {
   /** Lazy resolver for the shared file-read deps (collection registry + blob
@@ -33,6 +34,7 @@ export interface FileReadRpcDeps {
   /** D-106 follow-up — where a watched folder's file is brought into Chat as a
    *  copy; its import receipts live in this database. */
   folderAttachments?: { db: Database.Database };
+  conversions?: FilePreviewConversionDeps;
   changed?: (session: string, file: string, deleted: boolean) => void;
   deleted?: (file: string) => void;
 }
@@ -69,7 +71,7 @@ export const handleDataFileRead = async (
   return handleFileRead(fileReadDeps, args);
 };
 
-type FileReadRpcMethods = 'data.file.attachments.preview' | 'data.file.attachments.sources' | 'data.file.attachments.remote.list' | 'data.file.attachments.remote.get' | 'data.file.attachments.import' | 'data.file.read' | 'data.file.usage' | 'data.file.mutate' | 'data.file.attachments.list' | 'data.file.attachments.get' | 'data.file.attachments.conversation';
+type FileReadRpcMethods = 'data.file.attachments.preview' | 'data.file.attachments.convert' | 'data.file.attachments.sources' | 'data.file.attachments.remote.list' | 'data.file.attachments.remote.get' | 'data.file.attachments.import' | 'data.file.read' | 'data.file.usage' | 'data.file.rename' | 'data.file.mutate' | 'data.file.attachments.list' | 'data.file.attachments.get' | 'data.file.attachments.conversation';
 
 export const makeFileReadRpcHandlers = (
   deps: FileReadRpcDeps | undefined,
@@ -102,19 +104,47 @@ export const makeFileReadRpcHandlers = (
     if (typeof id !== 'string' || !/^file:[0-9a-f]{32}$/.test(id)) throw new RpcError('bad_request', 'Choose a retained file.', 400);
     return id;
   };
+  const select = (id: string): PreviewSelection => {
+    if (id.startsWith('file:remote:')) {
+      const selected = cloudFiles().get({ record_id: id });
+      const source = cloudFiles().sources().sources.find(source => source.source_id === selected.source_id);
+      return { ...selected, modified_at: selected.mtime,
+        ...(source ? { origin: { label: source.label, ...(selected.path ? { path: selected.path } : {}) } } : {}) };
+    }
+    if (parseWatchedFileRecordId(id) !== null) {
+      const selected = watchedFileSelection(deps.getFileReadDeps()!.registry, id);
+      return { ...selected, modified_at: selected.mtime, origin: { label: 'Watched folder', path: selected.path } };
+    }
+    const files = retainedFiles();
+    const selected = files.attachmentLifecycle!.selection(requireFileId(id));
+    const record = files.attachmentLifecycle!.getVersion(id) ?? files.get(id);
+    const capture = record?.hot_fields.cloud_capture;
+    const origin = record?.hot_fields.origin;
+    const labels: Record<string, string> = { webclient_upload: 'Uploaded to Recued', watched_folder: 'Copied from a watched folder',
+      mail_attachment: 'Email attachment', connection_download: 'Downloaded from a connection', tool_output: 'Tool output',
+      messenger_media: 'Messenger attachment', reception_drop: 'Received through Reception' };
+    return { ...selected, ...(record ? { created_at: record.received_at, modified_at: record.modified_at,
+      content_hash: record.hot_fields.content_hash } : {}),
+      ...(isFileCloudCapture(capture) ? { origin: { label: capture.source_label, source_filename: capture.filename,
+        ...(capture.path ? { path: capture.path } : {}), captured_at: capture.captured_at, saved_copy: true } }
+        : typeof origin === 'string' && Object.hasOwn(labels, origin) ? { origin: { label: labels[origin]! } } : {}) };
+  };
+  const conversions = deps.conversions ? createFilePreviewConversions(deps.conversions, select) : undefined;
   return {
-    methods: ['data.file.attachments.preview', 'data.file.attachments.sources', 'data.file.attachments.remote.list', 'data.file.attachments.remote.get', 'data.file.attachments.import', 'data.file.read', 'data.file.usage', 'data.file.mutate', 'data.file.attachments.list', 'data.file.attachments.get', 'data.file.attachments.conversation'],
+    methods: ['data.file.attachments.preview', 'data.file.attachments.convert', 'data.file.attachments.sources', 'data.file.attachments.remote.list', 'data.file.attachments.remote.get', 'data.file.attachments.import', 'data.file.read', 'data.file.usage', 'data.file.rename', 'data.file.mutate', 'data.file.attachments.list', 'data.file.attachments.get', 'data.file.attachments.conversation'],
     handlers: {
       'data.file.attachments.preview': async (args, client) => {
         requireRegisteredClient(client);
         const read = deps.getFileReadDeps();
         if (!read) throw new RpcError('not_configured', 'File previews are unavailable.', 503);
-        return previewFile(read, args, id => id.startsWith('file:remote:')
-          ? cloudFiles().get({ record_id: id })
-          : parseWatchedFileRecordId(id) !== null
-            // D-106 follow-up — a file in a folder Recued watches.
-            ? watchedFileSelection(read.registry, id)
-            : retainedFiles().attachmentLifecycle!.selection(requireFileId(id)));
+        const result = await previewFile(read, args, select);
+        const conversion = conversions?.availability(select(args.record_id));
+        return { ...result, ...(conversion ? { conversion } : {}) };
+      },
+      'data.file.attachments.convert': async (args, client) => {
+        requireRegisteredClient(client);
+        if (!conversions) throw new RpcError('not_configured', 'Preview conversion is unavailable on this server.', 503);
+        return conversions.call(args, client);
       },
       'data.file.attachments.sources': async (_args, client) => {
         requireRegisteredClient(client); return cloudFiles().sources();
@@ -145,6 +175,23 @@ export const makeFileReadRpcHandlers = (
       'data.file.usage': async (args, client) => {
         requireRegisteredClient(client);
         return retainedFiles().attachmentLifecycle!.preview(requireFileId(args.record_id));
+      },
+      'data.file.rename': async (args, client) => {
+        requireRegisteredClient(client);
+        requireFileId(args?.record_id);
+        if (typeof args.filename !== 'string' || !args.revision || typeof args.revision !== 'string') {
+          throw new RpcError('bad_request', 'Enter a filename and review the current saved file.', 400);
+        }
+        const files = retainedFiles();
+        if (!files.renameLifecycle) throw new RpcError('not_configured', 'Saved file rename is unavailable.', 503);
+        const { replayed, ...result } = files.renameLifecycle(args);
+        // A retry acknowledges the current state, not an obsolete cached name.
+        if (replayed) return files.attachmentLifecycle!.preview(args.record_id);
+        await deps.getFileReadDeps()?.auditLog?.logActivity({ activity_id: '', timestamp: Date.now(),
+          action: 'collection_record_updated', target: result.record_id,
+          detail: JSON.stringify({ operation: 'rename' }) })
+          .catch(() => { console.error('File rename audit write failed after commit.'); });
+        return result;
       },
       'data.file.mutate': async (args, client) => {
         requireRegisteredClient(client);

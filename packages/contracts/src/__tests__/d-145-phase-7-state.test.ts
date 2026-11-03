@@ -76,6 +76,19 @@ describe('D-145 PA7 — openCreateComposeTransition', () => {
     expect(reopened.dialog?.values.body).toBe('');
     expect(reopened.dialog?.values.sender_source).toBe('hubspot.abc.mail_message');
   });
+
+  it('prefills editable recipients without retaining a previous conversation or the caller array', () => {
+    const to = ['selected@example.test'];
+    const previous = setComposeValuesTransition(openReplyComposeTransition(initialMailComposeState(), replyContext), {
+      cc: ['copy@example.test'], bcc: ['blind@example.test'], attachments: ['old-file'], body: 'Old reply',
+    });
+    const created = openCreateComposeTransition(previous, { default_sender_source_id: 'work', to });
+    to.push('later@example.test');
+    expect(created.dialog?.values).toEqual({ ...EMPTY_MAIL_COMPOSE_VALUES, to: ['selected@example.test'], sender_source: 'work' });
+    const edited = setComposeValuesTransition(created, { to: ['edited@example.test'] });
+    expect(edited.dialog?.values.to).toEqual(['edited@example.test']);
+    expect(created.dialog?.values.to).toEqual(['selected@example.test']);
+  });
 });
 
 describe('D-145 PA7 — openReplyComposeTransition', () => {

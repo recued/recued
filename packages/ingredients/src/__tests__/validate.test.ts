@@ -784,6 +784,28 @@ describe('fallback', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
+// D-336 (spec §43) — an authority path names an input the ingredient takes
+// ────────────────────────────────────────────────────────────────
+
+describe('authority_args name inputs', () => {
+  it('accepts paths rooted at an input, and the wire keys', () => {
+    for (const path of ['deal_id', 'url', 'method', 'connection']) {
+      const result = validateIngredient({ ...httpSample, authority_args: [path] });
+      expect(codesOf(result), path).not.toContain('AUTHORITY_ARGS_NOT_AN_INPUT');
+    }
+    const nested = validateIngredient({ ...httpSample, input: { ...httpSample.input, body: null }, authority_args: ['body.to'] });
+    expect(codesOf(nested)).not.toContain('AUTHORITY_ARGS_NOT_AN_INPUT');
+  });
+
+  it('refuses a path that names no input: it would pin nothing', () => {
+    const result = validateIngredient({ ...httpSample, authority_args: ['deal_id', 'event_source_id'] });
+    const issue = result.issues.find((i) => i.code === 'AUTHORITY_ARGS_NOT_AN_INPUT');
+    expect(issue?.severity).toBe('error');
+    expect(issue?.message).toContain("'event_source_id'");
+    expect(result.valid).toBe(false);
+  });
+});
+
 // D-177 P1b hash_exclude_args
 // ────────────────────────────────────────────────────────────────
 

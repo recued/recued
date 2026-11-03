@@ -20,6 +20,9 @@ import {
   isActor,
   MEMORY_LIST_DEFAULT_PAGE_SIZE,
   MEMORY_LIST_MAX_PAGE_SIZE,
+  MEMORY_RELATION_INDEX,
+  memoryClaimEndKey,
+  normalizeClaimText,
   OWNER_CONTRACT_ID,
   provenanceAttributionFromSource,
   renderProvenanceAttribution,
@@ -43,6 +46,11 @@ import {
   type MemoryRevokeResult,
   type MemorySavesRequest,
   type MemorySavesResult,
+  type MemoryClaim,
+  type MemoryClaimsEntry,
+  type MemoryClaimCountsResult,
+  type MemoryClaimsRequest,
+  type MemoryClaimsResult,
   type MemoryUnrevokeRequest,
   type MemoryRestoreResult,
   type MemoryUpdateRequest,
@@ -53,8 +61,18 @@ import type { EventBus } from './events/bus.js';
 import { emitMemoryUser } from './events/emit-sites.js';
 import { countAgentSaves, type ChatSavesReader } from './memory-save-count.js';
 import {
+  claimContactEmails,
+  claimKeyOfCall,
+  conflictSummary,
+  findClaimConflicts,
+  importedClaim,
+  ownerClaim,
+  type ClaimRecordLookups,
+} from './memory-claim.js';
+import {
   checkOwnerReplace,
   checkOwnerRevoke,
+  forgottenIn,
   lineageBackFrom,
   liveReplacementOf,
   removedIds,
@@ -65,6 +83,7 @@ import {
 } from './memory-revision.js';
 import {
   USER_MEMORY_ID_PREFIX,
+  claimEndsLikeIn,
   type UserMemoryCreateInput,
   type UserMemoryImportEntry,
   type UserMemoryRow,
@@ -119,6 +138,11 @@ export interface MemoryRpcDeps {
   /** D-198 §13 — the saves each chat records, for `memory.saves` to find a deleted note's
    *  words. Absent → a deleted note is not counted (the count is a lower bound). */
   readChatSaves?: ChatSavesReader;
+  /** D-336 — this server's contacts and things, as the owner reads them: an imported
+   *  claim's linked ends keep them (§3.8), and the Delete count looks a deleted save's
+   *  linked ends up in them to key its claim (slice B). Absent → every linked end comes in
+   *  as its name, and a save naming one is matched by its words only. */
+  claimRecords?: ClaimRecordLookups;
 }
 
 /** Registered-client boundary. The owner-trusted read runs WITHOUT a
@@ -281,6 +305,7 @@ const userRowToEntry = (r: UserMemoryRow): MemoryListEntry => {
   if (r.reason_code !== undefined) entry.reason_code = r.reason_code;
   if (r.replaces !== undefined) entry.replaces = r.replaces;
   if (r.event_at !== undefined) entry.event_at = r.event_at;
+  if (r.claim !== undefined) entry.claim = r.claim;
   if (r.provenance_entity_ids !== undefined && r.provenance_entity_ids.length > 0) {
     entry.links = r.provenance_entity_ids.map((entity_id) => ({
       entity_id,
@@ -331,6 +356,27 @@ const revisionMarks = async (
     memory_id,
   );
   return next !== undefined ? { ...revoked, replaced_by: next.memory_id } : revoked;
+};
+
+/** D-336 slice G (§3.9) — the notes a note contradicts, for the Memory view's mark ("Contradicts
+ *  …"). Only a current note is marked (no mark of the overlay, not replaced), and only against
+ *  current notes, so the mark goes once either is replaced or removed. Another note on the
+ *  same thing is never marked here: it would mark every pair of parents. */
+const MEMORY_CONTRADICTIONS_SHOWN = 3;
+const contradictionMark = async (
+  deps: MemoryRpcDeps,
+  memory_id: string,
+  claim: MemoryClaim | undefined,
+  redactions: ReadonlyMap<string, MemoryRedactionRecord>,
+  replaced: boolean,
+): Promise<Pick<MemoryListEntry, 'contradicts'>> => {
+  const store = deps.userMemoryStore;
+  if (store === undefined || claim === undefined || replaced || redactions.has(memory_id)) return {};
+  const { contradicts } = await findClaimConflicts(store, new Set(redactions.keys()), claim, new Set([memory_id]));
+  return contradicts.length === 0 ? {} : {
+    contradicts: contradicts.slice(0, MEMORY_CONTRADICTIONS_SHOWN)
+      .map((row) => ({ memory_id: row.memory_id, summary: conflictSummary(row) })),
+  };
 };
 
 /** Overlay a redaction (§5): the row still displays (transparency), but with its
@@ -471,10 +517,14 @@ export const handleMemoryList = async (
   // Redaction overlay (§5) — applied to the page only; `redactEntry` preserves
   // `memory_id` + effective time, so the cursor is unaffected.
   const redactions = await fetchRedactions(deps);
-  const entries = await Promise.all(page.map(async (e) => ({
-    ...(redactions.has(e.memory_id) && redactions.get(e.memory_id)?.revoked !== true ? redactEntry(e) : e),
-    ...(await revisionMarks(deps, e.memory_id, redactions)),
-  })));
+  const entries = await Promise.all(page.map(async (e) => {
+    const marks = await revisionMarks(deps, e.memory_id, redactions);
+    return {
+      ...(redactions.has(e.memory_id) && redactions.get(e.memory_id)?.revoked !== true ? redactEntry(e) : e),
+      ...marks,
+      ...(await contradictionMark(deps, e.memory_id, e.claim, redactions, marks.replaced_by !== undefined)),
+    };
+  }));
 
   const response: MemoryListResponse = { entries };
   if (collected.length > limit && page.length > 0) {
@@ -573,6 +623,7 @@ export const handleMemoryGet = async (
     if (row.reason_code !== undefined) res.reason_code = row.reason_code;
     if (row.event_at !== undefined) res.event_at = row.event_at;
     if (row.replaces !== undefined) res.replaces = row.replaces;
+    if (row.claim !== undefined) res.claim = row.claim;
   } else {
     const audit = await deps.auditLog.get(memory_id);
     if (audit === null) throw new RpcError('not_found', 'memory entry not found', 404);
@@ -593,8 +644,33 @@ export const handleMemoryGet = async (
     // Audit rows carry no user body — only the summary (§5).
   }
 
-  const marks = await revisionMarks(deps, memory_id, await fetchRedactions(deps));
-  return { ...(isRedacted ? redactGetResponse(res) : res), ...marks };
+  const redactions = await fetchRedactions(deps);
+  const marks = await revisionMarks(deps, memory_id, redactions);
+  return {
+    ...(isRedacted ? redactGetResponse(res) : res),
+    ...marks,
+    ...(await contradictionMark(deps, memory_id, res.claim, redactions, marks.replaced_by !== undefined)),
+  };
+};
+
+/** D-336 — a note's links with the contacts its relationship links: the owner's forms link
+ *  the note to them as an agent's save and a card's change do (`claimContactEmails`). */
+const withClaimLinks = (
+  deps: MemoryRpcDeps,
+  ids: readonly string[],
+  claim: MemoryClaim | null | undefined,
+): string[] => [...new Set([
+  ...ids,
+  ...(claim === undefined || claim === null ? [] : claimContactEmails(claim, deps.claimRecords ?? {})),
+])];
+
+/** D-336 slice E — a claim from the owner's own form, checked (`ownerClaim`), or
+ *  `undefined` when none was sent. A refusal is the owner's words, for the form. */
+const ownerClaimArg = (deps: MemoryRpcDeps, raw: unknown): MemoryClaim | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  const checked = ownerClaim(raw, deps.claimRecords ?? {});
+  if (!checked.ok) throw new RpcError('bad_request', checked.message, 400);
+  return checked.value;
 };
 
 /** `memory.create` — author a NEW `user_self` entry. The origin is stamped
@@ -619,7 +695,10 @@ export const handleMemoryCreate = async (
   const reason_code = coerceOptionalString(args.reason_code);
   if (reason_code !== undefined) input.reason_code = reason_code;
   if (typeof args.event_at === 'number') input.event_at = args.event_at;
-  const ids = sanitizeIds(args.provenance_entity_ids);
+  const claim = ownerClaimArg(deps, args.claim);
+  if (claim !== undefined) input.claim = claim;
+  // D-336 — a contact the relationship links links the note to them, as an agent's save does.
+  const ids = withClaimLinks(deps, sanitizeIds(args.provenance_entity_ids), claim);
   if (ids.length > 0) input.provenance_entity_ids = ids;
 
   const row = await deps.userMemoryStore.create(input);
@@ -661,6 +740,8 @@ export const handleMemoryReplace = async (
   if (summary !== undefined) input.summary = summary;
   const body = coerceBody(args.body);
   if (body !== undefined) input.body = body;
+  const claim = ownerClaimArg(deps, args.claim);
+  if (claim !== undefined) input.claim = claim;
 
   const row = await withRevisionLock(store, async () => {
     // §13 — a deleted note is under the overlay like a forgotten one, but nothing
@@ -677,12 +758,11 @@ export const handleMemoryReplace = async (
     }
     const replaced = checked.row;
     const event_at = typeof args.event_at === 'number' ? args.event_at : replaced.event_at;
+    const links = withClaimLinks(deps, replaced.provenance_entity_ids ?? [], claim);
     return store.writeAuthored({
       ...input,
       ...(event_at !== undefined ? { event_at } : {}),
-      ...(replaced.provenance_entity_ids !== undefined && replaced.provenance_entity_ids.length > 0
-        ? { provenance_entity_ids: replaced.provenance_entity_ids }
-        : {}),
+      ...(links.length > 0 ? { provenance_entity_ids: links } : {}),
       origin_actor: 'user_self',
       replaces: memory_id,
     });
@@ -738,6 +818,18 @@ export const handleMemoryUpdate = async (
   // A present `body` REPLACES it (empty clears); an absent `body` leaves it.
   if (args.body !== undefined) patch.body = coerceBody(args.body) ?? '';
   if (typeof args.event_at === 'number') patch.event_at = args.event_at;
+  // D-336 slice E — `null` drops the claim, a claim replaces it, absent leaves it.
+  if (args.claim === null) patch.claim = null;
+  else {
+    const claim = ownerClaimArg(deps, args.claim);
+    if (claim !== undefined) {
+      patch.claim = claim;
+      // The contacts it links join the note's links; an unlinked one keeps its link, as
+      // a link once made is never taken back by an edit.
+      const links = withClaimLinks(deps, existing.provenance_entity_ids ?? [], claim);
+      if (links.length !== (existing.provenance_entity_ids?.length ?? 0)) patch.provenance_entity_ids = links;
+    }
+  }
 
   const row = await deps.userMemoryStore.update(memory_id, patch);
   if (row === null) throw new RpcError('not_found', 'memory entry not found', 404);
@@ -936,9 +1028,123 @@ export const handleMemorySaves = async (
     store,
     redactions: deps.redactionStore,
     ...(deps.readChatSaves !== undefined ? { readChatSaves: deps.readChatSaves } : {}),
+    claimKeyOf: (claim) => claimKeyOfCall(claim, deps.claimRecords),
     note: row,
   });
   return { memory_id, ...count };
+};
+
+/** The most notes a `memory.claims` answer lists; past it, `more` says there are more. */
+const MEMORY_CLAIMS_MAX = 50;
+
+/** `memory.claims` (D-336 slice D) — the notes whose claim names a contact or a thing the
+ *  owner keeps, for the Relationships section of its page. A note names it by its record
+ *  (a linked end) or by words matching its name; the second may be someone else of that
+ *  name, so each says which (`by`). Removed, replaced and revoked notes are left out: the
+ *  section lists what memory holds as true. The record is looked up as the owner sees it
+ *  (`claimRecords`); one that is not here may still be named in words. */
+export const handleMemoryClaims = async (
+  deps: MemoryRpcDeps,
+  args: MemoryClaimsRequest,
+): Promise<MemoryClaimsResult & { more?: true }> => {
+  const store = deps.userMemoryStore;
+  if (!store) {
+    throw new RpcError('not_configured', 'memory.claims requires the user_memory store', 501);
+  }
+  const contact = typeof args.contact === 'string' && args.contact.trim() !== '' ? args.contact.trim() : undefined;
+  const asset = typeof args.asset === 'string' && args.asset.trim() !== '' ? args.asset.trim() : undefined;
+  if ((contact === undefined) === (asset === undefined)) {
+    throw new RpcError('bad_request', 'memory.claims takes a contact or an asset', 400);
+  }
+  let recordKey: string | undefined;
+  let name: string | undefined;
+  if (contact !== undefined) {
+    const found = deps.claimRecords?.contact?.(contact) ?? null;
+    if (found !== null) {
+      recordKey = memoryClaimEndKey(found);
+      // A contact with no name is known by its address, which no claim writes.
+      if (!found.name.includes('@')) name = found.name;
+    }
+  } else {
+    const found = deps.claimRecords?.asset?.(asset!) ?? null;
+    if (found !== null) {
+      recordKey = memoryClaimEndKey(found);
+      name = found.name;
+    }
+  }
+  const nameKey = name === undefined || name.trim() === '' ? undefined : memoryClaimEndKey({ text: name });
+  const rows = [
+    ...(recordKey !== undefined ? await store.listClaimEnd(recordKey) : []),
+    ...(nameKey !== undefined ? await store.listClaimEnd(nameKey) : []),
+  ];
+  // Every mark removes a note from the section: forgotten, hidden, deleted and revoked
+  // (`removedIds` keeps revoked notes, which a replace may still name; this lists none).
+  const removed = forgottenIn(deps.redactionStore ? await deps.redactionStore.list() : []);
+  const seen = new Set<string>();
+  const claims: MemoryClaimsEntry[] = [];
+  // Audit 2026-11-01 — a contact merged into this one is still the record its notes name.
+  const records = recordKey === undefined ? new Set<string>() : claimEndsLikeIn(store, recordKey);
+  for (const row of rows) {
+    if (seen.has(row.memory_id)) continue;
+    seen.add(row.memory_id);
+    if (row.claim === undefined || removed.has(row.memory_id)) continue;
+    if (await liveReplacementOf(store, removed, row.memory_id)) continue;
+    const byRecord = (row.claim_subject !== undefined && records.has(row.claim_subject))
+      || (row.claim_object !== undefined && records.has(row.claim_object));
+    claims.push({
+      memory_id: row.memory_id,
+      origin_actor: row.origin_actor,
+      ...(row.summary !== undefined ? { summary: row.summary } : {}),
+      claim: row.claim,
+      by: byRecord ? 'record' : 'name',
+      ts: row.ts,
+      ...(row.event_at !== undefined ? { event_at: row.event_at } : {}),
+    });
+  }
+  claims.sort((a, b) => (b.event_at ?? b.ts) - (a.event_at ?? a.ts));
+  return claims.length > MEMORY_CLAIMS_MAX
+    ? { claims: claims.slice(0, MEMORY_CLAIMS_MAX), more: true }
+    : { claims };
+};
+
+/** D-336 slice K (§5) — what the relation list misses, from this server's notes alone (D-097):
+ *  how many notes an AI saved without a relationship, and the relations the owner wrote in
+ *  their own words, by how many notes use each. Agents keep to the list (§3.11), so a relation
+ *  it lacks was the owner's, written on a form, an approval card or an import. Only notes that
+ *  stand count: none forgotten, hidden, deleted or revoked, and none replaced by a note that is
+ *  not removed (`liveReplacementOf`'s rule). One read of a few fields per note (`claimTally`),
+ *  never a body. */
+export const handleMemoryClaimCounts = async (deps: MemoryRpcDeps): Promise<MemoryClaimCountsResult> => {
+  const store = deps.userMemoryStore;
+  if (!store) {
+    throw new RpcError('not_configured', 'memory.claim_counts requires the user_memory store', 501);
+  }
+  const rows = await store.claimTally();
+  const removed = forgottenIn(deps.redactionStore ? await deps.redactionStore.list() : []);
+  const replaced = new Set(rows.flatMap((row) =>
+    (row.replaces !== undefined && !removed.has(row.memory_id) ? [row.replaces] : [])));
+  let agentNotes = 0;
+  let withoutClaim = 0;
+  const own = new Map<string, { relation: string; notes: number; ts: number }>();
+  for (const row of rows) {
+    if (removed.has(row.memory_id) || replaced.has(row.memory_id)) continue;
+    if (row.origin_actor === 'contracted_user') {
+      agentNotes += 1;
+      if (row.claim === undefined) withoutClaim += 1;
+    }
+    if (row.claim === undefined) continue;
+    const key = normalizeClaimText(row.claim.relation);
+    if (key === '' || MEMORY_RELATION_INDEX.has(key)) continue;
+    const seen = own.get(key);
+    if (seen === undefined) own.set(key, { relation: row.claim.relation.trim(), notes: 1, ts: row.ts });
+    else own.set(key, row.ts > seen.ts
+      ? { relation: row.claim.relation.trim(), notes: seen.notes + 1, ts: row.ts }
+      : { ...seen, notes: seen.notes + 1 });
+  }
+  const own_relations = [...own.values()]
+    .sort((a, b) => b.notes - a.notes || a.relation.localeCompare(b.relation))
+    .map(({ relation, notes }) => ({ relation, notes }));
+  return { agent_notes: agentNotes, agent_notes_without_claim: withoutClaim, own_relations };
 };
 
 /** `memory.import` — bulk restore / ingest into the `user_memory` store (§5).
@@ -974,6 +1180,9 @@ export const handleMemoryImport = async (
     if (typeof raw.event_at === 'number') entry.event_at = raw.event_at;
     const ids = sanitizeIds(raw.provenance_entity_ids);
     if (ids.length > 0) entry.provenance_entity_ids = ids;
+    // D-336 §3.8 — a claim that is not one is left out; the note still comes in.
+    const claim = raw.claim === undefined ? undefined : importedClaim(raw.claim, deps.claimRecords ?? {});
+    if (claim !== undefined) entry.claim = claim;
     return entry;
   });
 
@@ -994,7 +1203,9 @@ type MemoryRpcMethods =
   | 'memory.replace'
   | 'memory.revoke'
   | 'memory.unrevoke'
-  | 'memory.saves';
+  | 'memory.saves'
+  | 'memory.claims'
+  | 'memory.claim_counts';
 
 export const makeMemoryRpcHandlers = (
   deps: MemoryRpcDeps | undefined,
@@ -1003,7 +1214,7 @@ export const makeMemoryRpcHandlers = (
   // Registered-client gate at every slice arrow (enforces the owner-only
   // boundary the no-contract-gate read/write relies on).
   return {
-    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import', 'memory.restore', 'memory.replace', 'memory.revoke', 'memory.unrevoke', 'memory.saves'],
+    methods: ['memory.list', 'memory.get', 'memory.create', 'memory.update', 'memory.delete', 'memory.import', 'memory.restore', 'memory.replace', 'memory.revoke', 'memory.unrevoke', 'memory.saves', 'memory.claims', 'memory.claim_counts'],
     handlers: {
       'memory.list': async (args, client) => {
         requireRegisteredClient(client);
@@ -1048,6 +1259,14 @@ export const makeMemoryRpcHandlers = (
       'memory.saves': async (args, client) => {
         requireRegisteredClient(client);
         return handleMemorySaves(deps, args as MemorySavesRequest);
+      },
+      'memory.claims': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleMemoryClaims(deps, args as MemoryClaimsRequest);
+      },
+      'memory.claim_counts': async (_args, client) => {
+        requireRegisteredClient(client);
+        return handleMemoryClaimCounts(deps);
       },
     },
   };

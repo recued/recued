@@ -1,6 +1,6 @@
 import { downloadStoredFile } from '../files/file-preview.js';
 import { mountPromptSchedulesPanel, type PromptScheduleClient } from '../automation/prompt-schedules-panel.js';
-import { approvalValueLabel, renderResourceReview, tier1CallDetails, tier1CallTitle, type ApprovalValueLabels } from '@recued/contracts';
+import { approvalValueLabel, isMentionOnlyEmail, memorySaveConflictRows, renderResourceReview, tier1CallDetails, tier1CallTitle, type ApprovalValueLabels, type MemoryClaim } from '@recued/contracts';
 import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
 import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
 import { assetChatHref, assetChatMessage, readAssetChatMessage, type ChatAssetContext } from './asset-context.js';
@@ -35,6 +35,7 @@ import { ANSWER_SOURCES_STYLES, buildAnswerSources } from './source-citations.js
 import { ANSWER_TEXT_STYLES, renderAnswerText } from './answer-text.js';
 import { formatChatMarkdownExport, type ChatExportFormat } from './transcript-export.js';
 import { createAnswerCodeCopy } from './answer-code-copy.js';
+import { createAnswerCopy, ANSWER_COPY_STYLES } from './answer-copy.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
 /** D-174 P2 — top-level Chat route.
@@ -190,6 +191,36 @@ import {
   type ConnectedSourceRecordReference,
   type ConnectedSourceTurnContext,
 } from './connected-source-answer.js';
+import {
+  PLAN_CLAIM_ACTION_ATTR,
+  PLAN_CLAIM_ATTR,
+  PLAN_CLAIM_STYLES,
+  planClaimDraft,
+  planClaimEdit,
+  planRelationshipChanged,
+  renderPlanClaimEditor,
+  type PlanClaimDraft,
+} from './plan-claim-editor.js';
+import {
+  MEMORY_CLAIM_ADD_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_UPDATE,
+  MEMORY_CLAIM_ADD_THING_ACTION,
+  MEMORY_CLAIM_END_ATTR,
+  MEMORY_CLAIM_LINK_ACTION,
+  MEMORY_CLAIM_LINK_ATTR,
+  MEMORY_CLAIM_LINK_CANCEL_ACTION,
+  MEMORY_CLAIM_PICK_ACTION,
+  MEMORY_CLAIM_PICK_ID_ATTR,
+  MEMORY_CLAIM_PICK_NAME_ATTR,
+  MEMORY_CLAIM_REMOVE_ACTION,
+  MEMORY_CLAIM_UNLINK_ACTION,
+  MEMORY_CLAIM_YOU_ACTION,
+  MEMORY_FIELD_ATTR,
+  dropMemoryClaimMatches,
+  showMemoryClaimTakes,
+  type MemoryComposeLinking,
+} from '../data/memory-lens.js';
 
 export const CHAT_ROUTE_STYLES_MARKER = 'data-recued-chat-route-styles';
 export const CHAT_ROUTE_HOST_ATTR = 'data-recued-chat-route';
@@ -298,6 +329,8 @@ export const CHAT_ROUTE_TOOL_DETAILS_ATTR = 'data-recued-chat-route-tool-details
  *  `approved` / `cancelled`) + `data-plan-id`; the approve / cancel
  *  buttons drive the `chat.plan.approve` / `chat.plan.cancel` rpc. */
 export const CHAT_ROUTE_PLAN_CARD_ATTR = 'data-recued-chat-route-plan-card';
+/** D-336 slice G — a card's row for a note in memory its save meets, by the plan's id. */
+export const CHAT_PLAN_CONFLICT_ATTR = 'data-chat-plan-conflict';
 /** Exact cross-surface plan landing. Unlike a message-level citation return,
  * this marks the one reviewed action the owner came back to continue. */
 export const CHAT_ROUTE_PLAN_TARGET_ATTR =
@@ -599,13 +632,34 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient, Prom
   /** D-137 P3 § A.11 — resolve a pending write plan. Both return the
    *  post-resolution authoritative `ChatPlanProposal`, which the route
    *  applies optimistically (the `chat.plan_resolved` broadcast also
-   *  lands and no-ops on the already-resolved card). `edited_args` is
-   *  deliberately not surfaced: the server ignores it today and the
-   *  `args_hash` gate binds approvals to exactly the reviewed payload. */
+   *  lands and no-ops on the already-resolved card). `edited_args` is the
+   *  owner's change, made while approving (D-336 slice E): sent only for
+   *  what the card says it may change (`editable_args`), a held save's
+   *  relationship and summary, so the approval binds to what the card shows. */
   (
     method: 'chat.plan.approve' | 'chat.plan.cancel',
-    payload: { plan_id: string },
+    payload: { plan_id: string; edited_args?: { claim?: MemoryClaim | null; summary?: string } },
   ): Promise<{ plan: ChatPlanProposal }>;
+  /** D-336 slice L — a thing added from a name the card's picker found nothing for, as Yours
+   *  adds one (`asset.create`). */
+  (
+    method: 'yours.change',
+    payload: { action: 'asset.create'; input: { name: string; idempotency_key: string } },
+  ): Promise<{ id?: string; message: string }>;
+  /** D-336 slice H — a contact added from a name the card's picker found nobody for. */
+  (
+    method: 'contact.create_by_name',
+    payload: { name: string },
+  ): Promise<{ contact: import('@recued/contracts').ContactRecord }>;
+  /** D-336 slice E — the contacts and things a card's relationship may link a name to. */
+  (
+    method: 'contact.search.local',
+    payload: import('@recued/contracts').ContactSearchLocalRequest,
+  ): Promise<import('@recued/contracts').ContactSearchLocalResponse>;
+  (
+    method: 'work_entity.list',
+    payload: import('@recued/contracts').WorkEntityListRpcRequest,
+  ): Promise<import('@recued/contracts').WorkEntityListRpcResponse>;
 }
 
 /** This route's OWN chrome. Exported for the style-scale ratchet, which must
@@ -2487,6 +2541,11 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-detail + .chat-plan-card-detail {
   border-top: 1px solid var(--border-subtle);
 }
+/* D-336 slice G — a note the save meets is for the relationship as proposed: once the
+   owner changes it on the card, the row goes, in place as they type. */
+[${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-detail[${CHAT_PLAN_CONFLICT_ATTR}][data-stale="true"] {
+  display: none;
+}
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-detail-key {
   min-width: 0;
   color: var(--muted);
@@ -2780,6 +2839,8 @@ export const CHAT_ROUTE_STYLES = [
   CHAT_INSTALL_OFFERS_STYLES,
   ANSWER_SOURCES_STYLES,
   ANSWER_TEXT_STYLES,
+  ANSWER_COPY_STYLES,
+  PLAN_CLAIM_STYLES,
 ].join('\n');
 
 export interface ChatConnectedSourcePollScheduler {
@@ -4666,6 +4727,7 @@ export const bootstrapChatRoute = (
     ...(opts.subscribe ? { subscribe: opts.subscribe } : {}) });
   const routeRoot = doc.createElement('div');
   const answerCodeCopy = createAnswerCodeCopy(doc, routeRoot);
+  const answerCopy = createAnswerCopy(doc, routeRoot);
   routeRoot.setAttribute(CHAT_ROUTE_HOST_ATTR, '');
 
   const dismissOpenHistoryActions = (restoreFocus: boolean): void => {
@@ -5445,6 +5507,7 @@ export const bootstrapChatRoute = (
       }
       row.appendChild(attachments);
     }
+    if (message.role === 'assistant' && pendingText === undefined && message.content.trim()) answerCopy.append(row, message, quoteSession);
     if (pendingText === undefined) renderActivity(row, activity, activityKey);
     host.appendChild(row);
     return row;
@@ -5455,6 +5518,11 @@ export const bootstrapChatRoute = (
   // shared loading label. View-local like `collapsedActivity`; dies with the
   // tab.
   const pendingPlanActions = new Map<string, 'approve' | 'cancel'>();
+  // D-336 slice E — a held save's relationship as its card shows it, by plan. View-local:
+  // what the owner changed and has not yet said yes to dies with the tab.
+  const planClaimDrafts = new Map<string, PlanClaimDraft>();
+  /** Numbers each relationship lookup and add on a card, so only the newest one's answer lands. */
+  let planClaimLinkSeq = 0;
 
   /** A plan action rebuilds the card twice (busy, then resolved/error). Keep
    * keyboard focus on the attempted control during the first rebuild, then
@@ -5551,13 +5619,30 @@ export const bootstrapChatRoute = (
     action: 'approve' | 'cancel',
   ): Promise<void> => {
     if (pendingPlanActions.has(plan_id)) return;
+    // D-336 slice E — a held save's relationship and summary, as its card shows them, are
+    // part of approving it. Left as proposed, nothing is sent and the save runs as the agent
+    // wrote it.
+    const card = state.thread.plan_cards.find((candidate) => candidate.plan_id === plan_id);
+    const claimDraft = action === 'approve' && card !== undefined && planClaimEditable(card)
+      ? planClaimDrafts.get(plan_id) : undefined;
+    const edit = claimDraft === undefined ? undefined : planClaimEdit(claimDraft);
+    if (claimDraft !== undefined) {
+      const { error: _error, ...cleared } = claimDraft;
+      planClaimDrafts.set(plan_id, edit !== undefined && 'error' in edit ? { ...cleared, error: edit.error } : cleared);
+      if (edit !== undefined && 'error' in edit) {
+        render();
+        focusPlanResolutionTarget(plan_id, action);
+        return;
+      }
+    }
+    const edited = edit !== undefined && !('error' in edit) ? edit : undefined;
     pendingPlanActions.set(plan_id, action);
     render();
     focusPlanResolutionTarget(plan_id, action);
     try {
       const { plan } = await opts.conn(
         action === 'approve' ? 'chat.plan.approve' : 'chat.plan.cancel',
-        { plan_id },
+        { plan_id, ...(edited !== undefined ? { edited_args: edited } : {}) },
       );
       if (disposed) return;
       state = {
@@ -5565,9 +5650,17 @@ export const bootstrapChatRoute = (
         thread: applyPlanResolution(state.thread, plan),
         error: null,
       };
+      if (plan.status !== 'proposed') planClaimDrafts.delete(plan_id);
     } catch (err) {
       if (disposed) return;
-      state = { ...state, error: classifyRpcError(err) };
+      const classified = classifyRpcError(err);
+      // A change the server refused is the card's to show, beside the relationship.
+      const draft = planClaimDrafts.get(plan_id);
+      if (edited !== undefined && draft !== undefined && !classified.connectionCaused) {
+        planClaimDrafts.set(plan_id, { ...draft, error: classified.copy });
+      } else {
+        state = { ...state, error: classified };
+      }
     } finally {
       pendingPlanActions.delete(plan_id);
       if (!disposed) {
@@ -6102,6 +6195,314 @@ export const bootstrapChatRoute = (
   // disclosure. Approval remains separate from execution: an approved card
   // offers an editable composer handoff and never sends automatically; only
   // server-linked tool events add the running / terminal execution receipt.
+  // ── D-336 slice E — a held save's relationship on its card ──────────────────────────
+
+  /** The card may change this save's relationship while approving it: a held save whose
+   *  server says so (`editable_args`), still waiting for its answer. */
+  const planClaimEditable = (card: PlanApprovalCard): boolean =>
+    card.status === 'proposed'
+    && card.held === true
+    && card.payload_available !== false
+    && card.tool === 'memory.write'
+    && card.editable_args?.includes('claim') === true;
+
+  const planClaimDraftFor = (card: PlanApprovalCard): PlanClaimDraft => {
+    const known = planClaimDrafts.get(card.plan_id);
+    if (known !== undefined) return known;
+    const draft = planClaimDraft(card.args, card.value_labels, card.editable_args);
+    planClaimDrafts.set(card.plan_id, draft);
+    return draft;
+  };
+
+  /** Whether the owner changed the save's relationship on its card (its summary aside). */
+  const planClaimChanged = (plan_id: string): boolean => {
+    const draft = planClaimDrafts.get(plan_id);
+    return draft !== undefined && planRelationshipChanged(draft);
+  };
+
+  const planClaimHost = (plan_id: string): HTMLElement | undefined =>
+    Array.from(routeRoot.querySelectorAll?.<HTMLElement>(`[${PLAN_CLAIM_ATTR}]`) ?? [])
+      .find((candidate) => candidate.getAttribute(PLAN_CLAIM_ATTR) === plan_id);
+
+  const focusPlanClaim = (plan_id: string, selector: string): void => {
+    (planClaimHost(plan_id)?.querySelector?.(selector) as HTMLElement | null | undefined)?.focus?.({ preventScroll: true });
+  };
+
+  /** A redraw replaces the card, its fields with it: keep the field the owner was in, and
+   *  the caret in it, as the composer's is kept. */
+  const capturePlanClaimFocus = (): {
+    plan_id: string; field: string | null; action: string | null; end: string | null;
+    start: number | null; stop: number | null;
+  } | null => {
+    const active = doc.activeElement as HTMLInputElement | null | undefined;
+    const host = active?.closest?.(`[${PLAN_CLAIM_ATTR}]`);
+    const plan_id = host?.getAttribute(PLAN_CLAIM_ATTR);
+    if (active == null || plan_id == null) return null;
+    const field = active.getAttribute(MEMORY_FIELD_ATTR);
+    return {
+      plan_id,
+      field,
+      action: active.getAttribute(PLAN_CLAIM_ACTION_ATTR),
+      end: active.getAttribute(MEMORY_CLAIM_END_ATTR),
+      start: field !== null ? active.selectionStart ?? null : null,
+      stop: field !== null ? active.selectionEnd ?? null : null,
+    };
+  };
+  const restorePlanClaimFocus = (saved: ReturnType<typeof capturePlanClaimFocus>): void => {
+    if (saved === null || disposed) return;
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (active != null && active !== doc.body && active.isConnected !== false) return;
+    const host = planClaimHost(saved.plan_id);
+    if (host === undefined) return;
+    if (saved.field !== null) {
+      const input = host.querySelector?.(`[${MEMORY_FIELD_ATTR}="${saved.field}"]`) as HTMLInputElement | null;
+      if (input == null) return;
+      input.focus?.({ preventScroll: true });
+      if (saved.start !== null && saved.stop !== null) input.setSelectionRange?.(saved.start, saved.stop);
+      return;
+    }
+    if (saved.action === null) return;
+    const end = saved.end === null ? '' : `[${MEMORY_CLAIM_END_ATTR}="${saved.end}"]`;
+    (host.querySelector?.(`[${PLAN_CLAIM_ACTION_ATTR}="${saved.action}"]${end}`) as HTMLElement | null)?.focus?.({ preventScroll: true });
+  };
+
+  /** The contacts or things matching one end's words, for the owner to link it to. */
+  const linkPlanClaimEnd = async (
+    plan_id: string,
+    end: 'subject' | 'object',
+    kind: 'contact' | 'asset',
+  ): Promise<void> => {
+    const draft = planClaimDrafts.get(plan_id);
+    const value = draft?.claim?.[end];
+    if (draft === undefined || value === undefined) return;
+    const words = 'text' in value ? value.text.trim() : '';
+    const setLinking = (linking: MemoryComposeLinking): void => {
+      const current = planClaimDrafts.get(plan_id);
+      if (current !== undefined) planClaimDrafts.set(plan_id, { ...current, linking });
+    };
+    if (words === '') {
+      setLinking({ end, kind, loading: false, options: [], error: 'Write the name first, then link it.' });
+      render();
+      return;
+    }
+    const request = (planClaimLinkSeq += 1);
+    setLinking({ end, kind, loading: true, options: [], request });
+    render();
+    // The answer to this lookup only: a newer one on the same card replaces it.
+    const still = (): boolean => !disposed && planClaimDrafts.get(plan_id)?.linking?.request === request;
+    try {
+      let options: Array<{ id: string; name: string; detail?: string }>;
+      if (kind === 'contact') {
+        // A contact with no address is keyed on a placeholder: it shows its name alone.
+        options = (await opts.conn('contact.search.local', { query: words, limit: 8 })).contacts
+          .map((c) => ({ id: c.contact_id ?? c.email, name: c.name?.trim() || c.email, ...(isMentionOnlyEmail(c.email) ? {} : { detail: c.email }) }));
+      } else {
+        // The work search has no things; the list does, matched here by name.
+        const needle = words.toLowerCase();
+        options = (await opts.conn('work_entity.list', { kind: 'asset', limit: 200 })).entities
+          .flatMap((row) => (row._kind === 'asset' && row.name.toLowerCase().includes(needle) ? [{ id: row.id, name: row.name }] : []))
+          .slice(0, 8);
+      }
+      if (!still()) return;
+      setLinking(options.length > 0
+        ? { end, kind, loading: false, options, request }
+        : {
+            end, kind, loading: false, options, request,
+            error: kind === 'contact' ? `No contact matches “${words}”.` : `Nothing you own matches “${words}”.`,
+            // D-336 slice H — nobody by that name: the picker can make the contact (§3.6).
+            // Slice L: or the thing, with one key for the offer, so a retry adds it once.
+            ...(kind === 'contact' ? { addable: words } : { addable: words, addKey: globalThis.crypto.randomUUID() }),
+          });
+    } catch (err) {
+      if (!still()) return;
+      setLinking({ end, kind, loading: false, options: [], error: classifyRpcError(err).copy, request });
+    }
+    render();
+  };
+
+  /** D-336 slice H — add the words the picker found nobody for as a contact of the owner's,
+   *  and link the end to it. The contact is theirs once added, whatever they answer the save. */
+  const addPlanClaimContact = async (plan_id: string, end: 'subject' | 'object'): Promise<void> => {
+    const draft = planClaimDrafts.get(plan_id);
+    const linking = draft?.linking;
+    const name = linking?.addable;
+    if (draft === undefined || linking === undefined || linking.end !== end || name === undefined || linking.adding === true) return;
+    const { error: _error, ...adding } = linking;
+    const request = (planClaimLinkSeq += 1);
+    planClaimDrafts.set(plan_id, { ...draft, linking: { ...adding, adding: true, request } });
+    render();
+    // The answer to this add only: one for an older add, back after this began, is dropped.
+    const still = (): boolean => !disposed && planClaimDrafts.get(plan_id)?.linking?.request === request;
+    try {
+      const { contact } = await opts.conn('contact.create_by_name', { name });
+      const current = planClaimDrafts.get(plan_id);
+      if (!still() || current?.claim === undefined) return;
+      if (contact.contact_id === undefined) throw new Error('The contact was added, but it cannot be linked from here. Link it with Link to a contact.');
+      const { linking: _linking, error: _err, ...base } = current;
+      planClaimDrafts.set(plan_id, { ...base, claim: { ...current.claim, [end]: { contact_id: contact.contact_id, name: contact.name?.trim() || name } } });
+      render();
+      focusPlanClaim(plan_id, `[${PLAN_CLAIM_ACTION_ATTR}="${MEMORY_CLAIM_UNLINK_ACTION}"][${MEMORY_CLAIM_END_ATTR}="${end}"]`);
+    } catch (err) {
+      const current = planClaimDrafts.get(plan_id);
+      if (!still() || current === undefined) return;
+      const classified = classifyRpcError(err);
+      const { addable: _addable, ...kept } = linking;
+      planClaimDrafts.set(plan_id, {
+        ...current,
+        linking: classified.code === 'unknown_method'
+          ? { ...kept, adding: false, error: MEMORY_CLAIM_ADD_CONTACT_UPDATE }
+          : { ...linking, adding: false, error: classified.copy },
+      });
+      render();
+    }
+  };
+
+  /** D-336 slice L — add the words the picker found nothing for as a thing the owner owns, as
+   *  Yours does, and link the end to it. The thing is theirs once added, whatever they answer
+   *  the save. */
+  const addPlanClaimThing = async (plan_id: string, end: 'subject' | 'object'): Promise<void> => {
+    const draft = planClaimDrafts.get(plan_id);
+    const linking = draft?.linking;
+    const name = linking?.addable;
+    const key = linking?.addKey;
+    if (draft === undefined || linking === undefined || linking.end !== end || linking.kind !== 'asset'
+      || name === undefined || key === undefined || linking.adding === true) return;
+    const { error: _error, ...adding } = linking;
+    const request = (planClaimLinkSeq += 1);
+    planClaimDrafts.set(plan_id, { ...draft, linking: { ...adding, adding: true, request } });
+    render();
+    // The answer to this add only: one for an older add, back after this began, is dropped.
+    const still = (): boolean => !disposed && planClaimDrafts.get(plan_id)?.linking?.request === request;
+    try {
+      const { id } = await opts.conn('yours.change', { action: 'asset.create', input: { name, idempotency_key: key } });
+      const current = planClaimDrafts.get(plan_id);
+      if (!still() || current?.claim === undefined) return;
+      if (id === undefined) throw new Error('The thing was added, but it cannot be linked from here. Link it with Link to a thing you own.');
+      const { linking: _linking, error: _err, ...base } = current;
+      planClaimDrafts.set(plan_id, { ...base, claim: { ...current.claim, [end]: { asset_id: id, name } } });
+      render();
+      focusPlanClaim(plan_id, `[${PLAN_CLAIM_ACTION_ATTR}="${MEMORY_CLAIM_UNLINK_ACTION}"][${MEMORY_CLAIM_END_ATTR}="${end}"]`);
+    } catch (err) {
+      const current = planClaimDrafts.get(plan_id);
+      if (!still() || current === undefined) return;
+      // The key stays with the offer, so trying again cannot add the thing twice.
+      planClaimDrafts.set(plan_id, { ...current, linking: { ...linking, adding: false, error: classifyRpcError(err).copy } });
+      render();
+    }
+  };
+
+  /** The relationship's buttons: add or remove it, link an end, or put a name back. */
+  const onPlanClaimClick = (plan_id: string, ev: Event): void => {
+    const target = (ev.target as Element | null)?.closest?.(`[${PLAN_CLAIM_ACTION_ATTR}]`) as HTMLElement | null | undefined;
+    const draft = planClaimDrafts.get(plan_id);
+    if (target == null || draft === undefined || pendingPlanActions.has(plan_id)) return;
+    const action = target.getAttribute(PLAN_CLAIM_ACTION_ATTR);
+    const { linking: _linking, error: _error, ...base } = draft;
+    const show = (next: PlanClaimDraft, focus?: string): void => {
+      planClaimDrafts.set(plan_id, next);
+      render();
+      if (focus !== undefined) focusPlanClaim(plan_id, focus);
+    };
+    if (action === MEMORY_CLAIM_ADD_ACTION) {
+      show({ ...base, claim: { subject: { text: '' }, relation: '', object: { text: '' } } }, `[${MEMORY_FIELD_ATTR}="claim-subject"]`);
+      return;
+    }
+    if (action === MEMORY_CLAIM_REMOVE_ACTION) {
+      const { claim: _claim, ...none } = base;
+      show(none, `[${PLAN_CLAIM_ACTION_ATTR}="${MEMORY_CLAIM_ADD_ACTION}"]`);
+      return;
+    }
+    const end = target.getAttribute(MEMORY_CLAIM_END_ATTR);
+    const claim = draft.claim;
+    if ((end !== 'subject' && end !== 'object') || claim === undefined) return;
+    if (action === MEMORY_CLAIM_LINK_ACTION) {
+      const kind = target.getAttribute(MEMORY_CLAIM_LINK_ATTR);
+      if (kind === 'contact' || kind === 'asset') void linkPlanClaimEnd(plan_id, end, kind);
+      return;
+    }
+    if (action === MEMORY_CLAIM_LINK_CANCEL_ACTION) {
+      show(base, `[${MEMORY_FIELD_ATTR}="claim-${end}"]`);
+      return;
+    }
+    if (action === MEMORY_CLAIM_ADD_CONTACT_ACTION) {
+      void addPlanClaimContact(plan_id, end);
+      return;
+    }
+    if (action === MEMORY_CLAIM_ADD_THING_ACTION) {
+      void addPlanClaimThing(plan_id, end);
+      return;
+    }
+    const current = claim[end];
+    if (action === MEMORY_CLAIM_YOU_ACTION) {
+      show({ ...base, claim: { ...claim, [end]: { owner: true } } }, `[${PLAN_CLAIM_ACTION_ATTR}="${MEMORY_CLAIM_UNLINK_ACTION}"][${MEMORY_CLAIM_END_ATTR}="${end}"]`);
+      return;
+    }
+    if (action === MEMORY_CLAIM_UNLINK_ACTION) {
+      const words = 'text' in current ? current.text : 'owner' in current ? '' : current.name;
+      show({ ...base, claim: { ...claim, [end]: { text: words } } }, `[${MEMORY_FIELD_ATTR}="claim-${end}"]`);
+      return;
+    }
+    if (action === MEMORY_CLAIM_PICK_ACTION) {
+      const id = target.getAttribute(MEMORY_CLAIM_PICK_ID_ATTR);
+      const name = target.getAttribute(MEMORY_CLAIM_PICK_NAME_ATTR);
+      const kind = draft.linking?.kind;
+      if (id === null || name === null || kind === undefined) return;
+      const linked = kind === 'contact' ? { contact_id: id, name } : { asset_id: id, name };
+      show({ ...base, claim: { ...claim, [end]: linked } }, `[${PLAN_CLAIM_ACTION_ATTR}="${MEMORY_CLAIM_UNLINK_ACTION}"][${MEMORY_CLAIM_END_ATTR}="${end}"]`);
+    }
+  };
+
+  /** What the owner types is kept as they type it, and nothing redraws: the relation decides
+   *  what each end can be linked to, which is shown in place (a redraw on its change replaced
+   *  Say yes under the pointer, so the click that left the field was lost). */
+  const onPlanClaimInput = (plan_id: string, ev: Event): void => {
+    const target = ev.target as HTMLInputElement | null;
+    const field = target?.getAttribute?.(MEMORY_FIELD_ATTR);
+    const draft = planClaimDrafts.get(plan_id);
+    if (target == null || draft === undefined || pendingPlanActions.has(plan_id)) return;
+    // The summary decides nothing else on the card: the notes it meets are the relationship's.
+    if (field === 'summary') {
+      if (draft.summary !== undefined) planClaimDrafts.set(plan_id, { ...draft, summary: target.value });
+      return;
+    }
+    const claim = draft.claim;
+    if (claim === undefined) return;
+    const next = field === 'claim-relation'
+      ? { ...claim, relation: target.value }
+      : field === 'claim-subject' && 'text' in claim.subject
+        ? { ...claim, subject: { text: target.value } }
+        : field === 'claim-object' && 'text' in claim.object
+          ? { ...claim, object: { text: target.value } }
+          : undefined;
+    if (next === undefined) return;
+    // D-336 audit 2026-11-01 — a lookup or an add under way was for the relationship as it
+    // was: its answer must not land on what the owner changed since (adding "Mia", then
+    // writing "Sam", had the card link Mia and the yes send her), as on the Memory form.
+    const { linking, ...unlinked } = draft;
+    planClaimDrafts.set(plan_id, { ...unlinked, claim: next });
+    if (linking !== undefined) dropMemoryClaimMatches(planClaimHost(plan_id), linking.end);
+    if (field === 'claim-relation') showMemoryClaimTakes(planClaimHost(plan_id), next.relation);
+    // Slice G — in place, never a redraw: a redraw here would swallow the next click.
+    const stale = planClaimChanged(plan_id) ? 'true' : 'false';
+    for (const row of Array.from(routeRoot.querySelectorAll?.<HTMLElement>(`[${CHAT_PLAN_CONFLICT_ATTR}]`) ?? [])) {
+      if (row.getAttribute(CHAT_PLAN_CONFLICT_ATTR) === plan_id) row.setAttribute('data-stale', stale);
+    }
+  };
+
+  const renderPlanClaim = (card: PlanApprovalCard): HTMLElement => {
+    const host = doc.createElement('div');
+    host.className = 'chat-plan-claim';
+    host.setAttribute(PLAN_CLAIM_ATTR, card.plan_id);
+    host.innerHTML = renderPlanClaimEditor(
+      planClaimDraftFor(card),
+      `chat-plan-claim-${card.plan_id.replace(/[^A-Za-z0-9_-]/g, '_')}`,
+      pendingPlanActions.has(card.plan_id),
+    );
+    host.addEventListener('click', (ev) => { onPlanClaimClick(card.plan_id, ev); });
+    host.addEventListener('input', (ev) => { onPlanClaimInput(card.plan_id, ev); });
+    return host;
+  };
+
   const renderPlanCard = (host: HTMLElement, card: PlanApprovalCard): void => {
     const actionTitle = planActionTitle(card.tool, card.args);
     const preparedMode =
@@ -6444,16 +6845,25 @@ export const bootstrapChatRoute = (
     const argsLabel = doc.createElement('span');
     argsLabel.className = 'chat-plan-card-args-label';
     argsLabel.textContent = 'The details';
-    el.appendChild(argsLabel);
     const details = doc.createElement('dl');
     details.className = 'chat-plan-card-details';
     details.setAttribute('aria-label', 'The details');
     details.setAttribute('tabindex', '0');
+    // D-336 slice E — a relationship the owner can change is shown in its own fields below,
+    // and the summary too where it can be changed.
+    const claimEditable = planClaimEditable(card);
+    const inFields = claimEditable ? card.editable_args ?? [] : [];
+    const shownArgs = claimEditable && card.args !== null && typeof card.args === 'object' && !Array.isArray(card.args)
+      ? Object.fromEntries(Object.entries(card.args as Record<string, unknown>).filter(([key]) => !inFields.includes(key)))
+      : card.args;
+    // Every argument in a field leaves no details, rather than a row saying so.
+    const allInFields = inFields.length > 0 && shownArgs !== null && typeof shownArgs === 'object'
+      && Object.keys(shownArgs).length === 0;
     const detailEntries =
       card.payload_available === false
         ? [['Details', 'Gone after the recovery']] as const
-        : planDetailEntries(card.tool, card.args, card.value_labels);
-    for (const [label, value] of detailEntries) {
+        : allInFields ? [] : planDetailEntries(card.tool, shownArgs, card.value_labels);
+    const detailRow = (label: string, value: string): HTMLElement => {
       const row = doc.createElement('div');
       row.className = 'chat-plan-card-detail';
       const key = doc.createElement('dt');
@@ -6464,9 +6874,25 @@ export const bootstrapChatRoute = (
       display.className = 'chat-plan-card-detail-value';
       display.textContent = value;
       row.appendChild(display);
-      details.appendChild(row);
+      return row;
+    };
+    for (const [label, value] of detailEntries) details.appendChild(detailRow(label, value));
+    // D-336 slice G — the notes in memory the save meets ("Contradicts"), for the relationship
+    // as proposed: stale once the owner changes it here.
+    if (card.payload_available !== false && card.memory_conflicts !== undefined) {
+      const stale = claimEditable && planClaimChanged(card.plan_id);
+      for (const [label, value] of Object.entries(memorySaveConflictRows(card.memory_conflicts))) {
+        const row = detailRow(label, value);
+        row.setAttribute(CHAT_PLAN_CONFLICT_ATTR, card.plan_id);
+        row.setAttribute('data-stale', stale ? 'true' : 'false');
+        details.appendChild(row);
+      }
     }
-    el.appendChild(details);
+    if (details.children.length > 0) {
+      el.appendChild(argsLabel);
+      el.appendChild(details);
+    }
+    if (claimEditable) el.appendChild(renderPlanClaim(card));
 
     const technical = doc.createElement('details');
     technical.className = 'chat-plan-card-technical';
@@ -8934,6 +9360,7 @@ export const bootstrapChatRoute = (
     const queueFocus = queueView.captureFocus(doc, routeRoot);
     const attachmentFocus = captureAttachmentFocus();
     const composerFocus = captureComposerFocus();
+    const planClaimFocus = capturePlanClaimFocus();
     const historyTop = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_LIST_ATTR}]`)?.scrollTop;
     renderContents();
     const codeScroller = answerPosition.horizontal.size > 0
@@ -8941,11 +9368,13 @@ export const bootstrapChatRoute = (
     const codePosition = codeScroller && codeScroller.clientHeight > 0
       ? captureTranscriptPosition(codeScroller, state.thread.has_more_after) : null;
     answerCodeCopy.restore(answerPosition, () => focusOpenThread());
+    answerCopy.repaint();
     if (codeScroller && codePosition) restoreTranscriptPosition(codeScroller, codePosition);
     const history = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_LIST_ATTR}]`);
     if (history && historyTop !== undefined) history.scrollTop = historyTop;
     restoreAttachmentFocus(attachmentFocus);
     restoreComposerFocus(composerFocus);
+    restorePlanClaimFocus(planClaimFocus);
     queueView.restoreFocus(doc, routeRoot, queueFocus, () => focusComposer(true));
     if (scheduleFocus?.isConnected) scheduleFocus.focus?.({ preventScroll: true });
   };
@@ -10363,6 +10792,7 @@ export const bootstrapChatRoute = (
     }
 
     answerCodeCopy.restore(answerPosition, () => focusOpenThread());
+    answerCopy.repaint();
     if (before !== null && scroller !== null && scroller !== undefined) {
       // Same rule as a render: follow the answer for a reader at the bottom,
       // hold position for one who has scrolled away.
@@ -13237,6 +13667,7 @@ export const bootstrapChatRoute = (
       historyRename.dispose();
       historyPages.dispose(); clearTimeout(historyRefreshTimer);
       answerCodeCopy.dispose();
+      answerCopy.dispose();
       queueView.dispose(); deliveryView.dispose(); messengerList.dispose(); historyFilters.dispose();
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
       // running would keep a socket open against a surface nobody is watching.

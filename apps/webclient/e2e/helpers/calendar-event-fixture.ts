@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
-import type { CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CollectionRecord, CalendarEventCreateRequest, CalendarEventCreateResult } from '@recued/contracts';
+import type { CalendarOverlapRequest, CalendarOverlapResult, CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CollectionRecord, CalendarEventCreateRequest, CalendarEventCreateResult } from '@recued/contracts';
+import type { CalendarEventDeleteRequest, CalendarEventDeletionCheckRequest } from '@recued/contracts';
 
 /** Local RPC fixture. Clone every reply, as a real WebSocket boundary does. */
 export type CalendarEventFixtureMode = 'timed' | 'all-day' | 'connected' | 'invitation' | 'editable-google' | 'editable-outlook';
@@ -17,6 +18,7 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
         end_at: Date.parse(day ? '2026-11-03T00:00:00Z' : '2026-10-28T17:00:12.345Z'),
         timezone: 'America/Los_Angeles', is_all_day: day, status: 'confirmed', is_recurring: false },
       resource_version: 'v1', incarnation: 'local-calendar-1', editable: !connected || editableRemote,
+      ...(!connected ? { deletable: true as const } : {}),
       ...(connected && !editableRemote ? { read_only_reason: 'Edit this event in its connected calendar.' } : {}),
     };
     if (editableRemote) {
@@ -36,6 +38,9 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
     let holdRead = false;
     let releaseRead: ((fail: boolean) => void) | undefined;
     const writes: CalendarEventUpdateRequest[] = [];
+    const deletes: CalendarEventDeleteRequest[] = [];
+    const deletionChecks: CalendarEventDeletionCheckRequest[] = [];
+    const removed = new Set<string>();
     const creates: CalendarEventCreateRequest[] = [];
     const created = new Map<string, CalendarEventCreateResult>();
     const record = () => ({ record_id: saved.event.record_id, source_id: saved.event.source_id, received_at: 1_700_000_000_000,
@@ -64,7 +69,9 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
       pending() { return releaseList !== undefined; },
       release() { if (!releaseList) throw new Error('No agenda read is waiting.'); const done = releaseList; releaseList = undefined; done(); },
     };
-    const controls = { writes, responses, creates, createdCount: () => created.size,
+    const controls = { writes, responses, creates, deletes, deletionChecks, createdCount: () => created.size,
+      setDeleteSupported(supported: boolean) { if (supported) saved.deletable = true; else delete saved.deletable; },
+      replaceCalendar() { saved.incarnation = 'replacement-calendar'; },
       setReadAvailable(available: boolean) { readAvailable = available; },
       removeOnDecline() { removeOnDecline = true; },
       allowResponses(allowed: boolean) { if (saved.invitation) { saved.invitation.can_respond = allowed; saved.invitation.unavailable_reason = allowed ? '' : 'This calendar is read-only.'; } },
@@ -76,15 +83,42 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
       changeSavedTitle(title: string) { saved.event.summary = title; saved.resource_version = `v${++version}`; },
       saved: view,
     };
-    Object.assign(window, { __calendarEvent: controls, __calendarAgenda: agendaControls, __connectionsFixture: async (method: string, raw: unknown) => {
+    const overlapRequests: CalendarOverlapRequest[] = [];
+    let overlapHold = false, overlapRelease: (() => void) | undefined, overlapFail = false, overlapPartial = false, overlapDense = false;
+    const overlapControls = { requests: overlapRequests,
+      holdNext() { overlapHold = true; }, pending() { return overlapRelease !== undefined; },
+      release() { if (!overlapRelease) throw new Error('No overlap read is waiting.'); const done = overlapRelease; overlapRelease = undefined; done(); },
+      fail(value: boolean) { overlapFail = value; }, partial(value: boolean) { overlapPartial = value; }, dense(value: boolean) { overlapDense = value; },
+    };
+    Object.assign(window, { __calendarOverlap: overlapControls, __calendarEvent: controls, __calendarAgenda: agendaControls, __connectionsFixture: async (method: string, raw: unknown) => {
       const args = raw as Record<string, unknown> | undefined;
       if (method === 'collection.listInstances') return { result: { instances: [{
         slug, platform: 'calendar', adapter_type: mode === 'editable-outlook' ? 'graph' : connected ? 'gcal' : 'local', caps: {}, auth_state: 'healthy', last_synced_at: 1_700_000_000_000,
       }, ...(agenda ? [{ slug: 'work', platform: 'calendar', adapter_type: 'gcal', caps: {}, auth_state: 'healthy', last_synced_at: Date.now() }] : [])] } };
+      if (method === 'collection.calendar.event.overlaps') {
+        const request = raw as CalendarOverlapRequest; overlapRequests.push(structuredClone(request));
+        const start = Date.parse('2026-10-28T16:15:00Z'), end = Date.parse('2026-10-28T16:45:00Z');
+        const value: CalendarOverlapResult = { start_at: request.start_at, end_at: request.end_at,
+          is_all_day: request.is_all_day, timezone: request.timezone, checked_at: Date.now(), truncated: overlapPartial,
+          events: request.start_at < end && request.end_at > start ? [{ summary: 'Design review', start_at: start, end_at: end,
+            is_all_day: false, calendars: ['Design', 'Work'] }] : [],
+          sources: [{ slug: 'local', name: 'On this server', status: 'local', last_synced_at: null },
+            { slug: 'work', name: 'Work', status: overlapPartial ? 'stale' : 'synced', last_synced_at: 1_700_000_000_000 }] };
+        if (overlapDense && value.events[0]) {
+          const first = value.events[0];
+          value.events.push(...Array.from({ length: 11 }, (_, index) => ({ ...first, summary: `Design review ${index + 2}`,
+            start_at: start + (index + 1) * 60_000, end_at: end + (index + 1) * 60_000 })));
+        }
+        if (overlapHold) { overlapHold = false; await new Promise<void>(done => { overlapRelease = done; }); }
+        if (overlapFail) return { error: { code: 'unavailable', message: 'Could not read calendar data.' } };
+        return { result: structuredClone(value) };
+      }
       if (method === 'collection.calendar.event.destinations') return { result: { destinations: [
-        { slug, calendar_id: slug, name: connected ? 'Work calendar' : 'On this server', provider: connected ? 'gcal' : 'local', incarnation: 'local-calendar-1' },
-        ...(agenda ? [{ slug: 'work', calendar_id: 'work', name: 'Work calendar', provider: 'gcal', incarnation: 'work-calendar-1' }] : []),
+        { slug, calendar_id: slug, name: connected ? 'Work calendar' : 'On this server', provider: mode === 'editable-outlook' ? 'graph' : connected ? 'gcal' : 'local', incarnation: 'local-calendar-1', ...(connected ? { can_invite: true } : {}) },
+        ...(agenda ? [{ slug: 'work', calendar_id: 'work', name: 'Work calendar', provider: 'gcal', incarnation: 'work-calendar-1', can_invite: true }] : []),
       ], unavailable: [] } };
+      if (method === 'contact.search.local') return { result: { contacts: (String(args?.query ?? '').toLowerCase().includes('ada')
+        ? [{ email: 'ada@example.com', name: 'Ada Lovelace' }] : []), total: 1 } };
       if (method === 'collection.calendar.event.create') {
         const request = raw as CalendarEventCreateRequest; creates.push(structuredClone(request));
         const prior = created.get(request.creation_id);
@@ -96,11 +130,12 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
         const record: CollectionRecord = { record_id, source_id, received_at: Date.now(), modified_at: Date.now(), size_bytes: request.description.length,
           hot_fields: { summary: request.summary, location: request.location, start_at: request.start_at, end_at: request.end_at,
             is_all_day: request.is_all_day, status: 'confirmed' }, body_inline: request.description };
-        const value: CalendarEventCreateResult = { slug: request.slug, snapshot: { record, incarnation: request.expected_incarnation, resource_version: 'created-v1', editable: request.slug === 'local',
-          ...(request.slug === 'local' ? {} : { read_only_reason: 'Edit this event in its connected calendar.' }),
+        const value: CalendarEventCreateResult = { slug: request.slug, ...(request.send_invitations ? { invitations_requested: true as const } : {}), snapshot: { record, incarnation: request.expected_incarnation, resource_version: 'created-v1', editable: request.slug === 'local',
+          ...(request.slug === 'local' ? { deletable: true as const } : { read_only_reason: 'Edit this event in its connected calendar.' }),
           event: { record_id, source_id, calendar_id: request.calendar_id, calendar_name: request.slug === 'local' ? 'On this server' : 'Work calendar',
             summary: request.summary, description: request.description, location: request.location, start_at: request.start_at, end_at: request.end_at,
-            timezone: request.timezone, is_all_day: request.is_all_day, status: 'confirmed', is_recurring: false, updated_at: Date.now() } } };
+            timezone: request.timezone, is_all_day: request.is_all_day, status: 'confirmed', is_recurring: false, updated_at: Date.now(),
+            ...(request.guests?.length ? { attendees: request.guests.map(guest => ({ ...guest, response_status: 'needs_action' as const })), attendee_count: request.guests.length } : {}) } } };
         created.set(request.creation_id, structuredClone(value));
         if (behavior === 'lost') return { error: { code: 'timeout', message: 'The creation reply was lost.' } };
         return { result: structuredClone(value) };
@@ -115,15 +150,16 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
         if (failSource === args.slug) return { error: { code: 'unavailable', message: 'Calendar service unavailable.' } };
         const rows = [...(args.slug === slug ? [record(), ...localRows] : args.slug === 'work' ? remoteRows : []),
           ...[...created.values()].filter(value => value.slug === args.slug).map(value => value.snapshot.record)];
-        const matches = rows.filter(row => (!filters || row.hot_fields.is_all_day === filters.is_all_day)
+        const matches = rows.filter(row => !removed.has(String(row.source_id)) && (!filters || row.hot_fields.is_all_day === filters.is_all_day)
           && (!range || (Number(row.hot_fields.start_at) < range.before && Number(row.hot_fields.end_at) > range.from)))
           .sort((a, b) => Number(a.hot_fields.start_at) - Number(b.hot_fields.start_at) || a.record_id.localeCompare(b.record_id));
         return { result: { records: structuredClone(matches.slice(offset, offset + limit)),
           source_freshness: { last_success_at: Date.now(), age_ms: 0, degraded: false, pending: 0, stale: false } } };
       }
-      if (method === 'collection.get' && args?.platform === 'calendar') return { result: { record: args.record_id === saved.event.record_id ? structuredClone(record())
-        : structuredClone([...created.values()].find(value => value.slug === args.slug && value.snapshot.record.record_id === args.record_id)?.snapshot.record ?? null) } };
+      if (method === 'collection.get' && args?.platform === 'calendar') return { result: { record: args.record_id === saved.event.record_id ? removed.has(saved.event.source_id) ? null : structuredClone(record())
+        : structuredClone([...created.values()].find(value => value.slug === args.slug && value.snapshot.record.record_id === args.record_id && !removed.has(value.snapshot.event.source_id))?.snapshot.record ?? null) } };
       if (method === 'collection.calendar.event.get') {
+        if (removed.has(String(args?.source_id))) return { error: { code: 'not_found', message: 'This event is no longer in the calendar.' } };
         const createdEvent = [...created.values()].find(value => value.slug === args?.slug && value.snapshot.event.source_id === args?.source_id);
         if (createdEvent) return { result: structuredClone(createdEvent.snapshot) };
         if (args?.slug !== slug || args.source_id !== saved.event.source_id) throw new Error('Wrong fixture calendar event identity.');
@@ -139,6 +175,28 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
           if (value.invitation) { value.invitation.can_respond = false; value.invitation.unavailable_reason = 'Organizer notification could not be verified.'; }
         }
         return { result: value };
+      }
+      if (method === 'collection.calendar.event.delete') {
+        const request = raw as CalendarEventDeleteRequest; deletes.push(structuredClone(request));
+        const behavior = next; next = null;
+        const interrupted = behavior === 'hold' && await new Promise<boolean>(done => { release = done; });
+        if (behavior === 'fail' || interrupted) return { error: { code: 'unavailable', message: 'The deletion was interrupted.' } };
+        if (request.slug !== slug || request.source_id !== saved.event.source_id || connected || !saved.deletable
+          || request.expected_version !== saved.resource_version || request.expected_incarnation !== saved.incarnation) {
+          return { error: { code: 'resource_changed', message: 'This event or calendar changed. Check before deleting it.' } };
+        }
+        removed.add(request.source_id);
+        if (behavior === 'lost') return { error: { code: 'timeout', message: 'The deletion reply was lost.' } };
+        return { result: { slug, source_id: request.source_id, incarnation: saved.incarnation, deleted: true } };
+      }
+      if (method === 'collection.calendar.event.checkDeletion') {
+        const request = raw as CalendarEventDeletionCheckRequest; deletionChecks.push(structuredClone(request));
+        if (!readAvailable) return { error: { code: 'unavailable', message: 'This calendar is unavailable. Check again later.' } };
+        if (request.slug !== slug || request.source_id !== saved.event.source_id || request.expected_incarnation !== saved.incarnation) {
+          return { error: { code: 'resource_changed', message: 'This calendar was removed or replaced. Reopen it before deleting an event.' } };
+        }
+        return { result: { slug, source_id: request.source_id, incarnation: saved.incarnation,
+          snapshot: removed.has(request.source_id) ? null : view() } };
       }
       if (method === 'collection.calendar.event.respond') {
         const request = raw as CalendarEventRespondRequest; responses.push(structuredClone(request));
@@ -177,6 +235,10 @@ declare global { interface Window { __calendarEvent: {
   creates: CalendarEventCreateRequest[];
   createdCount(): number;
   responses: CalendarEventRespondRequest[];
+  deletes: CalendarEventDeleteRequest[];
+  deletionChecks: CalendarEventDeletionCheckRequest[];
+  setDeleteSupported(supported: boolean): void;
+  replaceCalendar(): void;
   setReadAvailable(available: boolean): void;
   removeOnDecline(): void; allowResponses(allowed: boolean): void;
   failNextSave(): void; loseNextReply(): void; holdNextSave(): void; releaseSave(fail?: boolean): void;
@@ -186,4 +248,9 @@ declare global { interface Window { __calendarEvent: {
 declare global { interface Window { __calendarAgenda: {
   reads: { slug: string; offset: number; from: number; before: number; allDay: boolean }[];
   fail(slug: string | null): void; holdNext(slug: string): void; pending(): boolean; release(): void;
+} } }
+
+declare global { interface Window { __calendarOverlap: {
+  requests: CalendarOverlapRequest[]; holdNext(): void; pending(): boolean; release(): void;
+  fail(value: boolean): void; partial(value: boolean): void; dense(value: boolean): void;
 } } }

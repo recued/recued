@@ -1495,6 +1495,38 @@ describe('CalDavProvider — deleteEvent', () => {
     ).rejects.toMatchObject({ code: 'event_not_found' });
   });
 
+  it('D-336 (spec §58): checks the owner\'s delete at its handoff, and a refusal there sends nothing', async () => {
+    const homeXml = `<?xml version="1.0"?>
+<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/calendars/alice/work/</href>
+    <propstat><prop><displayname>Work</displayname><resourcetype><collection/><c:calendar/></resourcetype></prop></propstat>
+  </response>
+</multistatus>`;
+    const single = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', 'UID:evt-1',
+      'DTSTART:20260423T120000Z', 'DTEND:20260423T130000Z', 'SUMMARY:One-off',
+      'END:VEVENT', 'END:VCALENDAR',
+    ].join('\r\n');
+    const order: string[] = [];
+    const fetcher: HttpFetcher = async (_url, init) => {
+      if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'GET') return mkText(200, single);
+      if (init?.method === 'DELETE') { order.push('sent'); return mkText(204, ''); }
+      return mkText(404, '');
+    };
+    const provider = createCalDavProvider({ slug: 'personal', config: mkConfig(), fetcher, etagStore: makeEtagStore(),
+      scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    await provider.deleteEvent({ calendar_id: '/calendars/alice/work/', source_id: 'caldav-id:evt-1',
+      before_send: () => { order.push('checked'); } });
+    expect(order).toEqual(['checked', 'sent']);
+    await expect(provider.deleteEvent({ calendar_id: '/calendars/alice/work/', source_id: 'caldav-id:evt-1',
+      before_send: () => { throw new Error('This calendar connection does not allow deleting events.'); } }))
+      .rejects.toThrow('does not allow deleting');
+    expect(order).toEqual(['checked', 'sent']);
+  });
+
   const recurDeleteHomeXml = `<?xml version="1.0"?>
 <multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
   <response>

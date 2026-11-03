@@ -159,6 +159,10 @@ export interface InternalExecuteOverrides {
   auto_run_qualification?: import('@recued/contracts').Checkpoint['auto_run_qualification'];
   /** Authenticated external tool entry, never accepted from ExecuteRequest. */
   entry_tool_name?: string;
+  /** D-336 (spec §53) — set only by a chat door: its look at each record change the run makes
+   *  (`ExecutionContext.recordChangeCheck`), so a CRM contact the user named only in part is
+   *  asked about when the run found it itself. Never from an ExecuteRequest. */
+  record_change_check?: NonNullable<import('@recued/engine').ExecutionContext['recordChangeCheck']>;
   /** D-320 §3.5 — set ONLY by `localRecipeInvoker`: the calling run's settled
    *  connection per slot. The called run takes it for each slot they share, so one
    *  run's steps stay on one account; a slot it does not use is skipped. Internal,

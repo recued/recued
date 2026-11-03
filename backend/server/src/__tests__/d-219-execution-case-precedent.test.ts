@@ -257,7 +257,9 @@ const fixture = () => {
   const deps: ExecutionCasePrecedentDeps = {
     anchorStore,
     caseStore,
-    candidateSource: createD213ScanCaseCandidateSource(caseStore),
+    // These assertions exercise card semantics; suite scheduling must not
+    // consume the production scan's 75 ms budget.
+    candidateSource: createD213ScanCaseCandidateSource(caseStore, { now: () => clock }),
     ensureCasesCurrent: compiler.ensureCurrent,
     // ⚠ `OWNER_CONTRACT_ID`, exactly as `resolveOwnerScope` in the real
     // composer resolves it. A literal 'owner' here would scope the lookup to a

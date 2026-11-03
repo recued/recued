@@ -164,7 +164,7 @@ const okResult = (outputs: Record<string, unknown> = {}) =>
   (command_id: string): BridgeResult =>
     buildResult(command_id, { status: 'ok', outputs });
 
-const errorResult = (code: BridgeErrorCode, message = code) =>
+const errorResult = (code: BridgeErrorCode, message: string = code) =>
   (command_id: string): BridgeResult =>
     buildResult(command_id, {
       status: 'error',
@@ -417,11 +417,11 @@ describe('D-169 P0 Slice 4 - dispatcher multi-bridge fall-through', () => {
     expect(setup.sent.map((entry) => entry.client_token_id)).toEqual(['bridge-a']);
   });
 
-  it('aggregates per-bridge capacity gaps when every eligible bridge reports a gap', async () => {
+  it('aggregates per-bridge capacity gaps, with what each Bridge said, when every eligible bridge reports a gap', async () => {
     const setup = buildSetup({
       onSend: respondByBridge({
-        'bridge-a': errorResult('capacity_gap_tab_unavailable'),
-        'bridge-b': errorResult('capacity_gap_logged_in'),
+        'bridge-a': errorResult('capacity_gap_tab_unavailable', 'bridge: no open tab matches the page'),
+        'bridge-b': errorResult('capacity_gap_logged_in', '  '),
       }),
     });
     setup.registry.attach(buildRecord('bridge-a', 3_000, 'laptop-a'));
@@ -438,6 +438,8 @@ describe('D-169 P0 Slice 4 - dispatcher multi-bridge fall-through', () => {
             bridge_id: 'bridge-a',
             bridge_label: 'laptop-a',
             gap_reason: { kind: 'tab_unavailable', url_pattern: target_pattern },
+            // D-335 slice H — the Bridge's words are kept; blank words are not.
+            message: 'bridge: no open tab matches the page',
           },
           {
             bridge_id: 'bridge-b',

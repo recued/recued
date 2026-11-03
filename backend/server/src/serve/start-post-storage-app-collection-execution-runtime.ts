@@ -528,6 +528,7 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
       ...(app.oauthAppNativePermissionNeeds ? { oauthAppNativePermissionNeeds: app.oauthAppNativePermissionNeeds } : {}),
       workEntityStore: options.app.workEntityStore,
       enrichmentCascade: app.enrichmentCascadeRef,
+      ...(app.enrichmentStoreRef ? { enrichmentStore: app.enrichmentStoreRef } : {}),
       // D-192 P4b — late-bound: the ref is populated post-listener by
       // `composeWorkEntityWriteExecutor` once the fetch deps exist.
       getWorkEntityWriteExecutor: () => app.workEntityWriteExecutorRef.current,

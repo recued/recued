@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { MailDraft, MailMessageSnapshot } from '@recued/contracts';
+import type { MailDraft, MailMessageSnapshot, MailMessageStateChange, MailMessageAttachmentsSnapshot } from '@recued/contracts';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 installFullAppHooks();
@@ -7,13 +7,13 @@ const field = (page: Page, name: string) => page.locator(`[data-form-field="${na
 const brief = (page: Page) => page.locator('[data-mail-compose-ai-brief]');
 const dialog = (page: Page) => page.getByRole('dialog', { name: /Reply|Forward|New mail/ });
 
-const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; historyFails?: boolean; messageCount?: number; group?: boolean; forwarding?: boolean } = {}): Promise<void> => {
-  const { sending = true, thread = false, historyFails = false, messageCount = 3, group = false, forwarding = true } = opts;
-  await page.addInitScript(({ sending, thread, historyFails, messageCount, group, forwarding }) => {
+const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; historyFails?: boolean; messageCount?: number; group?: boolean; forwarding?: boolean; triage?: 'writable' | 'read_only'; attachments?: boolean } = {}): Promise<void> => {
+  const { sending = true, thread = false, historyFails = false, messageCount = 3, group = false, forwarding = true, attachments = false } = opts;
+  await page.addInitScript(({ sending, thread, historyFails, messageCount, group, forwarding, triage, attachments }) => {
     let canSend = sending, held = false, fail = false, sendHeld = false;
     let groupReply = group, copyRecipient = 'copy@example.test', replyMailbox = 'owner@example.test';
     let senderMailbox = 'owner@example.test';
-    let forwardAvailable = forwarding, partialBody = false, originalAttachments = false;
+    let forwardAvailable = forwarding, partialBody = false, originalAttachments = attachments;
     let originalBody = 'Please review the revised scope. Can you confirm the delivery date?';
     const recipients = () => groupReply ? ['owner@example.test', 'colleague@example.test', 'DESK@example.test'] : ['owner@example.test'];
     const copies = () => groupReply ? [copyRecipient, 'COLLEAGUE@example.test', 'OWNER@example.test'] : ['copy@example.test'];
@@ -21,6 +21,20 @@ const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; his
     let releaseSend: (() => void) | undefined;
     let saved: MailDraft | null = null;
     const executions: Array<{ recipe_id: string; config: Record<string, unknown> }> = [];
+    const stateChanges: MailMessageStateChange[] = [];
+    const remoteFlags = new Map<string, { is_read: boolean; is_flagged: boolean }>();
+    const confirmedFlags = new Map<string, { is_read: boolean; is_flagged: boolean }>();
+    let stateReadFails = false, loseStateResponse = false, holdState = false;
+    let releaseState: (() => void) | undefined;
+    const flags = (id: string) => remoteFlags.get(id) ?? { is_read: false, is_flagged: false };
+    const messageState = (id: string) => {
+      if (!stateReadFails) confirmedFlags.set(id, { ...flags(id) });
+      return { identity: 'a'.repeat(64), ...(confirmedFlags.get(id) ?? { is_read: false, is_flagged: false }),
+        verified: !stateReadFails, can_mark: triage === 'writable' && !stateReadFails,
+        can_flag: triage === 'writable' && !stateReadFails,
+        ...(triage === 'read_only' ? { unavailable_reason: 'This mailbox is read-only. Mail editing access can be changed in Connections.' }
+          : stateReadFails ? { unavailable_reason: 'Email status could not be checked. Refresh this email before changing it.' } : {}) };
+    };
     const anchorSnapshot = (): MailMessageSnapshot => ({ slug: 'work', record_id: 'mail-1',
       from: 'lead@example.test', to: recipients(), cc: copies(), subject: 'Delivery date',
       received_at: 1_700_000_000_000,
@@ -45,7 +59,7 @@ const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; his
           reply_to: ['lead@example.test'], references: ['<request@example.test>'],
         } }, ...(sent ? { reply_unavailable_reason: 'Reply is available on received email.' } : {}),
       };
-      return { ...selected, ...(forwardAvailable ? {
+      return { ...selected, ...(triage ? { state: messageState(id) } : {}), ...(forwardAvailable ? {
         forward: canSend && !partialBody ? { original_source_id: 'work', mailbox_address: replyMailbox,
           original_message: { from: selected.from, to: selected.to, cc: selected.cc, subject: selected.subject,
             received_at: selected.received_at, body: selected.body!, body_truncated: false, has_attachments: originalAttachments },
@@ -57,7 +71,7 @@ const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; his
     const record = { record_id: 'mail-1', source_id: 'provider-mail-1', received_at: 1_700_000_000_000,
       modified_at: 1_700_000_000_000, size_bytes: 80, body_inline: snapshot().body,
       hot_fields: { subject: 'Delivery date', from: 'lead@example.test', to: ['owner@example.test'], cc: [],
-        direction: 'inbound', folder: 'INBOX', is_read: true, message_id: 'provider-mail-1', rfc_message_id: 'request@example.test' } };
+        direction: 'inbound', folder: 'INBOX', is_read: true, has_attachments: attachments, message_id: 'provider-mail-1', rfc_message_id: 'request@example.test' } };
     const records = [record, ...(thread ? [...Array.from({ length: messageCount - 1 }, (_, index) => `mail-${index + 2}`), 'mail-0'].map(id => {
       const message = snapshot(id);
       return { ...record, record_id: id, source_id: `provider-${id}`, received_at: message.received_at,
@@ -70,8 +84,25 @@ const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; his
     const releases = new Map<string, () => void>();
     let failOlder = false, historyFailure = historyFails, holdConversation = false;
     let releaseConversation: (() => void) | undefined;
-    const conversationItem = (row: typeof record) => ({ ...row, ...row.hot_fields, snippet: row.body_inline?.slice(0, 160) ?? '', has_attachments: false });
-    Object.assign(window, { __mailCompose: { executions, reads,
+    const recordWithFlags = (row: typeof record) => triage ? { ...row,
+      hot_fields: { ...row.hot_fields, ...(confirmedFlags.get(row.record_id) ?? { is_read: false, is_flagged: false }) } } : row;
+    const conversationItem = (row: typeof record) => ({ ...row, ...recordWithFlags(row).hot_fields, snippet: row.body_inline?.slice(0, 160) ?? '', has_attachments: attachments && row.record_id === 'mail-1' });
+    const attachmentReads: string[] = [], previewReads: string[] = [];
+    let attachmentHold = false, attachmentRelease: (() => void) | undefined, attachmentFailure = false, attachmentName = 'Invoice.txt', attachmentIncarnation = 'work-v1';
+    const primaryFile = 'file:' + '1'.repeat(32), officeFile = 'file:' + '2'.repeat(32), missingFile = 'file:' + '3'.repeat(32), laterFile = 'file:' + '4'.repeat(32);
+    const content = (id: string) => id === officeFile ? 'Office document.' : id === laterFile ? 'Later message attachment.' : 'Invoice INV-42\nTotal: 25 EUR';
+    const digest = async (value: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const attachmentControls = { reads: attachmentReads, previewReads,
+      holdNext() { attachmentHold = true; }, pending() { return attachmentRelease !== undefined; },
+      release() { if (!attachmentRelease) throw new Error('No attachment read is waiting.'); const done = attachmentRelease; attachmentRelease = undefined; done(); },
+      fail(value: boolean) { attachmentFailure = value; }, rename() { attachmentName = 'Revised.txt'; }, replaceMailbox() { attachmentIncarnation = 'work-v2'; },
+    };
+    Object.assign(window, { __mailAttachments: attachmentControls, __mailCompose: { executions, reads, stateChanges,
+      failStateRead(value: boolean) { stateReadFails = value; },
+      setRemoteFlags(id: string, value: { is_read: boolean; is_flagged: boolean }) { remoteFlags.set(id, value); },
+      loseStateResponse() { loseStateResponse = true; },
+      holdState() { holdState = true; },
+      releaseState() { if (!releaseState) throw new Error('No email change is waiting.'); const done = releaseState; releaseState = undefined; done(); },
       holdMessage(id: string) { heldReads.add(id); },
       releaseMessage(id: string) { const done = releases.get(id); if (!done) throw new Error('No email read is waiting.'); releases.delete(id); done(); },
       failOlder() { failOlder = true; },
@@ -96,8 +127,46 @@ const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; his
       const args = raw as Record<string, unknown> | undefined;
       if (method === 'collection.listInstances') return { result: { instances: [{ platform: 'mail', slug: 'work',
         adapter_type: 'gmail', auth_state: 'healthy', caps: {}, last_synced_at: 1_700_000_000_000 }] } };
-      if (method === 'collection.list' && args?.platform === 'mail') return { result: { records: structuredClone(records.filter(row => row.record_id !== 'mail-0')) } };
-      if (method === 'collection.get' && args?.platform === 'mail') return { result: { record: structuredClone(records.find(row => row.record_id === args.record_id) ?? null) } };
+      if (method === 'collection.list' && args?.platform === 'mail') return { result: { records: structuredClone(records.filter(row => row.record_id !== 'mail-0').map(recordWithFlags)) } };
+      if (method === 'collection.get' && args?.platform === 'mail') {
+        const row = records.find(row => row.record_id === args.record_id);
+        return { result: { record: row ? structuredClone(recordWithFlags(row)) : null } };
+      }
+      if (method === 'collection.mail.message.attachments') {
+        const id = String(args?.record_id); attachmentReads.push(id);
+        if (args?.expected_incarnation && args.expected_incarnation !== attachmentIncarnation) return { error: { code: 'resource_changed', message: 'This email or mailbox changed. Reopen it from Mail.' } };
+        const item = async (file_id: string, filename: string, mime_type: string) => ({ file_id, filename, mime_type,
+          size: new TextEncoder().encode(content(file_id)).length, content_hash: await digest(content(file_id)),
+          selection_revision: (filename === 'Revised.txt' ? 'c' : 'b').repeat(64) });
+        const value: MailMessageAttachmentsSnapshot = { slug: 'work', record_id: id, incarnation: attachmentIncarnation, warnings: [], truncated: false,
+          items: !attachments ? [] : id === 'mail-1' ? [await item(primaryFile, attachmentName, 'text/plain'),
+            await item(officeFile, 'Terms.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+            { file_id: missingFile, filename: 'Missing.pdf', mime_type: 'application/pdf', size: null, unavailable_reason: 'This linked attachment is no longer retained.' }]
+            : [await item(laterFile, 'Later.txt', 'text/plain')] };
+        if (attachmentHold) { attachmentHold = false; await new Promise<void>(done => { attachmentRelease = done; }); }
+        if (attachmentFailure) return { error: { code: 'unavailable', message: 'Saved attachments are temporarily unavailable.' } };
+        return { result: value };
+      }
+      if (method === 'data.file.attachments.preview' || method === 'data.file.read') {
+        const id = String(args?.record_id); previewReads.push(id);
+        const data = content(id), filename = id === officeFile ? 'Terms.docx' : id === laterFile ? 'Later.txt' : attachmentName;
+        const mime_type = id === officeFile ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'text/plain';
+        if (method === 'data.file.read') return { result: { record_id: id, filename, mime_type, bytes_b64: btoa(data), size_bytes: data.length, blob_hash: await digest(data) } };
+        return { result: { record_id: id, filename, mime_type, transient: false, can_download: true, size_bytes: data.length,
+          ...(id === officeFile ? { unavailable_reason: 'This file format has no preview yet. You can download it.' }
+            : { content: { kind: 'text', bytes_b64: btoa(data) } }) } };
+      }
+      if (method === 'collection.mail.message.updateState') {
+        const input = structuredClone(args) as unknown as MailMessageStateChange;
+        stateChanges.push(input);
+        if (triage !== 'writable') return { error: { code: 'forbidden', message: 'This mailbox is read-only.' } };
+        if (holdState) { holdState = false; await new Promise<void>(done => { releaseState = done; }); }
+        remoteFlags.set(input.record_id, { ...flags(input.record_id), [input.change.kind === 'read' ? 'is_read' : 'is_flagged']: input.change.value });
+        if (loseStateResponse) { loseStateResponse = false; return { error: { code: 'upstream_error', message: 'The response was lost. The change may have been applied.' } }; }
+        confirmedFlags.set(input.record_id, { ...flags(input.record_id) });
+        const row = records.find(row => row.record_id === input.record_id)!;
+        return { result: { slug: input.slug, record_id: input.record_id, state: messageState(input.record_id), record: recordWithFlags(row) } };
+      }
       if (method === 'collection.mail.conversation.get') {
         if (historyFailure) return { error: { code: 'unavailable', message: 'Conversation history is temporarily unavailable.' } };
         if (holdConversation) { holdConversation = false; await new Promise<void>(done => { releaseConversation = done; }); }
@@ -145,13 +214,119 @@ const boot = async (page: Page, opts: { sending?: boolean; thread?: boolean; his
       }
       return undefined;
     } });
-  }, { sending, thread, historyFails, messageCount, group, forwarding });
+  }, { sending, thread, historyFails, messageCount, group, forwarding, triage: opts.triage, attachments });
   await page.goto(`${HARNESS_URL}?connection=source-answer&recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/mail'));
   await page.locator('[data-collection-record="mail-1"]').click();
   await expect(page.getByRole('article', { name: 'Email message' })).toContainText('Can you confirm the delivery date?');
 };
+
+test('opens and downloads retained attachments from the email and explains missing files', async ({ page }, testInfo) => {
+  await boot(page, { attachments: true, sending: false });
+  const panel = page.getByRole('region', { name: 'Email attachments', exact: true });
+  await expect(panel).toContainText('Invoice.txt');
+  await expect(panel).toContainText('no longer retained');
+  const invoice = panel.locator('li').filter({ hasText: 'Invoice.txt' });
+  await invoice.getByRole('button', { name: 'Open', exact: true }).click();
+  const viewer = page.getByRole('dialog', { name: 'File preview', exact: true });
+  await expect(viewer).toContainText('Invoice INV-42');
+  await viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+  await expect(invoice.getByRole('button', { name: 'Open', exact: true })).toBeFocused();
+  await expect(page.getByRole('article', { name: 'Email message' })).toContainText('Can you confirm the delivery date?');
+  await panel.screenshot({ path: testInfo.outputPath('mail-attachments-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark' });
+  await panel.screenshot({ path: testInfo.outputPath('mail-attachments-phone-dark.png') });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const office = panel.locator('li').filter({ hasText: 'Terms.docx' });
+  await office.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(viewer).toContainText('no preview yet');
+  const completed = page.waitForEvent('download'); await viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+  expect((await completed).suggestedFilename()).toBe('Terms.docx');
+  await viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+  const direct = page.waitForEvent('download'); await invoice.getByRole('button', { name: 'Download', exact: true }).click();
+  expect((await direct).suggestedFilename()).toBe('Invoice.txt');
+  expect(await page.evaluate(() => window.__mailCompose.executions)).toEqual([]);
+});
+
+test('keeps email and a reply draft usable while attachment metadata loads or fails', async ({ page }) => {
+  await boot(page, { attachments: true });
+  const panel = page.getByRole('region', { name: 'Email attachments', exact: true });
+  await expect(panel).toContainText('Invoice.txt');
+  await page.evaluate(() => window.__mailAttachments.holdNext());
+  await panel.getByRole('button', { name: 'Refresh attachments', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mailAttachments.pending())).toBe(true);
+  await page.getByRole('button', { name: 'Reply', exact: true }).click();
+  await field(page, 'body').fill('Keep these reply notes.');
+  await page.evaluate(() => window.__mailAttachments.release());
+  await expect(field(page, 'body')).toHaveValue('Keep these reply notes.');
+  await expect(dialog(page)).toBeVisible();
+  expect(await page.evaluate(() => window.__mailCompose.executions)).toEqual([]);
+});
+
+test('retires attachment lists and pending opens after selecting another message', async ({ page }) => {
+  await boot(page, { attachments: true, thread: true });
+  const panel = page.getByRole('region', { name: 'Email attachments', exact: true });
+  const index = page.getByRole('navigation', { name: 'Messages in this conversation' });
+  await expect(panel).toContainText('Invoice.txt');
+  await page.evaluate(() => window.__mailAttachments.holdNext());
+  await panel.getByRole('button', { name: 'Refresh attachments', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mailAttachments.pending())).toBe(true);
+  await index.locator('[data-mail-record="mail-2"]').click();
+  await expect(panel).toContainText('Later.txt');
+  await page.evaluate(() => window.__mailAttachments.release());
+  await expect(panel).not.toContainText('Invoice.txt');
+  await page.evaluate(() => window.__mailAttachments.holdNext());
+  await panel.locator('li').filter({ hasText: 'Later.txt' }).getByRole('button', { name: 'Open', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mailAttachments.pending())).toBe(true);
+  await index.locator('[data-mail-record="mail-1"]').click();
+  await expect(panel).toContainText('Invoice.txt');
+  await page.evaluate(() => window.__mailAttachments.release());
+  await expect(page.getByRole('dialog', { name: 'File preview', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__mailAttachments.previewReads)).toEqual([]);
+});
+
+test('recovers attachment failures and requires a new selection after rename or mailbox replacement', async ({ page }) => {
+  await boot(page, { attachments: true });
+  const panel = page.getByRole('region', { name: 'Email attachments', exact: true });
+  await expect(panel).toContainText('Invoice.txt');
+  await page.evaluate(() => window.__mailAttachments.fail(true));
+  await panel.getByRole('button', { name: 'Refresh attachments', exact: true }).click();
+  await expect(panel).toContainText('temporarily unavailable');
+  await expect(page.getByRole('button', { name: 'Reply', exact: true })).toBeEnabled();
+  await expect(page.getByRole('article', { name: 'Email message' })).toContainText('Can you confirm the delivery date?');
+  await page.evaluate(() => window.__mailAttachments.fail(false));
+  await panel.getByRole('button', { name: 'Retry attachments', exact: true }).click();
+  await expect(panel).toContainText('Invoice.txt');
+  await page.evaluate(() => window.__mailAttachments.rename());
+  await panel.locator('li').filter({ hasText: 'Invoice.txt' }).getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(panel).toContainText('choose it again');
+  await expect(panel).toContainText('Revised.txt');
+  expect(await page.evaluate(() => window.__mailAttachments.previewReads)).toEqual([]);
+  await page.evaluate(() => window.__mailAttachments.replaceMailbox());
+  await panel.locator('li').filter({ hasText: 'Revised.txt' }).getByRole('button', { name: 'Download', exact: true }).click();
+  await expect(panel).toContainText('mailbox changed');
+  expect(await page.evaluate(() => window.__mailAttachments.previewReads)).toEqual([]);
+});
+
+test('a newer email refresh retires a pending attachment open before its old response arrives', async ({ page }) => {
+  await boot(page, { attachments: true, sending: false });
+  const panel = page.getByRole('region', { name: 'Email attachments', exact: true });
+  await expect(panel).toContainText('Invoice.txt');
+  await page.evaluate(() => window.__mailAttachments.holdNext());
+  await panel.locator('li').filter({ hasText: 'Invoice.txt' }).getByRole('button', { name: 'Open', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mailAttachments.pending())).toBe(true);
+  await expect(panel).toContainText('Checking attachment…');
+  await page.evaluate(() => window.__mailAttachments.rename());
+  await page.getByRole('button', { name: 'Refresh email', exact: true }).click();
+  await expect(panel).toContainText('Revised.txt');
+  await page.evaluate(() => window.__mailAttachments.release());
+  await expect(panel).not.toContainText('Invoice.txt');
+  await expect(page.getByRole('dialog', { name: 'File preview', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__mailAttachments.previewReads)).toEqual([]);
+  await panel.locator('li').filter({ hasText: 'Revised.txt' }).getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'File preview', exact: true })).toContainText('Invoice INV-42');
+});
 
 test('Reply all checks fresh participants and carries the reviewed To/Cc through draft storage and approval on a phone', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -653,6 +828,107 @@ test('keeps the current message visible in a long conversation index while readi
   await expect(index.locator('[data-mail-record="mail-1"]')).toBeInViewport();
 });
 
+test('mail triage changes read and star status without sending access, on desktop and phone', async ({ page }, testInfo) => {
+  await boot(page, { thread: true, sending: false, triage: 'writable' });
+  const article = page.getByRole('article', { name: 'Email message' });
+  const status = article.getByLabel('Email status', { exact: true });
+  const more = article.getByRole('button', { name: 'More', exact: true });
+  const index = page.getByRole('navigation', { name: 'Messages in this conversation' }).locator('[data-mail-record="mail-1"]');
+  await expect(status).toHaveText('Unread');
+  expect(await page.evaluate(() => window.__mailCompose.stateChanges)).toEqual([]);
+  await more.click();
+  await article.screenshot({ path: testInfo.outputPath('mail-actions-desktop.png') });
+  await article.getByRole('button', { name: 'Mark as read', exact: true }).click();
+  await expect(status).toHaveText('Read'); await expect(index).not.toContainText('Unread');
+  await more.click(); await article.getByRole('button', { name: 'Mark as unread', exact: true }).click();
+  await expect(status).toHaveText('Unread'); await expect(index).toContainText('Unread');
+  await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark' });
+  await more.click();
+  await page.screenshot({ path: testInfo.outputPath('mail-actions-phone-dark.png'), fullPage: true });
+  await article.getByRole('button', { name: 'Star email', exact: true }).click();
+  await expect(status).toHaveText('Unread · Starred');
+  await page.getByRole('button', { name: '← Back', exact: true }).click();
+  await page.locator('[data-collection-record="mail-1"]').click();
+  await expect(status).toHaveText('Unread · Starred');
+  await more.click(); await article.getByRole('button', { name: 'Remove star', exact: true }).click();
+  await expect(status).toHaveText('Unread');
+  const actions = await page.evaluate(() => window.__mailCompose.stateChanges);
+  expect(actions.map(input => input.change)).toEqual([{ kind: 'read', value: true }, { kind: 'read', value: false },
+    { kind: 'star', value: true }, { kind: 'star', value: false }]);
+  expect(actions.every(input => input.slug === 'work' && input.record_id === 'mail-1'
+    && input.conversation?.incarnation === 'work-v1')).toBe(true);
+  expect(await page.evaluate(() => window.__mailCompose.executions)).toEqual([]);
+});
+
+test('mail triage holds navigation and duplicate actions until the provider confirms', async ({ page }) => {
+  await boot(page, { thread: true, triage: 'writable' });
+  const article = page.getByRole('article', { name: 'Email message' });
+  await page.evaluate(() => window.__mailCompose.holdState());
+  await article.getByRole('button', { name: 'More', exact: true }).click();
+  await article.getByRole('button', { name: 'Mark as read', exact: true }).click();
+  await expect(article).toContainText('Updating email…');
+  await expect(article.getByLabel('Email status', { exact: true })).toHaveText('Unread');
+  await article.getByRole('button', { name: 'More', exact: true }).click({ force: true });
+  await page.getByRole('button', { name: '← Back', exact: true }).click();
+  await expect(article).toBeVisible();
+  expect(await page.evaluate(() => window.__mailCompose.stateChanges.length)).toBe(1);
+  await page.evaluate(() => window.__mailCompose.releaseState());
+  await expect(article.getByLabel('Email status', { exact: true })).toHaveText('Read');
+});
+
+test('mail triage requires a successful check after a lost response and reconciles the conversation', async ({ page }) => {
+  await boot(page, { thread: true, triage: 'writable' });
+  const article = page.getByRole('article', { name: 'Email message' });
+  const more = article.getByRole('button', { name: 'More', exact: true });
+  await page.evaluate(() => window.__mailCompose.loseStateResponse());
+  await more.click(); await article.getByRole('button', { name: 'Star email', exact: true }).click();
+  await expect(article.getByRole('alert')).toContainText('Refresh this email before trying another change.');
+  await more.click(); await expect(article.getByRole('button', { name: 'Star email', exact: true })).toBeDisabled();
+  await page.evaluate(() => window.__mailCompose.failStateRead(true));
+  await article.getByRole('button', { name: 'Refresh email', exact: true }).click();
+  await expect(article.getByRole('button', { name: 'Star email', exact: true })).toBeDisabled();
+  await page.evaluate(() => window.__mailCompose.failStateRead(false));
+  await article.getByRole('button', { name: 'Refresh email', exact: true }).click();
+  await expect(article.getByRole('button', { name: 'Remove star', exact: true })).toBeEnabled();
+  await expect(page.getByRole('navigation', { name: 'Messages in this conversation' }).locator('[data-mail-record="mail-1"]')).toContainText('Starred');
+  expect(await page.evaluate(() => window.__mailCompose.stateChanges.length)).toBe(1);
+});
+
+test('mail triage checks keep the mailbox list current when conversation history is unavailable', async ({ page }) => {
+  await boot(page, { sending: false, historyFails: true, triage: 'writable' });
+  const article = page.getByRole('article', { name: 'Email message' });
+  const status = article.getByLabel('Email status', { exact: true });
+  const more = article.getByRole('button', { name: 'More', exact: true });
+  await more.click(); await article.getByRole('button', { name: 'Mark as read', exact: true }).click();
+  await expect(article).toContainText('Marked as read.');
+  await page.evaluate(() => window.__mailCompose.setRemoteFlags('mail-1', { is_read: false, is_flagged: false }));
+  await article.getByRole('button', { name: 'Refresh email', exact: true }).click();
+  await expect(status).toHaveText('Unread');
+  await expect(article).not.toContainText('Marked as read.');
+  await page.getByRole('button', { name: '← Back', exact: true }).click();
+  await expect(page.locator('[data-collection-record="mail-1"] .col-explorer-mail-status')).toContainText('Unread');
+  await page.locator('[data-collection-record="mail-1"]').click();
+  await expect(article).not.toContainText('Marked as read.');
+  await page.evaluate(() => window.__mailCompose.loseStateResponse());
+  await more.click(); await article.getByRole('button', { name: 'Mark as read', exact: true }).click();
+  await expect(article.getByRole('alert')).toContainText('Refresh this email');
+  await expect(status).toHaveText('Last confirmed: Unread');
+  await article.getByRole('button', { name: 'Refresh email', exact: true }).click();
+  await expect(status).toHaveText('Read');
+  await page.getByRole('button', { name: '← Back', exact: true }).click();
+  await expect(page.locator('[data-collection-record="mail-1"] .col-explorer-mail-status')).not.toContainText('Unread');
+});
+
+test('mail triage explains a read-only mailbox without offering an executable action', async ({ page }) => {
+  await boot(page, { triage: 'read_only' });
+  const article = page.getByRole('article', { name: 'Email message' });
+  await article.getByRole('button', { name: 'More', exact: true }).click();
+  await expect(article.getByRole('button', { name: 'Mark as read', exact: true })).toBeDisabled();
+  await expect(article.getByRole('button', { name: 'Star email', exact: true })).toBeDisabled();
+  await expect(article.getByRole('group', { name: 'Email actions' })).toContainText('This mailbox is read-only.');
+  expect(await page.evaluate(() => window.__mailCompose.stateChanges)).toEqual([]);
+});
+
 declare global { interface Window { __mailCompose: {
   executions: Array<{ recipe_id: string; config: Record<string, unknown> }>;
   setSending(value: boolean): void; holdAI(): void; releaseAI(): void; failAI(): void; saved(): MailDraft | null;
@@ -662,6 +938,14 @@ declare global { interface Window { __mailCompose: {
   setOriginalBody(value: string): void; setOriginalAttachments(value: boolean): void;
   holdSend(): void; releaseSend(): void;
   reads: Array<{ record_id: string; conversation?: unknown }>;
+  stateChanges: MailMessageStateChange[];
+  setRemoteFlags(id: string, value: { is_read: boolean; is_flagged: boolean }): void;
+  failStateRead(value: boolean): void; loseStateResponse(): void; holdState(): void; releaseState(): void;
   holdMessage(id: string): void; releaseMessage(id: string): void; failOlder(): void;
   recoverHistory(): void; holdConversation(): void; releaseConversation(): void;
+} } }
+
+declare global { interface Window { __mailAttachments: {
+  reads: string[]; previewReads: string[]; holdNext(): void; pending(): boolean; release(): void;
+  fail(value: boolean): void; rename(): void; replaceMailbox(): void;
 } } }

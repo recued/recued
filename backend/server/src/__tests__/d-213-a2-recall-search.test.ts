@@ -107,6 +107,8 @@ describe('D-213 A2 — interaction decrypt-and-scan', () => {
       ts: 1_200,
     });
     const backend = createRecallSearchBackend(store, {
+      // Matching semantics do not depend on the host's scan time.
+      now: () => 0,
       continuation_secret: new Uint8Array(32),
     });
 

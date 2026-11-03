@@ -1,5 +1,5 @@
 import {
-  CALENDAR_EVENT_EDIT_LIMITS, DAY_MS, RpcError,
+  CALENDAR_EVENT_EDIT_LIMITS, DAY_MS, RpcError, normalizeCalendarEventGuests,
   type CalendarEventCreateRequest, type CalendarEventCreateResult, type CalendarEventDestinations,
 } from '@recued/contracts';
 import { resourceReviewHash } from '../../resource-review.js';
@@ -37,6 +37,8 @@ export const listCalendarEventDestinations = async (deps: CalendarDispatcherDeps
         && cal.calendar_id.length <= 4096 && typeof cal.name === 'string').map(cal => ({
         slug: instance.slug, calendar_id: cal.calendar_id, name: cal.name.slice(0, 1024),
         provider: collection.provider.kind, incarnation,
+        ...(cal.can_invite === true && collection.provider.kind !== 'local' ? { can_invite: true as const } : {}),
+        ...(cal.invitation_unavailable_reason ? { invitation_unavailable_reason: cal.invitation_unavailable_reason } : {}),
       }));
       return destinations.length ? { destinations, unavailable: [] } : unavailable('No writable calendars are available on this connection.');
     } catch {
@@ -63,11 +65,19 @@ const validate = (input: CalendarEventCreateRequest): CalendarEventCreateRequest
   }
   if (input.end_at <= input.start_at) return invalid('The end must be after the start.');
   if (typeof input.is_all_day !== 'boolean' || input.is_all_day && (input.start_at % DAY_MS !== 0 || input.end_at % DAY_MS !== 0)) return invalid('All-day events must use whole calendar dates.');
-  // Bind only the fields this form supports. Extra recurrence or attendee data
-  // must never turn a one-off personal event into invitations or a series.
+  let guests: NonNullable<CalendarEventCreateRequest['guests']>;
+  try { guests = normalizeCalendarEventGuests(input.guests ?? []); }
+  catch (cause) { return invalid(cause instanceof Error ? cause.message : 'Check the guest list.'); }
+  if ((input.send_invitations !== undefined && input.send_invitations !== true)
+    || Boolean(guests.length) !== (input.send_invitations === true)) {
+    return invalid('Review the guests and choose Create and send invitations.');
+  }
+  // Bind only the owner form's supported fields. Raw attendees, organizer and
+  // recurrence cannot silently add recipients or change the event's identity.
   return { slug: input.slug, calendar_id: input.calendar_id, expected_incarnation: input.expected_incarnation,
     creation_id: input.creation_id, summary: input.summary, description: input.description, location: input.location,
-    start_at: input.start_at, end_at: input.end_at, timezone: input.timezone, is_all_day: input.is_all_day };
+    start_at: input.start_at, end_at: input.end_at, timezone: input.timezone, is_all_day: input.is_all_day,
+    ...(guests.length ? { guests, send_invitations: true as const } : {}) };
 };
 
 export const createOwnerCalendarEvent = async (
@@ -85,7 +95,8 @@ export const createOwnerCalendarEvent = async (
     // A completed request is a read, so it remains recoverable if write access
     // was revoked after the save. It must still refer to the same connection.
     if (deps.instances.getIncarnation?.('calendar', input.slug) !== input.expected_incarnation) changed();
-    return { slug: input.slug, snapshot: getCalendarEvent(deps, { slug: input.slug, source_id: receipt.source_id }) };
+    return { slug: input.slug, snapshot: getCalendarEvent(deps, { slug: input.slug, source_id: receipt.source_id }),
+      ...(input.send_invitations ? { invitations_requested: true as const } : {}) };
   };
   const prior = priorResult();
   if (prior) return prior;
@@ -93,17 +104,26 @@ export const createOwnerCalendarEvent = async (
   if (!collection.provider.listWritableCalendars) throw new RpcError('forbidden', 'Event creation is unavailable for this calendar.', 403);
   const calendars = await collection.provider.listWritableCalendars();
   binding();
-  if (!calendars.some(cal => cal.calendar_id === input.calendar_id)) throw new RpcError('forbidden', 'This calendar is no longer writable. Reload calendars and choose another.', 403);
+  const destination = calendars.find(cal => cal.calendar_id === input.calendar_id);
+  if (!destination) throw new RpcError('forbidden', 'This calendar is no longer writable. Reload calendars and choose another.', 403);
+  if (input.send_invitations && (collection.provider.kind === 'local' || destination.can_invite !== true)) {
+    throw new RpcError('forbidden', 'This calendar cannot send guest invitations here. Reload calendars and choose a calendar that supports invitations.', 403);
+  }
   if (!store.claim(input.creation_id, hash, (deps.now ?? Date.now)())) return priorResult()!;
   let source: string;
   try {
     const created = await handleCalendarCreate(deps, { slug: input.slug, calendar_id: input.calendar_id,
       event: { calendar_id: input.calendar_id, summary: input.summary, description: input.description, location: input.location,
-        start_at: input.start_at, end_at: input.end_at, timezone: input.timezone, is_all_day: input.is_all_day, status: 'confirmed' },
+        start_at: input.start_at, end_at: input.end_at, timezone: input.timezone, is_all_day: input.is_all_day, status: 'confirmed',
+        ...(input.guests?.length ? { attendees: input.guests.map(guest => ({ ...guest, response_status: 'needs_action' as const })),
+          send_invitations: true as const } : {}) },
       beforeSend: binding,
     });
     source = created.source_id;
+    const attendees = collection.table.get(source)?.event.attendees ?? [];
+    if (input.guests?.some(guest => !attendees.some(attendee => attendee.email.trim().toLowerCase() === guest.email))) return unknown();
     store.complete(input.creation_id, hash, source);
   } catch { return unknown(); }
-  return { slug: input.slug, snapshot: getCalendarEvent(deps, { slug: input.slug, source_id: source }) };
+  return { slug: input.slug, snapshot: getCalendarEvent(deps, { slug: input.slug, source_id: source }),
+    ...(input.send_invitations ? { invitations_requested: true as const } : {}) };
 };

@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   renderHousekeepingCustomWindowFields,
+  renderHousekeepingEnrichmentProducerSection,
   computeHousekeepingCostPreview,
   initialHousekeepingPanelState,
   initialHousekeepingRunNowDialogState,
@@ -51,6 +52,18 @@ const taskStatus = (
 // ────────────────────────────────────────────────────────────────
 
 describe('D-123 P5 — computeHousekeepingCostPreview', () => {
+  it('distinguishes a known empty AI source from an unavailable source count', () => {
+    const known = computeHousekeepingCostPreview({
+      enrichment: { is_ai_surface: true, token_estimate_per_record: 600, source_collection_count: 0 },
+    });
+    const unknown = computeHousekeepingCostPreview({
+      enrichment: { is_ai_surface: true, token_estimate_per_record: 600 },
+    });
+    expect(known.estimated_tokens).toBe(0);
+    expect(known.deterministic).toBe(false);
+    expect(unknown.estimated_tokens).toBeUndefined();
+  });
+
   it('returns deterministic = true for 0-token producers', () => {
     const preview = computeHousekeepingCostPreview({
       enrichment: { token_estimate_per_record: 0, source_collection_count: 1234 },
@@ -147,6 +160,34 @@ describe('D-123 follow-on — Run Now dialog AI-availability warning', () => {
     expect(confirm).not.toBeNull();
     expect(confirm?.[0].split('>')[0]).not.toContain(' disabled');
     expect(confirm?.[1].replace(/<[^>]*>/g, '').trim()).toBe('Run now');
+  });
+
+  it('shows the full-pass estimate and distinguishes an empty read scope from an unknown one', () => {
+    const html = renderHousekeepingRunNowConfirmDialog({
+      state: { ...initialHousekeepingRunNowDialogState(), task_id: 'enrichment.summary' },
+      task: aiTask({ enrichment: {
+        is_ai_surface: true, token_estimate_per_record: 600, source_collection_count: 3, ai_path_available: true,
+        scope_read: [
+          { collection: 'data.contact', sample_field_paths: ['email'], record_count: 3 },
+          { collection: 'data.mail', sample_field_paths: ['subject'], record_count: 0 },
+          { collection: 'connection.unknown', sample_field_paths: ['status'] },
+        ],
+      } }),
+    });
+    expect(html).toContain('~1,800 tokens');
+    expect(html).toContain('3 source records');
+    expect(html).toContain('0 records');
+    expect(html).toContain('Record count unavailable');
+    expect(html).toContain('Estimates cover the full source population');
+    expect(html).toContain('Cycle limits and unchanged records may reduce the work');
+  });
+
+  it('presents the priced total once in the expanded producer card', () => {
+    const html = renderHousekeepingEnrichmentProducerSection({
+      ...baseState(), now: NOW, search: '', costFilter: 'all', modelUnitCostUsd: 0.000005,
+      tasks: [aiTask()], expandedTopic: 'summary',
+    });
+    expect(html).toContain('~30,000 tokens (across 50 source records) ≈ $0.15');
   });
 
   it('renders the no-AI warning + disables Run Now when ai_path_available is false', () => {

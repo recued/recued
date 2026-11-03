@@ -5,6 +5,7 @@ import { MAIL_DRAFT_SOURCE_MAX, RpcError, type MailMessageRef, type MailMessageS
 import { materializeMailBody } from '../../mail-body-read-handler.js';
 import type { BlobStore } from '../../storage/blob-store.js';
 import type { MailCollection } from './mail-collection.js';
+import { readMailMessageState } from './message-state.js';
 
 export interface MailMessageReadDeps {
   getCollection(slug: string): (Pick<MailCollection, 'get' | 'accountEmail'> & {
@@ -53,15 +54,18 @@ export const getMailMessage = async (deps: MailMessageReadDeps, input: MailMessa
   };
   assertScope();
   const hot = record.hot_fields;
-  let body = typeof record.body_inline === 'string' ? record.body_inline : deps.blobs
-    ? await materializeMailBody(record, deps.blobs) : null;
   const snapshot: MailMessageSnapshot = {
     slug: input.slug, record_id: input.record_id, from: text(hot.from), to: strings(hot.to), cc: strings(hot.cc), subject: text(hot.subject),
     received_at: record.received_at,
     body: null, body_truncated: false, read: 'stored', reply: null, forward: null,
   };
+  const checkedState = await readMailMessageState(deps, input);
+  snapshot.state = checkedState.state;
+  let body = typeof record.body_inline === 'string' ? record.body_inline : deps.blobs
+    ? await materializeMailBody(record, deps.blobs) : null;
   const unavailable = (reason: string): MailMessageSnapshot => {
     assertScope();
+    if (checkedState.state.verified) checkedState.assertCurrent();
     snapshot.body_truncated = body !== null && body.length > MAIL_DRAFT_SOURCE_MAX;
     snapshot.body = body === null ? null : body.slice(0, MAIL_DRAFT_SOURCE_MAX);
     snapshot.reply_unavailable_reason = reason;
@@ -78,7 +82,7 @@ export const getMailMessage = async (deps: MailMessageReadDeps, input: MailMessa
   const fetch = collection.provider.fetchMessage;
   if (!fetch) return unavailable('This mailbox cannot verify the original email.');
   try {
-    const message = await fetch.call(collection.provider, sourceId);
+    const message = checkedState.message === undefined ? await fetch.call(collection.provider, sourceId) : checkedState.message;
     const storedId = rfcId(storedRfcId);
     const messageId = rfcId(message?.rfc_message_id);
     if (!message || message.source_id !== sourceId || storedId !== null && storedId !== messageId) {

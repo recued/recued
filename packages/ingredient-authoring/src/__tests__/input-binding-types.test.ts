@@ -30,8 +30,8 @@ describe('advisory input binding types', () => {
     const variables = { text: { type: 'text', label: 'Text' }, count: { type: 'number', label: 'Count' }, custom: { type: 'future', label: 'Custom' } };
     const before = JSON.stringify({ schema, values, variables }), result = checkClosedInputBindings(schema, values, variables);
     expect(result).toEqual({ complete: true, totalFindings: 2, findings: [
-      { path: ['a.b'], name: 'text', declared: 'text', expected: 'boolean' },
-      { path: ['rows', 1], name: 'text', declared: 'text', expected: 'integer' },
+      { path: ['a.b'], name: 'text', declared: 'text', expected: 'boolean', reason: 'type' },
+      { path: ['rows', 1], name: 'text', declared: 'text', expected: 'integer', reason: 'type' },
     ] });
     expect(checkClosedInputs(schema, values).deferredValues).toBe(6);
     expect(checkClosedInputs(schema, values).findings).toEqual([]);
@@ -51,5 +51,26 @@ describe('advisory input binding types', () => {
     expect(checkClosedInputBindings(schema, { count: '{{config.text}}', unknown: '{{config.text}}', values: ['{{config.text}}'] }, hints).findings.map(row => row.path))
       .toEqual([['count'], ['values', 0]]);
     expect(inputBindingCompatibility(undefined, hints.text)).toBe('unknown');
+  });
+  it('compares bounded declared enum sets without inferring values or rejecting custom inputs', () => {
+    const hint = { label: 'Mode', type: 'enum', options: ['draft', 'send'], optional: true };
+    expect(inputBindingCompatibility('string', hint)).toBe('compatible');
+    expect(inputBindingCompatibility({ type: 'string', enum: ['send', 'draft', 'archive'] }, hint)).toBe('compatible');
+    expect(inputBindingCompatibility({ type: 'string', enum: ['draft'] }, hint)).toBe('mismatch');
+    expect(inputBindingCompatibility('boolean', hint)).toBe('mismatch');
+    expect(inputBindingCompatibility({ type: 'string', enum: ['draft'] }, { ...hint, type: 'future' })).toBe('unknown');
+    for (const options of [[], [''], [' '], [true], Array(101).fill('draft'), ['x'.repeat(257)]])
+      expect(inputBindingCompatibility('string', { ...hint, options })).toBe('unknown');
+    expect(inputBindingCompatibility({ type: 'string', enum: [] }, hint)).toBe('unknown');
+  });
+  it('locates incompatible enum options inside array items and defers formatted or runtime values', () => {
+    const schema = { type: 'array', items: { type: 'string', enum: ['draft'] } };
+    const hints = { mode: { label: 'Mode', type: 'enum', options: ['draft', 'send', 'send'] } };
+    const values = ['{{config.mode}}', '{{config.mode:json}}', '{{step.result}}'];
+    const before = JSON.stringify({ schema, hints, values });
+    const checked = checkClosedInputBindings(schema, values, hints);
+    expect(checked.complete).toBe(true);
+    expect(checked.findings).toEqual([{ path: [0], name: 'mode', declared: 'enum', expected: 'string', reason: 'enum', outside: ['send'] }]);
+    expect(JSON.stringify({ schema, hints, values })).toBe(before);
   });
 });

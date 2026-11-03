@@ -71,14 +71,17 @@ export interface CheckpointStore {
    *  closed rather than silently dropping the edit.
    *
    *  This is the ONLY write path for `Checkpoint.arg_overrides`
-   *  (D-173 N.5 MUST). It MUST be called ONLY from the admin-only
-   *  `reception.inbox.approve` rpc handler, which validated `arg_overrides`
-   *  against the operation's `ArgEditSchema` allowlist (N.6) BEFORE
-   *  calling this — the store does not (and cannot) re-allowlist, so the
-   *  upstream gate is load-bearing. The engine resume merge reads
-   *  `arg_overrides` ONLY off the consumed checkpoint, never off caller
-   *  input, so no non-inbox path can inject overrides; this writer is the
-   *  single seam that gets an override onto a checkpoint at all.
+   *  (D-173 N.5 MUST). It MUST be called ONLY from an owner approval that
+   *  validated the edits against an allowlist BEFORE calling this — the
+   *  store does not (and cannot) re-allowlist, so the upstream gate is
+   *  load-bearing. Two do: the admin-only `reception.inbox.approve` rpc
+   *  handler, against the operation's `ArgEditSchema` (N.6), and D-336
+   *  slice E's `chat.plan.approve` for a held Tier-1 write, against
+   *  `heldPlanEditableArgs` (`chat-plan-edits.ts`; the Tier-1 resume
+   *  applies only those keys). The resume merge reads `arg_overrides`
+   *  ONLY off the consumed checkpoint, never off caller input, so no other
+   *  path can inject overrides; this writer is the single seam that gets
+   *  an override onto a checkpoint at all.
    *
    *  Deliberately NOT a general `update` — the only mutable fields are
    *  `arg_overrides` and `approved_target`. `write` stays once-only (a

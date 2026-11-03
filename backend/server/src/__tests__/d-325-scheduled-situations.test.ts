@@ -33,12 +33,13 @@ const fixture = (initial = [fact()], zone = 'UTC', nativeSources = false, person
   const db = new Database(':memory:'); ensureWorkEntitySchema(db); const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
   const contracts = createContractStore(db); const store = createSituationStore(db);
   let at = monday; let open = true; let quiet = false; let facts = initial; let fail = false; let summarize: ((cluster: never) => Promise<string | undefined>) | undefined;
+  let prepared = new Set<string>();
   // A real window, wired as the composition root wires it; `quiet` stays a plain switch.
   let window: QuietHoursPolicy | null = null;
   const overBound = new Set<string>();
   const send = vi.fn(async (_message: import('../notification-handler.js').NotificationSendArgs) => ({ delivered_to: fail ? [] : ['in_app', 'telegram'] }));
   const sources = nativeSources ? buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [],
-    timeZone: () => zone, now: () => at }) : ['booking', 'asset', 'occasion', 'commitment', 'episode'].map(collection => ({
+    timeZone: () => zone, now: () => at }) : ['booking', 'asset', 'occasion', 'commitment', 'episode', 'calendar', 'task'].map(collection => ({
     id: collection, collection, verb_op: 'core.work-entity.read', read: vi.fn(() => {
       if (overBound.has(collection)) throw new SituationScanBoundError('Situation source exceeds its scan bound');
       return facts.filter(row => row.ref.collection === collection);
@@ -52,7 +53,8 @@ const fixture = (initial = [fact()], zone = 'UTC', nativeSources = false, person
       quietEnd: minute => window && quietHoursEndFor(window, minute),
       overview: async () => ({ proposal_count: 3, newest_proposal: { id: 'p1', title: 'Boiler' }, unmatched_replies: [], phone_ready: true }), send,
       mailHealth: () => [{ name: 'Personal mail', last_success_at: monday - 8 * 86_400_000, needs_attention: true }],
-      summarize: cluster => summarize?.(cluster as never) ?? Promise.resolve(undefined), ...(personName ? { personName } : {}) });
+      summarize: cluster => summarize?.(cluster as never) ?? Promise.resolve(undefined), ...(personName ? { personName } : {}),
+      prepNotesReady: id => prepared.has(id) });
     service.bindAccess(access); return service;
   };
   let service = boot();
@@ -63,7 +65,7 @@ const fixture = (initial = [fact()], zone = 'UTC', nativeSources = false, person
     quietHours: (value: QuietHoursPolicy) => { window = value; },
     facts: (value: SituationFact[]) => { facts = value; }, fail: (value: boolean) => { fail = value; },
     overBound: (collection: string) => { overBound.add(collection); },
-    summary: (value: typeof summarize) => { summarize = value; } };
+    summary: (value: typeof summarize) => { summarize = value; }, prepared: (ids: string[]) => { prepared = new Set(ids); } };
 };
 
 describe('D-325 scheduled overview through the shared query', () => {
@@ -206,6 +208,285 @@ describe('D-325 scheduled overview through the shared query', () => {
       expect('next_at' in f.service().status()).toBe(false);
       f.service().setSettings({ frequency: 'daily' }); expect(f.service().status().next_at).toBeTypeOf('number');
       f.open(false); expect('next_at' in f.service().status()).toBe(false);
+    });
+  });
+  describe('§15.7 amendment (2026-11-02) — the digest covers the days the owner chose', () => {
+    const DAY = 86_400_000;
+    // `act_by` decides whether a fact is in a window (`situationDue`), so each sits on its own day.
+    const on = (id: string, title: string, days: number) => fact(id, { title, when: { from: monday + days * DAY, to: monday + days * DAY + 3600_000 },
+      act_by: monday + days * DAY });
+    it('lists a thing the morning it first comes within today and tomorrow, and Send now covers the same days', async () => {
+      const f = fixture([on('dentist', 'Dentist', 2)]);
+      f.service().setSettings({ frequency: 'daily', time: '08:00', day_of: false, look_ahead_days: 2 });
+      expect(f.service().status().settings).toMatchObject({ frequency: 'daily', look_ahead_days: 2 });
+      // Monday covers Monday and Tuesday, so Wednesday's appointment is not in it yet.
+      await f.service().tick(); expect(f.service().status().last_run).toMatchObject({ mode: 'overview', state: 'skipped' });
+      await f.service().sendNow(); expect(f.send).not.toHaveBeenCalled();
+      f.time(monday + DAY); await f.service().tick();
+      expect(f.send).toHaveBeenCalledTimes(1);
+      expect(f.send.mock.calls[0]![0]).toMatchObject({ title: 'Coming up', text: expect.stringContaining('Dentist · 2026-10-21') });
+    });
+    it('looks as far ahead as the owner chose', async () => {
+      for (const [look_ahead_days, listed] of [[3, true], [2, false]] as const) {
+        const f = fixture([on('dentist', 'Dentist', 2)]);
+        f.service().setSettings({ frequency: 'daily', time: '08:00', day_of: false, look_ahead_days }); await f.service().tick();
+        expect(f.send.mock.calls.some(([message]) => message.text.includes('Dentist · 2026-10-21'))).toBe(listed);
+      }
+    });
+    it('holds a weekly digest to a week however its frequency was set, and keeps a daily window for when it is daily again', async () => {
+      // Saturday: inside a week of Monday, outside today and tomorrow.
+      const f = fixture([on('boiler', 'Boiler service', 5)]);
+      f.service().setSettings({ frequency: 'daily', time: '08:00', day_of: false, look_ahead_days: 2 });
+      f.service().setSettings({ frequency: 'weekly', weekday: 1 });
+      expect(f.service().status().settings.look_ahead_days).toBe(7);
+      await f.service().tick(); expect(f.send.mock.calls[0]?.[0].text).toContain('Boiler service · 2026-10-24');
+      f.service().setSettings({ frequency: 'daily' }); expect(f.service().status().settings.look_ahead_days).toBe(2);
+      // `yours.change` `settings.update` writes the frequency alone, past `setSettings`.
+      f.store.writeSetting('digest.frequency', 'weekly'); expect(f.service().status().settings.look_ahead_days).toBe(7);
+    });
+    it('refuses a window that is not a choice, and a weekly digest asked for less than a week', () => {
+      const f = fixture();
+      for (const look_ahead_days of [1, 5, 30, 7.5, '7', null]) {
+        expect(() => f.service().setSettings({ frequency: 'daily', look_ahead_days: look_ahead_days as never })).toThrow('Choose a valid overview schedule');
+      }
+      expect(() => f.service().setSettings({ frequency: 'weekly', look_ahead_days: 3 })).toThrow('A weekly digest looks at least 7 days ahead');
+      expect(f.service().status().settings).toMatchObject({ frequency: 'weekly', look_ahead_days: 7 });
+      f.service().setSettings({ frequency: 'weekly', look_ahead_days: 14 }); expect(f.service().status().settings.look_ahead_days).toBe(14);
+    });
+    it('covers a week by default and from settings saved before the choice, and a save that does not name it keeps it', () => {
+      const f = fixture(); expect(f.service().status().settings.look_ahead_days).toBe(7);
+      f.store.writeSetting('situations.delivery', { frequency: 'daily', weekday: 1, time: '08:00', day_of: true }); f.store.writeSetting('digest.frequency', 'daily');
+      expect(f.service().status().settings.look_ahead_days).toBe(7);
+      // An older server stored a field it did not know as it came.
+      f.store.writeSetting('situations.delivery', { frequency: 'daily', weekday: 1, time: '08:00', day_of: true, look_ahead_days: 99 });
+      expect(f.service().status().settings.look_ahead_days).toBe(7);
+      // An older client saves the four fields it knows.
+      f.service().setSettings({ look_ahead_days: 3 }); f.service().setSettings({ frequency: 'daily', weekday: 2, time: '09:00', day_of: false });
+      expect(f.service().status().settings).toEqual({ frequency: 'daily', weekday: 2, time: '09:00', day_of: false, look_ahead_days: 3 });
+    });
+  });
+  describe('§15.7 amendment (2026-11-02, later) — the Agenda, apart from the Digest', () => {
+    // Monday 19 October 2026 is day 0, in UTC.
+    const on = (day: number, hhmm: string) => Date.parse(`2026-10-${19 + day}T${hhmm}:00Z`);
+    const event = (id: string, title: string, day: number, from: string, to: string) => fact(id, { ref: { collection: 'calendar', id: `work:${id}` },
+      kind: 'calendar', title, when: { from: on(day, from), to: on(day, to) }, act_by: on(day, from), valid_until: on(day, to),
+      evidence: [{ collection: 'calendar', id: `work:${id}` }] });
+    const task = (id: string, title: string, day: number, hhmm: string) => fact(id, { ref: { collection: 'task', id }, kind: 'task', title,
+      when: { from: on(day, hhmm), to: on(day, hhmm) }, act_by: on(day, hhmm), evidence: [{ collection: 'task', id }] });
+    const allDay = (id: string, title: string, day: number) => fact(id, { ref: { collection: 'occasion', id, field: 'rules.date' }, kind: 'occasion', title,
+      when: { from: on(day, '00:00'), to: on(day + 1, '00:00') }, when_day: `2026-10-${19 + day}`, act_by: on(day, '00:00'), evidence: [{ collection: 'occasion', id }] });
+    // Every morning's routine is a recurring series: each day's instance is its own record.
+    const routine = (day: number) => [event(`wake-${day}`, 'Wake up', day, '06:00', '06:15'), event(`jog-${day}`, 'Jogging', day, '06:30', '07:15'),
+      event(`breakfast-${day}`, 'Breakfast', day, '07:30', '08:00'), event(`drive-${day}`, 'Driving to work', day, '08:00', '08:45'),
+      event(`briefing-${day}`, 'Morning briefing', day, '09:00', '09:30')];
+    const tuesday = ['All day · Mum’s birthday', 'Until 10:00 · Conference', '06:00 Wake up', '06:30 Jogging', '07:30 Breakfast', '08:00 Driving to work',
+      '09:00 Morning briefing · prep notes ready', '12:00 Pay electricity bill'];
+    const agendaOnly = (f: ReturnType<typeof fixture>, settings: Partial<import('@recued/contracts').SituationAgendaSettings>) => {
+      f.service().setSettings({ frequency: 'off', day_of: false }); f.service().setAgenda({ enabled: true, ...settings });
+    };
+    const texts = (f: ReturnType<typeof fixture>) => f.send.mock.calls.map(([message]) => message);
+    it('lists the next day in time order, all-day first, every recurring instance, and says prep notes are ready', async () => {
+      const f = fixture([...routine(0), ...routine(1), allDay('mum', 'Mum’s birthday', 1), task('bill', 'Pay electricity bill', 1, '12:00'),
+        event('late-call', 'Late call', 0, '22:00', '23:00'),
+        // Begun the day before: it says until when, after the all-day items.
+        fact('conference', { ref: { collection: 'calendar', id: 'work:conference' }, kind: 'calendar', title: 'Conference',
+          when: { from: on(0, '15:00'), to: on(1, '10:00') }, act_by: on(0, '15:00'), valid_until: on(1, '10:00'), evidence: [{ collection: 'calendar', id: 'work:conference' }] })]);
+      f.prepared(['briefing-1']); f.time(on(0, '20:00')); agendaOnly(f, { time: '20:00', day: 'tomorrow' });
+      await f.service().tick();
+      expect(texts(f)).toEqual([{ title: 'Agenda · Tue 20 Oct', text: tuesday.join('\n'), ui_link_url: '#today' }]);
+      // An agenda repeats what has not changed: Send now lists the same day again, where the Digest would send nothing.
+      await f.service().sendAgendaNow(); expect(texts(f)[1]?.text).toBe(tuesday.join('\n'));
+      // The next evening lists the next day's own instances of the same series.
+      f.time(on(1, '20:00')); f.facts([...routine(2)]); await f.service().tick();
+      expect(texts(f)[2]).toMatchObject({ title: 'Agenda · Wed 21 Oct', text: expect.stringContaining('06:30 Jogging') });
+    });
+    it('leaves out on the day it goes what has already ended, and keeps an open task whose time has passed', async () => {
+      const f = fixture([...routine(1), task('cat', 'Feed the cat', 1, '07:00'), task('bill', 'Pay electricity bill', 1, '12:00')]);
+      // Set before its time and sent late, as after a restart: what is over by then is left out.
+      f.time(on(1, '06:00')); agendaOnly(f, { time: '07:00', day: 'today' }); f.time(on(1, '08:10')); await f.service().tick();
+      expect(texts(f).map(message => message.text)).toEqual([['07:00 Feed the cat', '08:00 Driving to work', '09:00 Morning briefing',
+        '12:00 Pay electricity bill'].join('\n')]);
+    });
+    it('leaves out an ended event that comes in only as related to one still to come', async () => {
+      // The query adds what a due record names as related, ended or not.
+      const report = fact('report', { ref: { collection: 'task', id: 'report' }, kind: 'task', title: 'Send the run report',
+        when: { from: on(1, '12:00'), to: on(1, '12:00') }, act_by: on(1, '12:00'), related: [{ collection: 'calendar', id: 'work:jog-1' }],
+        evidence: [{ collection: 'task', id: 'report' }] });
+      const f = fixture([report, event('jog-1', 'Jogging', 1, '06:30', '07:15')]);
+      f.time(on(1, '06:00')); agendaOnly(f, { time: '07:00', day: 'today' }); f.time(on(1, '08:10')); await f.service().tick();
+      expect(texts(f).map(message => message.text)).toEqual(['12:00 Send the run report']);
+    });
+    it('keeps what a reminder keeps private as "Private reminder", at its own time', async () => {
+      const f = fixture([]); const history = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db));
+      const birthday = history.saveOccasion({ title: 'Ana’s birthday', month_day: '10-20', people: ['ana'], muted: false, rules: [], sphere: 'personal' }, monday);
+      f.facts([allDay(birthday.id, 'Ana’s birthday', 1), event('dentist-1', 'Dentist', 1, '18:30', '19:00')]);
+      f.time(on(0, '20:00')); agendaOnly(f, { time: '20:00', day: 'tomorrow' }); await f.service().tick();
+      expect(texts(f)[0]?.text).toBe('All day · Private reminder\n18:30 Dentist');
+    });
+    it('goes at its own time on its own two sends a day, so it never takes the Digest’s', async () => {
+      const f = fixture([...routine(1), task('bill', 'Pay electricity bill', 1, '12:00')]);
+      f.time(on(1, '06:00')); f.service().setSettings({ frequency: 'daily', time: '08:00', day_of: false });
+      f.service().setAgenda({ enabled: true, time: '07:00', day: 'today' });
+      expect(f.service().agendaStatus()).toMatchObject({ next_at: on(1, '07:00'), time_zone: 'UTC' });
+      await f.service().tick(); expect(f.send).not.toHaveBeenCalled();
+      // Two agenda tries that reach no channel spend the Agenda's two sends, not the Digest's.
+      f.fail(true); for (const time of ['07:00', '07:01', '07:02']) { f.time(on(1, time)); await f.service().tick(); }
+      expect(texts(f).map(message => message.title)).toEqual(['Agenda · Tue 20 Oct', 'Agenda · Tue 20 Oct']);
+      f.fail(false); f.time(on(1, '08:00')); await f.service().tick();
+      expect(texts(f).map(message => message.title)).toEqual(['Agenda · Tue 20 Oct', 'Agenda · Tue 20 Oct', 'Coming up']);
+      // Each card reads its own runs.
+      const status = f.service().status();
+      expect(status.last_run).toMatchObject({ mode: 'overview', state: 'sent' });
+      expect(f.service().agendaStatus()).toMatchObject({ pending: 1, last_run: { mode: 'agenda', state: 'pending' }, last_sent: null });
+    });
+    it('names the next agenda only while it is on, and sends a held-over agenda no later than its own day', async () => {
+      const f = fixture([...routine(1), ...routine(2)]); f.time(on(1, '06:00'));
+      expect(f.service().agendaStatus()).toEqual({ settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 },
+        last_run: null, last_sent: null, pending: 0, uncertain: 0 });
+      agendaOnly(f, { time: '07:00', day: 'today' }); f.fail(true); f.time(on(1, '07:00')); await f.service().tick();
+      expect(f.service().agendaStatus().pending).toBe(1);
+      // The next day, Tuesday's agenda is not sent late: it is superseded, and Wednesday's goes.
+      f.fail(false); f.time(on(2, '07:00')); await f.service().tick();
+      expect(texts(f).map(message => message.title)).toEqual(['Agenda · Tue 20 Oct', 'Agenda · Wed 21 Oct']);
+      expect(f.db.prepare("SELECT id,state FROM scheduled_situation_runs WHERE mode='agenda' ORDER BY id").all())
+        .toEqual([{ id: 'agenda:2026-10-20', state: 'superseded' }, { id: 'agenda:2026-10-21', state: 'sent' }]);
+      f.service().setAgenda({ enabled: false }); expect('next_at' in f.service().agendaStatus()).toBe(false);
+    });
+    it('carried past midnight by quiet hours, goes when they end and lists that morning’s day', async () => {
+      const f = fixture([...routine(1)]); f.quietHours({ enabled: true, from_minute: 22 * 60, to_minute: 7 * 60, applies_to: ['notification'], updated_at: 1 });
+      f.time(on(0, '21:00')); agendaOnly(f, { time: '23:00', day: 'tomorrow' });
+      expect(f.service().agendaStatus().next_at).toBe(on(1, '07:00'));
+      // Turned on in the evening, the day's 07:00 has passed: it is not caught up at once.
+      for (const time of [on(0, '21:00'), on(0, '23:00'), on(1, '06:59')]) { f.time(time); await f.service().tick(); }
+      expect(f.send).not.toHaveBeenCalled();
+      f.time(on(1, '07:00')); await f.service().tick();
+      expect(texts(f)).toEqual([expect.objectContaining({ title: 'Agenda · Tue 20 Oct', text: expect.stringContaining('07:30 Breakfast') })]);
+    });
+    it('turned on after the day’s time, starts the next day; a day missed while the server was down still goes', async () => {
+      const f = fixture([...routine(1), ...routine(2), task('bill', 'Pay electricity bill', 2, '12:00')]); f.time(on(1, '09:00'));
+      agendaOnly(f, { time: '07:00', day: 'today' });
+      expect(f.service().agendaStatus().next_at).toBe(on(2, '07:00'));
+      await f.service().tick(); expect(f.send).not.toHaveBeenCalled();
+      // Wednesday's 07:00 passed with the server down; at 11:00 it goes, without what is over.
+      f.time(on(2, '11:00')); await f.service().tick();
+      expect(texts(f)).toEqual([expect.objectContaining({ title: 'Agenda · Wed 21 Oct', text: '12:00 Pay electricity bill' })]);
+    });
+    it('sends now while it is off, and a day with nothing on sends nothing', async () => {
+      const f = fixture([...routine(1)]); f.time(on(1, '05:00'));
+      await f.service().sendAgendaNow(); expect(texts(f)[0]).toMatchObject({ title: 'Agenda · Tue 20 Oct' });
+      f.service().setAgenda({ day: 'tomorrow' }); await f.service().sendAgendaNow();
+      expect(f.send).toHaveBeenCalledTimes(1); expect(f.service().agendaStatus()).toMatchObject({ last_run: { mode: 'agenda_manual', state: 'skipped' } });
+      expect(f.service().status().last_run).toBeNull();
+    });
+    it('refuses a schedule it cannot keep', () => {
+      const f = fixture();
+      for (const patch of [{ time: '7:00' }, { time: '24:00' }, { day: 'yesterday' }, { enabled: 'yes' }, { frequency: 'monthly' }, { frequency: null },
+        { weekday: 0 }, { weekday: 8 }, { weekday: 1.5 }, { weekday: '1' }]) {
+        expect(() => f.service().setAgenda(patch as never)).toThrow('Choose a valid agenda schedule');
+      }
+      expect(f.service().agendaSettings()).toEqual({ enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 });
+    });
+    it('reads settings saved before the weekly choice as daily, and a save that names neither keeps them', () => {
+      const f = fixture(); f.store.writeSetting('situations.agenda', { enabled: true, time: '06:30', day: 'tomorrow' });
+      expect(f.service().agendaSettings()).toEqual({ enabled: true, time: '06:30', day: 'tomorrow', frequency: 'daily', weekday: 1 });
+      // A client from before the weekly choice saves the three fields it knows.
+      f.service().setAgenda({ frequency: 'weekly', weekday: 5 }); f.service().setAgenda({ enabled: true, time: '07:15', day: 'today' });
+      expect(f.service().agendaSettings()).toEqual({ enabled: true, time: '07:15', day: 'today', frequency: 'weekly', weekday: 5 });
+    });
+    it('keeps each card’s last run and last sent through retention', async () => {
+      const f = fixture([...routine(1), task('bill', 'Pay electricity bill', 1, '12:00')]);
+      f.time(on(1, '07:00')); f.service().setSettings({ frequency: 'daily', time: '07:00', day_of: false });
+      f.service().setAgenda({ enabled: true, time: '07:00', day: 'today' }); await f.service().tick();
+      expect(texts(f).map(message => message.title)).toEqual(['Coming up', 'Agenda · Tue 20 Oct']);
+      f.time(on(3, '07:00')); f.service().setAgenda({ enabled: false }); f.service().setSettings({ frequency: 'off' });
+      f.service().prune(on(3, '00:00'));
+      expect(f.service().status().last_sent).toMatchObject({ mode: 'overview' });
+      expect(f.service().agendaStatus().last_sent).toMatchObject({ mode: 'agenda' });
+    });
+    describe('§15.7 amendment (2026-11-03) — a weekly agenda', () => {
+      // The owner: "perhaps agenda can be weekly as well for user to choose between daily & weekly".
+      const nightly = { enabled: true, from_minute: 22 * 60, to_minute: 7 * 60, applies_to: ['notification' as const], updated_at: 1 };
+      it('goes on its weekday and lists seven days, a day at a time, leaving out a day with nothing on', async () => {
+        const f = fixture([...routine(0), allDay('mum', 'Mum’s birthday', 1), task('bill', 'Pay electricity bill', 3, '12:00'),
+          event('brunch', 'Brunch', 6, '11:00', '12:00'), event('dentist', 'Dentist', 7, '10:00', '10:30')]);
+        f.prepared(['briefing-0']);
+        // Sunday 18 October, the evening before the week it lists.
+        f.time(on(-1, '12:00')); agendaOnly(f, { frequency: 'weekly', weekday: 7, time: '18:00', day: 'tomorrow' });
+        expect(f.service().agendaStatus().next_at).toBe(on(-1, '18:00'));
+        f.time(on(-1, '17:59')); await f.service().tick(); expect(f.send).not.toHaveBeenCalled();
+        f.time(on(-1, '18:00')); await f.service().tick();
+        expect(texts(f)).toEqual([{ title: 'Agenda · Mon 19 Oct to Sun 25 Oct', ui_link_url: '#today', text: ['Mon 19 Oct', '06:00 Wake up', '06:30 Jogging',
+          '07:30 Breakfast', '08:00 Driving to work', '09:00 Morning briefing · prep notes ready', '', 'Tue 20 Oct', 'All day · Mum’s birthday', '',
+          'Thu 22 Oct', '12:00 Pay electricity bill', '', 'Sun 25 Oct', '11:00 Brunch'].join('\n') }]);
+        // Not again until its weekday comes round.
+        expect(f.service().agendaStatus().next_at).toBe(on(6, '18:00'));
+        for (let day = 0; day < 6; day++) { f.time(on(day, '18:00')); await f.service().tick(); }
+        expect(f.send).toHaveBeenCalledTimes(1);
+      });
+      it('lists something that lasts several days on each of them', async () => {
+        const f = fixture([fact('conference', { ref: { collection: 'calendar', id: 'work:conference' }, kind: 'calendar', title: 'Conference',
+          when: { from: on(0, '15:00'), to: on(2, '10:00') }, act_by: on(0, '15:00'), valid_until: on(2, '10:00'), evidence: [{ collection: 'calendar', id: 'work:conference' }] })]);
+        f.time(on(0, '06:00')); f.service().setAgenda({ frequency: 'weekly', weekday: 1 }); await f.service().sendAgendaNow();
+        expect(texts(f)[0]?.text).toBe(['Mon 19 Oct', '15:00 Conference', '', 'Tue 20 Oct', 'All day · Conference', '', 'Wed 21 Oct', 'Until 10:00 · Conference'].join('\n'));
+      });
+      it('turned on after its time, waits a week; one missed while the server was down goes later that week with the days still to come', async () => {
+        const facts = () => [...routine(0), task('bill', 'Pay electricity bill', 2, '12:00'), event('brunch', 'Brunch', 6, '11:00', '12:00')];
+        const f = fixture(facts());
+        f.time(on(0, '09:00')); agendaOnly(f, { frequency: 'weekly', weekday: 1, time: '07:00', day: 'today' });
+        expect(f.service().agendaStatus().next_at).toBe(on(7, '07:00'));
+        await f.service().tick(); expect(f.send).not.toHaveBeenCalled();
+        // Turned on the day before, then the server is down until Wednesday 10:00.
+        const g = fixture(facts());
+        g.time(on(-1, '12:00')); agendaOnly(g, { frequency: 'weekly', weekday: 1, time: '07:00', day: 'today' });
+        g.time(on(2, '10:00')); expect(g.service().agendaStatus().next_at).toBe(on(2, '10:00'));
+        await g.service().tick();
+        expect(texts(g)).toEqual([{ title: 'Agenda · Wed 21 Oct to Sun 25 Oct', ui_link_url: '#today',
+          text: ['Wed 21 Oct', '12:00 Pay electricity bill', '', 'Sun 25 Oct', '11:00 Brunch'].join('\n') }]);
+        expect(g.service().agendaStatus().next_at).toBe(on(7, '07:00'));
+      });
+      it('carried past midnight by quiet hours, goes the morning after its weekday and lists seven days from that morning', async () => {
+        for (const day of ['today', 'tomorrow'] as const) {
+          const f = fixture([...routine(0), event('brunch', 'Brunch', 6, '11:00', '12:00'), event('dentist', 'Dentist', 7, '10:00', '10:30')]);
+          f.quietHours(nightly); f.time(on(-1, '12:00')); agendaOnly(f, { frequency: 'weekly', weekday: 7, time: '23:00', day });
+          expect(f.service().agendaStatus().next_at).toBe(on(0, '07:00'));
+          for (const time of [on(-1, '23:00'), on(0, '06:59')]) { f.time(time); await f.service().tick(); }
+          expect(f.send).not.toHaveBeenCalled();
+          f.time(on(0, '07:00')); await f.service().tick();
+          expect(texts(f)).toEqual([expect.objectContaining({ title: 'Agenda · Mon 19 Oct to Sun 25 Oct', text: expect.stringContaining('11:00 Brunch') })]);
+          expect(texts(f)[0]?.text).not.toContain('Dentist');
+        }
+      });
+      it('a switch from daily leaves a daily agenda still waiting unsent', async () => {
+        const f = fixture([...routine(1), task('bill', 'Pay electricity bill', 1, '12:00')]);
+        f.time(on(1, '06:00')); agendaOnly(f, { time: '07:00', day: 'today' });
+        f.fail(true); f.time(on(1, '07:00')); await f.service().tick(); expect(f.service().agendaStatus().pending).toBe(1);
+        f.fail(false); f.time(on(1, '07:30')); f.service().setAgenda({ frequency: 'weekly', weekday: 2, time: '08:00' });
+        await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
+        f.time(on(1, '08:00')); await f.service().tick();
+        expect(texts(f).map(message => message.title)).toEqual(['Agenda · Tue 20 Oct', 'Agenda · Tue 20 Oct to Mon 26 Oct']);
+        expect(f.db.prepare("SELECT id,state FROM scheduled_situation_runs WHERE mode='agenda' ORDER BY id").all())
+          .toEqual([{ id: 'agenda:2026-10-20', state: 'superseded' }, { id: 'agenda_week:2026-10-20', state: 'sent' }]);
+      });
+      it('Send now lists seven days from today or tomorrow on any day, and a week with nothing on sends nothing', async () => {
+        const f = fixture([...routine(2), event('brunch', 'Brunch', 6, '11:00', '12:00'), event('dentist', 'Dentist', 9, '10:00', '10:30')]);
+        // Wednesday, while it is off: its weekday is Sunday, and Send now does not wait for it.
+        f.time(on(2, '05:00')); f.service().setAgenda({ frequency: 'weekly', weekday: 7, day: 'tomorrow' });
+        await f.service().sendAgendaNow();
+        expect(texts(f)[0]).toMatchObject({ title: 'Agenda · Thu 22 Oct to Wed 28 Oct', text: 'Sun 25 Oct\n11:00 Brunch\n\nWed 28 Oct\n10:00 Dentist' });
+        f.service().setAgenda({ day: 'today' }); await f.service().sendAgendaNow();
+        expect(texts(f)[1]).toMatchObject({ title: 'Agenda · Wed 21 Oct to Tue 27 Oct', text: expect.stringMatching(/^Wed 21 Oct\n06:00 Wake up\n/u) });
+        expect(texts(f)[1]?.text).not.toContain('Dentist');
+        f.facts([]); await f.service().sendAgendaNow();
+        expect(f.send).toHaveBeenCalledTimes(2); expect(f.service().agendaStatus().last_run).toMatchObject({ mode: 'agenda_manual', state: 'skipped' });
+      });
+      it('holds each day to its own count of lines and says how many more that day has', async () => {
+        const many = Array.from({ length: 42 }, (_, index) => task(`task-${index}`, `Task ${String(index).padStart(2, '0')}`, 1, '12:00'));
+        const f = fixture([...many, task('later', 'Pay electricity bill', 2, '12:00')]);
+        f.time(on(1, '06:00')); f.service().setAgenda({ frequency: 'weekly', weekday: 2 }); await f.service().sendAgendaNow();
+        const lines = texts(f)[0]!.text.split('\n');
+        expect(lines.slice(0, 2)).toEqual(['Tue 20 Oct', '12:00 Task 00']);
+        expect(lines.slice(40, 46)).toEqual(['12:00 Task 39', 'And 2 more that day. Open Today for the rest.', '', 'Wed 21 Oct', '12:00 Pay electricity bill']);
+      });
     });
   });
   it('holds before the configured local time, disables ordinary pushes, and lets the owner send now', async () => {

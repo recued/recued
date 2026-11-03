@@ -339,6 +339,15 @@ export interface PlanApprovalStore {
   /** D-329 — the hold expired unanswered: cancel the still-proposed plan and stamp
    * `hold.lapsed_at`. A plan already resolved, or held by another run, is returned as it is. */
   lapseHold?(plan_id: string, run_id: string, lapsed_at: number): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-336 slice E — the owner changed a held proposal's arguments while approving it: `args`
+   * (and `args_hash`) become what runs. Only a still-proposed plan held by `run_id` changes;
+   * `undefined` for any other, which is left as it is. Its `memory_conflicts` were found for
+   * its claim, so they stay only while `args.claim` does. */
+  editHeld?(plan_id: string, run_id: string, args: Record<string, unknown>): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-336 slice O's open item — add a conflict to a still-proposed plan's `memory_conflicts`
+   * (a later save of the same fact, `asked_again`), once; `undefined` for a plan gone or
+   * answered, which is left as it is. */
+  addMemoryConflict?(plan_id: string, conflict: import('@recued/contracts').MemorySaveConflict): MaybePromise<ChatPlanProposal | undefined>;
   /** D-329 — the newest held proposal for the exact call in this session that is still
    * waiting for its answer, in any turn: asking it again re-shows this one, so one write
    * never raises two asks. */
@@ -400,6 +409,7 @@ export interface SynchronousPlanApprovalStore extends PlanApprovalStore {
   unlinkHold(plan_id: string, run_id: string): ChatPlanProposal | undefined;
   findByHoldRun(run_id: string): ChatPlanProposal | undefined;
   lapseHold(plan_id: string, run_id: string, lapsed_at: number): ChatPlanProposal | undefined;
+  editHeld(plan_id: string, run_id: string, args: Record<string, unknown>): ChatPlanProposal | undefined;
   findPendingHeld(
     session_id: string,
     tool: string,
@@ -555,7 +565,8 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
     const existing = byPlanId.get(plan_id);
     if (!existing) return undefined;
     if (existing.hold?.run_id !== run_id) return existing;
-    const { hold: _hold, ...next } = existing;
+    // A plain card takes no change while approving (D-336 slice E), so it loses that too.
+    const { hold: _hold, editable_args: _editable, ...next } = existing;
     byPlanId.set(plan_id, next);
     return next;
   };
@@ -578,6 +589,25 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
       status: 'cancelled',
       resolved_at: lapsed_at,
       hold: { run_id, lapsed_at },
+    };
+    byPlanId.set(plan_id, next);
+    return next;
+  };
+
+  const editHeld = (
+    plan_id: string,
+    run_id: string,
+    args: Record<string, unknown>,
+  ): ChatPlanProposal | undefined => {
+    const existing = byPlanId.get(plan_id);
+    if (!existing || existing.status !== 'proposed' || existing.hold?.run_id !== run_id) return undefined;
+    const { memory_conflicts, ...rest } = existing;
+    const claimOf = (a: unknown) => JSON.stringify((a as { claim?: unknown } | null | undefined)?.claim ?? null);
+    const next: ChatPlanProposal = {
+      ...rest,
+      args,
+      args_hash: computePlanArgsHash(args),
+      ...(memory_conflicts !== undefined && claimOf(existing.args) === claimOf(args) ? { memory_conflicts } : {}),
     };
     byPlanId.set(plan_id, next);
     return next;
@@ -696,6 +726,7 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
     unlinkHold,
     findByHoldRun,
     lapseHold,
+    editHeld,
     findPendingHeld,
     answerMessageId: (plan_id: string): string | undefined => messageIdByPlanId.get(plan_id),
   };

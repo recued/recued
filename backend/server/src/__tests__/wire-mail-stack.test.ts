@@ -144,12 +144,18 @@ const makeAccountStore = (
 
 const makeContactStore = (
   networkDomains: Record<string, string[]> = {},
-): TestContactStore =>
-  ({
+  /** D-336 slice R — an address a contact was re-keyed off, to the address it has now. */
+  formerAddresses: Record<string, string> = {},
+): TestContactStore => {
+  const row = (email: string) => (email in networkDomains ? { network_domain: networkDomains[email] } : null);
+  return ({
     observeBatch: vi.fn(() => 0),
-    get: vi.fn((email: string) =>
-      email in networkDomains ? { network_domain: networkDomains[email] } : null),
+    get: vi.fn(row),
+    // As the store's: the address's own row, else the contact it is a second address of.
+    getByAnyEmail: vi.fn((email: string) =>
+      row(email) ?? (email in formerAddresses ? row(formerAddresses[email]!) : null)),
   }) as unknown as TestContactStore;
+};
 
 const buildDeps = (
   overrides: Partial<ComposeMailStackBootDeps> = {},
@@ -691,6 +697,28 @@ describe('composeMailBoot — mail facts (D-315)', () => {
       origin: { kind: 'owner' },
     });
     const contactStore = makeContactStore({ 'pkginfo@ups.com': ['work'] });
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()), contactStore }));
+    const [, storage] = lastComposeCall();
+
+    storage.onMessageUpserted?.(upsMessage(), upsertCtx());
+
+    expect(mailFactStore.listFacts().map((fact) => fact.type).sort()).toEqual(['owner_request', 'shipment']);
+  });
+
+  it('D-336 slice R — reads the relationships of a sender writing from an address its contact was changed from', () => {
+    const mailFactStore = factStore();
+    mailFactStore.createTemplate({
+      definition: {
+        name: 'Work requests',
+        type: 'owner_request',
+        entrance: { conditions: [{ field: 'relationship', op: 'is', value: 'work' }], variables: [] },
+        rules: [],
+        html: false,
+        ai: { enabled: false },
+      },
+      origin: { kind: 'owner' },
+    });
+    const contactStore = makeContactStore({ 'notices@ups.com': ['work'] }, { 'pkginfo@ups.com': 'notices@ups.com' });
     composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()), contactStore }));
     const [, storage] = lastComposeCall();
 

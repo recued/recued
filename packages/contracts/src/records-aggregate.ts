@@ -16,7 +16,7 @@
  *  ⚠ This is NOT an expression language and must not become one. The function
  *  list is closed; the moment a caller needs a conditional, that is a producer
  *  recipe, not a declaration. */
-import { RECORDS_DECIMAL_SCALE, type RecordsFieldKind } from './records.js';
+import { RECORDS_DECIMAL_SCALE, type RecordsContractIssue, type RecordsFieldKind } from './records.js';
 
 export const RECORDS_AGGREGATE_FNS = [
   'count',
@@ -82,29 +82,36 @@ export const isRecordsAggregateFn = (value: unknown): value is RecordsAggregateF
 export const validateRecordsAggregateSelect = (
   select: unknown,
   kinds: Readonly<Record<string, RecordsFieldKind>>,
-): string[] => {
-  const problems: string[] = [];
+): string[] => recordsAggregateSelectIssues(select, kinds).map(issue => issue.message);
+
+export const recordsAggregateSelectIssues = (
+  select: unknown,
+  kinds: Readonly<Record<string, RecordsFieldKind>>,
+): RecordsContractIssue[] => {
+  const problems: RecordsContractIssue[] = [];
   if (select === null || typeof select !== 'object' || Array.isArray(select)) {
-    return ['select must be an object of { output_name: { fn, field?, by? } }'];
+    return [{ path: [], message: 'select must be an object of { output_name: { fn, field?, by? } }' }];
   }
   const entries = Object.entries(select as Record<string, unknown>);
-  if (entries.length === 0) problems.push('select must name at least one output');
+  if (entries.length === 0) problems.push({ path: [], message: 'select must name at least one output' });
 
   for (const [name, rawSpec] of entries) {
     const at = `select.${name}`;
+    const add = (message: string, key?: string, target?: 'key') =>
+      problems.push({ path: key === undefined ? [name] : [name, key], message, ...(target ? { target } : {}) });
     if (!/^[a-z][a-z0-9_]*$/.test(name)) {
-      problems.push(`${at}: output name must be lower_snake_case`);
+      add(`${at}: output name must be lower_snake_case`, undefined, 'key');
     }
     if (rawSpec === null || typeof rawSpec !== 'object' || Array.isArray(rawSpec)) {
-      problems.push(`${at}: must be an object { fn, field?, by? }`);
+      add(`${at}: must be an object { fn, field?, by? }`);
       continue;
     }
     const spec = rawSpec as Record<string, unknown>;
     for (const key of Object.keys(spec)) {
-      if (!['fn', 'field', 'by'].includes(key)) problems.push(`${at}: unknown key '${key}'`);
+      if (!['fn', 'field', 'by'].includes(key)) add(`${at}: unknown key '${key}'`, key, 'key');
     }
     if (!isRecordsAggregateFn(spec.fn)) {
-      problems.push(`${at}: fn must be one of ${RECORDS_AGGREGATE_FNS.join(', ')}`);
+      add(`${at}: fn must be one of ${RECORDS_AGGREGATE_FNS.join(', ')}`, 'fn');
       continue;
     }
     const fn = spec.fn;
@@ -114,19 +121,20 @@ export const validateRecordsAggregateSelect = (
     if (field === undefined) {
       // ⚠ Only `count` has a meaningful field-less reading (count the rows).
       // Everything else without a field would silently aggregate nothing.
-      if (fn !== 'count') problems.push(`${at}: '${fn}' requires a field`);
+      if (fn !== 'count') add(`${at}: '${fn}' requires a field`, 'field');
     } else if (typeof field !== 'string' || field.length === 0) {
-      problems.push(`${at}: field must be a non-empty string`);
-    } else if (!(field in kinds)) {
-      problems.push(`${at}: unknown field '${field}'`);
+      add(`${at}: field must be a non-empty string`, 'field');
+    } else if (!Object.hasOwn(kinds, field)) {
+      add(`${at}: unknown field '${field}'`, 'field');
     } else {
       const kind = kinds[field]!;
       if (!RECORDS_AGGREGATE_VALIDITY[kind].includes(fn)) {
-        problems.push(
+        add(
           `${at}: '${fn}' is not valid on a ${kind} field` +
           (['string', 'text'].includes(kind) && ['min', 'max'].includes(fn)
             ? ` — use latest/earliest with an explicit 'by', so the ordering is declared`
             : ''),
+          'field',
         );
       }
     }
@@ -134,14 +142,14 @@ export const validateRecordsAggregateSelect = (
     const needsBy = fn === 'latest' || fn === 'earliest';
     if (needsBy) {
       if (typeof by !== 'string' || by.length === 0) {
-        problems.push(`${at}: '${fn}' requires 'by' — the ordering field`);
-      } else if (!(by in kinds)) {
-        problems.push(`${at}: unknown ordering field '${by}'`);
+        add(`${at}: '${fn}' requires 'by' — the ordering field`, 'by');
+      } else if (!Object.hasOwn(kinds, by)) {
+        add(`${at}: unknown ordering field '${by}'`, 'by');
       } else if (!RECORDS_AGGREGATE_ORDERABLE.includes(kinds[by]!)) {
-        problems.push(`${at}: ordering field '${by}' is ${kinds[by]} and is not ordered`);
+        add(`${at}: ordering field '${by}' is ${kinds[by]} and is not ordered`, 'by');
       }
     } else if (by !== undefined) {
-      problems.push(`${at}: 'by' is only meaningful for latest/earliest`);
+      add(`${at}: 'by' is only meaningful for latest/earliest`, 'by');
     }
   }
   return problems;
@@ -347,7 +355,7 @@ export const validateRecordsGroupBy = (
   if (typeof groupBy !== 'string' || groupBy.length === 0) {
     return ['group_by must be a non-empty field name'];
   }
-  if (!(groupBy in kinds)) return [`group_by: unknown field '${groupBy}'`];
+  if (!Object.hasOwn(kinds, groupBy)) return [`group_by: unknown field '${groupBy}'`];
   const kind = kinds[groupBy]!;
   if (!RECORDS_GROUP_BY_KINDS.includes(kind)) {
     return [

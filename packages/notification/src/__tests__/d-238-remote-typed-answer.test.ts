@@ -11,6 +11,8 @@ import { describe, expect, it } from 'vitest';
 import { createRemoteChannel } from '../channels/remote.js';
 import type { NotificationMessage } from '../types.js';
 import type { Transport, TransportSendResult } from '@recued/transport';
+import { createInMemoryCollection } from '@recued/storage';
+import type { RemotePromptRecord } from '../channels/remote.js';
 
 const OPTIONS = [
   { id: 'approve', label: 'Approve' },
@@ -196,5 +198,27 @@ describe('only the enrolled principal may settle an ask by typing', () => {
     const { channel, sent } = channelWith((id) => `https://x.example.com/ask/${id}`, null);
     await channel.deliverAsk('ask-1', MESSAGE, OPTIONS);
     expect(sent[0]!).toContain('https://x.example.com/ask/ask-1');
+  });
+});
+
+describe('D-158 P3 — a typed answer to an ask sent before a restart', () => {
+  it('is matched against the record the earlier process kept, from the owner only', async () => {
+    const promptRecords = createInMemoryCollection<RemotePromptRecord>();
+    const build = (transport: Transport) => createRemoteChannel({
+      transport,
+      capability: 'landing-page',
+      resolveCredential: async () => ({ token: 'tok', recipient: '19:abc@thread.v2', expected_sender: OWNER }),
+      promptRecords,
+    });
+    await build(baseTransport().transport).deliverAsk('ask-1', MESSAGE, OPTIONS);
+    // The restart: a new channel over the same records. The boot sweep's re-delivery sends nothing,
+    // so the answer below can only match the record (and the first inbound message comes after it).
+    const second = baseTransport();
+    const after = build(second.transport);
+    await after.deliverAsk('ask-1', MESSAGE, OPTIONS);
+    expect(second.sent).toEqual([]);
+    expect(after.parseInboundReply({ text: 'Approve', from: OWNER })).toMatchObject({ ask_id: 'ask-1', option: 'approve' });
+    // ⛔ The approver is still the one in force when it went out.
+    expect(after.parseInboundReply({ text: 'Approve', from: 'someone-else' })).toBeNull();
   });
 });

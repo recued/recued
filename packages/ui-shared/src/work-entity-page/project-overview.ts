@@ -22,6 +22,8 @@ export interface ProjectOverviewProps {
   can_create_task: boolean;
   can_create_note: boolean;
   can_create_commitment?: boolean;
+  can_link_task?: boolean;
+  can_link_note?: boolean;
   can_link_commitment?: boolean;
   commitment_status?: 'open' | 'all';
   stale?: boolean;
@@ -38,7 +40,7 @@ const section = (kind: ProjectWorkKind, state: ProjectWorkSection, canCreate: bo
     <header class="project-work-head"><h3 id="project-${kind}-heading" tabindex="-1" data-project-focus="${kind}-heading">${kind === 'commitment' ? 'Blocking commitments' : label}</h3>
       ${state.total !== undefined ? `<span class="project-work-count">${state.total}</span>` : ''}
       <div class="project-work-actions">${canCreate && !state.unsupported ? `<button type="button" data-action="project-work-new" data-project-kind="${kind}" data-project-focus="new-${kind}">New ${kind}</button>` : ''}
-        ${kind === 'commitment' && props.can_link_commitment && !state.unsupported ? '<button type="button" data-action="project-commitment-link-existing" data-project-focus="link-commitment">Link existing</button>' : ''}</div></header>
+        ${props[`can_link_${kind}`] && !state.unsupported ? `<button type="button" data-action="project-work-link-existing" data-project-kind="${kind}" data-project-focus="link-${kind}">Link existing</button>` : ''}</div></header>
     ${kind === 'commitment' ? `<div class="project-commitment-filters" role="group" aria-label="Commitments to show">
       <button type="button" data-action="project-commitment-scope" data-project-status="open" data-project-focus="commitment-open" aria-pressed="${commitmentStatus === 'open'}">Outstanding</button>
       <button type="button" data-action="project-commitment-scope" data-project-status="all" data-project-focus="commitment-all" aria-pressed="${commitmentStatus === 'all'}">All</button></div>` : ''}
@@ -111,6 +113,14 @@ export const PROJECT_OVERVIEW_STYLES = `
 .project-work-commitment-status.is-overdue { color:var(--danger); }
 .project-link-context { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem 1rem; margin:0 0 1rem; padding:.75rem 1rem; border:1px solid var(--border); border-radius:.5rem; }
 .project-link-context p { flex:1; min-width:12rem; margin:0; }
+.work-entity-dialog[data-project-link-review] { width:min(560px,100%); overflow:hidden; }
+.work-entity-dialog[data-project-link-review] .work-entity-dialog-header { flex-shrink:0; }
+.work-entity-dialog[data-project-link-review] .work-entity-dialog-title { min-width:0; overflow-wrap:anywhere; }
+.work-entity-dialog[data-project-link-review] .work-entity-note-content { gap:12px; }
+.work-entity-dialog[data-project-link-review] .work-entity-note-content > :is(h3,p) { margin:0; overflow-wrap:anywhere; }
+.work-entity-dialog[data-project-link-review] .work-entity-dialog-actions { padding:12px 20px; flex-shrink:0; flex-wrap:wrap; }
+.work-entity-dialog[data-project-link-review] button { min-height:44px; }
+.work-entity-dialog[data-project-link-review] button:disabled { opacity:.6; cursor:progress; }
 .project-work-head h3 { margin:0; font-size:1rem; }
 .project-work-count { padding:.125rem .5rem; border-radius:1rem; background:var(--surface-sunk); font-size:.8rem; color:var(--fg-muted); }
 .project-work-hint, .project-work-meta { margin:0; font-size:.8125rem; color:var(--fg-muted); line-height:1.5; }

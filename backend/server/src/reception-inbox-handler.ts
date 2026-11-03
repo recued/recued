@@ -822,7 +822,7 @@ const buildDropAttachment = (
  *  page resolve DIFFERENT allowlists for the same hold, each confident. A
  *  four-line function is exactly the size that gets copied and then edited on
  *  one side only. */
-export const heldOperationId = (anchor: AuditEntry, checkpoint: Checkpoint): string =>
+export const heldOperationId = (anchor: Pick<AuditEntry, 'recipe_id'>, checkpoint: Checkpoint): string =>
   checkpoint.approved_target?.operation_id
   ?? checkpoint.approved_target?.ingredient_slug
   ?? `${anchor.recipe_id}.${checkpoint.gated_step_id}`;

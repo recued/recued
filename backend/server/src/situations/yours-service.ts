@@ -828,6 +828,8 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       }
       case 'delivery.update': if (!scheduled) throw new Error('The overview service is unavailable'); scheduled.setSettings(input.settings); return { message: 'Overview schedule saved.' };
       case 'delivery.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); await scheduled.sendNow(); return { message: 'Overview checked. It sends only when something changed.' };
+      case 'agenda.update': if (!scheduled) throw new Error('The overview service is unavailable'); scheduled.setAgenda(input.settings); return { message: 'Agenda saved.' };
+      case 'agenda.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); await scheduled.sendAgendaNow(); return { message: 'Agenda checked. It is sent only when something is on.' };
       case 'subscriber.reconciled': {
         const receipt = deps.situations.subscriberRun(input.subscriber_id, input.revision);
         if (!receipt || receipt.run_id !== input.run_id || receipt.state === 'completed') throw new Error('This subscriber receipt changed. Refresh before reconciling it.');
@@ -1260,6 +1262,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       return spheres.resolve(ref);
     },
     deliveryStatus() { requireOpen(); if (!scheduled) throw new Error('Overview service unavailable'); return scheduled.status(); },
+    agendaStatus() { requireOpen(); if (!scheduled) throw new Error('Overview service unavailable'); return scheduled.agendaStatus(); },
     async learningStatus(): Promise<import('@recued/contracts').YoursLearningStatus> {
       requireOpen(); if (!deps.episodeRuntime) throw new Error('Last time is unavailable');
       return { last_time: deps.situations.readSetting('last_time.choice', 'unasked'), asked: await deps.episodeRuntime.optInOpen(), classes: deps.episodeRuntime.rates() };

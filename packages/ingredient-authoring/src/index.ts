@@ -19,6 +19,8 @@ export type {
   OperationRow,
 } from './schema.js';
 export { canonicalHash } from './canonical-hash.js';
+export { packConnectionNames, connectionHintFields, connectionHintValueFields, connectionHintAuthChoices } from './connection-authoring.js';
+export { operationPaginationFields, operationPaginationStyleHelp, collectionResultPathHelp, authoredCollectionResultPath } from './pagination-authoring.js';
 export { referenceFormatHintHelp } from './reference-format-hints.js';
 export { valueHintFields, valueHintField, valueHintUnsupportedFieldHelp, type ValueHintField } from './value-hint-fields.js';
 export { recipePageBindingFields, recipePageBindingField, type RecipePageBindingField } from './value-hint-fields.js';
@@ -29,12 +31,23 @@ export {
   recordsEntitySchemas,
   recordsCatalogSlug,
   recordsSchemaSnapshot,
+  recordsMetaFieldType,
+  recordsActionArguments,
+  recordsActionRiskFloor,
+  recordsFieldListIssues,
+  recordsFieldAliasSafe,
+  type RecordsFieldList,
+  normalizeRecordsEntityId,
   recordsSlots,
   stampRecordsCatalog,
   validateRecordsComposition,
   type RecordsAuthoringIssue,
   type RecordsHashes,
 } from './records.js';
+export { recordsFieldFields, recordsFieldChoices } from './records-field-authoring.js';
+export { recordsBindingFields, recordsBindingActions } from './records-binding-authoring.js';
+export { recordsAggregateFields, recordsAggregateFunctions, recordsAggregateFieldAllowed, recordsBatchFields } from './records-nested-authoring.js';
+export { recordsRootFields, recordsRootHopFields } from './records-root-authoring.js';
 export {
   decomposeComposition,
   decomposePack,
@@ -99,7 +112,7 @@ export type { AuthoringSourceKind, AuthoringSourceValidation, AuthoringRecipeVal
 export { kernelArguments, type KernelArgumentSchema } from './kernel-inputs.js';
 export { outputSectionFields, outputTypeHelp, type OutputSectionField } from './output-fields.js';
 export { stepControlFields, stepFailureKindHelp, stepCacheHelp, stepPolicyChoices, type StepControlField, type StepControlKey } from './step-controls.js';
-export { operationPolicyFields, operationPolicyValues, operationPolicyValueHelp, type OperationPolicyField, type OperationPolicyKey } from './operation-policies.js';
+export { operationPolicyFields, operationPolicyValues, operationPolicyValueHelp, OPERATION_SETTING_KEYS, type OperationPolicyField, type OperationPolicyKey } from './operation-policies.js';
 
 export { tableAuthoringFields, tableAuthoringChoices, type TableAuthoringKind, type TableAuthoringField } from './table-authoring.js';
 
@@ -111,8 +124,31 @@ export { closedInputMetadata, closedInputAt, closedInputHelp, checkClosedInputs,
   type ClosedInputSchema, type ClosedInputFinding } from './closed-inputs.js';
 export { closedSchemaFields, closedSchemaTypes, closedSchemaEntries, type ClosedInputPath, type ClosedSchemaEntry, type ClosedSchemaField } from './closed-schema-authoring.js';
 export { closedInputScaffold } from './closed-input-scaffold.js';
-export { inputPrimitive, inputHintType, inputBindingCompatibility, plainConfigBinding, checkClosedInputBindings,
+export { inputPrimitive, inputHintType, inputEnumOptions, inputBindingCompatibility, inputBindingMessage, plainConfigBinding, checkClosedInputBindings,
   type InputPrimitive, type InputBindingFinding, type BindingInputSchema } from './input-binding-types.js';
 export { valueHintTypes, valueHintTypeHelp } from './value-hint-types.js';
 export { bindingArgumentTokens, bindingArgumentTokenAt, bindingArgumentValue, operationBindingArgumentReferences, assertBindingArgumentRename,
   type BindingArgumentPath, type BindingArgumentSyntax, type BindingArgumentReference } from './binding-argument-references.js';
+
+export * from './file-transfer-authoring.js';
+
+export * from './rest-json-authoring.js';
+
+export * from './arg-edit-schema.js';
+export * from './approval-review-details.js';
+export * from './approval-authoring.js';
+export * from './cli-authoring.js';
+export * from './cli-setup-authoring.js';
+
+export { restRequestFields, restMergeQueryNames, restBodyAuthNames, REST_REQUEST_CHOICE_LIMIT } from './rest-request-authoring.js';
+export { API_SCHEMA_SOURCE_KEYS, API_SCHEMA_CHOICE_LIMIT, apiSchemaFields, openApiDocumentParameters,
+  type ApiSchemaField, type ApiSchemaSection, type ApiSchemaSourceKey } from './api-schema-authoring.js';
+export { compositionLoweringDecision, type CompositionLoweringDecision } from './decomposer.js';
+export * from './response-schema-authoring.js';
+export * from './operation-scopes.js';
+export * from './vendor-entity-authoring.js';
+export { normalizeEntityId as normalizeVendorEntityId } from './decomposer.js';
+export { vendorEntitySchemaOrigins } from './vendor-entity-issues.js';
+
+export * from './workflow-authoring.js';
+export * from './engagement-authoring.js';

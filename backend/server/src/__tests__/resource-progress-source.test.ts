@@ -102,14 +102,11 @@ describe('ResourceProgressSource — real process tree', () => {
     // (measured). 500ms gives a 2%-of-a-core process a 10ms advance — a margin
     // wide enough that this is a real assertion, not a coin flip.
     const GAP = 500;
-    // ⚠ THE PRODUCTION RSS RULE, DELIBERATELY. A stopped process's RSS is the OS's to change:
-    // under memory pressure (sweeps run with swap in use) the kernel pages it out. At
-    // e98b086fc, while a shrink still counted, this case read still for a whole window and
-    // then "moved" in the next with the child stopped; d28e6d9a4 held it to CPU alone. Only
-    // growth counts now (D-274 §4a, amended 2026-10-09), so it runs on the default rule
-    // again. The boundaries are pinned on a scripted sampler below.
+    // SIGSTOP controls CPU execution; the OS can still change RSS. Measure CPU
+    // here, and check the production RSS defaults with the scripted sampler.
     const src = new ResourceProgressSource({
       pid: child.pid as number, sampleMs: 0, minComparisonMs: 100,
+      rssEpsilonBytes: Number.POSITIVE_INFINITY,
     });
 
     await nextSample(src);                  // baseline
@@ -147,8 +144,13 @@ describe('ResourceProgressSource — real process tree', () => {
       { stdio: 'ignore', detached: true },
     );
     alive.push(parent);
-    await sleep(400);
-    const sample = await defaultTreeSampler(parent.pid as number);
+    // The parent must actually spawn its child before testing tree traversal.
+    const readyBy = Date.now() + 10_000;
+    let sample = await defaultTreeSampler(parent.pid as number);
+    while ((sample?.pids ?? 0) < 2 && Date.now() < readyBy) {
+      await sleep(25);
+      sample = await defaultTreeSampler(parent.pid as number);
+    }
     expect(sample).not.toBeNull();
     expect((sample as TreeSample).pids).toBeGreaterThanOrEqual(2);
 
@@ -238,7 +240,7 @@ describe('ResourceProgressSource — fail-open', () => {
   it('counts a below-epsilon CPU advance as stillness, and RSS growth — never a shrink — as movement', async () => {
     let cur: TreeSample = { cpu_ms: 0, rss_bytes: 1_000_000, pids: 1 };
     const src = new ResourceProgressSource({
-      pid: 1, sampleMs: 0, minComparisonMs: 0, cpuEpsilonMs: 10, rssEpsilonBytes: 4_096,
+      pid: 1, sampleMs: 0, minComparisonMs: 0, cpuEpsilonMs: 10,
       sampler: async () => cur,
     });
     await nextSample(src);                              // baseline

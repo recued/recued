@@ -214,6 +214,10 @@ export type CalendarAdapterErrorCode =
   /** CalDAV series edits where the RRULE variant isn't supported by
    *  the provider. Adapter rejects before any network call. */
   | 'rrule_unsupported'
+  /** D-336 (spec §46) — a change the provider cannot make the way it was asked: Outlook takes no
+   *  status in an update, so a cancel by status changed nothing and reported success. Adapter
+   *  rejects before any network call. */
+  | 'change_unsupported'
   /** `rsvp` called on an event where the signed-in user is not an
    *  attendee. */
   | 'attendee_not_self'

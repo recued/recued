@@ -45,6 +45,7 @@ import type {
   ScopedSenderCandidate,
 } from '@recued/contracts';
 import {
+  NOTIFICATION_CHANNEL_NAMES,
   OWNER_OPERATION_SCOPE,
   OWNER_TOOL_VERSION_SCOPE,
   isCatalogForm,
@@ -62,6 +63,7 @@ import type {
   NotificationBlock,
   RemoteChannel,
 } from '@recued/notification';
+import { channelApprovalEnabled } from '@recued/notification';
 import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
 import { resolveServerTimeZone, type ReceptionInboxFanoutMode } from '@recued/contracts';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
@@ -173,6 +175,8 @@ export interface ComposeExecuteDepsDeps {
   /** D-329 — late-bound, like the sink: the Tier-1 tool registry a held tool call resumes
    *  through. Chat builds it after these deps. */
   readonly tier1Registry?: ExecuteHandlerDeps['tier1Registry'];
+  /** D-336 slice O's open item — told once a Tier-1 call is held. */
+  readonly onTier1Held?: ExecuteHandlerDeps['onTier1Held'];
   /** Forwarded to the notification block: keeps what an owner's page-started
    *  run answered once its approval let it finish, for `execution.get`. */
   readonly settledRunResults?: SettledRunResults;
@@ -231,6 +235,13 @@ export interface ComposeExecuteDepsDeps {
    *  per-row stored-cleanliness gate. Optional; absent ⇒ contact-record
    *  roots stay tainted-pinned. */
   contactStore?: ContactStore;
+  /** D-336 (spec §50) — the CRM records a held call changes, named on its approval. Optional;
+   *  absent ⇒ they show by their ids. */
+  crmRecordMirror?: ExecuteHandlerDeps['crmRecordMirror'];
+  /** D-336 (spec §52) — a single held call's rows, recorded with the hold for its ask. */
+  heldCallDetails?: ExecuteHandlerDeps['heldCallDetails'];
+  /** D-336 (spec §52) — a held calendar change's event, named on its approval. */
+  calendarEventLabel?: ExecuteHandlerDeps['calendarEventLabel'];
   /** Lazy accessor for `executeDeps` itself. The notification block's
    *  preflight resumer closes over this thunk and dereferences it at
    *  answer time — by then the caller has assigned
@@ -453,6 +464,14 @@ export interface ExecuteDepsBundle {
 const approvalAskChannelsOf = (block: Pick<NotificationBlock, 'getAsk'>) =>
   async (ask_id: string): Promise<readonly string[] | undefined> =>
     (await block.getAsk(ask_id))?.fanout_channels;
+
+/** The channels an approval ask would go to now, by the rule the block's own fan-out applies to
+ *  each channel (`channelApprovalEnabled`). */
+const approvalChannelsNowOf = (block: Pick<NotificationBlock, 'getNotificationSettings'>) =>
+  async (): Promise<readonly string[]> => {
+    const settings = await block.getNotificationSettings();
+    return NOTIFICATION_CHANNEL_NAMES.filter((channel) => channelApprovalEnabled(settings, channel));
+  };
 
 /** Compose the notification block (optional) + executeDeps. */
 /** The live list of mailboxes that can send, as the run reads it. */
@@ -869,17 +888,20 @@ export const composeExecuteDeps = (
   // refuses mirrored files for its own reason (`upload-staging.ts:100`).
   const remoteFileReadDeps = deps.getRemoteFileReadDeps;
   const readFileBytes = inboundFileCollection
-    ? async (record_id: string) => {
+    ? async (record_id: string, maxBytes?: number) => {
         const watched = parseWatchedFileRecordId(record_id);
         if (watched !== null) {
           const folder = deps.collectionRegistry?.get('file', watched.slug);
           if (!folder || !isWatchedFolderCollection(folder)) {
             throw new Error(`cli input_materialize: '${record_id}' names a watched folder this server does not have`);
           }
-          const file = await folder.readFile(watched.path, LOCAL_FILE_READ_MAX_BYTES);
+          const file = await folder.readFile(watched.path, Math.min(LOCAL_FILE_READ_MAX_BYTES, maxBytes ?? LOCAL_FILE_READ_MAX_BYTES));
           return { bytes: Buffer.from(file.bytes), mime_type: file.mime_type, filename: file.filename };
         }
         if (parseRemoteFileRecordId(record_id) === null) {
+          if (maxBytes !== undefined && (inboundFileCollection.get(record_id)?.size_bytes ?? 0) > maxBytes) {
+            throw new Error('This file exceeds the preview conversion download limit.');
+          }
           return inboundFileCollection.readBytes(record_id);
         }
         const remote = remoteFileReadDeps?.();
@@ -888,7 +910,8 @@ export const composeExecuteDeps = (
             `cli input_materialize: '${record_id}' is a mirrored provider file and no remote byte reader is wired`,
           );
         }
-        const { bytes, mime_type, filename } = await resolveRemoteFileBytes(remote, record_id);
+        const { bytes, mime_type, filename } = await resolveRemoteFileBytes(maxBytes === undefined ? remote
+          : { ...remote, maxBytes: Math.min(maxBytes, remote.maxBytes ?? maxBytes) }, record_id);
         return { bytes, mime_type, filename };
       }
     : undefined;
@@ -971,6 +994,7 @@ export const composeExecuteDeps = (
     }) } : {}),
     ...(deps.situationAccess ? { situationAccess: deps.situationAccess } : {}),
     ...(deps.tier1Registry !== undefined ? { tier1Registry: deps.tier1Registry } : {}),
+    ...(deps.onTier1Held !== undefined ? { onTier1Held: deps.onTier1Held } : {}),
     // D-210 Phase C — the device-fanout branch reads this at each preflight
     // raise. Absent ⇒ every hold raises the actionable ask.
     ...(deps.resolveInboxFanoutMode !== undefined
@@ -1042,6 +1066,10 @@ export const composeExecuteDeps = (
     // stored-cleanliness gate (dotted-email record resolution). Absent ⇒
     // contact-record roots stay tainted-pinned.
     ...(deps.contactStore ? { contactStore: deps.contactStore } : {}),
+    // D-336 (spec §50) — the CRM records a held call changes, by name on its approval.
+    ...(deps.crmRecordMirror ? { crmRecordMirror: deps.crmRecordMirror } : {}),
+    ...(deps.heldCallDetails ? { heldCallDetails: deps.heldCallDetails } : {}),
+    ...(deps.calendarEventLabel ? { calendarEventLabel: deps.calendarEventLabel } : {}),
     // D-179 P1 — standing-dish resolution (overlay + audit attribution)
     // + per-dish `context.recipe` continuity snapshots.
     ...(dishStore ? { dishStore } : {}),
@@ -1082,7 +1110,10 @@ export const composeExecuteDeps = (
     // channels, so the agent says "reply to the approval email" as well as
     // "the bell" (`execute-handler`). A missing ask names none.
     ...(notificationBlock
-      ? { approvalAskChannels: approvalAskChannelsOf(notificationBlock) }
+      ? {
+          approvalAskChannels: approvalAskChannelsOf(notificationBlock),
+          approvalChannelsNow: approvalChannelsNowOf(notificationBlock),
+        }
       : {}),
     // R2 step 6 — the same block, threaded as the torn-saga notifier.
     // `execute-handler` raises ONE `gateway.saga` ask when a run

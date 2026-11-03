@@ -36,12 +36,15 @@
  *  Spec: D-270. */
 
 import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
-import { approvalValueLabel, type ArgEditSchema, type Checkpoint, type ServerPendingAskDetail } from '@recued/contracts';
+import {
+  ANY_ARGUMENT, approvalValueLabel, describeEncodedEmail, nameValuesIn, type ArgEditSchema, type Checkpoint,
+  type ServerPendingAskDetail,
+} from '@recued/contracts';
 import type { AuditEntry } from '@recued/storage';
 import type { PendingAsk } from '@recued/notification';
 
 import { buildAskLandingDetails, readArgPath } from './ask-landing-held-op-details.js';
-import { defaultReviewDetails } from './ask-card-default-details.js';
+import { defaultReviewDetails, HIDDEN_SECRET_VALUE, isSecretShapedKey } from './ask-card-default-details.js';
 import { kernelReviewDetails } from './ask-card-kernel-details.js';
 import { holdCoversSeveralItems } from './foreach-approval-items.js';
 // ⛔ THE OPERATION ID IS IMPORTED, NOT RE-DERIVED. It selects the
@@ -80,6 +83,9 @@ export interface AskCardDetailResolverDeps {
    *  (`describeFileView`), or undefined when the server cannot place it. Absent
    *  ⇒ a file shows as its id, the behaviour before. */
   readonly describeFileRef?: (record_id: string) => string | undefined;
+  /** D-336 (spec §50) — a held raw op's installed `operation_id`, from its catalog and its
+   *  operation key: the identity its resume binds (`raw-op-dispatch.ts`). Absent ⇒ the key. */
+  readonly rawOpOperationId?: (catalog_slug: string, operation: string) => string | undefined;
 }
 
 /** A file id, whole: a saved file's, or a connected source's or a watched
@@ -131,8 +137,16 @@ const nameKnownValues = (
 ): { fields: ArgEditSchema['fields']; args: Record<string, unknown> } => {
   const args: Record<string, unknown> = { ...shown };
   const named = fields.map((field) => {
-    const label = approvalValueLabel(labels, field.key, readArgPath(shown, field.key));
-    if (label === undefined) return field;
+    const value = readArgPath(shown, field.key);
+    // D-336 (spec §42) — an email passed encoded reads as whom it goes to and its subject.
+    const label = approvalValueLabel(labels, field.key, value)
+      ?? describeEncodedEmail(value, (address) => approvalValueLabel(labels, ANY_ARGUMENT, address));
+    if (label === undefined) {
+      // D-336 (spec §41) — the people inside a structure by name, a calendar event's attendees.
+      const inside = nameValuesIn(value, labels);
+      if (inside !== value) args[field.key] = inside;
+      return field;
+    }
     args[field.key] = label;
     return { ...field, type: 'string' as const };
   });
@@ -178,6 +192,88 @@ const heldArgs = (checkpoint: Checkpoint): Record<string, unknown> => {
     (checkpoint as { arg_overrides?: unknown }).arg_overrides,
   );
   return Object.keys(overrides).length > 0 ? { ...base, ...overrides } : base;
+};
+
+/** The card's rows for a held call, from its installed operation's declared fields
+ *  (`createAskCardDetailResolver` reads them per ask). D-336 (spec §52) — exported so a hold
+ *  can record them when it is made, for the ask every channel receives. */
+export const heldCallDetailRows = (
+  deps: Pick<AskCardDetailResolverDeps, 'resolveArgEditSchema' | 'lookupRequestSchema' | 'describeFileRef'>,
+  zone: string,
+  checkpoint: Checkpoint,
+  operation_id: string,
+  opts: { readonly hideSecrets?: boolean } = {},
+): readonly ServerPendingAskDetail[] | null => {
+  const args = heldArgs(checkpoint);
+  let arg_schema: ArgEditSchema;
+  let shown = args;
+  try {
+    arg_schema = deps.resolveArgEditSchema(operation_id, args);
+    // A Recued built-in action is never installed, so neither lookup above
+    // or below can see it: its rows come from its bundled manifest.
+    const kernel = arg_schema.fields.length === 0
+      ? kernelReviewDetails(operation_id, args)
+      : null;
+    if (kernel !== null) {
+      arg_schema = { fields: kernel.fields };
+      shown = kernel.args;
+    } else if (arg_schema.fields.length === 0 && deps.lookupRequestSchema !== undefined) {
+      // A pack that declared nothing reviewable still says what the call will
+      // change: the action's own declared fields, secrets hidden. Display only.
+      const fallback = defaultReviewDetails(deps.lookupRequestSchema(operation_id), args);
+      if (fallback === null) return null;
+      arg_schema = { fields: fallback.fields };
+      shown = fallback.args;
+    }
+  } catch {
+    return null;
+  }
+  if (deps.describeFileRef !== undefined) {
+    const named = nameFileRefs(arg_schema.fields, shown, deps.describeFileRef);
+    arg_schema = { ...arg_schema, fields: named.fields };
+    shown = named.args;
+  }
+  // D-336 (spec §52) — the rows an ask carries off Recued hide a secret-named field's value,
+  // as the request-schema rows always do (`defaultReviewDetails`).
+  if (opts.hideSecrets === true) {
+    shown = { ...shown };
+    for (const field of arg_schema.fields) {
+      if (isSecretShapedKey(field.key) && readArgPath(shown, field.key) !== undefined) shown[field.key] = HIDDEN_SECRET_VALUE;
+    }
+  }
+  // Read even with no labels: an encoded email is described all the same (D-336 §42).
+  const known = nameKnownValues(arg_schema.fields, shown, checkpoint.preflight_context?.value_labels);
+  arg_schema = { ...arg_schema, fields: known.fields };
+  shown = known.args;
+  const built = buildAskLandingDetails(
+    { args: shown, arg_schema, proposed_action: '' },
+    { timeZone: zone, foldBlank: true },
+  );
+  return built.details.length > 0
+    ? built.details.map((d) => ({ label: d.label, value: d.value }))
+    : null;
+};
+
+/** D-336 (spec §52) — the rows a hold's approval card will show, read from its checkpoint as
+ *  the hold writes it, so the ask every channel receives can say them. The card's own rules
+ *  over the same checkpoint: none for a hold that covers several calls (its ask lists them), a
+ *  raw op's operation by the id its resume binds, a run's by the one it held. A run is read by
+ *  the recipe its checkpoint names, which its anchor names too. */
+export const heldCheckpointDetails = (
+  deps: Pick<
+    AskCardDetailResolverDeps,
+    'resolveArgEditSchema' | 'lookupRequestSchema' | 'describeFileRef' | 'rawOpOperationId'
+  >,
+  zone: string | undefined,
+  checkpoint: Checkpoint,
+  opts: { readonly hideSecrets?: boolean } = {},
+): readonly ServerPendingAskDetail[] | null => {
+  if (holdCoversSeveralItems(checkpoint)) return null;
+  const rawOp = checkpoint.raw_op;
+  const operation_id = rawOp !== undefined
+    ? deps.rawOpOperationId?.(rawOp.catalog_slug, rawOp.operation) ?? rawOp.operation
+    : heldOperationId({ recipe_id: checkpoint.recipe_id ?? '' }, checkpoint);
+  return heldCallDetailRows(deps, zone ?? resolveDefaultTimeZone(), checkpoint, operation_id, opts);
 };
 
 /** Build the card's `resolveDetails` closure.
@@ -244,7 +340,13 @@ export const createAskCardDetailResolver = (
       // detail could not resolve is strictly worse than losing the detail.
       return null;
     }
-    if (anchor === null) return null;
+    // D-336 (spec §50) — ⛔ A HELD RAW OP HAS NO RUN ANCHOR AND NO APPROVED TARGET: the
+    // door holds the call itself (`buildRawOpHold`), writing its checkpoint and its ask and
+    // nothing to the audit log. Read through the anchor gate below, every raw op's card was
+    // empty (live, 2026-11-02: an AI's held HubSpot deal update showed no rows), though the
+    // test of this shape handed it an anchor. Its ask, still pending, is what says it is held.
+    const rawOp = checkpoint.raw_op;
+    if (rawOp === undefined && anchor === null) return null;
     // ⛔ A HELD FOREACH IS SEVERAL CALLS. One approval runs every remaining item
     // of the step (the engine's "remaining same-target aggregate"), and the
     // prose lists them all; this block would show the ONE item the run paused
@@ -255,49 +357,8 @@ export const createAskCardDetailResolver = (
     // ⚠ THE SAME GATE THE RECEPTION LOOKUP APPLIES, kept because it is about the
     // HOLD and not about the transport: a run that is no longer awaiting
     // approval has nothing held, so its "what will happen" is already history.
-    if (anchor.commit_status !== 'awaiting_approval') return null;
-    const args = heldArgs(checkpoint);
-    const operation_id = heldOperationId(anchor, checkpoint);
-    let arg_schema: ArgEditSchema;
-    let shown = args;
-    try {
-      arg_schema = deps.resolveArgEditSchema(operation_id, args);
-      // A Recued built-in action is never installed, so neither lookup above
-      // or below can see it: its rows come from its bundled manifest.
-      const kernel = arg_schema.fields.length === 0
-        ? kernelReviewDetails(operation_id, args)
-        : null;
-      if (kernel !== null) {
-        arg_schema = { fields: kernel.fields };
-        shown = kernel.args;
-      } else if (arg_schema.fields.length === 0 && deps.lookupRequestSchema !== undefined) {
-        // A pack that declared nothing reviewable still says what the call will
-        // change: the action's own declared fields, secrets hidden. Display only.
-        const fallback = defaultReviewDetails(deps.lookupRequestSchema(operation_id), args);
-        if (fallback === null) return null;
-        arg_schema = { fields: fallback.fields };
-        shown = fallback.args;
-      }
-    } catch {
-      return null;
-    }
-    if (deps.describeFileRef !== undefined) {
-      const named = nameFileRefs(arg_schema.fields, shown, deps.describeFileRef);
-      arg_schema = { ...arg_schema, fields: named.fields };
-      shown = named.args;
-    }
-    const labels = checkpoint.preflight_context?.value_labels;
-    if (labels !== undefined) {
-      const known = nameKnownValues(arg_schema.fields, shown, labels);
-      arg_schema = { ...arg_schema, fields: known.fields };
-      shown = known.args;
-    }
-    const built = buildAskLandingDetails(
-      { args: shown, arg_schema, proposed_action: '' },
-      { timeZone: zoneOf(), foldBlank: true },
-    );
-    return built.details.length > 0
-      ? built.details.map((d) => ({ label: d.label, value: d.value }))
-      : null;
+    if (rawOp === undefined && (anchor === null || anchor.commit_status !== 'awaiting_approval')) return null;
+    // D-336 (spec §52) — the rows the hold recorded for its ask are these, read by one rule.
+    return heldCheckpointDetails(deps, zoneOf(), checkpoint);
   };
 };

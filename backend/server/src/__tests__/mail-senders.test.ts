@@ -32,6 +32,7 @@ import { createRecipeStore } from '../recipe-store.js';
 import {
   isLiveSendCapableMailInstance,
   mailboxAddressOf,
+  mailSenderAudienceOf,
   sendCapableMailboxes,
   settleMailSenders,
   type SendCapableMailbox,
@@ -149,6 +150,93 @@ describe('settling "Send from"', () => {
     expect(settleMailSenders(authored, {}, mailSenderSettings(authored), [BENCH, WORK])).toEqual({});
     const config = { sender_mail_instance: 7 };
     expect(settle(config, [BENCH])).toBe(config);
+  });
+});
+
+/** ⛔ Live, 2026-11-03: Claude Code over an MCP door called "Send a composed
+ *  email" with no mailbox, having no way to learn one. The send was held, the
+ *  owner approved it, and only then did it fail. A door's run is settled the
+ *  same way now, but a door can be a customer's, so its refusal names none of
+ *  the owner's mailboxes: it says who to ask. */
+describe('settling "Send from" for a door\'s run', () => {
+  const r = sendRecipe();
+  const settle = (config: Record<string, unknown>, senders: SendCapableMailbox[]) =>
+    settleMailSenders(r, config, mailSenderSettings(r), senders, 'door');
+  const refusal = (fn: () => unknown): RpcError => {
+    try { fn(); } catch (e) { return e as RpcError; }
+    throw new Error('expected a refusal');
+  };
+  /** None of the owner's mailboxes reaches the caller, by name, by address, or
+   *  in the details. */
+  const namesNone = (e: RpcError) => {
+    for (const mailbox of [BENCH, WORK]) {
+      expect(e.message).not.toContain(mailbox.name);
+      expect(e.message).not.toContain(mailbox.address);
+    }
+    expect(e.details).not.toHaveProperty('candidates');
+  };
+
+  it('filled as the owner\'s is: the one that can send, a name kept, an address taken', () => {
+    expect(settle({}, [BENCH])).toEqual({ sender_mail_instance: 'bench-mail' });
+    const named = { sender_mail_instance: 'work-mail' };
+    expect(settle(named, [BENCH, WORK])).toBe(named);
+    expect(settle({ sender_mail_instance: 'me@work.test' }, [BENCH, WORK])).toEqual({ sender_mail_instance: 'work-mail' });
+  });
+
+  it('empty, with several: refused, naming none, and saying who to ask', () => {
+    const e = refusal(() => settle({}, [BENCH, WORK]));
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe('mail_sender_required');
+    expect(e.message).toBe(
+      'Recipe \'send-a-note\' cannot send: "Send from" (sender_mail_instance) is empty, and more than one mailbox on this server can send. Ask the owner which mailbox to send from, then pass its name or address.',
+    );
+    expect(e.details).toEqual({ variable: 'sender_mail_instance' });
+    namesNone(e);
+  });
+
+  it('a name or address that cannot send: refused, naming none', () => {
+    const e = refusal(() => settle({ sender_mail_instance: 'Work account' }, [BENCH, WORK]));
+    expect(e.message).toBe(
+      'Recipe \'send-a-note\' cannot send: "Send from" (sender_mail_instance) is \'Work account\', which is not a mailbox on this server that can send. Ask the owner which mailbox to send from, then pass its name or address.',
+    );
+    expect(e.details).toEqual({ variable: 'sender_mail_instance', named: 'Work account' });
+    namesNone(e);
+    // The caller's own address comes back; the mailboxes that send as it do not.
+    const imap: SendCapableMailbox = { name: 'bench-imap', address: 'me@gmail.test', provider: 'IMAP' };
+    const twice = refusal(() => settle({ sender_mail_instance: 'me@gmail.test' }, [BENCH, imap, WORK]));
+    expect(twice.message).toBe(
+      'Recipe \'send-a-note\' cannot send: "Send from" (sender_mail_instance) is \'me@gmail.test\', the address of more than one mailbox on this server that can send. Ask the owner which one, then pass its name.',
+    );
+    expect(twice.details).toEqual({ variable: 'sender_mail_instance', named: 'me@gmail.test' });
+  });
+
+  it('with none that can send: refused, saying the owner can connect one', () => {
+    expect(refusal(() => settle({}, [])).message).toBe(
+      'Recipe \'send-a-note\' cannot send: "Send from" (sender_mail_instance) is empty, and no mailbox on this server can send. The owner can connect one under Connections → Mail.',
+    );
+    expect(refusal(() => settle({ sender_mail_instance: 'bench-mail' }, [])).message).toBe(
+      'Recipe \'send-a-note\' cannot send: "Send from" (sender_mail_instance) is \'bench-mail\', but no mailbox on this server can send. The owner can connect one under Connections → Mail.',
+    );
+  });
+});
+
+describe('whose run is settled', () => {
+  it('the owner\'s, and a caller\'s through an MCP or chat door; not an automation\'s, a visitor\'s or a webhook\'s', () => {
+    const sources: Array<[ExecutionSource | undefined, 'owner' | 'door' | undefined]> = [
+      [{ channel: 'user', actor: 'user_self', user_id: 'o', client_token_id: 't' }, 'owner'],
+      [{ channel: 'chat', actor: 'user_self', chat_session_id: 's', user_id: 'o' }, 'owner'],
+      [{ channel: 'mcp', actor: 'contracted_user', agent_id: 'a', tool_call_id: 'c', mcp_token_id: 'm', contract_id: 'k' }, 'door'],
+      [{ channel: 'chat', actor: 'contracted_user', chat_session_id: 's', user_id: 'u', contract_id: 'k' }, 'door'],
+      [{ channel: 'messenger', actor: 'contracted_user', vendor: 'telegram', from: '42', contract_id: 'k' }, 'door'],
+      [{ channel: 'reception', actor: 'contracted_user', reception_id: 'r', contract_id: 'k' }, undefined],
+      [{ channel: 'reception', actor: 'anonymous', reception_id: 'r' }, undefined],
+      [{ channel: 'webhook', actor: 'anonymous', vendor: 'stripe', webhook_secret_id: 'w' }, undefined],
+      [{ channel: 'schedule', actor: 'system', cron: '0 9 * * *' } as unknown as ExecutionSource, undefined],
+      [undefined, undefined],
+    ];
+    for (const [source, audience] of sources) {
+      expect(mailSenderAudienceOf(source), JSON.stringify(source)).toBe(audience);
+    }
   });
 });
 
@@ -280,6 +368,41 @@ describe('a run', () => {
       listByRecipe: () => [{ dish_id: 'd1', name: '', is_default: true, config_overlay: { sender_mail_instance: 'work-mail' } }],
     } as unknown as ExecuteHandlerDeps['dishStore'];
     expect(await from(deps([BENCH, WORK], { dishStore }))).toBe('work-mail');
+  });
+
+  const DOOR: ExecutionSource = {
+    channel: 'mcp', actor: 'contracted_user', agent_id: 'claude-code', tool_call_id: 'call-1',
+    mcp_token_id: 'door-token-1', contract_id: 'contract-door-1',
+  };
+
+  /** The contract a door's run carries, granting the send; the policy gate
+   *  refuses a door's run without one. */
+  const DOOR_CONTRACT = {
+    contract_id: 'contract-door-1', contract_version: 'v1', allowed_tools: ['mail-send'], approval_required: [],
+    scope_restrictions: [], resolved_at: 1_000,
+  };
+
+  it('a door\'s run with "Send from" empty sends from the one mailbox that can', async () => {
+    expect(await from(deps([BENCH]), { execution_source: DOOR, contract_snapshot: DOOR_CONTRACT })).toBe('bench-mail');
+  });
+
+  it('a door\'s run with several is refused before anything runs, naming no mailbox', async () => {
+    const error = await from(deps([BENCH, WORK]), { execution_source: DOOR, contract_snapshot: DOOR_CONTRACT }).then(
+      () => { throw new Error('expected a refusal'); },
+      (e: unknown) => e as RpcError,
+    );
+    expect(error).toMatchObject({ code: 'mail_sender_required', details: { variable: 'sender_mail_instance' } });
+    expect(error.message).toContain('Ask the owner which mailbox to send from');
+    expect(error.message).not.toMatch(/bench-mail|work-mail|me@gmail\.test|me@work\.test/);
+    expect(error.details).not.toHaveProperty('candidates');
+  });
+
+  it('an automation\'s run is untouched: its sender would move unseen when a second mailbox connects', async () => {
+    let asked = 0;
+    const counting = deps(undefined, { listSendCapableMailboxes: () => { asked += 1; return [BENCH]; } });
+    const schedule = { channel: 'schedule', actor: 'system', cron: '0 9 * * *' };
+    expect(await from(counting, { execution_source: schedule })).toBe('');
+    expect(asked).toBe(0);
   });
 
   it('untouched: a run that is not the owner\'s, and a server that cannot list mailboxes', async () => {

@@ -2,7 +2,7 @@ import { createKitchenDraftStore, describeKitchenDraftOrigin } from '../kitchen-
 import { createKitchenPackSourceStore } from '../ingredient-authoring/kitchen-pack-source-store.js';
 import { installedPackInstalledAt } from '../pack-inventory.js';
 import { mailAccountCapabilities } from '@recued/contracts';
-import { handleExecute } from '../execute-handler.js';
+import { handleExecute, buildRpcUserExecutionSource } from '../execute-handler.js';
 import { createAutomationRehearsalHost } from '../automation-rehearsal-host.js';
 import { createCalendarEventCreationStore } from '../storage/calendar-event-creations.js';
 import { createAutomationRehearsalStore } from '../storage/automation-rehearsal-store.js';
@@ -43,7 +43,7 @@ import { composeInboundEmailAnswer, emailAnswerAccountsOf } from '../composition
 import { createOwnerEmailConnection, createOwnerNotificationConnection } from '../composition/bin/owner-email-connection.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
 import { composeMailChatTurns } from '../mail-chat-door/turns.js';
-import { composeMailChatAnswers, type MailChatAnswers } from '../mail-chat-door/answers.js';
+import { composeMailChatAnswers, sendAfterContinuation, type MailChatAnswers } from '../mail-chat-door/answers.js';
 import { recipeToolTitle } from '../recipe-tool-name.js';
 import { closeMailSendOutcomeAsk, raiseMailSendOutcomeAsk } from '../mail-send-outcome-ask.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
@@ -185,7 +185,7 @@ import {
   privateByoDropIds,
 } from '../pack-inventory.js';
 import type { ContractBroadcastEvent } from '../contract-handler.js';
-import type { HistoryDeps } from '../history-handler.js';
+import { createAskChatPlanFinder, type HistoryDeps } from '../history-handler.js';
 import type { WsServerHandle } from '../ws-server.js';
 import type { BridgeDispatcher } from '../bridges/dispatcher.js';
 import { createBridgeRegistry } from '../bridges/registry.js';
@@ -205,6 +205,7 @@ import type { IngredientDraftRpcDeps } from '../ingredient-authoring/draft-previ
 import { supervisorWillRespawn as supervisorRespawns } from '@recued/contracts';
 import { resolveServerTimeZone } from '@recued/contracts';
 import type { Lifecycle } from '../lifecycle/index.js';
+import { recoverPendingAsksOnceRunning } from '../composition/bin/wire-notification-block.js';
 import type { ArchiveRpcDeps } from '../archive/archive-handler.js';
 import { createHostnameSniBindingLookup } from '../hostname/index.js';
 import type { CollectionContext } from './compose-collection-context.js';
@@ -279,7 +280,9 @@ import { removePackOwnerRulings } from '../pack-inventory.js';
 import { mcpConnectionForPackSlug } from '@recued/ingredient-authoring';
 import { executeLLM } from '@recued/llm';
 import { createHeldPlanAskAnswerer, createHoldExpiredReader } from '../chat-held-writes.js';
+import { createHeldPlanEditor } from '../chat-plan-edits.js';
 import { createChatSavesReader } from '../memory-save-count.js';
+import { ownerClaimRecords } from '../memory-claim.js';
 import {
   CONNECTION_SETUP_GUIDE_MANIFEST,
   CONNECTION_SETUP_GUIDE_TIMEOUT_MS,
@@ -501,6 +504,8 @@ export interface ComposeListenersOptions {
     // hears of a run that settles after its turn.
     | 'chatStoreRef'
     | 'onChatRunSettled'
+    // D-337 — and sends a continuation's answer as soon as its turn ends.
+    | 'onChatHeldResultTurnEnded'
     // D-188 — master pause flag closes the inbound webhook listeners.
     | 'serverState'
   >;
@@ -661,14 +666,23 @@ export interface ComposeListenersOptions {
 const buildContactDeps = (
   contactStore: NonNullable<AppContext['contactStoreRef']>,
   recordsStore: StorageContext['recordsStore'],
+  /** D-336 slice R — what a contact's changed address carries outside the contact store. */
+  app?: Pick<AppContext, 'annotationStoreRef' | 'enrichmentCascadeRef'>,
 ): ContactRpcDeps => ({
   store: contactStore,
+  // As a merge carries them: the notes and typed links on the contact, keyed on its address,
+  // and its enrichment, recomputed under the new address and the old one's dropped.
+  onEmailChanged: async ({ from_email, to_email }) => {
+    await app?.annotationStoreRef?.rewriteRecordId('contact', from_email, to_email);
+    app?.enrichmentCascadeRef?.cascadeForIdentityChange('contact', to_email, [to_email, from_email]);
+  },
   // ⚠ BATCHED, and it must stay that way. Looping `readRootProjections` here
   // would read identically and reintroduce the N+1 the batch exists to kill:
   // 50 rows x 20 packs is 2,050 queries against 41.
   rollupsForKeys: (emails: readonly string[]) => {
     const out: Record<string, TimelineRollup[]> = {};
-    for (const [key, projections] of readRootProjectionsBatch(recordsStore, 'contact', emails)) {
+    // D-336 slice R — each contact's records under every address it answers to.
+    for (const [key, projections] of readRootProjectionsBatch(recordsStore, 'contact', emails, (email) => contactStore.addressSet(email))) {
       out[key] = projections.map(toTimelineRollup);
     }
     return out;
@@ -1041,6 +1055,7 @@ export const composeListeners = async (
   const mailChatProof = collection.mailChatProof;
   let mailChatAnswers: MailChatAnswers | undefined;
   let stopMailChatSettled: (() => void) | undefined;
+  let stopMailChatContinued: (() => void) | undefined;
   if (mailChatProof !== undefined) {
     const notifier = execution.notificationBlock;
     if (notifier !== undefined) {
@@ -1127,6 +1142,9 @@ export const composeListeners = async (
       // follows in the thread.
       const answers = mailChatAnswers;
       stopMailChatSettled = app.onChatRunSettled?.((settled) => answers.onRunSettled(settled));
+      // D-337 — an email chat carrying on after an approval: its answer is owed from the commit,
+      // and goes now, as after one of the door's own turns, not at the next idle look.
+      stopMailChatContinued = app.onChatHeldResultTurnEnded?.(sendAfterContinuation(answers));
     }
   }
 
@@ -1163,6 +1181,19 @@ export const composeListeners = async (
           : {}),
       }),
     );
+    // D-336 slice E — the owner's change to a held save, made on its card while approving
+    // it: checked by the owner's lookups, then written onto the hold and the proposal.
+    app.chatDeps.claimRecords = ownerClaimRecords({
+      ...(app.contactStoreRef ? { contacts: app.contactStoreRef } : {}),
+      ...(storage.workEntityStoreRef ? { work: storage.workEntityStoreRef } : {}),
+    });
+    const plans = app.chatDeps.planApprovalStore;
+    if (execution.executeDeps.checkpointStore !== undefined && plans !== undefined) {
+      app.chatDeps.editHeldPlan = createHeldPlanEditor({
+        checkpointStore: execution.executeDeps.checkpointStore,
+        plans,
+      });
+    }
   }
 
   // WatchSource messenger push-source provider — one governance row per
@@ -1222,6 +1253,7 @@ export const composeListeners = async (
     ...(collection.calendarStack && storage.db ? { calendarEventCreations: createCalendarEventCreationStore(storage.db) } : {}),
     ...(collection.mailStack ? { mailEnroll: collection.mailStack.enrollDeps } : {}),
     ...(app.cacheBlobs ? { mailBodyBlobs: app.cacheBlobs } : {}),
+    ...(app.annotationStoreRef ? { mailAttachmentLinks: app.annotationStoreRef } : {}),
     // D-318 step 1 — `collection.mail.chat_door.*`, and the chat mailbox's flag
     // in `collection.mail.list`.
     ...(collection.mailChatDoor ? { mailChatDoor: collection.mailChatDoor } : {}),
@@ -1531,6 +1563,9 @@ export const composeListeners = async (
       // fields, read from the same installed catalog (display only).
       lookupRequestSchema: (operationId) =>
         buildResolverDeps(storage.localManifestStore).lookupOperation(operationId)?.request_schema,
+      // D-336 (spec §50) — a held raw op's installed id, as its resume binds it.
+      rawOpOperationId: (catalogSlug, operation) =>
+        execution.executorConfig.manifests.get(catalogSlug)?.operations?.[operation]?.operation_id ?? operation,
       // ⛔ REQUIRED or every batched ask fails closed and renders no rows — the
       // same silent feature-off the `/ask` page had before its own membership
       // read was threaded. Not passing it is not a smaller feature, it is none.
@@ -1562,6 +1597,10 @@ export const composeListeners = async (
     nameAskAction: createAskActionNamer({
       getManifest: (slug: string) => execution.executorConfig.manifests.get(slug),
     }),
+    // D-336 slice N — a held chat write's card in Chat, which its approval links to.
+    ...(app.chatDeps?.planApprovalStore?.findByHoldRun !== undefined
+      ? { findAskChatPlan: createAskChatPlanFinder(app.chatDeps.planApprovalStore) }
+      : {}),
     ...(execution.notificationBlock
       ? {
           listOpenAsks: () => execution.notificationBlock!.listOpenAsks(),
@@ -1645,7 +1684,7 @@ export const composeListeners = async (
           getFormSubmissionPiiKey: () =>
             deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception')),
           ...(app.contactStoreRef
-      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore) }
+      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore, app) }
       : {}),
         })
       : undefined;
@@ -1863,7 +1902,7 @@ export const composeListeners = async (
       ? { formResponseStore: storage.formResponseStoreRef }
       : {}),
     ...(app.contactStoreRef
-      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore) }
+      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore, app) }
       : {}),
     ...(receptionCalendarSeam ? { createCalendarEvent: receptionCalendarSeam } : {}),
     ...(receptionBookingSeam ? { createBooking: receptionBookingSeam } : {}),
@@ -3300,6 +3339,8 @@ export const composeListeners = async (
         // D-329 — the same writes' own checks, asked before the owner is.
         checkCalendarCreate: collection.calendarStack.writeChecks.create,
         checkCalendarUpdate: collection.calendarStack.writeChecks.update,
+        // D-336 (spec §48) — the calendar a create naming none goes on, on any account.
+        defaultCalendar: collection.calendarStack.defaultCalendar,
       } as never
     : null;
 
@@ -3593,7 +3634,7 @@ export const composeListeners = async (
     approvalDeps: rpc.observabilityBundle.approvalDeps,
     ...(app.annotationDeps ? { annotationDeps: app.annotationDeps } : {}),
     ...(app.contactStoreRef
-      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore) }
+      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore, app) }
       : {}),
     ...(rpc.contactMergeDeps ? { contactMergeDeps: rpc.contactMergeDeps } : {}),
     ...(app.connectionStoreRef
@@ -4530,6 +4571,12 @@ export const composeListeners = async (
             ...(app.userMemoryStore ? { userMemoryStore: app.userMemoryStore } : {}),
             ...(app.memoryRedactionStore ? { redactionStore: app.memoryRedactionStore } : {}),
             ...(storage.eventBus ? { bus: storage.eventBus } : {}),
+            // D-336 — an imported claim keeps a linked end whose record is here (§3.8), and
+            // the Delete count keys a deleted save's claim by the same records (slice B).
+            claimRecords: ownerClaimRecords({
+              ...(app.contactStoreRef ? { contacts: app.contactStoreRef } : {}),
+              ...(storage.workEntityStoreRef ? { work: storage.workEntityStoreRef } : {}),
+            }),
             // D-198 §13 — `memory.saves` reads a deleted note's words back from the chat
             // that saved it: its call rows, and the approval cards of saves held for you.
             ...(app.chatDeps
@@ -4578,7 +4625,9 @@ export const composeListeners = async (
               // own grant fence.
               rollupsForEntity: (collectionName: string, id: string) =>
                 collectionName === 'contact'
-                  ? readRootProjections(storage.recordsStore, 'contact', id).map(toTimelineRollup)
+                  // D-336 slice R — under every address the contact answers to.
+                  ? readRootProjections(storage.recordsStore, 'contact', id,
+                    app.contactStoreRef === undefined ? undefined : (email) => app.contactStoreRef!.addressSet(email)).map(toTimelineRollup)
                   : [],
             },
           },
@@ -4591,6 +4640,23 @@ export const composeListeners = async (
     // rather than half-reading. Owner-trusted (registered-client boundary in the
     // handler) — the contract/egress gate is only for the AI/recipe channels.
     fileReadRpcDeps: {
+      conversions: {
+        readers: () => {
+          const config = execution.executeDeps.executorConfig;
+          const resolution = buildPackOpResolution(
+            () => execution.executeDeps.contractScan?.('installed_pack', []) ?? [],
+            slug => config.manifests.get(slug),
+          );
+          return (['markitdown', 'docling'] as const).flatMap(converter => {
+            const binding = resolution.get(`recued-core.${converter}`);
+            if (!binding?.operations.has('document.to_markdown')) return [];
+            return [{ converter, fingerprint: JSON.stringify([binding.catalog_slug, config.manifests.get(binding.catalog_slug)]) }];
+          });
+        },
+        execute: (request, client) => handleExecute(execution.executeDeps, { ...request, trigger_source: 'manual',
+          instance_id: client.instance_id!, execution_source: buildRpcUserExecutionSource(client) }),
+        runStatus: async run => (await storage.auditLog?.get(run))?.commit_status,
+      },
       ...(storage.db && app.connectionStoreRef && storage.workEntityStoreRef ? {
         cloudAttachments: { db: storage.db, connections: app.connectionStoreRef, sources: storage.workEntityStoreRef,
           ...(app.fileSourceSyncStateRef ? { syncState: app.fileSourceSyncStateRef } : {}) },
@@ -5203,6 +5269,12 @@ export const composeListeners = async (
   } else {
     await messengerIngressSupervisor?.start();
   }
+  // D-158 P3 — the notification block's sweep waits for the same flip: an open
+  // ask's email and an approved run reach the mailboxes and calendars
+  // `startCollectionAdapters` registers after the boot's recovery step.
+  let holdNotificationSweep: (() => void) | undefined = execution.notificationBlock
+    ? recoverPendingAsksOnceRunning({ block: execution.notificationBlock, ...(lifecycle ? { lifecycle } : {}) })
+    : undefined;
   webhookOutboxRuntime?.start();
   savedDataViewAlerts?.start();
   authenticationAlerts?.start();
@@ -5216,7 +5288,8 @@ export const composeListeners = async (
   //    settles `interrupted` at its next check (`chat-turn-queue.ts`);
   //  - an answer (Approve in the web app, a messenger button, an email reply) is
   //    recorded and its handler — for an approval, the whole resumed run — is
-  //    left to the boot sweep (`NotificationBlock.beginStopping`).
+  //    left to the next start's sweep, once that server runs
+  //    (`NotificationBlock.beginStopping`, `recoverPendingAsksOnceRunning`).
   const turnQueue = app.chatOrchestratorRef?.turnQueue;
   const answers = execution.notificationBlock;
   if (lifecycle && (turnQueue || answers || promptScheduleAlerts)) {
@@ -5231,8 +5304,9 @@ export const composeListeners = async (
   let closePromise: Promise<void> | undefined;
   const closeServer = (): Promise<void> => {
     if (closePromise) return closePromise;
-    // A boot that ends before `running` never starts the messengers.
+    // A boot that ends before `running` never starts the messengers, nor sweeps the asks.
     holdMessengerIngress?.(); holdMessengerIngress = undefined;
+    holdNotificationSweep?.(); holdNotificationSweep = undefined;
     const begin = (stop: () => void | Promise<void>): Promise<void> => {
       try { return Promise.resolve(stop()); }
       catch (err) { return Promise.reject(err); }
@@ -5269,6 +5343,8 @@ export const composeListeners = async (
       ...(portMappingSupervisorRef !== null
         ? [begin(() => portMappingSupervisorRef?.stop())]
         : []),
+      // D-337 — the email door stops hearing that continuations ended (after the answers above).
+      ...(stopMailChatContinued !== undefined ? [begin(() => stopMailChatContinued!())] : []),
     ];
     closePromise = Promise.allSettled(drains).then((results) => {
       const errors = results

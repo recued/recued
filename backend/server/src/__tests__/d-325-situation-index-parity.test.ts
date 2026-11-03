@@ -264,7 +264,9 @@ describe('D-325 §6.3 indexed situation read', () => {
     expect(occasionReads.length).toBeGreaterThan(0);
     expect(occasionReads.every(read => read.only !== undefined)).toBe(true);
     expect(occasionReads.reduce((sum, read) => sum + read.only!, 0)).toBe(2);
-  }, 180_000);
+  // Each timezone compares 570 query/context/time combinations with both
+  // readers. Allow the shared low-priority sweep five minutes for this oracle.
+  }, 300_000);
 
   it('reads the classes a learned relation names, as the server composes it', async () => {
     const spheres = createSphereStore(db, work);

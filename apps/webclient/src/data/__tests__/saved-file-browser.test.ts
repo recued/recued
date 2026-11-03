@@ -93,4 +93,17 @@ describe('saved-file browser read ownership', () => {
     await browser.retry();
     expect(browser.snapshot()).toMatchObject({ unsupported: false, error: undefined, files: [{ file_id: 'upgraded' }], pages: 1 });
   });
+  it('a confirmed rename retires stale pages, survives refresh failure, and removes rows outside the current search', async () => {
+    const pending = deferred<FileAttachmentListResult>();
+    const list = vi.fn<SavedFileListCaller>().mockResolvedValueOnce(page(['one'], 'next'))
+      .mockReturnValueOnce(pending.promise).mockRejectedValueOnce(new Error('Interrupted')).mockResolvedValueOnce(page(['one']));
+    const browser = createSavedFileBrowser(list, () => {});
+    await browser.search('', false); const more = browser.more();
+    browser.rename('one', 'Renamed.pdf'); pending.resolve(page(['late'])); await more;
+    await browser.search('', false);
+    expect(browser.snapshot()).toMatchObject({ files: [{ file_id: 'one', filename: 'Renamed.pdf' }], cursor: 'next', canLoadMore: false, error: expect.any(String) });
+    await browser.search('one', false); browser.rename('one', 'Unrelated.pdf');
+    expect(browser.snapshot().files).toEqual([]);
+  });
+
 });

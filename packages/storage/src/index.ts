@@ -2,12 +2,13 @@ export type {
   Collection,
   EncryptedEntry,
   ConfigEntry,
+  FieldProjectableCollection,
   FieldQuery,
   FieldQueryableCollection,
   OrderedWindowCollection,
   OrderedWindowQuery,
 } from './types.js';
-export { isFieldQueryable, isOrderedWindowQueryable } from './types.js';
+export { isFieldProjectable, isFieldQueryable, isOrderedWindowQueryable } from './types.js';
 export { createInMemoryCollection } from './in-memory.js';
 export {
   createIDBCollection,

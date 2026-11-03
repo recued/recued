@@ -1,4 +1,4 @@
-import type { SituationDeliverySettings, SituationDeliveryStatus } from '@recued/contracts';
+import type { SituationDeliverySettings, SituationDeliveryStatus, SituationDigestLookAhead } from '@recued/contracts';
 import { e } from '@recued/ui-shared';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
 
@@ -18,6 +18,21 @@ const RUN_STATE: Readonly<Record<string, string>> = {
   uncertain: 'Delivery not confirmed', superseded: 'Replaced by a newer digest',
 };
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** §15.7 amendment (2026-11-02) — how far ahead a digest looks, counted from the day it goes,
+ *  that day included. Keyed by the contract's type, so a new length is named here too. */
+const LOOK_AHEAD: Readonly<Record<SituationDigestLookAhead, string>> = {
+  2: 'Today and tomorrow', 3: 'Next 3 days', 7: 'Next 7 days', 14: 'Next 14 days',
+};
+/** The windows a digest at this frequency may cover, shortest first. A weekly digest covers at
+ *  least a week, as the server holds it to, so no day falls between two digests. */
+export const digestLookAheadChoices = (frequency: string): SituationDigestLookAhead[] =>
+  (Object.keys(LOOK_AHEAD).map(Number) as SituationDigestLookAhead[]).filter(days => frequency !== 'weekly' || days >= 7);
+/** The choice to show: the owner's own while it is offered, else the shortest offered that is
+ *  longer, so a detour through Weekly gives a daily digest its window back. */
+export const digestLookAheadFor = (frequency: string, wanted: number): SituationDigestLookAhead => {
+  const choices = digestLookAheadChoices(frequency);
+  return choices.find(days => days >= wanted) ?? choices.at(-1)!;
+};
 /** §15.7 amendment — when the next digest goes, in the server's zone the card's times use.
  *  An unknown zone falls back to this device's; a time already come reads "going out now". */
 export const nextDigestText = (at: number, timeZone: string | undefined, now = Date.now(), locale?: string): string => {
@@ -45,7 +60,7 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   // a digest "Coming up" and a due-day note "Today"; the copy names both, so the
   // owner can match a message to this setting.
   node('h3', 'Digest');
-  node('p', 'A summary of the next seven days, sent to your notification channels as “Coming up”. It lists what changed '
+  node('p', 'A summary of the days ahead, sent to your notification channels as “Coming up”. It lists what changed '
     + 'since the last digest and counts the rest as still open. If nothing changed, nothing is sent.', root, 'sd-lede');
   const editor = node('div');
   editor.setAttribute('data-overview-editor', '');
@@ -72,6 +87,14 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   time.name = 'time';
   time.required = true;
   time.setAttribute('aria-label', 'Time');
+  // An older server has no window to choose (its digest covers seven days): the field stays
+  // hidden and the save leaves it out, since that server would keep it and ignore it.
+  const lookAhead = select('look_ahead_days', 'How far ahead', []);
+  const lookAheadField = lookAhead.parentElement!;
+  lookAheadField.hidden = true;
+  const weeklyHint = node('p', 'A weekly digest looks at least a week ahead, so nothing falls between two.', form, 'sd-hint');
+  weeklyHint.setAttribute('data-look-ahead-hint', '');
+  weeklyHint.hidden = true;
   const dayLabel = node('label', undefined, form, 'sd-check');
   const dayOf = node('input', undefined, dayLabel);
   dayOf.type = 'checkbox';
@@ -109,7 +132,7 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
     if (frequency.value === 'weekly') weekdayField.hidden = false;
     else if (doc.activeElement !== weekday) weekdayField.hidden = true;
   };
-  const controls = [frequency, weekday, time, dayOf, saveButton, sendButton];
+  const controls = [frequency, weekday, time, lookAhead, dayOf, saveButton, sendButton];
   let disposed = false;
   let busy = false;
   let dirty = false;
@@ -117,6 +140,19 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   let generation = 0;
   let status: SituationDeliveryStatus | undefined;
   let resultKey: string | undefined;
+  // The window the owner last chose, kept while Weekly offers only longer ones.
+  let wantedLookAhead = 7;
+  const lookAheadNamed = () => status?.settings.look_ahead_days !== undefined;
+  const syncLookAhead = () => {
+    lookAheadField.hidden = !lookAheadNamed();
+    weeklyHint.hidden = !lookAheadNamed() || frequency.value !== 'weekly';
+    const choices = digestLookAheadChoices(frequency.value);
+    if ([...lookAhead.options].map(option => option.value).join() !== choices.join()) {
+      lookAhead.replaceChildren();
+      for (const days of choices) node('option', LOOK_AHEAD[days], lookAhead).value = String(days);
+    }
+    lookAhead.value = String(digestLookAheadFor(frequency.value, wantedLookAhead));
+  };
 
   const message = (text: string, error = false) => {
     notice.textContent = text;
@@ -129,9 +165,11 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   const settings = (): SituationDeliverySettings => ({
     frequency: frequency.value as SituationDeliverySettings['frequency'],
     weekday: Number(weekday.value), time: time.value, day_of: dayOf.checked,
+    ...(lookAheadNamed() ? { look_ahead_days: Number(lookAhead.value) as SituationDigestLookAhead } : {}),
   });
   const sameSettings = (a: SituationDeliverySettings, b: SituationDeliverySettings) =>
-    a.frequency === b.frequency && a.weekday === b.weekday && a.time === b.time && a.day_of === b.day_of;
+    a.frequency === b.frequency && a.weekday === b.weekday && a.time === b.time && a.day_of === b.day_of
+    && a.look_ahead_days === b.look_ahead_days;
   const updateDirty = () => {
     if (disposed || busy || !status) return;
     // A failed save may have reached the server. Only a fresh read can resolve it.
@@ -149,8 +187,10 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
       weekday.value = String(status.settings.weekday);
       if (doc.activeElement !== time && time.value !== status.settings.time) time.value = status.settings.time;
       dayOf.checked = status.settings.day_of;
+      if (status.settings.look_ahead_days !== undefined) wantedLookAhead = status.settings.look_ahead_days;
     }
     syncWeekday();
+    syncLookAhead();
     const key = JSON.stringify([status.pending, status.uncertain, status.last_run, status.last_sent, status.next_at, status.time_zone]);
     if (key === resultKey) return;
     resultKey = key;
@@ -211,7 +251,9 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   };
   form.addEventListener('input', updateDirty);
   form.addEventListener('change', updateDirty);
-  frequency.addEventListener('change', syncWeekday);
+  // Before the form's own `change`, so the dirty check sees the window the frequency offers.
+  frequency.addEventListener('change', () => { syncWeekday(); syncLookAhead(); });
+  lookAhead.addEventListener('change', () => { wantedLookAhead = Number(lookAhead.value); });
   weekday.addEventListener('blur', syncWeekday);
   time.addEventListener('blur', () => {
     if (!disposed && !busy && !dirty && status && !time.validity.badInput && time.value !== status.settings.time) time.value = status.settings.time;
@@ -268,9 +310,11 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
  *  Control heights are the shell's (`--wc-control-h`, 44px on a phone), so
  *  this sets layout only.
  *  ⚠ `[hidden]` is restated because `.rx-btn` sets a display, which would
- *  otherwise show the hidden Retry button and the unloaded editor. */
-export const SITUATION_DELIVERY_PANEL_STYLES = `
-[${SITUATION_DELIVERY_PANEL_ATTR}] {
+ *  otherwise show the hidden Retry button and the unloaded editor.
+ *  The Agenda's card (§15.7, 2026-11-02, later) is the same card under its own
+ *  attribute and its own message, retry and results hooks. */
+export const deliveryCardStyles = (attr: string, names: { message: string; retry: string; results: string }): string => `
+[${attr}] {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -281,51 +325,51 @@ export const SITUATION_DELIVERY_PANEL_STYLES = `
   color: var(--fg);
   font-size: 13px;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] [hidden] {
+[${attr}] [hidden] {
   display: none !important;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] h3 {
+[${attr}] h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] p {
+[${attr}] p {
   margin: 0;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-lede,
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-hint {
+[${attr}] .sd-lede,
+[${attr}] .sd-hint {
   max-width: 68ch;
   color: var(--fg-muted);
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-hint {
+[${attr}] .sd-hint {
   font-size: 12px;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-hint a {
+[${attr}] .sd-hint a {
   color: var(--accent);
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] form {
+[${attr}] form {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-fields {
+[${attr}] .sd-fields {
   display: flex;
   flex-wrap: wrap;
   gap: 10px 16px;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-field {
+[${attr}] .sd-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 132px;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-field > span {
+[${attr}] .sd-field > span {
   font-size: 12px;
   font-weight: 500;
   color: var(--fg-muted);
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-check {
+[${attr}] .sd-check {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -333,7 +377,7 @@ export const SITUATION_DELIVERY_PANEL_STYLES = `
   font-weight: 500;
   cursor: pointer;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-check input {
+[${attr}] .sd-check input {
   width: 16px;
   height: 16px;
   margin: 0;
@@ -341,24 +385,24 @@ export const SITUATION_DELIVERY_PANEL_STYLES = `
 }
 /* The label is the checkbox's target: a finger's height on a phone. ⛔ 28px. */
 @media (max-width: 640px) {
-  [${SITUATION_DELIVERY_PANEL_ATTR}] .sd-check { min-height: 44px; }
+  [${attr}] .sd-check { min-height: 44px; }
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-check + .sd-hint {
+[${attr}] .sd-check + .sd-hint {
   margin-top: -6px;
   padding-left: 24px;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-actions {
+[${attr}] .sd-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] [data-situation-delivery-message][role="alert"] {
+[${attr}] [${names.message}][role="alert"] {
   color: var(--danger);
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] [data-overview-retry] {
+[${attr}] [${names.retry}] {
   align-self: flex-start;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] [data-overview-results] {
+[${attr}] [${names.results}] {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -367,14 +411,14 @@ export const SITUATION_DELIVERY_PANEL_STYLES = `
   font-size: 12px;
   color: var(--fg-muted);
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] [data-overview-results]:empty {
+[${attr}] [${names.results}]:empty {
   display: none;
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] [data-overview-results] summary {
+[${attr}] [${names.results}] summary {
   cursor: pointer;
   color: var(--fg);
 }
-[${SITUATION_DELIVERY_PANEL_ATTR}] .sd-sent {
+[${attr}] .sd-sent {
   margin-top: 6px;
   padding: 8px 10px;
   white-space: pre-wrap;
@@ -385,3 +429,5 @@ export const SITUATION_DELIVERY_PANEL_STYLES = `
   border-radius: 4px;
 }
 `;
+export const SITUATION_DELIVERY_PANEL_STYLES = deliveryCardStyles(SITUATION_DELIVERY_PANEL_ATTR,
+  { message: 'data-situation-delivery-message', retry: 'data-overview-retry', results: 'data-overview-results' });

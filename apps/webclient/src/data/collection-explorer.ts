@@ -86,6 +86,13 @@ export interface CollectionExplorerProps {
    *  file's bytes are reachable from the record detail. Rendered ONLY in the
    *  detail view (the list view never shows it). */
   detailActionsHtml?: string;
+  /** Owner controls beside a list row, outside its Open button. */
+  rowControlHtml?: (record: CollectionRecord) => string;
+  /** Alternate primary action, with a separate route to the record's details. */
+  rowOpenAction?: string;
+  rowSecondaryHtml?: (record: CollectionRecord) => string;
+  /** Freeze browsing while an owner action settles. */
+  disabled?: boolean;
   /** Specialized content for a loaded record; recovery and Back remain shared. */
   detailBodyHtml?: string;
   /** D-210 step 3 — pre-rendered timeline section slotted BELOW the record's
@@ -297,6 +304,10 @@ const renderRow = (
   allDay: AllDayField | undefined,
   now: number,
   actionAttr: string,
+  controlHtml = '',
+  disabled = false,
+  openAction = COLLECTION_OPEN_RECORD_ACTION,
+  secondaryHtml = '',
 ): string => {
   const title = recordTitle(record, titleFields);
   const days = allDayValues(record, allDay, now);
@@ -313,11 +324,12 @@ const renderRow = (
     })
     .filter((s) => s.length > 0)
     .join('');
-  return `<li class="col-explorer-row">
-    <button type="button" class="col-explorer-row-btn" ${actionAttr}="${COLLECTION_OPEN_RECORD_ACTION}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}">
+  return `<li class="col-explorer-row${controlHtml ? ' col-explorer-row--controlled' : ''}">${controlHtml}
+    ${secondaryHtml ? '<div class="col-explorer-file-row">' : ''}<button type="button" class="col-explorer-row-btn" ${actionAttr}="${openAction}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}"${disabled ? ' disabled' : ''}>
       <span class="col-explorer-row-head"><span class="col-explorer-row-title">${e(title)}</span>${renderStateBadge(record, stateField)}</span>
       ${summary ? `<span class="col-explorer-row-summary">${summary}</span>` : ''}
     </button>
+    ${secondaryHtml ? `${secondaryHtml}</div>` : ''}
   </li>`;
 };
 
@@ -328,6 +340,7 @@ const renderInstanceBar = (
   selectedSlug: string | null,
   actionAttr: string,
   labels?: ReadonlyMap<string, string>,
+  disabled = false,
 ): string => {
   if (instances.length === 0 || (instances.length === 1 && instances[0]!.slug === selectedSlug)) return '';
   const chips = instances
@@ -353,7 +366,7 @@ const renderInstanceBar = (
         : '';
       return `<button type="button" class="col-explorer-instance-chip${active ? ' is-active' : ''}"
         ${actionAttr}="${COLLECTION_SELECT_INSTANCE_ACTION}" ${COLLECTION_INSTANCE_SLUG_ATTR}="${e(inst.slug)}"
-        aria-pressed="${active ? 'true' : 'false'}">${e(label)}${owned !== '' ? ` ${owned}` : ''}</button>`;
+        aria-pressed="${active ? 'true' : 'false'}"${disabled ? ' disabled' : ''}>${e(label)}${owned !== '' ? ` ${owned}` : ''}</button>`;
     })
     .join('');
   return `<div class="col-explorer-instances" role="group" aria-label="Choose an instance">${chips}</div>`;
@@ -563,7 +576,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
 
   const instanceBar = props.singleCollection
     ? ''
-    : renderInstanceBar(props.instances, props.selectedSlug, props.actionAttr, props.instanceLabels);
+    : renderInstanceBar(props.instances, props.selectedSlug, props.actionAttr, props.instanceLabels, props.disabled);
 
   let body: string;
   if (props.error !== undefined) {
@@ -589,7 +602,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     body = `<p class="col-explorer-empty">${e(props.emptyCopy ?? 'No records in this collection yet.')}</p>`;
   } else {
     body = `<ul class="col-explorer-list" role="list">${props.records
-      .map((r) => props.collection === 'mail' ? renderMailRow(r, props.actionAttr) : renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr))
+      .map((r) => props.collection === 'mail' ? renderMailRow(r, props.actionAttr) : renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr, props.rowControlHtml?.(r), props.disabled, props.rowOpenAction, props.rowSecondaryHtml?.(r)))
       .join('')}</ul>`;
   }
 
@@ -626,6 +639,11 @@ export const COLLECTION_EXPLORER_STYLES = `
 }
 .col-explorer-list { min-width: 0; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
 .col-explorer-row { min-width: 0; }
+.col-explorer-row--controlled { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:stretch; }
+.col-explorer-file-row { display:flex; min-width:0; align-items:stretch; }
+.col-explorer-file-row > .col-explorer-row-btn { flex:1; min-width:0; }
+.col-explorer-file-details { flex-shrink:0; align-self:center; margin:0 8px; padding:8px; min-width:40px; min-height:40px;
+  border:1px solid var(--border); border-radius:6px; color:var(--fg); background:var(--surface); cursor:pointer; font:inherit; }
 .col-explorer-row-btn {
   min-width: 0;
   width: 100%; text-align: left; display: flex; flex-direction: column; gap: 0.25rem;

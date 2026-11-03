@@ -281,7 +281,6 @@ const renderRadios = <T extends string>(
 
 const renderScopeRead = (
   scopeRead: ReadonlyArray<HousekeepingDrawerScopeRead>,
-  recordTotal: number | undefined,
 ): string => {
   if (scopeRead.length === 0) {
     return `<p class="housekeeping-drawer-empty">No scope-of-read declared.</p>`;
@@ -289,15 +288,11 @@ const renderScopeRead = (
   return `
     <ul class="housekeeping-drawer-scope-list">
       ${scopeRead.map((entry) => {
-        // P6 — prefer the per-entry record_count populated by the
-        // server's preview-time count; fall back to the producer's
-        // primary source-collection total when the entry doesn't
-        // carry its own count (e.g. P5-era state-side scope rows or
-        // pre-walker boot races).
-        const count = entry.record_count ?? recordTotal;
+        // A secondary collection's size cannot be inferred from the primary.
+        const count = entry.record_count;
         const countLine = count !== undefined
           ? `<span class="housekeeping-drawer-scope-count">${count} records</span>`
-          : '';
+          : '<span class="housekeeping-drawer-scope-count">Record count unavailable</span>';
         return `
           <li class="housekeeping-drawer-scope-entry">
             <code class="housekeeping-drawer-scope-collection">${e(entry.collection)}</code>
@@ -426,7 +421,6 @@ export const renderHousekeepingDetailDrawer = (
   const poolPolicy: EnrichmentPoolPolicy =
     props.trustRow?.pool_policy ?? POOL_POLICY_DEFAULT;
   const errorBlock = props.writeError ? inlineError(props.writeError) : '';
-  const recordTotal = props.task.enrichment?.source_collection_count;
 
   return `
     <div class="housekeeping-drawer" data-topic="${e(topic)}" role="region" aria-label="Detail drawer for ${e(topic)}">
@@ -444,7 +438,7 @@ export const renderHousekeepingDetailDrawer = (
 
       <section class="housekeeping-drawer-section housekeeping-drawer-scope">
         <h4>What this reads</h4>
-        ${renderScopeRead(props.scopeRead, recordTotal)}
+        ${renderScopeRead(props.scopeRead)}
       </section>
 
       <section class="housekeeping-drawer-section housekeeping-drawer-recent-runs">

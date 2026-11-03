@@ -12,6 +12,7 @@ import {
   CLI_VERSION_OUTSIDE,
   CLI_VERSION_PROBE_FLAGS,
   compareToolVersions,
+  type AuthoringReferenceSpan,
 } from '@recued/contracts';
 
 export interface CliToolPolicyProblem {
@@ -19,6 +20,8 @@ export interface CliToolPolicyProblem {
    *  `tested.from`, `[1].docs`, … */
   path: string;
   message: string;
+  /** Exact decoded key range for source editors; it does not change validity. */
+  reference_span?: AuthoringReferenceSpan;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -26,6 +29,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const keysOutside = (value: Record<string, unknown>, allowed: readonly string[]): string[] =>
   Object.keys(value).filter((key) => !allowed.includes(key));
+
+const unknownKey = (base: string, key: string, message: string): CliToolPolicyProblem => ({
+  path: base + (/^[A-Za-z_]\w*$/.test(key) ? (base ? '.' : '') + key : '[' + JSON.stringify(key) + ']'),
+  message, reference_span: { target: 'key', offset: 0, length: key.length },
+});
 
 const isToolVersion = (value: unknown): value is string =>
   typeof value === 'string' && CLI_TOOL_VERSION_PATTERN.test(value);
@@ -38,19 +46,16 @@ export const cliVersionProblems = (version: unknown): CliToolPolicyProblem[] => 
   }
   const out: CliToolPolicyProblem[] = [];
   for (const key of keysOutside(version, ['tested', 'outside'])) {
-    out.push({
-      path: key,
-      message: key === 'pattern'
+    out.push(unknownKey('', key, key === 'pattern'
         ? 'version.pattern is not supported: the version is the first dotted number in the first line the probe prints'
-        : `version.${key} is not a version setting (tested, outside)`,
-    });
+        : `version.${key} is not a version setting (tested, outside)`));
   }
   const tested = version.tested;
   if (!isRecord(tested)) {
     out.push({ path: 'tested', message: 'version.tested must be an object: { from, before? }' });
   } else {
     for (const key of keysOutside(tested, ['from', 'before'])) {
-      out.push({ path: `tested.${key}`, message: `version.tested.${key} is not part of a range (from, before)` });
+      out.push(unknownKey('tested', key, `version.tested.${key} is not part of a range (from, before)`));
     }
     if (!isToolVersion(tested.from)) {
       out.push({ path: 'tested.from', message: 'version.tested.from must be a version such as 1.18.35: one to four whole numbers joined by dots' });
@@ -94,7 +99,7 @@ export const cliInstallProblems = (install: unknown): CliToolPolicyProblem[] => 
     }
     if ('docs' in entry) {
       for (const key of keysOutside(entry, ['docs'])) {
-        out.push({ path: `${at}.${key}`, message: `a docs hint carries only docs, not ${key}` });
+        out.push(unknownKey(at, key, `a docs hint carries only docs, not ${key}`));
       }
       if (!isHttpsLink(entry.docs)) {
         out.push({ path: `${at}.docs`, message: 'docs must be an https link, with no user name or password' });
@@ -102,7 +107,7 @@ export const cliInstallProblems = (install: unknown): CliToolPolicyProblem[] => 
       return;
     }
     for (const key of keysOutside(entry, ['manager', 'package', 'systems'])) {
-      out.push({ path: `${at}.${key}`, message: `${key} is not an install hint setting (manager, package, systems)` });
+      out.push(unknownKey(at, key, `${key} is not an install hint setting (manager, package, systems)`));
     }
     if (!(CLI_INSTALL_MANAGERS as readonly unknown[]).includes(entry.manager)) {
       out.push({ path: `${at}.manager`, message: `manager must be one of ${CLI_INSTALL_MANAGERS.join(', ')}` });

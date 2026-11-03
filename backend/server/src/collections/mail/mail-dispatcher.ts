@@ -39,6 +39,8 @@ import { callMailAdapter } from './mail-errors.js';
 
 export interface MailDispatcherDeps {
   registry: CollectionRegistry;
+  /** An owner UI action stays bound to the enrollment and message it reviewed. */
+  assertCurrent?: () => void;
   /** Remove the local warehouse row after a provider-verified delete, or
    *  after a move whose result the provider could not name.
    *
@@ -183,6 +185,7 @@ export const handleMailMark = async (
   );
   const result = await callMailAdapter(input.slug, 'mail-mark', () =>
     mark({ source_id, read: input.read }));
+  deps.assertCurrent?.();
   const updated = collection.applyVerifiedMutation(input.record_id, result);
   return updated ? outcomeOf(updated, result) : detachedOutcome(result);
 };
@@ -199,6 +202,7 @@ export const handleMailFlag = async (
   );
   const result = await callMailAdapter(input.slug, 'mail-flag', () =>
     flag({ source_id, flagged: input.flagged }));
+  deps.assertCurrent?.();
   const updated = collection.applyVerifiedMutation(input.record_id, result);
   return updated ? outcomeOf(updated, result) : detachedOutcome(result);
 };

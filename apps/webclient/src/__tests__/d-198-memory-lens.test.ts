@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { MemoryListEntry } from '@recued/contracts';
+import { qualifyWorkEntityId, type MemoryListEntry } from '@recued/contracts';
 import {
   MEMORY_ADD_ACTION,
   MEMORY_BODY_PLACEHOLDER,
@@ -45,8 +45,18 @@ import {
   MEMORY_REVOKE_ACTION,
   MEMORY_UNREVOKE_ACTION,
   memoryFilterActors,
+  MEMORY_CLAIM_ADD_CONTACT_ACTION,
+  MEMORY_CLAIM_ADD_THING_ACTION,
+  MEMORY_CLAIM_MATCHES_ATTR,
+  dropMemoryClaimMatches,
+  MEMORY_CLAIM_OFFER_ATTR,
+  MEMORY_CLAIM_TAKES_ATTR,
+  MEMORY_CLAIM_TAKES_STYLES,
   renderLensSwitcher,
   renderMemoryLens,
+  renderClaimCounts,
+  MEMORY_CLAIM_COUNTS_ATTR,
+  showMemoryClaimTakes,
   type MemoryComposeState,
   type MemoryDetailState,
   type MemoryImportState,
@@ -1146,5 +1156,262 @@ describe("the Delete confirm's count (D-198 §13)", () => {
     expect(html).toContain('An agent has saved this 2 times. Mark it wrong so it asks you first?');
     expect(html).toMatch(new RegExp(`class="memory-btn"\\s+data-recued-data-action="${MEMORY_REVOKE_ACTION}"[^>]*>Mark it wrong<`));
     expect(html).toMatch(button(MEMORY_DELETE_CONFIRM_ACTION, 'umem_live', 'Delete'));
+  });
+});
+
+describe('D-336 slice E — the relationship in the compose form', () => {
+  const compose = { open: true, mode: 'create' as const, kind: 'fact', summary: '', body: '', submitting: false };
+  const render = (claim: { subject: unknown; relation: string; object: unknown }) =>
+    renderMemoryLens({ ...baseProps, entries: [], canWrite: true, compose: { ...compose, claim: claim as never } });
+  const endHtml = (html: string, end: 'subject' | 'object') => {
+    const start = html.indexOf(`id="memory-claim-${end}"`);
+    const next = html.indexOf(end === 'subject' ? 'id="memory-claim-relation"' : 'Remove relationship', start);
+    return html.slice(start, next);
+  };
+
+  it('offers to add one when the note has none', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, compose });
+    expect(html).toContain('Add a relationship');
+    expect(html).toContain('Also say the fact as a relationship, such as Mia, daughter of, Dana.');
+  });
+
+  /** What an end says its relation takes there (`MEMORY_CLAIM_TAKES_ATTR`). */
+  const takes = (html: string, end: 'subject' | 'object') =>
+    new RegExp(`data-memory-claim-part="${end}" ${MEMORY_CLAIM_TAKES_ATTR}="(\\w+)"`).exec(html)?.[1];
+
+  it("offers each end the links its relation takes there: a person a contact or you, a thing a thing you own", () => {
+    // Every link is drawn, marked with what it links to, and each end says what its relation
+    // takes; the styles hide the rest, so a relation typed changes them in place.
+    const owns = render({ subject: { text: 'Mia' }, relation: 'owns', object: { text: 'bike' } });
+    expect(endHtml(owns, 'subject')).toContain(`${MEMORY_CLAIM_OFFER_ATTR}="person">Link to a contact`);
+    expect(endHtml(owns, 'subject')).toContain(`${MEMORY_CLAIM_OFFER_ATTR}="person">That’s you`);
+    expect(endHtml(owns, 'subject')).toContain(`${MEMORY_CLAIM_OFFER_ATTR}="thing">Link to a thing you own`);
+    expect([takes(owns, 'subject'), takes(owns, 'object')]).toEqual(['person', 'thing']);
+    // Words a place takes: no link at all.
+    expect(takes(render({ subject: { text: 'Dana' }, relation: 'lives in', object: { text: 'Cork' } }), 'object')).toBe('none');
+    // A relation of the owner's own says nothing of its ends, so both are offered; so does none yet.
+    expect(takes(render({ subject: { text: 'Lena' }, relation: "mother of my cousin's boyfriend", object: { text: 'Sara' } }), 'object')).toBe('any');
+    expect(takes(render({ subject: { text: '' }, relation: '', object: { text: '' } }), 'subject')).toBe('any');
+    // The lens's styles hide what an end does not take.
+    expect(MEMORY_LENS_STYLES).toContain(MEMORY_CLAIM_TAKES_STYLES);
+    for (const hidden of [
+      `[${MEMORY_CLAIM_TAKES_ATTR}="person"] [${MEMORY_CLAIM_OFFER_ATTR}="thing"]`,
+      `[${MEMORY_CLAIM_TAKES_ATTR}="thing"] [${MEMORY_CLAIM_OFFER_ATTR}="person"]`,
+      `[${MEMORY_CLAIM_TAKES_ATTR}="none"] [${MEMORY_CLAIM_OFFER_ATTR}]`,
+    ]) expect(MEMORY_CLAIM_TAKES_STYLES).toContain(hidden);
+  });
+
+  it('a relation being typed sets what each end takes in place, without a redraw', () => {
+    const ends = new Map(['subject', 'object'].map((end) => [end, new Map<string, string>([[MEMORY_CLAIM_TAKES_ATTR, 'any']])]));
+    const within = {
+      querySelector: (selector: string) => {
+        const end = /data-memory-claim-part="(\w+)"/.exec(selector)?.[1];
+        const attrs = end === undefined ? undefined : ends.get(end);
+        return attrs === undefined ? null : { setAttribute: (k: string, v: string) => { attrs.set(k, v); } };
+      },
+    } as unknown as ParentNode;
+    showMemoryClaimTakes(within, 'owns');
+    expect([ends.get('subject')!.get(MEMORY_CLAIM_TAKES_ATTR), ends.get('object')!.get(MEMORY_CLAIM_TAKES_ATTR)]).toEqual(['person', 'thing']);
+    showMemoryClaimTakes(within, 'lives in');
+    expect(ends.get('object')!.get(MEMORY_CLAIM_TAKES_ATTR)).toBe('none');
+    showMemoryClaimTakes(within, '  ');
+    expect(ends.get('object')!.get(MEMORY_CLAIM_TAKES_ATTR)).toBe('any');
+    showMemoryClaimTakes(undefined, 'owns');
+  });
+
+  it('lists every relation to choose from, by group, and takes the owner\'s own words', () => {
+    const html = render({ subject: { text: '' }, relation: '', object: { text: '' } });
+    expect(html).toContain('<option value="daughter of" label="Family"></option>');
+    expect(html).toContain('<option value="owns" label="Things"></option>');
+    expect(html).toContain('Choose one from the list, or write your own words.');
+  });
+
+  it('shows a linked end by its name, with a way to unlink it', () => {
+    const html = render({ subject: { text: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-1', name: 'Dana Whitfield' } });
+    expect(html).toContain('data-memory-claim-linked="object"');
+    expect(html).toContain('Dana Whitfield<span class="memory-field-hint"> · a contact</span>');
+    expect(html).toContain('>Unlink</button>');
+    expect(render({ subject: { owner: true }, relation: 'owns', object: { text: 'bike' } })).toContain('<span class="memory-claim-linked">You');
+  });
+
+  /** D-336 slice H — the picker makes the contact when there is none (§3.6). */
+  it('offers to add the name as a contact where the search found nobody, and says while it is added', () => {
+    const claim = { subject: { text: 'Mia <3' }, relation: 'daughter of', object: { text: 'Dana' } };
+    const withLinking = (linking: Record<string, unknown>) => renderMemoryLens({
+      ...baseProps, entries: [], canWrite: true,
+      compose: { ...compose, claim: claim as never, linking: { end: 'subject', kind: 'contact', loading: false, options: [], ...linking } as never },
+    });
+    const offered = endHtml(withLinking({ error: 'No contact matches “Mia <3”.', addable: 'Mia <3' }), 'subject');
+    expect(offered).toContain(`${MEMORY_CLAIM_ADD_CONTACT_ACTION}" data-memory-claim-end="subject">Add “Mia &lt;3” as a contact</button>`);
+    // Before the Cancel that leaves the search.
+    expect(offered.indexOf('as a contact')).toBeLessThan(offered.indexOf('>Cancel</button>'));
+    const adding = endHtml(withLinking({ addable: 'Mia <3', adding: true }), 'subject');
+    expect(adding).toContain('<p class="memory-field-hint" role="status">Adding “Mia &lt;3”…</p>');
+    expect(adding).not.toContain(MEMORY_CLAIM_ADD_CONTACT_ACTION);
+    // Matches found, or a search that failed: nothing to add.
+    const found = endHtml(withLinking({ options: [{ id: 'ct-1', name: 'Mia Whitfield' }] }), 'subject');
+    expect(found).not.toContain(MEMORY_CLAIM_ADD_CONTACT_ACTION);
+    expect(endHtml(withLinking({ error: 'Your server is busy right now.' }), 'subject')).not.toContain(MEMORY_CLAIM_ADD_CONTACT_ACTION);
+  });
+
+  /** D-336 slice L — the picker makes the thing when there is none. */
+  it('offers to add the name as a thing you own where the search found nothing, with an action of its own', () => {
+    const claim = { subject: { owner: true }, relation: 'owns', object: { text: 'Rex <3' } };
+    const offered = endHtml(renderMemoryLens({
+      ...baseProps, entries: [], canWrite: true,
+      compose: { ...compose, claim: claim as never, linking: {
+        end: 'object', kind: 'asset', loading: false, options: [], error: 'Nothing you own matches “Rex <3”.', addable: 'Rex <3', addKey: 'k1',
+      } as never },
+    }), 'object');
+    expect(offered).toContain(`${MEMORY_CLAIM_ADD_THING_ACTION}" data-memory-claim-end="object">Add “Rex &lt;3” as a thing you own</button>`);
+    expect(offered).not.toContain(MEMORY_CLAIM_ADD_CONTACT_ACTION);
+  });
+
+  /** Audit 2026-11-01 — a lookup or an add under way is dropped when the owner changes the
+   *  relationship, and its matches with it, in place. */
+  it('an end\'s matches are marked by their end, and come off the form in place', () => {
+    const claim = { subject: { text: 'Mia' }, relation: 'daughter of', object: { text: 'Dana' } };
+    const html = renderMemoryLens({
+      ...baseProps, entries: [], canWrite: true,
+      compose: { ...compose, claim: claim as never, linking: { end: 'object', kind: 'contact', loading: true, options: [] } as never },
+    });
+    expect(endHtml(html, 'object')).toContain(`<div class="memory-claim-matches" ${MEMORY_CLAIM_MATCHES_ATTR}="object" role="group"`);
+    expect(endHtml(html, 'subject')).not.toContain(MEMORY_CLAIM_MATCHES_ATTR);
+    const asked: string[] = [];
+    let removed = 0;
+    const host = { querySelector: (selector: string) => { asked.push(selector); return { remove: () => { removed += 1; } }; } };
+    dropMemoryClaimMatches(host as unknown as ParentNode, 'object');
+    expect(asked).toEqual([`[${MEMORY_CLAIM_MATCHES_ATTR}="object"]`]);
+    expect(removed).toBe(1);
+    // No form, or no matches drawn: nothing to take off.
+    dropMemoryClaimMatches(undefined, 'object');
+    dropMemoryClaimMatches({ querySelector: () => null } as unknown as ParentNode, 'subject');
+  });
+});
+
+describe('D-336 slice G — the Memory view marks a note that contradicts another', () => {
+  const sister = entry({
+    memory_id: 'umem_sister', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 998_000,
+    summary: "Mia is Dana's sister.",
+    contradicts: [{ memory_id: 'umem_daughter', summary: "Mia is <Dana>'s daughter." }],
+  });
+
+  it('says what each contradicts, by its summary, opening that note', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [sister] });
+    expect(html).toContain('<p class="memory-row-revision" data-memory-contradicts>Contradicts '
+      + '<a href="#data/memory/umem_daughter">"Mia is &lt;Dana&gt;&#39;s daughter."</a></p>');
+  });
+
+  it('names two in one line, and says nothing for a note with none', () => {
+    const two = entry({
+      memory_id: 'umem_x', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 1,
+      summary: 'x', contradicts: [{ memory_id: 'umem_a', summary: 'A.' }, { memory_id: 'umem_b', summary: 'B.' }],
+    });
+    expect(renderMemoryLens({ ...baseProps, entries: [two] })).toMatch(/Contradicts <a [^>]*>"A\."<\/a> and <a [^>]*>"B\."<\/a>/);
+    expect(renderMemoryLens({ ...baseProps, entries: [entry({ memory_id: 'umem_y', origin_actor: 'user_self', kind: 'note', ts: 1 })] }))
+      .not.toContain('data-memory-contradicts');
+  });
+
+  it('marks the detail view too', () => {
+    const html = renderMemoryLens({ ...baseProps, entries: [], detail: { memory_id: 'umem_sister', loading: false, entry: { ...sister, body: 'full' } } });
+    expect(html).toContain('data-memory-contradicts>Contradicts <a href="#data/memory/umem_daughter">');
+  });
+});
+
+describe('D-336 slice T — a relationship\'s ends told apart: a record, or a name in words', () => {
+  const daughter = entry({
+    memory_id: 'umem_daughter', origin_actor: 'contracted_user', kind: 'chat_memory', ts: 998_000,
+    summary: "Mia is Dana's daughter.",
+    claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-dana', name: 'Dana <W>' } },
+  });
+  const WORDS = (text: string) => `<span class="memory-claim-tag memory-claim-tag--words" data-memory-claim-end-is="words">“${text}”`
+    + '<span class="memory-claim-tag-kind">not linked</span></span>';
+  const detailOf = (row: MemoryListEntry, canWrite = true) =>
+    renderMemoryLens({ ...baseProps, entries: [], canWrite, detail: { memory_id: row.memory_id, loading: false, entry: { ...row, body: 'full' } } });
+
+  it('the list shows each note\'s relationship: a contact, a thing or you as a record, a name in words as not linked', () => {
+    const car = entry({
+      memory_id: 'umem_car', origin_actor: 'user_self', kind: 'note', ts: 997_000, summary: 'I own the family car.',
+      claim: { subject: { owner: true }, relation: 'owns', object: { asset_id: 'asset-car', name: 'Family car' } },
+    });
+    const html = renderMemoryLens({ ...baseProps, entries: [daughter, car, entry({ memory_id: 'umem_plain', origin_actor: 'user_self', kind: 'note', ts: 1, summary: 'plain' })] });
+    // A contact's tag opens its page, by its id, which the contact page looks up.
+    expect(html).toContain(`<p class="memory-row-claim" data-memory-claim-line>${WORDS('Mia')} <span class="memory-claim-relation">daughter of</span> `
+      + '<a class="memory-claim-tag memory-claim-tag--record" data-memory-claim-end-is="contact" href="#data/contact/ct-dana">Dana &lt;W&gt;'
+      + '<span class="memory-claim-tag-kind">contact</span></a></p>');
+    expect(html).toContain('<span class="memory-claim-tag memory-claim-tag--record" data-memory-claim-end-is="owner">You</span> '
+      + '<span class="memory-claim-relation">owns</span> <span class="memory-claim-tag memory-claim-tag--record" data-memory-claim-end-is="asset">'
+      + 'Family car<span class="memory-claim-tag-kind">thing you own</span></span>');
+    // A note saved with no relationship has no line.
+    expect(html.match(/data-memory-claim-line/g)).toHaveLength(2);
+  });
+
+  // D-336 (spec §45) — a thing's tag opens its page in Yours, by the id it keeps for a thing of its own.
+  it("a thing's tag opens its page when its id is Recued's own, and stays a tag otherwise", () => {
+    const thing = (asset_id: string) => renderMemoryLens({ ...baseProps, entries: [entry({
+      memory_id: `umem_${asset_id.length}`, origin_actor: 'user_self', kind: 'note', ts: 1, summary: 'mine',
+      claim: { subject: { owner: true }, relation: 'owns', object: { asset_id, name: 'Family car' } },
+    })] });
+    const local = qualifyWorkEntityId({ kind: 'asset', source_id: 'recued.asset', local_id: 'asset-car' });
+    expect(thing(local)).toContain('<a class="memory-claim-tag memory-claim-tag--record" data-memory-claim-end-is="asset" '
+      + 'href="#yours/asset/asset-car">Family car<span class="memory-claim-tag-kind">thing you own</span></a>');
+    // From a source, the page knows it by another id; an id of another form, or a broken one, links nowhere.
+    const sourced = qualifyWorkEntityId({ kind: 'asset', source_id: 'home-assistant', source_record_id: 'sensor.car', local_id: 'asset-car' });
+    for (const id of [sourced, 'asset-car', `${local.split(':').slice(0, 3).join(':')}:broken`]) {
+      expect(thing(id)).toContain('<span class="memory-claim-tag memory-claim-tag--record" data-memory-claim-end-is="asset">Family car');
+      expect(thing(id)).not.toContain('href="#yours/asset/');
+    }
+  });
+
+  it('the detail says how to link a name in words: Replace for an AI\'s note, Edit for the owner\'s own', () => {
+    expect(detailOf(daughter)).toContain('<p class="memory-detail-claim-hint">“Mia” is not linked, so Recued matches it only with notes '
+      + 'in the same words. To link it, choose Replace.</p>');
+    const own = entry({ ...daughter, memory_id: 'umem_own', origin_actor: 'user_self', kind: 'note',
+      claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { text: 'Dana' } } });
+    expect(detailOf(own)).toContain('“Mia” and “Dana” are not linked, so Recued matches them only with notes in the same words. '
+      + 'To link them, choose Edit.');
+    expect(detailOf(own)).toContain(`${WORDS('Mia')} <span class="memory-claim-relation">daughter of</span> ${WORDS('Dana')}`);
+  });
+
+  it('says nothing of linking where it cannot be: a place in words, every end linked, or no way to change the note', () => {
+    const home = entry({ ...daughter, memory_id: 'umem_home', claim: { subject: { contact_id: 'ct-dana', name: 'Dana' }, relation: 'lives in', object: { text: 'Dublin' } } });
+    expect(detailOf(home)).toContain('data-memory-claim-line');
+    expect(detailOf(home)).not.toContain('memory-detail-claim-hint');
+    const linked = entry({ ...daughter, memory_id: 'umem_linked', claim: { subject: { contact_id: 'ct-mia', name: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-dana', name: 'Dana' } } });
+    expect(detailOf(linked)).not.toContain('memory-detail-claim-hint');
+    expect(detailOf(daughter, false)).not.toContain('memory-detail-claim-hint');
+  });
+});
+
+describe('D-336 slice K — the Memory view says what the relation list misses', () => {
+  const counts = (over: Partial<{ agent_notes: number; agent_notes_without_claim: number; own_relations: Array<{ relation: string; notes: number }> }> = {}) => ({
+    agent_notes: 12, agent_notes_without_claim: 3, own_relations: [], ...over,
+  });
+
+  it("names the notes an AI saved without a relationship, and the owner's own relations with their counts", () => {
+    expect(renderClaimCounts(counts())).toContain('3 of the 12 notes an AI saved have no relationship. Replace one to add it.');
+    expect(renderClaimCounts(counts({ agent_notes_without_claim: 1 }))).toContain('1 of the 12 notes an AI saved has no relationship.');
+    expect(renderClaimCounts(counts({ agent_notes: 1, agent_notes_without_claim: 1 })))
+      .toContain('The note an AI saved has no relationship. Replace it to add one.');
+    const own = renderClaimCounts(counts({ agent_notes_without_claim: 0, own_relations: [{ relation: 'taught piano to', notes: 2 }, { relation: 'walks <b>', notes: 1 }] }));
+    expect(own).toContain('Relations in your own words: "taught piano to" (2), "walks &lt;b&gt;" (1).');
+    expect(own).not.toContain('no relationship');
+  });
+
+  it('names five of the own relations and counts the rest', () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({ relation: `relation ${String(i)}`, notes: 1 }));
+    expect(renderClaimCounts(counts({ agent_notes_without_claim: 0, own_relations: many }))).toContain('"relation 4" (1), and 2 more.');
+  });
+
+  it('says nothing when there is nothing to say, and only in the list', () => {
+    expect(renderClaimCounts(counts({ agent_notes_without_claim: 0 }))).toBe('');
+    const list = renderMemoryLens({ ...baseProps, entries: [], claimCounts: counts() });
+    expect(list).toContain(MEMORY_CLAIM_COUNTS_ATTR);
+    expect(renderMemoryLens({ ...baseProps, entries: [] })).not.toContain(MEMORY_CLAIM_COUNTS_ATTR);
+    const composing = renderMemoryLens({
+      ...baseProps, entries: [], claimCounts: counts(), canWrite: true,
+      compose: { open: true, kind: 'note', summary: '', body: '' } as never,
+    });
+    expect(composing).not.toContain(MEMORY_CLAIM_COUNTS_ATTR);
   });
 });

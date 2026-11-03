@@ -1,4 +1,5 @@
 import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
+import { liftBrowserImages } from './mcp-browser-images.js';
 import { withMcpToolProgress, type McpProgressSink } from './mcp-tool-progress.js';
 /** MCP server — expose recued-server as tools over stdio.
  *
@@ -36,11 +37,12 @@ import {
   runCanonicalSearchFanout,
 } from './canonical-op-tool-catalog.js';
 import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
-import { CANONICAL_OP_TOOL_PREFIX, type ApprovalValueLabels } from '@recued/contracts';
+import { CANONICAL_OP_TOOL_PREFIX, type ApprovalValueLabels, type HeldCallNotices } from '@recued/contracts';
 import { deriveChannelSessionId, planApproval } from '@recued/gateway';
 import { resolveConnectionVendor } from './storage/connection-store.js';
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import {
+  approvalElsewhereMessage,
   HELD_FOR_APPROVAL_MESSAGE,
   projectRunResultForAgent,
 } from './run-result-agent-projection.js';
@@ -1491,6 +1493,8 @@ const holdMcpTier1Write = async (
   tool: string,
   args: Record<string, unknown>,
   valueLabels?: ApprovalValueLabels,
+  /** D-336 slice G — what the write meets: told to the app, and kept for the owner's ask. */
+  notices?: HeldCallNotices,
 ): Promise<unknown> => {
   const executionSource = buildMcpExecutionSource(deps);
   const contractSnapshot = buildMcpContractSnapshot(executionSource, deps);
@@ -1501,8 +1505,11 @@ const holdMcpTier1Write = async (
     contractSnapshot,
     ...(executionSource.channel === 'mcp' ? { correlationId: executionSource.tool_call_id } : {}),
     ...(valueLabels !== undefined ? { valueLabels } : {}),
+    ...(notices?.memory_conflicts !== undefined ? { memoryConflicts: notices.memory_conflicts } : {}),
   });
-  if (outcome.kind === 'held') return heldMcpTier1Response(deps, tool, outcome.run_id);
+  if (outcome.kind === 'held') {
+    return heldMcpTier1Response(deps, tool, outcome.run_id, notices?.agent, outcome.approval_channels);
+  }
   if (outcome.kind === 'ask') {
     return markMcpZeroCustomerUsage(text({ status: 'requires_approval', tool, message: outcome.message }));
   }
@@ -1510,23 +1517,32 @@ const holdMcpTier1Write = async (
 };
 
 /** D-329 — the app's answer for its held Tier-1 write: `awaiting_approval`, the `action_ref`
- *  to follow, and the do-not-resend message. A repeat of a write still waiting gets the same
- *  answer, with the same `action_ref`. */
+ *  to follow, the do-not-resend message, and where else the owner answers it, as a held run
+ *  says. A repeat of a write still waiting gets the same answer, with the same `action_ref`
+ *  (and no `approval_elsewhere`: the first answer said it). */
 const heldMcpTier1Response = async (
   deps: McpDeps,
   tool: string,
   run_id: string,
-): Promise<unknown> => markMcpZeroCustomerUsage(text(await attachMcpActionRef(deps, {
-  run_id,
-  tool_name: tool,
-  kind: 'raw_op',
-  projected: {
-    status: 'awaiting_approval',
-    awaiting_approval: true,
-    tool,
-    message: HELD_FOR_APPROVAL_MESSAGE,
-  },
-})));
+  /** D-336 slice G — what the write meets, told beside "held" (`HeldCallNotices.agent`). */
+  note?: string,
+  /** The channels its ask went to (`RawOpDispatchOutcome.approval_channels`). */
+  approvalChannels?: readonly string[],
+): Promise<unknown> => {
+  const elsewhere = approvalElsewhereMessage(approvalChannels ?? []);
+  return markMcpZeroCustomerUsage(text(await attachMcpActionRef(deps, {
+    run_id,
+    tool_name: tool,
+    kind: 'raw_op',
+    projected: {
+      status: 'awaiting_approval',
+      awaiting_approval: true,
+      tool,
+      message: note === undefined ? HELD_FOR_APPROVAL_MESSAGE : `${HELD_FOR_APPROVAL_MESSAGE} ${note}`,
+      ...(elsewhere !== undefined ? { approval_elsewhere: elsewhere } : {}),
+    },
+  })));
+};
 
 export const buildMcpGrantCatalogLegacyEntries = (
   manifests: Pick<ManifestRegistry, 'slugs' | 'get'>,
@@ -2170,6 +2186,14 @@ const text = (data: unknown) => ({
     : {}),
 });
 const err = (msg: string) => ({ content: [{ type: 'text', text: msg }], isError: true });
+/** D-335 slice H — `text`, with each screenshot the result refers to attached
+ *  as an MCP image beside it (`mcp-browser-images.ts`). A result with no
+ *  picture is exactly `text`'s. */
+const textWithImages = (data: unknown) => {
+  const lifted = liftBrowserImages(data);
+  const response = text(lifted.data);
+  return lifted.images.length === 0 ? response : { ...response, content: [...response.content, ...lifted.images] };
+};
 const MCP_ZERO_CUSTOMER_USAGE = Symbol('mcp.zero-customer-usage');
 
 /** Settlement metadata is host-owned and non-enumerable. A business tool's
@@ -2327,7 +2351,7 @@ const textProjectedExecuteResult = async (
         projected,
       })
     : projected;
-  const response = text(projectedWithAction);
+  const response = textWithImages(projectedWithAction);
   return isFailedExecuteResponse(result)
     ? markMcpZeroCustomerUsage(response)
     : response;
@@ -2342,9 +2366,12 @@ const MCP_ACTION_TERMINAL_SETTLEMENT_GRACE_MS = 30_000;
 /** Reconcile crash/restart residue from the existing durable checkpoint + run
  * anchor. Normal answer handling writes the exact result directly; this is the
  * recovery backstop for a process that crossed one durable write but not the
- * next. */
-const reconcileMcpAction = async (
-  deps: McpDeps,
+ * next. It is also how a run retired with no answer reaches its record: an
+ * approval that expired (`checkpoint-retention` retires a recipe run, not its
+ * record). D-337 slice Q: the LLM gateway reads a waiting call's record through
+ * it too (`readCarriedHeldCalls`). */
+export const reconcileMcpAction = async (
+  deps: Pick<McpDeps, 'mcpActionStore' | 'checkpointStore' | 'auditLog'>,
   record: McpActionRecord,
 ): Promise<McpActionRecord> => {
   if (!deps.mcpActionStore || isMcpActionTerminal(record.status)) return record;
@@ -2389,13 +2416,19 @@ const reconcileMcpAction = async (
   }
 
   if (anchor !== null) {
+    const firstError = (anchor.errors ?? [])[0];
+    // D-337 slice T — an approval that expired is retired by retention, which writes no result of
+    // its own (and expires only a run no answer is settling): nothing is coming that the grace
+    // would wait for. Without this, a read in the first 30 s after an expiry (the LLM gateway's
+    // next request, driven live 2026-11-02) still said the call was waiting.
+    const expired = firstError?.code === 'RECIPE_APPROVAL_TIMEOUT';
     if (
-      typeof anchor.finished_at === 'number'
+      !expired
+      && typeof anchor.finished_at === 'number'
       && Date.now() - anchor.finished_at <= MCP_ACTION_TERMINAL_SETTLEMENT_GRACE_MS
     ) {
       return record;
     }
-    const firstError = (anchor.errors ?? [])[0];
     const failure = {
       status: anchor.commit_status,
       run_id: record.run_id,
@@ -3029,7 +3062,9 @@ const handleToolCall = async (
           if (refused && !refused.ok) return { response: err(formatMcpDispatchError(refused)) };
           // The records it names, by their names, for the owner's ask.
           const valueLabels = await adapter?.askValueLabels(params.name, args).catch(() => undefined);
-          return { response: await holdMcpTier1Write(deps, params.name, args, valueLabels) };
+          // D-336 slice G — and what it meets: told to the app, and kept for the owner's ask.
+          const notices = await adapter?.askNotices(params.name, args).catch(() => undefined);
+          return { response: await holdMcpTier1Write(deps, params.name, args, valueLabels, notices) };
         }
         return { ruled };
       });
@@ -3085,7 +3120,8 @@ const handleToolCall = async (
                 projected: result.result,
               })
             : result.result;
-        const response = text(projected);
+        // D-335 slice H — a recipe tool's screenshot reaches the AI app as an image.
+        const response = textWithImages(projected);
         return result.run_failed || result.run_held
           ? markMcpZeroCustomerUsage(response)
           : response;
@@ -3341,12 +3377,14 @@ const handleToolCall = async (
       switch (outcome.kind) {
         case 'refused':
           return err(outcome.message);
-        case 'held':
+        case 'held': {
           // Inc B-writes — the op is durably HELD for the owner's approval (a
           // recipe-less checkpoint + the D-158 ask). A held action is the
           // expected, successful outcome — NOT an error. Same agent-facing
           // message a held recipe run gets (expected-outcome framing +
           // do-NOT-resend + tell-the-user), so a weak/local model never loops.
+          // D-329 — and, as a held run says, where else the owner answers it.
+          const elsewhere = approvalElsewhereMessage(outcome.approval_channels ?? []);
           return markMcpZeroCustomerUsage(text(await attachMcpActionRef(deps, {
             run_id: outcome.run_id,
             tool_name: params.name,
@@ -3356,8 +3394,10 @@ const handleToolCall = async (
               awaiting_approval: true,
               op: outcome.op_id,
               message: HELD_FOR_APPROVAL_MESSAGE,
+              ...(elsewhere !== undefined ? { approval_elsewhere: elsewhere } : {}),
             },
           })));
+        }
         case 'ask':
           // The DEGRADED stub — an ask-tier op that could not be held durably
           // (hold substrate unwired). Self-describing + anti-loop (the message
@@ -3368,7 +3408,10 @@ const handleToolCall = async (
             message: outcome.message,
           }));
         case 'result':
-          return text(projectRunResultForAgent(outcome.result));
+          return textWithImages(projectRunResultForAgent(outcome.result));
+        // D-337 slice K — only a chat's own turn asks to be told so (`askAfter`); never here.
+        case 'not_asked':
+          return err(`${outcome.op_id} was not asked: a call before it waits for the owner's approval.`);
       }
     } catch (e) {
       const { RpcError } = await import('@recued/contracts');
@@ -3971,7 +4014,9 @@ const handleToolCall = async (
         ...(deps.recordsStore
           ? { rollupsForEntity: (collection: string, id: string) =>
               collection === 'contact'
-                ? readRootProjections(deps.recordsStore!, 'contact', id).map(toTimelineRollup)
+                // D-336 slice R — under every address the contact answers to.
+                ? readRootProjections(deps.recordsStore!, 'contact', id,
+                  deps.contactStore === undefined ? undefined : (email) => deps.contactStore!.addressSet(email)).map(toTimelineRollup)
                 : [] }
           : {}),
       };

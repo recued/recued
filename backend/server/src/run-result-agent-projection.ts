@@ -24,6 +24,7 @@ import type {
 } from '@recued/contracts';
 import { isRemoteFailureKind } from '@recued/contracts';
 import type { ExecuteResponse } from './types.js';
+import { conversationCarriesOn, HELD_CARRIES_ON_MESSAGE } from './chat-carries-on.js';
 
 /** The agent-facing guidance for a held-for-approval run. Channel-agnostic —
  *  works for chat (a user to tell) and MCP (an agent acting for a user).
@@ -80,6 +81,12 @@ export const HELD_FOR_APPROVAL_MESSAGE =
   + 'interruptions, the approval card itself may offer bounded options (such as '
   + 'allowing repeats for this session).';
 
+/** The held message's place sentence: the app is where approvals are answered. */
+const HELD_PLACE_SENTENCE = 'Approvals are answered in the Recued '
+  + 'app, from the bell at the top of the page (Attention), which also opens the '
+  + 'Approvals page.';
+
+
 /** Where else a held run's approval ask goes, in the words a user knows. The
  *  app is named by {@link HELD_FOR_APPROVAL_MESSAGE}; a channel not listed here
  *  is named nowhere rather than wrongly. */
@@ -93,9 +100,69 @@ const APPROVAL_CHANNEL_PLACES: Readonly<Partial<Record<NotificationChannelName, 
   bridge: 'in the Recued browser extension',
 };
 
+/** How an approval is answered on a conversation's own channel, said when the conversation is
+ *  there ({@link approvalChannelOf}). Telegram's comes with buttons; an email one is answered by a
+ *  reply. Where the answer's form is not known, only the place is named. */
+const APPROVAL_CHANNEL_ANSWERS: Readonly<Partial<Record<NotificationChannelName, string>>> = {
+  email: 'by replying to the approval email with one of the options it lists, such as Approve',
+  telegram: 'there in Telegram, with the buttons on the approval message',
+  slack: 'there in Slack',
+  whatsapp: 'there in WhatsApp',
+  discord: 'there in Discord',
+  teams: 'there in Microsoft Teams',
+};
+
+/** Where to answer, said when the conversation is on the channel the request goes to. "Where this
+ *  conversation is", never "this chat": the approval can go to another chat on the same service. */
+const approvalHereSentence = (here: NotificationChannelName, also: boolean): string =>
+  `This approval request ${also ? 'also ' : ''}goes to the user ${APPROVAL_CHANNEL_PLACES[here]!}, where this `
+  + `conversation is: tell them they can answer it ${APPROVAL_CHANNEL_ANSWERS[here]!}.`;
+
+/** A conversation's own channel in the words above: where its approval requests go ("on
+ *  Telegram") and how they are answered there. The system prompt's approvals posture says them
+ *  too (`featureTextApprovalsIn`), so a turn and a held call name one place. */
+export const approvalChannelWords = (
+  here: NotificationChannelName,
+): { readonly place: string; readonly answer: string } | undefined => {
+  const place = APPROVAL_CHANNEL_PLACES[here];
+  const answer = APPROVAL_CHANNEL_ANSWERS[here];
+  return place !== undefined && answer !== undefined ? { place, answer } : undefined;
+};
+
+/** The held message for a conversation whose own channel the approval request goes to
+ *  ({@link approvalChannelOf}): its place sentence names that channel first, as where to answer,
+ *  and the app after it. ⛔ In a Telegram chat whose approval came with buttons, the model sent the
+ *  owner to "the bell icon at the top of the Recued app" (live, 2026-11-01); and with the bell
+ *  first in this message and "where this conversation is" beside it, an email chat still led with
+ *  the bell. The model keeps this message's order. ⚠ Model-facing string — see
+ *  `chat-prompt-optimization-log.md`. */
+export const heldForApprovalMessageIn = (here: NotificationChannelName): string =>
+  HELD_FOR_APPROVAL_MESSAGE.replace(
+    HELD_PLACE_SENTENCE,
+    `${approvalHereSentence(here, false)} They can also answer it in the Recued app, from the bell at the `
+      + 'top of the page (Attention), which opens the Approvals page.',
+  );
+
+/** The channel a conversation is on, when it is the owner's own chat on one an approval can go
+ *  to: a Telegram or Slack chat, or the email door's (`vendor: 'email'`). Not a chat under a
+ *  contract: its approvals go to the owner, who is not the one in it. */
+export const approvalChannelOf = (source: unknown): NotificationChannelName | undefined => {
+  if (source === null || typeof source !== 'object') return undefined;
+  const s = source as { channel?: unknown; actor?: unknown; vendor?: unknown; contract_id?: unknown };
+  if (s.channel !== 'messenger' || s.actor !== 'user_self' || s.contract_id !== undefined) return undefined;
+  return typeof s.vendor === 'string' && Object.hasOwn(APPROVAL_CHANNEL_ANSWERS, s.vendor)
+    ? s.vendor as NotificationChannelName
+    : undefined;
+};
+
 /** What an agent is told about the other channels a held run's approval ask
  *  went to (`ExecuteResponse.approval_channels`), or nothing when it went to the
  *  app alone.
+ *
+ *  ⛔ "THE BELL" TO AN OWNER ASKING IN TELEGRAM. With "also goes to the user on Telegram" beside
+ *  the held message's bell, a Telegram chat sent the owner to the app while the approval sat in
+ *  that chat with buttons (live, 2026-11-01). So when the conversation is itself on one of the
+ *  channels (`here`, {@link approvalChannelOf}), that one is named first, as where to answer.
  *
  *  ⛔ "THE BELL" TO AN OWNER WHO ASKED BY EMAIL. With only the held message to
  *  go on, an email chat answered "You can review and approve it from the bell
@@ -104,21 +171,32 @@ const APPROVAL_CHANNEL_PLACES: Readonly<Partial<Record<NotificationChannelName, 
  *  the request GOES, never that it has arrived: quiet hours hold a delivery,
  *  and the 2026-06-08 rule holds that nothing may imply a prompt is showing.
  *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
-export const approvalElsewhereMessage = (channels: readonly string[]): string | undefined => {
-  const places = channels.flatMap((channel) => {
+export const approvalElsewhereMessage = (
+  channels: readonly string[],
+  here?: NotificationChannelName,
+): string | undefined => {
+  const placesOf = (list: readonly string[]): string[] => list.flatMap((channel) => {
     const place = Object.hasOwn(APPROVAL_CHANNEL_PLACES, channel)
       ? APPROVAL_CHANNEL_PLACES[channel as NotificationChannelName]
       : undefined;
     return place === undefined ? [] : [place];
   });
-  if (places.length === 0) return undefined;
-  const where = places.length === 1
-    ? places[0]
+  const listed = (places: readonly string[]): string => places.length === 1
+    ? places[0]!
     : `${places.slice(0, -1).join(', ')} and ${places[places.length - 1]}`;
-  const lead = `This approval request also goes to the user ${where}; they can answer it there too.`;
-  return channels.includes('email')
-    ? `${lead} To answer by email, they reply to the approval email with one of the options it lists, such as Approve.`
-    : lead;
+  const emailHint = 'To answer by email, they reply to the approval email with one of the options it lists, such as Approve.';
+  if (here !== undefined && channels.includes(here)) {
+    const lead = approvalHereSentence(here, true);
+    const others = channels.filter((channel) => channel !== here);
+    const otherPlaces = placesOf(others);
+    if (otherPlaces.length === 0) return lead;
+    const rest = `It also goes to them ${listed(otherPlaces)}; they can answer it there too.`;
+    return others.includes('email') ? `${lead} ${rest} ${emailHint}` : `${lead} ${rest}`;
+  }
+  const places = placesOf(channels);
+  if (places.length === 0) return undefined;
+  const lead = `This approval request also goes to the user ${listed(places)}; they can answer it there too.`;
+  return channels.includes('email') ? `${lead} ${emailHint}` : lead;
 };
 
 /** D-181 § 9 — agent-facing message for an OWNER-cancelled run (an
@@ -333,6 +411,9 @@ export interface AgentHeldRunResult {
   /** Where else the user can answer the approval ({@link approvalElsewhereMessage}),
    *  when its ask went beyond the app. */
   approval_elsewhere?: string;
+  /** D-337 — in a conversation that carries on once the approval is answered, that it does
+   *  (`HELD_CARRIES_ON_MESSAGE`). */
+  after_approval?: string;
 }
 
 /** D-192 Slice 6b — the clean agent-facing shape for a create held behind a
@@ -547,7 +628,12 @@ const collectItemRefusals = (result: object): AgentItemsRefusedAnnotation | null
  *  extension-delegated MCP path, whose result is opaquely typed — a non-object
  *  or a plain result is returned by reference, so it is always safe to wrap
  *  any agent-facing recipe result through here. Pure. */
-export const projectRunResultForAgent = (result: unknown): unknown => {
+export const projectRunResultForAgent = (
+  result: unknown,
+  /** The conversation the run was asked from (its `execution_source`), when a chat projects
+   *  it: a held run's approval is then said to be answered there when it goes there. */
+  options: { readonly conversation?: unknown } = {},
+): unknown => {
   if (typeof result !== 'object' || result === null) return result;
   const terminated = (result as { run_terminated?: RunControlTermination }).run_terminated;
   if (terminated !== undefined) {
@@ -732,12 +818,18 @@ export const projectRunResultForAgent = (result: unknown): unknown => {
     return stopped === null ? result : { ...result, ...stopped };
   }
   const held = result as ExecuteResponse;
-  const elsewhere = approvalElsewhereMessage(held.approval_channels ?? []);
+  const channels = held.approval_channels ?? [];
+  const here = approvalChannelOf(options.conversation);
+  // The conversation's own channel goes in the message, first; the others beside it, as before.
+  const hereIn = here !== undefined && channels.includes(here);
+  const elsewhere = approvalElsewhereMessage(hereIn ? channels.filter((channel) => channel !== here) : channels);
   return {
     status: 'awaiting_approval',
     awaiting_approval: true,
     recipe_id: held.recipe_id,
-    message: HELD_FOR_APPROVAL_MESSAGE,
+    message: hereIn ? heldForApprovalMessageIn(here!) : HELD_FOR_APPROVAL_MESSAGE,
     ...(elsewhere !== undefined ? { approval_elsewhere: elsewhere } : {}),
+    // D-337 — the conversation carries on with the outcome, so a step that needs it waits for it.
+    ...(conversationCarriesOn(options.conversation) ? { after_approval: HELD_CARRIES_ON_MESSAGE } : {}),
   } satisfies AgentHeldRunResult;
 };

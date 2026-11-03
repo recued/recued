@@ -27,6 +27,7 @@
 
 import type {
   ApprovalValueLabels,
+  HeldCallNotices,
   ChatDispatchContext,
   ChatDispatchResult,
   ContractSnapshot,
@@ -73,6 +74,9 @@ export interface McpInternalToolAdapter {
   /** D-329 — how the owner knows the records a held write names, for its ask; `undefined`
    *  when there are none to name. */
   askValueLabels(name: string, args: unknown): Promise<ApprovalValueLabels | undefined>;
+  /** D-336 slice G — what a held write meets, told to the app beside "held" and shown on the
+   *  owner's ask; `undefined` when there is nothing to tell. */
+  askNotices(name: string, args: unknown): Promise<HeldCallNotices | undefined>;
 }
 
 export interface BuildInternalToolMcpAdapterOptions {
@@ -179,7 +183,10 @@ export const buildInternalToolMcpAdapter = (
   const askValueLabels = async (name: string, args: unknown): Promise<ApprovalValueLabels | undefined> =>
     registry.askValueLabels ? registry.askValueLabels(name, args, wireCtx()) : undefined;
 
-  return { listTools, callTool, hasTool, checkBeforeAsking, askValueLabels };
+  const askNotices = async (name: string, args: unknown): Promise<HeldCallNotices | undefined> =>
+    registry.askNotices ? registry.askNotices(name, args, wireCtx()) : undefined;
+
+  return { listTools, callTool, hasTool, checkBeforeAsking, askValueLabels, askNotices };
 };
 
 /** Closed-list of MCP error-envelope mappings for `ChatDispatchResult`
@@ -213,6 +220,9 @@ export const MCP_DISPATCH_ERROR_MESSAGES: Readonly<Record<
   // D-181 § 9 — the owner killed / cancelled-in-queue the dispatched run.
   // The appended `detail` carries the do-not-retry / resolve-with-user copy.
   run_cancelled: 'Run cancelled by the user.',
+  // D-337 slice K — a chat's own turn only (a conversation that carries on); an MCP
+  // call never meets it. Kept so the mapping stays exhaustive.
+  not_asked_yet: 'Not asked yet: a call before it in the same turn waits for the owner\'s approval.',
 } as const;
 
 /** Map a failed `ChatDispatchResult` to the MCP error message shape.

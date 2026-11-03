@@ -70,30 +70,36 @@ export interface RecordConnectionDeps {
   isSetUp: (connection_name: string) => boolean;
 }
 
-/** The record a step acts on: the id as authored, and the kind of record the step
- *  reads (`entity` for a vendor's op, the CRM alias for a vendor-neutral one). */
-interface StepRecord {
-  setting: string;
+/** The record a step acts on: the id as authored, the kind of record the step
+ *  reads (`entity` for a vendor's op, the CRM alias for a vendor-neutral one), and
+ *  whether the step changes it (`writes`). */
+interface StepRecordAt {
   id: unknown;
   matches: (vendor: string, entity: string) => boolean;
+  writes: boolean;
 }
 
-const recordOf = (
+/** As `StepRecordAt`, on a step that signs in through a setting. */
+interface StepRecord extends StepRecordAt {
+  setting: string;
+}
+
+/** The record a step acts on, whatever its setting. */
+const recordAt = (
   step: Readonly<Record<string, unknown>>,
-  deps: RecordConnectionDeps,
-): StepRecord | undefined => {
-  const setting = typeof step.connection === 'string' ? PURE_CONFIG_REF.exec(step.connection.trim())?.[1] : undefined;
-  if (setting === undefined) return undefined;
+  deps: Pick<RecordConnectionDeps, 'manifests' | 'packs'>,
+): StepRecordAt | undefined => {
   const args = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   // A vendor's own op names the argument its record id rides on (`record_id_arg`),
   // and the argument says what kind of record that is (`recordIdArgKind`): not the
   // op's own family, since `engagement.list` takes a `deal_id`.
-  const byOperation = (catalog: string, operation: string, from: Record<string, unknown>): StepRecord | undefined => {
-    const arg = deps.manifests?.get(catalog)?.operations?.[operation]?.record_id_arg;
+  const byOperation = (catalog: string, operation: string, from: Record<string, unknown>): StepRecordAt | undefined => {
+    const spec = deps.manifests?.get(catalog)?.operations?.[operation];
+    const arg = spec?.record_id_arg;
     if (arg === undefined) return undefined;
     const kind = recordIdArgKind(arg);
-    return { setting, id: from[arg], matches: (_vendor, entity) => entity === kind };
+    return { id: from[arg], matches: (_vendor, entity) => entity === kind, writes: spec?.risk_tier !== 'read' };
   };
   if (typeof step.op === 'string') {
     const parsed = parseOpId(step.op);
@@ -107,9 +113,9 @@ const recordOf = (
       : parsed === null ? step.op.split('.') : [];
     if (alias === undefined || verb === undefined || extra.length > 0 || !RECORD_VERBS.has(verb)) return undefined;
     return {
-      setting,
       id: args(step.args)[WRITE_SELECTOR_KEY],
       matches: (vendor, entity) => getVendorEntityByCrmAlias(vendor, alias as CrmAlias)?.entity === entity,
+      writes: verb !== 'read',
     };
   }
   if (typeof step.ingredient === 'string') {
@@ -117,6 +123,16 @@ const recordOf = (
     return typeof input.operation === 'string' ? byOperation(step.ingredient, input.operation, args(input.args)) : undefined;
   }
   return undefined;
+};
+
+const recordOf = (
+  step: Readonly<Record<string, unknown>>,
+  deps: RecordConnectionDeps,
+): StepRecord | undefined => {
+  const setting = typeof step.connection === 'string' ? PURE_CONFIG_REF.exec(step.connection.trim())?.[1] : undefined;
+  if (setting === undefined) return undefined;
+  const record = recordAt(step, deps);
+  return record === undefined ? undefined : { setting, ...record };
 };
 
 /** Not known before the run. */
@@ -209,6 +225,35 @@ export const settingsFromRecordIds = (
     if (connections.size === 1 && !unroutable.has(setting)) out[setting] = [...connections][0]!;
   }
   return out;
+};
+
+/** D-336 (spec §48) — the record ids a run's steps CHANGE, each known before the run as
+ *  `settingsFromRecordIds` reads one: a vendor-neutral `update` or `delete`, or a vendor's
+ *  operation that is more than a read, by the id it acts on. Whatever its setting, so the
+ *  recipe as installed answers it, before its run gives each step one. An id another step
+ *  produces is not known yet, and is not here. */
+export const recordIdsChangedBeforeRun = (
+  recipe: RecipeDefinition,
+  input: {
+    config: Readonly<Record<string, unknown>>;
+    context?: Readonly<Record<string, unknown>> | undefined;
+  },
+  deps: Pick<RecordConnectionDeps, 'manifests' | 'packs'>,
+): string[] => {
+  const stores = { config: { ...input.config }, context: { ...(input.context ?? {}) } };
+  const ids = new Set<string>();
+  const runs = [...(recipe.prefetch_steps ?? []), ...recipe.steps] as ReadonlyArray<Readonly<Record<string, unknown>>>;
+  const earlier = new Map<string, Readonly<Record<string, unknown>>>();
+  for (const step of runs) {
+    if (step === null || typeof step !== 'object') continue;
+    const record = recordAt(step, deps);
+    const before: StepIndex = new Map(earlier);
+    if (typeof step.id === 'string') earlier.set(step.id, step);
+    if (record === undefined || !record.writes) continue;
+    const known = knownBeforeRun(record.id, stores, before);
+    if (typeof known === 'string' && known.trim() !== '') ids.add(known.trim());
+  }
+  return [...ids];
 };
 
 // ════════════════════════════════════════════════════════════════

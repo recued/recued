@@ -20,12 +20,11 @@ export const captureCalendarResource = (deps: CalendarDispatcherDeps,
     throw new RpcError('resource_review_unsupported',
       'Version-bound review currently supports one calendar occurrence. Review series changes in your calendar provider.', 400);
   }
-  if (collection.provider.kind === 'graph') {
-    throw new RpcError('resource_review_unsupported',
-      'Version-bound Outlook changes are not available yet. Review this change in Outlook.', 400);
-  }
+  // D-336 (spec §56) — Outlook too: its update and delete send the reviewed version (If-Match),
+  // and its etag is a weak one (`W/"…"`), as the owner's own edit already reads it.
   const local = collection.provider.kind === 'local';
-  if (!local && (!row.etag || !/^"[^"\r\n]+"$/.test(row.etag))) {
+  const usableEtag = collection.provider.kind === 'graph' ? /^(?:W\/)?"[^"\r\n]+"$/ : /^"[^"\r\n]+"$/;
+  if (!local && (!row.etag || !usableEtag.test(row.etag))) {
     throw new RpcError('resource_version_unavailable',
       'This calendar event has no usable provider version. Sync the calendar, then request a new review.', 409);
   }

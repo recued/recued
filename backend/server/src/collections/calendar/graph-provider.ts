@@ -25,10 +25,11 @@ import { managedOAuthFetcherFor, type ManagedOAuthConsumers } from '../../manage
  *  pre-expanded instances); seriesMaster / occurrence distinction is
  *  preserved via `seriesMasterId` → `recurring_event_id`.
  *
- *  Every request sets `Prefer: outlook.timezone="UTC"` so datetimes
- *  arrive normalised; the canonical `timezone` field is populated
- *  from `originalStartTimeZone` (IANA on modern tenants, Windows-style
- *  on older tenants — preserved verbatim).
+ *  Every request sets `Prefer: outlook.timezone="UTC"`, so a read's
+ *  datetimes arrive in UTC; a write's reply does not (`parseGraphEventTime`).
+ *  The canonical `timezone` field is populated from
+ *  `originalStartTimeZone` (IANA on modern tenants, Windows-style on
+ *  older tenants — preserved verbatim).
  *
  *  Mutation methods return a verified `ProviderEventPayload` on 2xx
  *  success or throw `CalendarAdapterError`. RSVP calls Graph's
@@ -41,6 +42,7 @@ import { createHash } from 'node:crypto';
 import {
   CalendarAdapterError,
   MICROSOFT_TOKEN_URL,
+  zonedWallClockToEpochMs,
   type CanonicalEvent,
 } from '@recued/contracts';
 import {
@@ -122,7 +124,8 @@ const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
 
 export interface GraphCalDateTime {
   dateTime: string;
-  /** Usually "UTC" because we send `Prefer: outlook.timezone="UTC"`. */
+  /** "UTC" on a read, because we send `Prefer: outlook.timezone="UTC"`; a
+   *  write's reply names the zone its request sent (`parseGraphEventTime`). */
   timeZone?: string;
 }
 
@@ -223,6 +226,7 @@ export interface GraphCalListEntry {
   name?: string;
   isDefaultCalendar?: boolean;
   canEdit?: boolean;
+  isTallyingResponses?: boolean;
   /** Who the calendar belongs to: on the default calendar, the signed-in
    *  account. Returned with the calendar's default properties. */
   owner?: { name?: string; address?: string };
@@ -238,14 +242,44 @@ interface GraphListResponse<T> {
 // Canonicalization
 // ────────────────────────────────────────────────────────────────
 
+const GRAPH_OFFSET_RE = /[Zz]|[+-]\d{2}:?\d{2}$/;
+
 const parseGraphDate = (value?: string): number => {
   if (!value) return 0;
   // Graph returns dateTime without a trailing 'Z' when `Prefer:
   // outlook.timezone="UTC"` is set; append it so Date.parse treats it
   // as UTC rather than local.
-  const normalised = /[Zz]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`;
+  const normalised = GRAPH_OFFSET_RE.test(value) ? value : `${value}Z`;
   const parsed = Date.parse(normalised);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+/** An event's start or end as an instant. Graph's `dateTime` carries no
+ *  offset: it is a wall clock IN its `timeZone`.
+ *
+ *  ⛔⛔ A WRITE'S REPLY IS NOT IN UTC. Every request asks for UTC, and a read
+ *  is answered in it, but a create, and an update that sends times, is
+ *  answered in the zone the request named, labelled with it. Measured live
+ *  2026-11-03 (D-336 spec §57): a create asking for UTC got back
+ *  `{"dateTime":"2026-11-07T10:00:00.0000000","timeZone":"America/Los_Angeles"}`.
+ *  Read as UTC, an event made or moved at 10:00 in Los Angeles was held at
+ *  02:00, and the approvals that named it said 02:00. So a clock labelled
+ *  with a zone is read in that zone. The label is the zone Recued sent, which
+ *  `Intl` reads (`toGraphDateTime` sends one it cannot read as UTC); a label
+ *  it cannot read is read as UTC, as before.
+ *
+ *  An all-day event keeps its date at midnight UTC (the canonical
+ *  convention), whatever zone labels it. */
+const parseGraphEventTime = (value: GraphCalDateTime | undefined, isAllDay: boolean): number => {
+  const raw = value?.dateTime;
+  if (!raw) return 0;
+  const zone = value.timeZone?.trim() ?? '';
+  if (!isAllDay && zone !== '' && zone.toUpperCase() !== 'UTC' && !GRAPH_OFFSET_RE.test(raw)) {
+    // Graph writes seven fractional digits; the wall clock it means is to the second.
+    const at = zonedWallClockToEpochMs(raw.replace(/\.\d+$/, ''), zone);
+    if (at !== null) return at;
+  }
+  return parseGraphDate(raw);
 };
 
 const mapAttendeeResponse = (
@@ -300,9 +334,9 @@ export const canonicalizeGraphEvent = (
   calendarId: string,
   calendarName?: string,
 ): CanonicalEvent => {
-  const startAt = parseGraphDate(event.start?.dateTime);
-  const endAt = parseGraphDate(event.end?.dateTime);
   const isAllDay = event.isAllDay ?? false;
+  const startAt = parseGraphEventTime(event.start, isAllDay);
+  const endAt = parseGraphEventTime(event.end, isAllDay);
   const timezone =
     event.originalStartTimeZone && event.originalStartTimeZone.length > 0
       ? event.originalStartTimeZone
@@ -597,7 +631,7 @@ export const createGraphCalProvider = (
       );
     }
     const owner = out.find((entry) => entry.isDefaultCalendar === true)?.owner?.address;
-    if (typeof owner === 'string' && owner.includes('@')) accountEmail = owner;
+    accountEmail = typeof owner === 'string' && owner.includes('@') ? owner : '';
     return out;
   };
 
@@ -1108,7 +1142,12 @@ export const createGraphCalProvider = (
     get accountEmail() { return accountEmail; },
     async listWritableCalendars() {
       return (await selectedCalendars()).filter(cal => cal.canEdit === true)
-        .map(cal => ({ calendar_id: cal.id, name: cal.name || cal.id }));
+        .map(cal => ({ calendar_id: cal.id, name: cal.name || cal.id,
+          ...(cal.isDefaultCalendar === true ? { is_default: true as const } : {}),
+          ...(accountEmail && cal.owner?.address?.toLowerCase() === accountEmail.toLowerCase()
+            && cal.isTallyingResponses !== false && (cal.isDefaultCalendar === true || cal.isTallyingResponses === true)
+            ? { can_invite: true as const }
+            : { invitation_unavailable_reason: 'Choose your primary Outlook calendar to send invitations and track responses.' }) }));
     },
 
     async connect() {
@@ -1224,6 +1263,16 @@ export const createGraphCalProvider = (
           "graph update: scope='this_and_future' must be expanded by the dispatcher into series-truncate + new-series-create",
         );
       }
+      // D-336 (spec §46) — Outlook takes no status in an update (`fromUpdatePatch` has no field
+      // for it): a cancel sent as `status: 'cancelled'` PATCHed nothing and reported success. A
+      // status it cannot set is refused before the call; cancelling is deleting the event.
+      if (input.patch.status !== undefined && input.patch.status !== 'confirmed') {
+        throw new CalendarAdapterError(
+          'change_unsupported',
+          `graph update: Outlook does not set an event's status to '${input.patch.status}' by an update. `
+            + 'To cancel the event, delete it.',
+        );
+      }
       const data = await graphMutate<GraphCalEvent>(
         eventUrl(input.source_id, input.calendar_id),
         'PATCH',
@@ -1250,12 +1299,17 @@ export const createGraphCalProvider = (
           "graph delete: scope='this_and_future' must be expanded by the dispatcher into series-truncate",
         );
       }
+      // D-336 (spec §56) — the reviewed version, as the update sends it: an event changed in
+      // Outlook since the owner approved is refused (412 → version_conflict), never deleted.
+      // Deleting a meeting from the organizer's calendar sends its guests a cancellation.
       await graphMutate<void>(
         eventUrl(input.source_id),
         'DELETE',
         undefined,
         'events.delete',
         false,
+        input.before_send,
+        input.expected_etag,
       );
     },
 

@@ -21,11 +21,17 @@ import {
   STRUCTURED_BEARER_LEN,
   STRUCTURED_BEARER_TOKEN_ID_LEN,
   UPGRADE_FAILURES_BEFORE_COOLDOWN,
+  UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN,
   UPGRADE_VERIFY_MAX_IN_FLIGHT,
 } from '../ws-server.js';
 
 const FAST_ARGON2 = { t: 1, m: 8, p: 1 };
 const BOGUS = `${'U'.repeat(STRUCTURED_BEARER_TOKEN_ID_LEN)}.${'Z'.repeat(STRUCTURED_BEARER_LEN)}`;
+/** A different made-up pairing each time: a stranger spraying token ids. */
+const sprayed = (i: number): string => {
+  const id = `${String.fromCharCode(65 + (i % 26))}${String.fromCharCode(65 + (Math.floor(i / 26) % 26))}`;
+  return `${id.padEnd(STRUCTURED_BEARER_TOKEN_ID_LEN, 'U')}.${'Z'.repeat(STRUCTURED_BEARER_LEN)}`;
+};
 
 interface Attempt { opened: boolean; status?: number; closed: Promise<number> }
 
@@ -89,12 +95,12 @@ afterEach(async () => {
 describe('the bearer check on an upgrade is bounded', () => {
   it('an address whose checks keep failing is refused without another check', async () => {
     for (let i = 0; i < UPGRADE_FAILURES_BEFORE_COOLDOWN; i += 1) {
-      const failed = await attempt(BOGUS);
+      const failed = await attempt(sprayed(i));
       expect(await failed.closed).toBe(4401);
     }
     expect(verifyCalls).toBe(UPGRADE_FAILURES_BEFORE_COOLDOWN);
 
-    const refused = await attempt(BOGUS);
+    const refused = await attempt(sprayed(UPGRADE_FAILURES_BEFORE_COOLDOWN));
     expect(refused).toMatchObject({ opened: false, status: 429 });
     expect(verifyCalls).toBe(UPGRADE_FAILURES_BEFORE_COOLDOWN);
   });
@@ -102,12 +108,12 @@ describe('the bearer check on an upgrade is bounded', () => {
   it('a success clears the count, so a device that got it right is not cooled down', async () => {
     const issued = await realTokens.issue({ client_kind: 'webclient' });
     for (let i = 0; i < UPGRADE_FAILURES_BEFORE_COOLDOWN - 1; i += 1) {
-      expect(await (await attempt(BOGUS)).closed).toBe(4401);
+      expect(await (await attempt(sprayed(i))).closed).toBe(4401);
     }
     expect((await attempt(`${issued.token_id}.${issued.bearer}`)).opened).toBe(true);
     // The count started over: these fail as checks, not as refusals.
     for (let i = 0; i < UPGRADE_FAILURES_BEFORE_COOLDOWN - 1; i += 1) {
-      expect(await (await attempt(BOGUS)).closed).toBe(4401);
+      expect(await (await attempt(sprayed(100 + i))).closed).toBe(4401);
     }
   });
 
@@ -124,5 +130,35 @@ describe('the bearer check on an upgrade is bounded', () => {
 
     release();
     await Promise.all(pending);
+  });
+});
+
+describe('one dead pairing cannot lock out the others behind the same address (2026-11-03)', () => {
+  it('a pairing refused again and again is refused without a check, and the address stays open', async () => {
+    for (let i = 0; i < UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN; i += 1) {
+      expect(await (await attempt(BOGUS)).closed).toBe(4401);
+    }
+    expect(verifyCalls).toBe(UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN);
+    expect(await attempt(BOGUS)).toMatchObject({ opened: false, status: 429 });
+    expect(verifyCalls).toBe(UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN);
+    // Another pairing, from the same address, is checked as usual.
+    expect(await (await attempt(sprayed(7))).closed).toBe(4401);
+    expect(verifyCalls).toBe(UPGRADE_PAIRING_FAILURES_BEFORE_COOLDOWN + 1);
+  });
+
+  it('a revoked pairing retrying at full speed, as a Bridge before 0.0.6 did, leaves a valid one free to connect', async () => {
+    const issued = await realTokens.issue({ client_kind: 'webclient' });
+    const valid = `${issued.token_id}.${issued.bearer}`;
+    // 30 back-to-back refusals of one pairing: before, the tenth put the address in cooldown, and
+    // behind a tunnel every client is that address.
+    for (let i = 0; i < 30; i += 1) {
+      const refused = await attempt(BOGUS);
+      if (refused.opened) await refused.closed;
+    }
+    expect(verifyCalls).toBeLessThan(UPGRADE_FAILURES_BEFORE_COOLDOWN);
+    for (let i = 0; i < 5; i += 1) {
+      const tryValid = await attempt(valid);
+      expect(tryValid.opened).toBe(true);
+    }
   });
 });

@@ -13,12 +13,13 @@ export interface MailAttachmentEvidence {
 }
 /** `slug` is the mailbox the email was read from: two IMAP mailboxes can hold
  *  an email under one id, and their links are keyed by that id alone. */
-export type MailAttachmentReader = (record: CollectionRecord, slug: string) => { attachments: MailAttachmentEvidence[]; warnings: string[] };
+export type MailAttachmentReader = (record: CollectionRecord, slug: string) => { attachments: MailAttachmentEvidence[]; warnings: string[]; truncated?: boolean };
 /** `legacyAmbiguous` is `legacyAttachmentsAmbiguousIn(registry)` outside tests. */
 export const createMailAttachmentReader = (
   registry: Pick<CollectionRegistry, 'get'>,
   annotations: Pick<AnnotationStore, 'outboundLinksSync'> | undefined,
   legacyAmbiguous: (slug: string, record_id: string) => boolean,
+  options?: { limit: number },
 ): MailAttachmentReader => (record, slug) => {
   if (!annotations?.outboundLinksSync) return { attachments: [], warnings: ['Attachment links could not be checked.'] };
   const files = registry.get('file', 'received');
@@ -33,8 +34,9 @@ export const createMailAttachmentReader = (
     ambiguous ??= legacyAmbiguous(slug, record.record_id);
     return !ambiguous;
   };
-  const refs = [...new Set(annotations.outboundLinksSync('mail', record.record_id)
-    .filter(link => link.role === 'attachment' && link.to_collection === 'file').map(link => link.to_id))].sort().filter(ownFile);
+  const linked = [...new Set(annotations.outboundLinksSync('mail', record.record_id)
+    .filter(link => link.role === 'attachment' && link.to_collection === 'file').map(link => link.to_id))].sort();
+  const refs = (options ? linked.slice(0, options.limit) : linked).filter(ownFile);
   const attachments = refs.map(file_ref => {
     const file = files?.get(file_ref);
     const fields = file?.hot_fields;
@@ -45,5 +47,5 @@ export const createMailAttachmentReader = (
   const warnings: string[] = [];
   if (record.hot_fields.has_attachments && !refs.length) warnings.push('This email reports attachments, but no attachment files are available yet.');
   if (attachments.some(item => !item.available)) warnings.push('One or more linked attachment files are unavailable.');
-  return { attachments, warnings };
+  return { attachments, warnings, ...(options ? { truncated: linked.length > options.limit } : {}) };
 };

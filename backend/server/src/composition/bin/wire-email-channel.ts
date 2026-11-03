@@ -46,11 +46,14 @@ import {
   type Channel,
   type EmailSender,
   type EmailChannelDeps,
+  type EmailPromptRecord,
   type AskDeliveryOutcome,
 } from '@recued/notification';
 import type { ConnectionRow } from '@recued/contracts';
 import type { MailRpcDep } from '@recued/ingredients';
+import type Database from 'better-sqlite3';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
+import { createSQLiteCollection } from '../../sqlite-collection.js';
 
 /** The `connection.notification` record name the email channel binds to —
  *  the same `(kind: 'notification', name: 'email')` key the readiness
@@ -81,6 +84,10 @@ export interface ComposeEmailChannelDeps {
    *  the server has no public address for `/ask`. Absent or unanswered →
    *  text-only asks, answerable on the always-on `ui` channel. */
   answerLink?: (ask_id: string) => string | undefined;
+  /** D-158 P3 — where the channel keeps which asks it emailed, so a restart
+   *  does not email an open ask again. Absent (a dbless harness) ⇒ in memory
+   *  only, as before. */
+  db?: Database.Database;
 }
 
 /** The two config fields the email channel reads off the
@@ -211,5 +218,6 @@ export const composeEmailChannel = (deps: ComposeEmailChannelDeps): Channel => {
     ...(deps.reconcileEmailAttempt ? { reconcileEmailDelivery: email => email.reconciliation_id
       ? deps.reconcileEmailAttempt!(email.reconciliation_id) : Promise.resolve({ outcome: 'unknown' as const }) } : {}),
     ...(deps.answerLink ? { answerLink: deps.answerLink } : {}),
+    ...(deps.db ? { promptRecords: createSQLiteCollection<EmailPromptRecord>(deps.db, 'email_prompt_records') } : {}),
   });
 };

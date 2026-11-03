@@ -100,13 +100,14 @@
 import {
   CONNECTION_API_TIMEOUT_MS,
   NOTIFICATION_SUBTYPES,
+  stripCorePrefix,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
   ConnectionRow,
   NotificationSubtype,
 } from '@recued/contracts';
-import type { ConnectionHandlerCtx, ConnectionKindHandler } from './connection.js';
+import { CHANNEL_SLUGS, type ConnectionHandlerCtx, type ConnectionKindHandler } from './connection.js';
 import { IngredientError, type ResolvedCall } from './types.js';
 import { resolveTimeoutMs, isWriteRiskTier } from './timeout.js';
 import {
@@ -949,6 +950,17 @@ export const createConnectionNotificationHandler = (
     ctx?: ConnectionHandlerCtx,
   ): Promise<unknown> => {
     const subtype = getSubtype(record);
+
+    // D-336 (spec §46) — an action named for one channel sends through that channel only.
+    const channel = (typeof call.slug === 'string' ? CHANNEL_SLUGS.get(stripCorePrefix(call.slug)) : undefined);
+    if (channel !== undefined && subtype !== channel) {
+      throw new IngredientError(
+        'CONNECTION_KIND_INVALID',
+        `connection.notification: '${call.slug}' sends through a ${channel} connection, and '${record.name}' `
+          + `is ${subtype}. Choose a ${channel} connection for it.`,
+        { slug: call.slug, name: record.name, subtype },
+      );
+    }
 
     // ────────────── input shape (text required at top level) ──────────────
     // Each subtype validates its own field set; the top-level `text`

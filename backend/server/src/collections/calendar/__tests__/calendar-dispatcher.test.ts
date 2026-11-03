@@ -988,3 +988,44 @@ describe('D-173 P4.3 slice 2 — local calendar update/delete through the real g
     h.db.close();
   });
 });
+
+describe('D-336 (spec §56) — an Outlook event cancelled is deleted, as Outlook cancels one', () => {
+  it('a cancel there deletes it, and Recued drops it; Google keeps a cancelled event, so there it stays an update', async () => {
+    const outlook = buildHarness('graph');
+    outlook.enrollInstance('work');
+    const event = outlook.seedEvent();
+    const res = await handleCalendarUpdate(outlook.deps, {
+      slug: 'work', source_id: event.source_id, patch: { status: 'cancelled' },
+    });
+    expect(res).toEqual({ source_id: event.source_id, deleted: true });
+    expect(outlook.calls.update).toHaveLength(0);
+    expect(outlook.calls.delete).toEqual([
+      expect.objectContaining({ calendar_id: event.calendar_id, source_id: event.source_id, scope: 'this_instance' }),
+    ]);
+    expect(outlook.deleted).toEqual([event.source_id]);
+    outlook.db.close();
+
+    const google = buildHarness('gcal');
+    google.enrollInstance('work');
+    const kept = google.seedEvent();
+    const g = await handleCalendarUpdate(google.deps, {
+      slug: 'work', source_id: kept.source_id, patch: { status: 'cancelled' },
+    });
+    expect(g).not.toHaveProperty('deleted');
+    expect(google.calls.update).toHaveLength(1);
+    expect(google.calls.delete).toHaveLength(0);
+    expect(google.deleted).toEqual([]);
+    google.db.close();
+  });
+
+  it('any other Outlook change stays an update', async () => {
+    const outlook = buildHarness('graph');
+    outlook.enrollInstance('work');
+    const event = outlook.seedEvent();
+    await handleCalendarUpdate(outlook.deps, { slug: 'work', source_id: event.source_id, patch: { summary: 'Moved' } });
+    expect(outlook.calls.update).toHaveLength(1);
+    expect(outlook.calls.delete).toHaveLength(0);
+    outlook.db.close();
+  });
+});
+

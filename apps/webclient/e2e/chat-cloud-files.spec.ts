@@ -75,7 +75,7 @@ const chooseDriveWithItsLoadHeld = async (f: Awaited<ReturnType<typeof setup>>):
 const openDataCloudFile = async (f: Awaited<ReturnType<typeof setup>>, filename = 'Cloud report.pdf') => {
   await f.page.evaluate(() => { location.hash = '#data/files'; });
   await f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true }).click();
-  await f.page.locator('[data-collection-record]').filter({ hasText: filename }).click();
+  await f.page.getByRole('button', { name: `Details for ${filename}`, exact: true }).click();
   await f.page.getByRole('button', { name: 'Import and use in Chat', exact: true }).click();
   const dialog = f.page.getByRole('dialog', { name: 'Import and use in Chat' });
   await expect(dialog.getByRole('button', { name: 'Shared conversation', exact: true })).toBeVisible();
@@ -85,7 +85,7 @@ const openDataCloudFile = async (f: Awaited<ReturnType<typeof setup>>, filename 
 const prepareFileChat = async (f: Awaited<ReturnType<typeof setup>>, origin: 'saved' | 'cloud') => {
   await f.page.evaluate(() => { location.hash = '#data/files'; });
   await f.page.getByRole('button', { name: origin === 'saved' ? 'Saved files On this server' : 'Google Drive · Work drive', exact: true }).click();
-  await f.page.locator('[data-collection-record]').filter({ hasText: origin === 'saved' ? 'Attachment.pdf' : 'Cloud report.pdf' }).click();
+  await f.page.getByRole('button', { name: 'Details for ' + (origin === 'saved' ? 'Attachment.pdf' : 'Cloud report.pdf'), exact: true }).click();
   const name = origin === 'saved' ? 'Use in Chat' : 'Import and use in Chat';
   const dialog = f.page.getByRole('dialog', { name, exact: true });
   return {

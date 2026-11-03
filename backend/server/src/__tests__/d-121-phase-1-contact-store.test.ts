@@ -314,15 +314,19 @@ describe('listForPrefetchScan (D-167 follow-on — prefetch coverage cap lifted)
   });
 
   it('caps at PREFETCH_SCAN_MAX=10000 — neither the default nor an over-cap limit exceeds it', () => {
-    // Seed > the cap (single-token names skip the per-row name_key UPDATE → fast).
-    store.observeBatch(
-      Array.from({ length: 10001 }, (_, i) => ({
-        email: `e${i}@scan-bench.com`,
-        name: `E${i}`,
-        source: 'manual' as const,
-        event_at: 1000 + i,
-      })),
-    );
+    // This checks the read ceiling. Seed its real rows directly instead of
+    // repeating contribution reconciliation 10,001 times before the assertion.
+    db.exec(`
+      WITH RECURSIVE seed(i) AS (
+        SELECT 0 UNION ALL SELECT i + 1 FROM seed WHERE i < 10000
+      )
+      INSERT INTO contacts (
+        email, name, contact_id, first_seen, last_interaction,
+        interaction_count, source, created_at, updated_at
+      )
+      SELECT 'e' || i || '@scan-bench.com', 'E' || i, 'prefetch-cap-' || i,
+        1000 + i, 1000 + i, 1, 'manual', 1000 + i, 1000 + i FROM seed
+    `);
     expect(store.count()).toBe(10001);
     expect(store.listForPrefetchScan().length).toBe(10000);       // default → cap
     expect(store.listForPrefetchScan(50000).length).toBe(10000);  // over-cap request clamped

@@ -503,6 +503,7 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
       keys: { tag: 'keys' },
       connectionStoreRef: { tag: 'connection-store' },
       enrichmentCascadeRef: { tag: 'enrichment-cascade' },
+      enrichmentStoreRef: { tag: 'enrichment-store' },
       contactMergeCycleObserverRef: { tag: 'contact-observer' },
       stopWarehouseEventBridges: vi.fn(async () => undefined),
       contactBackfillDone,
@@ -546,6 +547,8 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
           connectionStore: app.connectionStoreRef,
           workEntityStore: options.app.workEntityStore,
           enrichmentCascade: app.enrichmentCascadeRef,
+          // D-325 §15.7 (2026-11-02, later) — the Agenda's "prep notes ready" reads it.
+          enrichmentStore: app.enrichmentStoreRef,
           // D-192 P4b — late-bound work-entity write executor.
           getWorkEntityWriteExecutor: expect.any(Function),
           // D-315 §4.3 — the mail facts' AI pass stops where background work stops.

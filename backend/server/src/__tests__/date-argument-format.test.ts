@@ -106,6 +106,9 @@ describe('the owner\'s chat and MCP refuse a malformed date before the recipe ru
     const { dispatch, execute } = dispatchWith();
     const result = await dispatch('recued-core/dated', { target: '2026-10-01' }, chat);
     expect(result.ok).toBe(true);
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ config: { target: '2026-10-01' } }));
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ config: { target: '2026-10-01' } }),
+      { entry_tool_name: 'recued-core/dated', record_change_check: expect.any(Function) },
+    );
   });
 });

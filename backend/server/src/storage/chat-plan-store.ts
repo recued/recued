@@ -20,9 +20,11 @@ import {
   isChatPlanStatus,
   type ApprovalValueLabels,
   type ChatPlanExecutionReceipt,
+  type ChatPlanMade,
   type ChatPlanProposal,
   type ChatPlanRecord,
   type ChatPlanStatus,
+  type MemorySaveConflict,
   type ToolTier,
 } from '@recued/contracts';
 import {
@@ -38,6 +40,7 @@ import {
   ChatVaultLockedError,
   type ChatKeyProvider,
 } from './chat-store.js';
+import { heldPlanEditableArgs } from '../chat-plan-edits.js';
 
 interface ChatPlanRow {
   plan_id: string;
@@ -66,6 +69,8 @@ interface ChatPlanRow {
   hold_lapsed_at: number | null;
   /** D-329 — the names of the records its args name (`ChatPlanProposal.value_labels`). */
   value_labels_encrypted: string | null;
+  /** D-336 slice G — the notes in memory a held save meets (`ChatPlanProposal.memory_conflicts`). */
+  memory_conflicts_encrypted: string | null;
 }
 
 const chatMutationIdentity = (row: ChatPlanRow): unknown => ({
@@ -107,19 +112,33 @@ interface PlanPayloadIdentity {
   readonly created_at: number;
 }
 
-type PlanPayloadKind = 'args' | 'execution' | 'resource_review' | 'value_labels';
+type PlanPayloadKind = 'args' | 'execution' | 'resource_review' | 'value_labels' | 'memory_conflicts';
 /** A stored `value_labels`: a name per value of a top-level argument. */
 const isValueLabels = (value: unknown): value is ApprovalValueLabels =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.values(value).every((byValue) => byValue !== null && typeof byValue === 'object' && !Array.isArray(byValue)
     && Object.values(byValue).every((name) => typeof name === 'string'));
+const MEMORY_CONFLICT_KINDS: ReadonlySet<string> = new Set<MemorySaveConflict['kind']>(['contradicts', 'saved_already', 'also_in_memory']);
+/** A stored `memory_conflicts`, each note read on its own: a kind this server knows, an id
+ *  and a summary. A note it cannot read is left off and the rest stay, so a kind a later
+ *  server adds (as slice J added `saved_already`) hides only itself. Slice O's
+ *  `asked_already`, a save still waiting, has no note yet and so no id; nor has its open
+ *  item's `asked_again`, a save asked after this one, nor slice S's `contradicts_asked`. */
+const readMemoryConflicts = (value: unknown): MemorySaveConflict[] =>
+  !Array.isArray(value) ? [] : value.filter((conflict: unknown): conflict is MemorySaveConflict => {
+    if (conflict === null || typeof conflict !== 'object') return false;
+    const { kind, memory_id, summary } = conflict as { kind?: unknown; memory_id?: unknown; summary?: unknown };
+    if (typeof summary !== 'string') return false;
+    return kind === 'asked_already' || kind === 'asked_again' || kind === 'contradicts_asked'
+      || (typeof kind === 'string' && MEMORY_CONFLICT_KINDS.has(kind) && typeof memory_id === 'string');
+  });
 const aadForPlanPayload = (
   kind: PlanPayloadKind,
   identity: PlanPayloadIdentity,
 ): Uint8Array =>
   new TextEncoder().encode(
     JSON.stringify(
-      kind === 'args' || kind === 'resource_review' || kind === 'value_labels'
+      kind === 'args' || kind === 'resource_review' || kind === 'value_labels' || kind === 'memory_conflicts'
         ? [
             'recued/v1/chat/plan/' + kind,
             identity.session_id,
@@ -221,6 +240,8 @@ const planShellFromRow = (
             run_id: row.hold_run_id,
             ...(typeof row.hold_lapsed_at === 'number' ? { lapsed_at: row.hold_lapsed_at } : {}),
           },
+          // D-336 slice E — what the owner may change on its card while approving it.
+          ...(heldPlanEditableArgs(row.tool) !== undefined ? { editable_args: heldPlanEditableArgs(row.tool) } : {}),
         }
       : {}),
   };
@@ -249,12 +270,33 @@ const decodePlan = async (
         if (error instanceof ChatVaultLockedError) throw error;
         return undefined;
       });
+    // Display only too: notes that do not read back leave the card without them.
+    const conflicts = row.memory_conflicts_encrypted == null ? undefined
+      : await decodePayload(row.memory_conflicts_encrypted, 'memory_conflicts', row, getKey).catch((error: unknown) => {
+        if (error instanceof ChatVaultLockedError) throw error;
+        return undefined;
+      });
     const plan = planShellFromRow(row, args);
-    return plan && { ...plan, ...(review ? { resource_review: review } : {}), ...(isValueLabels(labels) ? { value_labels: labels } : {}) };
+    const notes = readMemoryConflicts(conflicts);
+    return plan && {
+      ...plan,
+      ...(review ? { resource_review: review } : {}),
+      ...(isValueLabels(labels) ? { value_labels: labels } : {}),
+      ...(notes.length > 0 ? { memory_conflicts: notes } : {}),
+    };
   } catch (error) {
     if (error instanceof ChatVaultLockedError) throw error;
     return undefined;
   }
+};
+
+/** D-336 slice Q — a completed receipt's record of what it made, read as off a stored hold. */
+const isChatPlanMade = (value: unknown): value is ChatPlanMade => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const made = value as Record<string, unknown>;
+  return made.kind === 'contact'
+    ? typeof made.target_id === 'string' && made.target_id !== '' && typeof made.name === 'string'
+    : made.kind === 'memory' && typeof made.memory_id === 'string' && made.memory_id !== '';
 };
 
 const validateExecution = (
@@ -283,6 +325,7 @@ const validateExecution = (
           ...(isLocalMutationReceiptSummary(candidate.local_receipt) ? { local_receipt: candidate.local_receipt } : {}),
           ...(['running', 'failed', 'unknown'].includes(String(candidate.recovered_from))
             ? { recovered_from: candidate.recovered_from as 'running' | 'failed' | 'unknown' } : {}),
+          ...(isChatPlanMade(candidate.made) ? { made: candidate.made } : {}),
           ...runAddress,
         }
       : undefined;
@@ -478,18 +521,35 @@ export const createSqliteChatPlanStore = (
        SET hold_run_id = NULL
      WHERE plan_id = @plan_id AND hold_run_id = @run_id
   `);
+  const addConflictRun = db.prepare(`
+    UPDATE chat_plans
+       SET memory_conflicts_encrypted = @memory_conflicts_encrypted
+     WHERE plan_id = @plan_id AND status = 'proposed' AND args_hash = @args_hash
+  `);
+  const editHeldRun = db.prepare(`
+    UPDATE chat_plans
+       SET args_encrypted = @args_encrypted,
+           args_hash = @args_hash,
+           resource_review_encrypted = @resource_review_encrypted,
+           value_labels_encrypted = @value_labels_encrypted,
+           memory_conflicts_encrypted = @memory_conflicts_encrypted
+     WHERE plan_id = @plan_id AND hold_run_id = @run_id AND status = 'proposed'
+       AND args_hash = @prior_args_hash
+  `);
   const insertPlan = db.prepare(`
     INSERT INTO chat_plans (
       plan_id, session_id, turn_id, retry_of_plan_id, message_id,
       tool, tier, classification,
       args_encrypted, resource_review_encrypted, args_hash, target_instance, status, created_at,
       resolved_at, consumed_at, execution_status, execution_turn_id,
-      execution_blob_encrypted, execution_updated_at, hold_run_id, value_labels_encrypted
+      execution_blob_encrypted, execution_updated_at, hold_run_id, value_labels_encrypted,
+      memory_conflicts_encrypted
     ) VALUES (
       @plan_id, @session_id, @turn_id, @retry_of_plan_id, NULL,
       @tool, @tier, @classification,
       @args_encrypted, @resource_review_encrypted, @args_hash, @target_instance, @status, @created_at,
-      @resolved_at, @consumed_at, NULL, NULL, NULL, NULL, @hold_run_id, @value_labels_encrypted
+      @resolved_at, @consumed_at, NULL, NULL, NULL, NULL, @hold_run_id, @value_labels_encrypted,
+      @memory_conflicts_encrypted
     )
     ON CONFLICT(plan_id) DO NOTHING
   `);
@@ -661,6 +721,8 @@ export const createSqliteChatPlanStore = (
       hold_run_id: plan.hold?.run_id ?? null,
       value_labels_encrypted: plan.value_labels
         ? await encodePayload(plan.value_labels, 'value_labels', plan, getKey) : null,
+      memory_conflicts_encrypted: plan.memory_conflicts !== undefined && plan.memory_conflicts.length > 0
+        ? await encodePayload(plan.memory_conflicts, 'memory_conflicts', plan, getKey) : null,
     });
   };
 
@@ -671,6 +733,67 @@ export const createSqliteChatPlanStore = (
     unlinkHoldRun.run({ plan_id, run_id });
     const row = rowFor(plan_id);
     return row === undefined ? undefined : decodePlan(row, getKey);
+  };
+
+  /** D-336 slice E — the owner's change to a held proposal, made while approving it. Its
+   *  reviewed payloads are sealed to its args hash, so each is sealed again to the new one;
+   *  a proposal answered or changed meanwhile is left as it is. Slice G: the notes it met
+   *  were for the relationship as proposed, so they go. */
+  const editHeld = async (
+    plan_id: string,
+    run_id: string,
+    args: Record<string, unknown>,
+  ): Promise<ChatPlanProposal | undefined> => {
+    const row = rowFor(plan_id);
+    if (row === undefined || row.status !== 'proposed' || row.hold_run_id !== run_id) return undefined;
+    const current = await decodePlan(row, getKey);
+    if (current === undefined) return undefined;
+    const args_hash = planApproval.computePlanArgsHash(args);
+    const identity = { ...row, args_hash };
+    // D-336 slice G — the notes a save met were found for its claim: a change of it drops
+    // them, and a change of the summary alone leaves them true.
+    const claimOf = (a: unknown) => JSON.stringify((a as { claim?: unknown } | null | undefined)?.claim ?? null);
+    const conflicts = current.memory_conflicts !== undefined && claimOf(current.args) === claimOf(args)
+      ? current.memory_conflicts : undefined;
+    const changed = editHeldRun.run({
+      plan_id,
+      run_id,
+      prior_args_hash: row.args_hash,
+      args_hash,
+      args_encrypted: await encodePayload(args, 'args', identity, getKey),
+      resource_review_encrypted: current.resource_review
+        ? await encodePayload(current.resource_review, 'resource_review', identity, getKey) : null,
+      value_labels_encrypted: current.value_labels
+        ? await encodePayload(current.value_labels, 'value_labels', identity, getKey) : null,
+      memory_conflicts_encrypted: conflicts !== undefined
+        ? await encodePayload(conflicts, 'memory_conflicts', identity, getKey) : null,
+    });
+    if (changed.changes === 0) return undefined;
+    const next = rowFor(plan_id);
+    return next === undefined ? undefined : decodePlan(next, getKey);
+  };
+
+  /** D-336 slice O's open item — a later save of the same fact, asked while this one waits
+   *  (`asked_again`): added to a still-proposed plan's conflicts, once. Sealed to the plan as
+   *  the rest are; `undefined` for a plan gone or answered. */
+  const addMemoryConflict = async (
+    plan_id: string,
+    conflict: MemorySaveConflict,
+  ): Promise<ChatPlanProposal | undefined> => {
+    const row = rowFor(plan_id);
+    if (row === undefined || row.status !== 'proposed') return undefined;
+    const current = await decodePlan(row, getKey);
+    if (current === undefined) return undefined;
+    const present = current.memory_conflicts ?? [];
+    if (present.some((had) => had.kind === conflict.kind && had.summary === conflict.summary)) return current;
+    const changed = addConflictRun.run({
+      plan_id,
+      args_hash: row.args_hash,
+      memory_conflicts_encrypted: await encodePayload([...present, conflict], 'memory_conflicts', row, getKey),
+    });
+    if (changed.changes === 0) return undefined;
+    const next = rowFor(plan_id);
+    return next === undefined ? undefined : decodePlan(next, getKey);
   };
 
   const findByHoldRun = async (
@@ -938,6 +1061,8 @@ export const createSqliteChatPlanStore = (
     linkTurnToMessage,
     recordExecution,
     unlinkHold,
+    editHeld,
+    addMemoryConflict,
     findByHoldRun,
     lapseHold,
     findPendingHeld,

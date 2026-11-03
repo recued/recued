@@ -29,6 +29,7 @@ import {
   CHAT_ROUTE_PLAN_APPROVE_ATTR,
   CHAT_ROUTE_PLAN_CANCEL_ATTR,
   CHAT_ROUTE_PLAN_CARD_ATTR,
+  CHAT_PLAN_CONFLICT_ATTR,
   CHAT_ROUTE_PLAN_CONTEXT_ATTR,
   CHAT_ROUTE_PLAN_CONTEXT_CLEAR_ATTR,
   CHAT_ROUTE_PLAN_CONTINUATION_PROMPT,
@@ -46,6 +47,23 @@ import {
   CHAT_ROUTE_LATE_RESULT_ATTR,
   CHAT_ROUTE_TOOL_DETAILS_ATTR,
 } from '../chat/bootstrap-chat-route.js';
+import { PLAN_CLAIM_ACTION_ATTR, PLAN_CLAIM_ATTR, PLAN_SUMMARY_EMPTY, PLAN_SUMMARY_NOTE } from '../chat/plan-claim-editor.js';
+import {
+  MEMORY_CLAIM_ADD_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_ACTION,
+  MEMORY_CLAIM_ADD_THING_ACTION,
+  MEMORY_CLAIM_UNLINK_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_UPDATE,
+  MEMORY_CLAIM_END_ATTR,
+  MEMORY_CLAIM_LINK_ACTION,
+  MEMORY_CLAIM_LINK_ATTR,
+  MEMORY_CLAIM_LINK_CANCEL_ACTION,
+  MEMORY_CLAIM_PICK_ACTION,
+  MEMORY_CLAIM_PICK_ID_ATTR,
+  MEMORY_CLAIM_PICK_NAME_ATTR,
+  MEMORY_CLAIM_REMOVE_ACTION,
+  MEMORY_FIELD_ATTR,
+} from '../data/memory-lens.js';
 
 interface FakeEl {
   tagName: string;
@@ -63,6 +81,7 @@ interface FakeEl {
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   querySelector(selector: string): FakeEl | null;
+  querySelectorAll(selector: string): FakeEl[];
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
@@ -114,6 +133,11 @@ const makeFakeEl = (tag: string): FakeEl => {
     querySelector(selector) {
       const attribute = /^\[([\w-]+)\]$/u.exec(selector)?.[1];
       return attribute ? collectByAttr(el, attribute).find(candidate => candidate !== el) ?? null : null;
+    },
+    // D-336 slice G — in-place updates find what they change by an attribute, as a browser does.
+    querySelectorAll(selector) {
+      const attribute = /^\[([\w-]+)\]$/u.exec(selector)?.[1];
+      return attribute ? collectByAttr(el, attribute).filter(candidate => candidate !== el) : [];
     },
     appendChild(c) {
       c.parent = el;
@@ -435,6 +459,8 @@ interface RouteHarnessOptions {
   >;
   approvePlan?: PlanRpc;
   cancelPlan?: PlanRpc;
+  /** Any other method the test answers. */
+  rpc?: Readonly<Record<string, (payload: unknown) => unknown>>;
 }
 
 const requirePlanPayload = (payload: unknown): { plan_id: string } => {
@@ -496,6 +522,7 @@ const mountChatRoute = (options: RouteHarnessOptions = {}): RouteHarness => {
         ? options.cancelPlan(planPayload)
         : { plan: chatPlan({ plan_id: planPayload.plan_id, status: 'cancelled' }) };
     }
+    if (options.rpc !== undefined && Object.hasOwn(options.rpc, method)) return options.rpc[method]!(payload);
     throw new Error(`unexpected method ${method}`);
   });
 
@@ -649,6 +676,17 @@ describe('D-137 P3 plan-approval reducer', () => {
     );
     expect(lateProposal).toBe(resolved);
     expect(onlyPlanCard(lateProposal).status).toBe('approved');
+  });
+
+  it('D-336 slice O\'s open item — a replay of a card still waiting takes its conflicts and nothing else; an answered card takes none', () => {
+    let state = reduceChatThreadEvent(hydrated(), planProposed());
+    const again = [{ kind: 'asked_again' as const, summary: "Mia is Dana Whitfield's daughter." }];
+    state = reduceChatThreadEvent(state, planProposed({ tool: 'mail.delete', args: { id: 'do-not-overwrite' }, memory_conflicts: again, cursor: 2 }));
+    expect(onlyPlanCard(state)).toMatchObject({ tool: 'mail.send', status: 'proposed', memory_conflicts: again });
+    expect(reduceChatThreadEvent(state, planProposed({ memory_conflicts: again, cursor: 3 }))).toBe(state);
+    const resolved = reduceChatThreadEvent(state, planResolved(chatPlan({ status: 'approved', resolved_at: 3_500 })));
+    const late = reduceChatThreadEvent(resolved, planProposed({ memory_conflicts: [...again, { kind: 'asked_again', summary: 'later' }], cursor: 4 }));
+    expect(late).toBe(resolved);
   });
 
   it('applies resolution flips, late-join materialization, replay idempotence, proposed refusal, and session gating', () => {
@@ -1188,6 +1226,33 @@ describe('D-137 P3 plan-approval chat route', () => {
     const unnamed = requirePlanCard(h.root, 'plan_unnamed');
     expect(allText(requireChildClass(unnamed, 'chat-plan-card-tool'))).toBe('Tick a task off');
     expect(rows(unnamed)).toEqual([['Task', 'task-1'], ['Done', 'Yes']]);
+    h.route.dispose();
+  });
+
+  it('names the contact a held change is for, and a new contact as one (D-336 slice F)', async () => {
+    const h = mountChatRoute({ messages: [assistantMessage('msg_anchor', 'Anchor.')] });
+    await openMountedRoute(h);
+    // A mention-only contact's target_id is a placeholder address: it must never be the name shown.
+    const mia = 'mention-only-01jbq7ddz8kz3w9t2f6x4m5n7p@_recued.invalid';
+    h.publish(planProposed({
+      plan_id: 'plan_contact', turn_id: 'turn_contact', tool: 'contact.write', tier: 1, held: true,
+      args: { target_id: mia, birthday: '2015-06-02' },
+      value_labels: { target_id: { [mia]: 'Mia' } },
+    }));
+    h.publish(planProposed({
+      plan_id: 'plan_new_contact', turn_id: 'turn_new_contact', tool: 'contact.write', tier: 1, held: true, cursor: 4,
+      args: { email: 'sam.ortiz@example.test', name: 'Sam Ortiz' },
+    }));
+    await tick();
+    const rows = (card: FakeEl): string[][] => requireChildClass(card, 'chat-plan-card-details').children
+      .map((row) => row.children.map((cell) => cell.textContent));
+    const change = requirePlanCard(h.root, 'plan_contact');
+    expect(allText(requireChildClass(change, 'chat-plan-card-tool'))).toBe('Change a contact');
+    expect(rows(change)).toEqual([['Contact', 'Mia'], ['Birthday', '2015-06-02']]);
+    expect(allText(requireChildClass(change, 'chat-plan-card-details'))).not.toContain('_recued.invalid');
+    const added = requirePlanCard(h.root, 'plan_new_contact');
+    expect(allText(requireChildClass(added, 'chat-plan-card-tool'))).toBe('Add a contact');
+    expect(rows(added)).toEqual([['Email', 'sam.ortiz@example.test'], ['Name', 'Sam Ortiz']]);
     h.route.dispose();
   });
 
@@ -2304,6 +2369,31 @@ describe('D-137 P3 plan-approval chat route', () => {
 });
 
 describe('D-329 — a held write\'s card', () => {
+  it('D-336 slice G — carries what a save meets from the live proposal and a reload, and drops it with the owner\'s change', () => {
+    const MET = [{ kind: 'contradicts' as const, memory_id: 'umem_1', summary: "Mia is Dana's sister." }];
+    const SAVE = { summary: "Mia is Dana's daughter", claim: { subject: 'Mia', relation: 'daughter of', object: 'Dana' } };
+    const live = reduceChatThreadEvent(hydrated(), planProposed({ plan_id: 'plan_save', held: true, args: SAVE, args_hash: 'h1', memory_conflicts: MET }));
+    expect(onlyPlanCard(live).memory_conflicts).toEqual(MET);
+    const recovered = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...chatSession(),
+      messages: [],
+      plans: [{ plan: chatPlan({ plan_id: 'plan_save', hold: { run_id: 'run-1' }, memory_conflicts: MET }), payload_available: true }],
+    } as never);
+    expect(onlyPlanCard(recovered).memory_conflicts).toEqual(MET);
+    // Approved as shown: they stay with what ran.
+    const asShown = applyPlanResolution(live, chatPlan({ plan_id: 'plan_save', status: 'approved', resolved_at: 4_000, args_hash: 'h1' }));
+    expect(onlyPlanCard(asShown).memory_conflicts).toEqual(MET);
+    // Approved with the owner's change: they were for the relationship as proposed.
+    const sister = { ...SAVE, claim: { subject: { text: 'Mia' }, relation: 'sister of', object: { text: 'Dana' } } };
+    const changed = applyPlanResolution(live, chatPlan({ plan_id: 'plan_save', status: 'approved', resolved_at: 4_000, args: sister, args_hash: 'h2' }));
+    expect(onlyPlanCard(changed).memory_conflicts).toBeUndefined();
+    // A summary changed alone leaves the relationship they were found for (audit 2026-10-31).
+    const worded = applyPlanResolution(live, chatPlan({
+      plan_id: 'plan_save', status: 'approved', resolved_at: 4_000, args: { ...SAVE, summary: 'Mia, Dana’s eldest' }, args_hash: 'h3',
+    }));
+    expect(onlyPlanCard(worded)).toMatchObject({ memory_conflicts: MET, args: { summary: 'Mia, Dana’s eldest' } });
+  });
+
   it('carries the held mark from the live proposal, the resolution and a reload', () => {
     const live = reduceChatThreadEvent(hydrated(), planProposed({ plan_id: 'plan_held', held: true }));
     expect(onlyPlanCard(live)).toMatchObject({ plan_id: 'plan_held', held: true });
@@ -2366,6 +2456,555 @@ describe('D-329 — a held write\'s card', () => {
     expect(planHint(requirePlanCard(h.root, 'plan_held'))?.textContent).toBe(
       'You said yes to exactly these details. Recued is doing it now, and Chat will say when it is done.',
     );
+    h.route.dispose();
+  });
+});
+
+describe("D-336 slice E — a held save's relationship, changed on its card as part of approving it", () => {
+  const SAVE = {
+    summary: "Mia is Dana's daughter",
+    claim: { subject: 'Mia', relation: 'daughter of', object: { contact: 'dana@example.test' } },
+  };
+  const LABELS = { claim: { 'dana@example.test': 'Dana Whitfield' } };
+  const held = (overrides: Partial<Omit<PlanProposedEvent, 'kind'>> = {}) => planProposed({
+    plan_id: 'plan_save', turn_id: 'turn_save', tool: 'memory.write', tier: 1, held: true,
+    args: SAVE, value_labels: LABELS, editable_args: ['claim'], ...overrides,
+  });
+  const stage = async (h: RouteHarness, event = held()): Promise<void> => {
+    await openMountedRoute(h);
+    h.publish(event);
+    h.publish(messageComplete('turn_save', assistantMessage('msg_save', 'I asked to save it.')));
+    await tick();
+  };
+  /** The card's relationship, as last drawn: a redraw replaces it. */
+  const claimHost = (h: RouteHarness): FakeEl | undefined => collectByAttr(requirePlanCard(h.root, 'plan_save'), PLAN_CLAIM_ATTR)[0];
+  const fire = (host: FakeEl, type: 'click' | 'input', target: Record<string, unknown>): void => {
+    for (const fn of host.listeners.get(type) ?? []) (fn as unknown as (event: unknown) => void)({ target });
+  };
+  /** A button inside the relationship, as a click on it reaches the host. */
+  const pressIn = (h: RouteHarness, attrs: Record<string, string>): void => {
+    const button = { getAttribute: (k: string) => attrs[k] ?? null };
+    fire(claimHost(h)!, 'click', { closest: () => button });
+  };
+  const typeIn = (h: RouteHarness, field: string, value: string): void => {
+    fire(claimHost(h)!, 'input', { value, getAttribute: (k: string) => (k === MEMORY_FIELD_ATTR ? field : null) });
+  };
+  const approved = (h: RouteHarness) => h.connSpy.mock.calls.filter(([method]) => method === 'chat.plan.approve').map(([, payload]) => payload);
+  const heldApproval = async () => ({
+    plan: chatPlan({ plan_id: 'plan_save', turn_id: 'turn_save', tool: 'memory.write', status: 'approved', hold: { run_id: 'run-1' } }),
+  });
+  const rows = (card: FakeEl): string[] => requireChildClass(card, 'chat-plan-card-details').children
+    .map((row) => row.children[0]!.textContent);
+
+  it('shows the relationship in its own fields, a linked name by its name, and leaves it out of the details', async () => {
+    const h = mountChatRoute();
+    await stage(h);
+    const html = claimHost(h)!.innerHTML;
+    expect(html).toContain('value="Mia"');
+    expect(html).toContain('value="daughter of"');
+    expect(html).toContain('Dana Whitfield');
+    expect(html).toContain('Unlink');
+    expect(html).toContain('Saying yes saves it as shown here.');
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary']);
+    h.route.dispose();
+  });
+
+  it("an older server's card says nothing may change: the relationship is a detail, as before", async () => {
+    const h = mountChatRoute();
+    const { editable_args: _editable, ...older } = held();
+    await stage(h, older as PlanProposedEvent);
+    expect(claimHost(h)).toBeUndefined();
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary', 'Relationship']);
+    h.route.dispose();
+  });
+
+  it('approved as proposed, it sends no change: the save runs as the agent wrote it', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h);
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect(approved(h)[0]).toEqual({ plan_id: 'plan_save' });
+    h.route.dispose();
+  });
+
+  it('a relation changed on the card is sent with the yes, the rest as it was shown', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h);
+    typeIn(h, 'claim-relation', 'stepdaughter of');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect(approved(h)[0]).toEqual({
+      plan_id: 'plan_save',
+      edited_args: { claim: {
+        subject: { text: 'Mia' }, relation: 'stepdaughter of', object: { contact_id: 'dana@example.test', name: 'Dana Whitfield' },
+      } },
+    });
+    h.route.dispose();
+  });
+
+  it('⛔ typing a relation redraws nothing: Say yes stays the button under the pointer', async () => {
+    // A redraw when the relation left focus replaced Say yes between press and release, so
+    // the click that left the field was lost (browser drive, 2026-10-31).
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h);
+    const card = requirePlanCard(h.root, 'plan_save');
+    const host = claimHost(h)!;
+    typeIn(h, 'claim-relation', 'owns');
+    for (const fn of host.listeners.get('change') ?? []) (fn as unknown as (event: unknown) => void)({ target: { getAttribute: () => 'claim-relation' } });
+    await tick();
+    expect(requirePlanCard(h.root, 'plan_save')).toBe(card);
+    expect(claimHost(h)).toBe(host);
+    h.route.dispose();
+  });
+
+  it('a relationship removed on the card saves the summary alone', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_REMOVE_ACTION });
+    expect(claimHost(h)!.innerHTML).toContain('Add a relationship');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect(approved(h)[0]).toEqual({ plan_id: 'plan_save', edited_args: { claim: null } });
+    h.route.dispose();
+  });
+
+  it('a name linked on the card: the matching contacts are offered, and the one picked is sent', async () => {
+    const h = mountChatRoute({
+      approvePlan: heldApproval,
+      rpc: { 'contact.search.local': () => ({ total: 1, contacts: [{ email: 'mia@example.test', name: 'Mia Whitfield', contact_id: 'ct-mia' }] }) },
+    });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('Mia Whitfield'));
+    expect(h.connSpy.mock.calls.find(([method]) => method === 'contact.search.local')?.[1]).toEqual({ query: 'Mia', limit: 8 });
+    pressIn(h, {
+      [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_PICK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject',
+      [MEMORY_CLAIM_PICK_ID_ATTR]: 'ct-mia', [MEMORY_CLAIM_PICK_NAME_ATTR]: 'Mia Whitfield',
+    });
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect((approved(h)[0] as { edited_args: { claim: { subject: unknown } } }).edited_args.claim.subject)
+      .toEqual({ contact_id: 'ct-mia', name: 'Mia Whitfield' });
+    h.route.dispose();
+  });
+
+  /** D-336 slice H — the picker makes the contact when the search finds nobody (§3.6). */
+  it('nobody by that name: the card adds the contact, links it, and the yes sends it', async () => {
+    const h = mountChatRoute({
+      approvePlan: heldApproval,
+      rpc: {
+        'contact.search.local': () => ({ total: 0, contacts: [] }),
+        'contact.create_by_name': (args: unknown) => ({ contact: {
+          email: 'mention-only-ct-new@_recued.invalid', name: (args as { name: string }).name, contact_id: 'ct-new', identity_status: 'mention_only',
+        } }),
+      },
+    });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Mia” as a contact</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_CONTACT_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('data-memory-claim-linked="subject"'));
+    expect(h.connSpy.mock.calls.filter(([method]) => method === 'contact.create_by_name').map(([, payload]) => payload))
+      .toEqual([{ name: 'Mia' }]);
+    expect(claimHost(h)!.innerHTML).not.toContain('_recued.invalid');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect((approved(h)[0] as { edited_args: { claim: { subject: unknown } } }).edited_args.claim.subject)
+      .toEqual({ contact_id: 'ct-new', name: 'Mia' });
+    h.route.dispose();
+  });
+
+  /** D-336 slice L — the picker makes the thing when the search finds nothing. */
+  it('slice L — nothing you own by that name: the card adds the thing, links it, and the yes sends it', async () => {
+    const h = mountChatRoute({
+      approvePlan: heldApproval,
+      rpc: {
+        'work_entity.list': () => ({ entities: [], total: 0 }),
+        'yours.change': () => ({ id: 'asset-rex', message: 'Asset created.' }),
+      },
+    });
+    await stage(h);
+    // The save links its object to a contact: unlink it, and write the thing's name.
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_UNLINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'object' });
+    typeIn(h, 'claim-object', 'Rex');
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'object', [MEMORY_CLAIM_LINK_ATTR]: 'asset' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Rex” as a thing you own</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_THING_ACTION, [MEMORY_CLAIM_END_ATTR]: 'object' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('data-memory-claim-linked="object"'));
+    expect(h.connSpy.mock.calls.filter(([method]) => method === 'yours.change').map(([, payload]) => payload))
+      .toEqual([{ action: 'asset.create', input: { name: 'Rex', idempotency_key: expect.any(String) } }]);
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect((approved(h)[0] as { edited_args: { claim: { object: unknown } } }).edited_args.claim.object)
+      .toEqual({ asset_id: 'asset-rex', name: 'Rex' });
+    h.route.dispose();
+  });
+
+  it('slice L — a failed add keeps its key on the card: trying again cannot add the thing twice', async () => {
+    let calls = 0;
+    const h = mountChatRoute({
+      rpc: {
+        'work_entity.list': () => ({ entities: [], total: 0 }),
+        'yours.change': () => {
+          calls += 1;
+          if (calls === 1) throw new Error('the server went away');
+          return { id: 'asset-rex', message: 'Asset created.' };
+        },
+      },
+    });
+    await stage(h);
+    // The save links its object to a contact: unlink it, and write the thing's name.
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_UNLINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'object' });
+    typeIn(h, 'claim-object', 'Rex');
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'object', [MEMORY_CLAIM_LINK_ATTR]: 'asset' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Rex” as a thing you own</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_THING_ACTION, [MEMORY_CLAIM_END_ATTR]: 'object' });
+    await vi.waitFor(() => expect(calls).toBe(1));
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Rex” as a thing you own</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_THING_ACTION, [MEMORY_CLAIM_END_ATTR]: 'object' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('data-memory-claim-linked="object"'));
+    const keys = h.connSpy.mock.calls.filter(([method]) => method === 'yours.change')
+      .map(([, payload]) => (payload as { input: { idempotency_key: string } }).input.idempotency_key);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+    h.route.dispose();
+  });
+
+  it('a contact with no address is offered by its name alone, never its placeholder', async () => {
+    const h = mountChatRoute({
+      rpc: { 'contact.search.local': () => ({ total: 1, contacts: [{ email: 'mention-only-ct-mia@_recued.invalid', name: 'Mia', contact_id: 'ct-mia' }] }) },
+    });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('data-memory-claim-pick-id="ct-mia"'));
+    expect(claimHost(h)!.innerHTML).not.toContain('_recued.invalid</span>');
+    expect(claimHost(h)!.innerHTML).not.toContain('as a contact</button>');
+    h.route.dispose();
+  });
+
+  it('an older server refuses the add: the card says to update it, and offers it no more', async () => {
+    const h = mountChatRoute({
+      approvePlan: heldApproval,
+      rpc: {
+        'contact.search.local': () => ({ total: 0, contacts: [] }),
+        'contact.create_by_name': () => { throw Object.assign(new Error('unknown method: contact.create_by_name'), { code: 'unknown_method' }); },
+      },
+    });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Mia” as a contact</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_CONTACT_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain(MEMORY_CLAIM_ADD_CONTACT_UPDATE));
+    expect(claimHost(h)!.innerHTML).not.toContain('as a contact</button>');
+    expect(claimHost(h)!.innerHTML).not.toContain('data-memory-claim-linked="subject"');
+    h.route.dispose();
+  });
+
+  /** Audit 2026-11-01 — the owner corrected the name while its contact was being added: the
+   *  late answer put Mia back over Sam, and the yes sent Mia. */
+  it('⛔ a name changed while its contact is being added keeps the change, and the yes sends it', async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    const h = mountChatRoute({
+      approvePlan: heldApproval,
+      rpc: {
+        'contact.search.local': () => ({ total: 0, contacts: [] }),
+        'contact.create_by_name': () => new Promise((resolve) => { finish = resolve; }),
+      },
+    });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Mia” as a contact</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_CONTACT_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('Adding “Mia”…'));
+    typeIn(h, 'claim-subject', 'Sam');
+    finish({ contact: { email: 'mention-only-ct-mia@_recued.invalid', name: 'Mia', contact_id: 'ct-mia', identity_status: 'mention_only' } });
+    await tick();
+    await tick();
+    expect(claimHost(h)!.innerHTML).not.toContain('data-memory-claim-linked="subject"');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect((approved(h)[0] as { edited_args: { claim: { subject: unknown } } }).edited_args.claim.subject).toEqual({ text: 'Sam' });
+    h.route.dispose();
+  });
+
+  /** Audit 2026-11-01 (second) — an older add's answer, back after the owner wrote Sam and
+   *  added him, linked Mia and dropped Sam's. */
+  it('⛔ an older add\'s answer never lands on a newer one: the yes sends the newest choice', async () => {
+    const pending: Array<{ name: string; finish: (value: unknown) => void }> = [];
+    const h = mountChatRoute({
+      approvePlan: heldApproval,
+      rpc: {
+        'contact.search.local': () => ({ total: 0, contacts: [] }),
+        'contact.create_by_name': (args: unknown) => new Promise((resolve) => {
+          pending.push({ name: (args as { name: string }).name, finish: resolve });
+        }),
+      },
+    });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Mia” as a contact</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_CONTACT_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject' });
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    typeIn(h, 'claim-subject', 'Sam');
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Sam” as a contact</button>'));
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_CONTACT_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject' });
+    await vi.waitFor(() => expect(pending.map((p) => p.name)).toEqual(['Mia', 'Sam']));
+    pending[0]!.finish({ contact: { email: 'mention-only-ct-mia@_recued.invalid', name: 'Mia', contact_id: 'ct-mia', identity_status: 'mention_only' } });
+    await tick();
+    await tick();
+    expect(claimHost(h)!.innerHTML).not.toContain('data-memory-claim-linked="subject"');
+    pending[1]!.finish({ contact: { email: 'mention-only-ct-sam@_recued.invalid', name: 'Sam', contact_id: 'ct-sam', identity_status: 'mention_only' } });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('data-memory-claim-linked="subject"'));
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect((approved(h)[0] as { edited_args: { claim: { subject: unknown } } }).edited_args.claim.subject).toEqual({ contact_id: 'ct-sam', name: 'Sam' });
+    h.route.dispose();
+  });
+
+  it('⛔ an older lookup\'s answer never lands on a newer one: Sam is not offered Mia', async () => {
+    const answers: Array<{ query: string; finish: (value: unknown) => void }> = [];
+    const h = mountChatRoute({
+      approvePlan: heldApproval,
+      rpc: {
+        'contact.search.local': (args: unknown) => new Promise((resolve) => {
+          answers.push({ query: (args as { query: string }).query, finish: resolve });
+        }),
+      },
+    });
+    await stage(h);
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    typeIn(h, 'claim-subject', 'Sam');
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject', [MEMORY_CLAIM_LINK_ATTR]: 'contact' });
+    await vi.waitFor(() => expect(answers.map((a) => a.query)).toEqual(['Mia', 'Sam']));
+    // Mia's search comes back while Sam's is still out, and lands on nothing.
+    answers[0]!.finish({ total: 1, contacts: [{ email: 'mia@example.test', name: 'Mia Whitfield', contact_id: 'ct-mia' }] });
+    await tick();
+    await tick();
+    expect(claimHost(h)!.innerHTML).not.toContain('data-memory-claim-pick-id="ct-mia"');
+    answers[1]!.finish({ total: 0, contacts: [] });
+    await vi.waitFor(() => expect(claimHost(h)!.innerHTML).toContain('>Add “Sam” as a contact</button>'));
+    expect(claimHost(h)!.innerHTML).not.toContain('data-memory-claim-pick-id="ct-mia"');
+    h.route.dispose();
+  });
+
+  it('a change the server refuses is shown beside the relationship, and the card still waits for its answer', async () => {
+    const refusal = 'Dana Whitfield is not in your contacts any more. Choose another contact, or write the name.';
+    const h = mountChatRoute({ approvePlan: async () => { throw Object.assign(new Error(refusal), { code: 'bad_request' }); } });
+    await stage(h);
+    typeIn(h, 'claim-relation', 'stepdaughter of');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(claimHost(h)?.innerHTML ?? '').toContain(refusal));
+    expect(requirePlanCard(h.root, 'plan_save').getAttribute('data-status')).toBe('proposed');
+    expect(collectByAttr(h.root, CHAT_ROUTE_ERROR_ATTR)).toHaveLength(0);
+    // What the owner wrote is still there to correct.
+    expect(claimHost(h)!.innerHTML).toContain('value="stepdaughter of"');
+    h.route.dispose();
+  });
+
+  it('a relationship half written is not sent: the card says what is missing', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h, held({ args: { summary: 'Dana rides a blue bicycle' }, value_labels: undefined }));
+    expect(claimHost(h)!.innerHTML).toContain('Add a relationship');
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_ADD_ACTION });
+    typeIn(h, 'claim-subject', 'Dana');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await tick();
+    expect(approved(h)).toHaveLength(0);
+    expect(claimHost(h)!.innerHTML).toContain('A relationship needs a first part, a relation and a second part.');
+    h.route.dispose();
+  });
+
+  it('carries what may change from the live proposal and a reload, and takes the arguments the owner approved', () => {
+    const live = reduceChatThreadEvent(hydrated(), held());
+    expect(onlyPlanCard(live).editable_args).toEqual(['claim']);
+    const recovered = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...chatSession(),
+      messages: [],
+      plans: [{ plan: chatPlan({ plan_id: 'plan_save', tool: 'memory.write', hold: { run_id: 'run-1' }, editable_args: ['claim'] }), payload_available: true }],
+    } as never);
+    expect(onlyPlanCard(recovered).editable_args).toEqual(['claim']);
+    const args = { summary: SAVE.summary, claim: { subject: { text: 'Mia' }, relation: 'stepdaughter of', object: { text: 'Dana' } } };
+    const resolved = applyPlanResolution(live, chatPlan({
+      plan_id: 'plan_save', turn_id: 'turn_save', tool: 'memory.write', status: 'approved', hold: { run_id: 'run-1' },
+      args, args_hash: 'hash_owners',
+    }));
+    expect(onlyPlanCard(resolved)).toMatchObject({ status: 'approved', args, args_hash: 'hash_owners' });
+  });
+
+  it('once approved, the card shows the relationship that ran, as a detail', async () => {
+    const owners = { subject: { text: 'Mia' }, relation: 'stepdaughter of', object: { contact_id: 'ct-dana', name: 'Dana Whitfield' } };
+    const h = mountChatRoute({
+      approvePlan: async () => ({ plan: chatPlan({
+        plan_id: 'plan_save', turn_id: 'turn_save', tool: 'memory.write', status: 'approved', hold: { run_id: 'run-1' },
+        args: { summary: SAVE.summary, claim: owners }, args_hash: 'hash_owners',
+      }) }),
+    });
+    await stage(h);
+    typeIn(h, 'claim-relation', 'stepdaughter of');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(requirePlanCard(h.root, 'plan_save').getAttribute('data-status')).toBe('approved'));
+    const card = requirePlanCard(h.root, 'plan_save');
+    expect(claimHost(h)).toBeUndefined();
+    expect(allText(requireChildClass(card, 'chat-plan-card-details'))).toContain('Mia, stepdaughter of, Dana Whitfield');
+    h.route.dispose();
+  });
+
+  // ── slice G — what the save meets in memory ──
+  const MET = [
+    { kind: 'contradicts', memory_id: 'umem_1', summary: "Mia is Dana's sister." },
+    { kind: 'also_in_memory', memory_id: 'umem_2', summary: "Mia is Sam's daughter." },
+  ] as const;
+  const conflictRows = (h: RouteHarness): FakeEl[] => collectByAttr(requirePlanCard(h.root, 'plan_save'), CHAT_PLAN_CONFLICT_ATTR);
+
+  it('slice G — says what the save contradicts and what else memory holds, after its details', async () => {
+    const h = mountChatRoute();
+    await stage(h, held({ memory_conflicts: MET }));
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary', 'Contradicts', 'Also in memory']);
+    expect(conflictRows(h).map((row) => row.children[1]!.textContent)).toEqual(['"Mia is Dana\'s sister."', '"Mia is Sam\'s daughter."']);
+    expect(conflictRows(h).every((row) => row.getAttribute('data-stale') === 'false')).toBe(true);
+    h.route.dispose();
+  });
+
+  it('slice J — says the fact is saved already, between what it contradicts and what else memory holds', async () => {
+    const h = mountChatRoute();
+    await stage(h, held({ memory_conflicts: [...MET, { kind: 'saved_already', memory_id: 'umem_3', summary: "Dana's daughter is called Mia." }] }));
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary', 'Contradicts', 'Saved already', 'Also in memory']);
+    expect(conflictRows(h).map((row) => row.children[1]!.textContent)).toEqual([
+      '"Mia is Dana\'s sister."', '"Dana\'s daughter is called Mia."', '"Mia is Sam\'s daughter."',
+    ]);
+    h.route.dispose();
+  });
+
+  it('slice O\'s open item — a later save of the fact, held since, is "Asked again" on the card still waiting', async () => {
+    const h = mountChatRoute();
+    await stage(h, held({ memory_conflicts: MET }));
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary', 'Contradicts', 'Also in memory']);
+    // The server sends the card's own event again, with the later save among its conflicts.
+    h.publish(held({ memory_conflicts: [...MET, { kind: 'asked_again', summary: 'Dana Whitfield 的女儿叫 Mia' }] }));
+    await tick();
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary', 'Contradicts', 'Asked again', 'Also in memory']);
+    expect(conflictRows(h).map((row) => row.children[1]!.textContent)).toEqual([
+      '"Mia is Dana\'s sister."', '"Dana Whitfield 的女儿叫 Mia"', '"Mia is Sam\'s daughter."',
+    ]);
+    h.route.dispose();
+  });
+
+  it('slice S — a save asked while it waits that it contradicts is "Contradicts what was asked", held since or before', async () => {
+    const h = mountChatRoute();
+    await stage(h, held({ memory_conflicts: [...MET, { kind: 'contradicts_asked', summary: "Mia is Dana Whitfield's sister." }] }));
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary', 'Contradicts', 'Contradicts what was asked', 'Also in memory']);
+    expect(conflictRows(h).map((row) => row.children[1]!.textContent)).toEqual([
+      '"Mia is Dana\'s sister."', '"Mia is Dana Whitfield\'s sister."', '"Mia is Sam\'s daughter."',
+    ]);
+    h.route.dispose();
+  });
+
+  it('slice O — says a save of the fact was asked already, which has no note yet, after the fact saved already', async () => {
+    const h = mountChatRoute();
+    await stage(h, held({ memory_conflicts: [...MET, { kind: 'asked_already', summary: "Mia is Dana Whitfield's daughter." }] }));
+    expect(rows(requirePlanCard(h.root, 'plan_save'))).toEqual(['Summary', 'Contradicts', 'Asked already', 'Also in memory']);
+    expect(conflictRows(h).map((row) => row.children[1]!.textContent)).toEqual([
+      '"Mia is Dana\'s sister."', '"Mia is Dana Whitfield\'s daughter."', '"Mia is Sam\'s daughter."',
+    ]);
+    h.route.dispose();
+  });
+
+  it('slice G — they are for the relationship as proposed: changing it hides them in place, and putting it back shows them', async () => {
+    const h = mountChatRoute();
+    await stage(h, held({ memory_conflicts: MET }));
+    const card = requirePlanCard(h.root, 'plan_save');
+    typeIn(h, 'claim-relation', 'sister of');
+    // In place: the same card, its rows marked stale, so a click that follows is not lost.
+    expect(requirePlanCard(h.root, 'plan_save')).toBe(card);
+    expect(conflictRows(h).map((row) => row.getAttribute('data-stale'))).toEqual(['true', 'true']);
+    typeIn(h, 'claim-relation', 'daughter of');
+    expect(conflictRows(h).map((row) => row.getAttribute('data-stale'))).toEqual(['false', 'false']);
+    h.route.dispose();
+  });
+
+  it('slice G — the styles hide a stale row, which the detail rows would otherwise show as a grid', () => {
+    expect(CHAT_ROUTE_STYLES).toMatch(/\.chat-plan-card-detail\[data-chat-plan-conflict\]\[data-stale="true"\] \{\s*display: none;/);
+  });
+
+  // ── audit 2026-10-31 — the summary, which recall returns, is changed beside the relationship ──
+  const withSummary = (overrides: Partial<Omit<PlanProposedEvent, 'kind'>> = {}) =>
+    held({ editable_args: ['claim', 'summary'], ...overrides });
+
+  it('where the server takes a change to the summary, it is a field above the relationship, out of the details', async () => {
+    const h = mountChatRoute();
+    await stage(h, withSummary());
+    const html = claimHost(h)!.innerHTML;
+    expect(html).toContain(`${MEMORY_FIELD_ATTR}="summary"`);
+    expect(html).toContain('>Mia is Dana&#39;s daughter</textarea>');
+    expect(html).toContain(PLAN_SUMMARY_NOTE);
+    expect(html.indexOf(`${MEMORY_FIELD_ATTR}="summary"`)).toBeLessThan(html.indexOf(`${MEMORY_FIELD_ATTR}="claim-subject"`));
+    // Both arguments are fields, so there are no details left to list, and no heading for them.
+    const card = requirePlanCard(h.root, 'plan_save');
+    expect(() => requireChildClass(card, 'chat-plan-card-details')).toThrow();
+    expect(allText(card)).not.toContain('The details');
+    // With something the fields do not hold, the details list it as before.
+    const g = mountChatRoute();
+    await stage(g, withSummary({ memory_conflicts: MET }));
+    expect(rows(requirePlanCard(g.root, 'plan_save'))).toEqual(['Contradicts', 'Also in memory']);
+    g.route.dispose();
+    h.route.dispose();
+  });
+
+  it('a summary corrected on the card is sent with the yes, alone when the relationship is as proposed', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h, withSummary());
+    const card = requirePlanCard(h.root, 'plan_save');
+    typeIn(h, 'summary', "  Mia is Dana's sister ");
+    // Typed in place, as the relationship is: nothing redraws under the pointer.
+    expect(requirePlanCard(h.root, 'plan_save')).toBe(card);
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect(approved(h)[0]).toEqual({ plan_id: 'plan_save', edited_args: { summary: "Mia is Dana's sister" } });
+    h.route.dispose();
+  });
+
+  it('the relationship and the summary corrected together are sent together', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h, withSummary());
+    typeIn(h, 'claim-relation', 'sister of');
+    typeIn(h, 'summary', "Mia is Dana's sister");
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect(approved(h)[0]).toEqual({
+      plan_id: 'plan_save',
+      edited_args: {
+        claim: { subject: { text: 'Mia' }, relation: 'sister of', object: { contact_id: 'dana@example.test', name: 'Dana Whitfield' } },
+        summary: "Mia is Dana's sister",
+      },
+    });
+    h.route.dispose();
+  });
+
+  it('a summary cleared on the card is not sent: the card asks for words, and still waits', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h, withSummary());
+    typeIn(h, 'summary', '   ');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await tick();
+    expect(approved(h)).toHaveLength(0);
+    expect(claimHost(h)!.innerHTML).toContain(PLAN_SUMMARY_EMPTY);
+    expect(requirePlanCard(h.root, 'plan_save').getAttribute('data-status')).toBe('proposed');
+    h.route.dispose();
+  });
+
+  it('a summary changed alone leaves what the save meets in view: it was found for the relationship', async () => {
+    const h = mountChatRoute();
+    await stage(h, withSummary({ memory_conflicts: MET }));
+    typeIn(h, 'summary', "Mia is Dana's sister");
+    expect(conflictRows(h).map((row) => row.getAttribute('data-stale'))).toEqual(['false', 'false']);
+    // Redrawn (a button in the relationship), the card still reads them as current.
+    pressIn(h, { [PLAN_CLAIM_ACTION_ATTR]: MEMORY_CLAIM_LINK_CANCEL_ACTION, [MEMORY_CLAIM_END_ATTR]: 'subject' });
+    expect(conflictRows(h).map((row) => row.getAttribute('data-stale'))).toEqual(['false', 'false']);
+    expect(claimHost(h)!.innerHTML).toContain(">Mia is Dana&#39;s sister</textarea>");
+    typeIn(h, 'claim-relation', 'sister of');
+    expect(conflictRows(h).map((row) => row.getAttribute('data-stale'))).toEqual(['true', 'true']);
     h.route.dispose();
   });
 });

@@ -55,6 +55,12 @@ export const installDocumentSearchFixture = async (page: Page, held = false, del
           platform: 'file', slug: 'other', adapter_type: 'fixture', auth_state: 'healthy', last_synced_at: null,
           caps: { read: 'yes', write: 'no', delete: 'no', watch: 'none', mirror: 'optional', auth: 'none', path_style: 'posix' },
         }] : [] } };
+        if (method === 'data.file.attachments.list') {
+          fileLists.push('received');
+          if (delayedFiles && fileLists.length === 1) await new Promise<void>(resolve => { releaseFiles = resolve; });
+          return { result: { files: [1, 2].map(n => ({ file_id: id(n), filename: match(n).filename, mime_type: 'text/plain',
+            size: text.length, media_class: 'document', selection_revision: String(n).repeat(64) })) } };
+        }
         if (method === 'collection.list' && args.platform === 'file') {
           fileLists.push(String(args.slug));
           if (delayedFiles && fileLists.length === 1) await new Promise<void>(resolve => { releaseFiles = resolve; });

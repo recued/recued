@@ -12,14 +12,16 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpInboundTokenRecord } from '@recued/contracts';
 import { LLMError, type LLMConfig } from '@recued/llm';
 
-import { ChatContextLengthError } from '../chat-turn-executor.js';
+import { ChatContextLengthError, ChatTurnUnansweredError } from '../chat-turn-executor.js';
 import {
   createLlmGatewayPortHandler,
+  LLM_GATEWAY_HELD_WAIT_MS,
+  type LlmGatewayCompletionInput,
   type LlmGatewayCompletionProvider,
   type LlmGatewayHandlerDeps,
 } from '../ports/llm-gateway/handler.js';
@@ -321,6 +323,14 @@ describe('openLlmGatewayStream', () => {
 });
 
 describe('createLlmGatewayPortHandler with stream: true', () => {
+  it('D-337 slice R — a streamed request waits two minutes for an approval: its keep-alive lines hold it open', async () => {
+    const provider = makeProvider();
+    const handler = createLlmGatewayPortHandler(makeDeps(provider));
+    await handler(buildReq(makeBody({ stream: true })), asRes(new FakeStreamRes()));
+    const input = (provider.complete as unknown as { mock: { calls: Array<[LlmGatewayCompletionInput]> } }).mock.calls[0]![0];
+    expect(input.held_wait?.ms).toBe(LLM_GATEWAY_HELD_WAIT_MS);
+  });
+
   it('answers as text/event-stream chunks that reassemble to the completion, ending with [DONE]', async () => {
     const provider = makeProvider();
     const handler = createLlmGatewayPortHandler(makeDeps(provider));
@@ -445,6 +455,122 @@ describe('createLlmGatewayPortHandler with stream: true', () => {
     expect(res.chunks).toEqual([SSE_KEEPALIVE]);
     expect(res.writableEnded).toBe(false);
     expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('D-337 follow-up 33 — a turn that produced no answer says why', () => {
+  const unanswered = (reason: ChatTurnUnansweredError['reason'], retry_at?: number) =>
+    createLlmGatewayPortHandler(makeDeps(makeProvider(async () => { throw new ChatTurnUnansweredError(reason, retry_at); })));
+
+  it('a cooldown is a 503 with Retry-After, saying when to try again', async () => {
+    const res = new FakeStreamRes();
+    await unanswered('cooldown', NOW + 30_000)(buildReq(makeBody()), asRes(res));
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['retry-after']).toBe('30');
+    expect(JSON.parse(res.body)).toEqual({ error: {
+      code: 'llm_gateway_model_cooling_down', type: 'server_error',
+      message: 'The AI model this service uses is paused after a provider failure. Try again in 30 seconds.',
+    } });
+  });
+
+  it('each cause has its own status and code; a wait goes in Retry-After whichever it is', async () => {
+    const cases: Array<[ChatTurnUnansweredError['reason'], number | undefined, number, string, string | undefined, string]> = [
+      ['no_source', undefined, 503, 'llm_gateway_no_model', undefined, 'No AI model is available to this service right now.'],
+      ['invalid_output', undefined, 502, 'llm_gateway_model_output_invalid', undefined, 'The AI model returned an answer that could not be read.'],
+      ['provider_failure', NOW + 1_500, 502, 'llm_gateway_provider_failed', '2', 'The AI provider failed before answering. Try again in 2 seconds.'],
+      ['provider_failure', undefined, 502, 'llm_gateway_provider_failed', undefined, 'The AI provider failed before answering.'],
+      ['cooldown', undefined, 503, 'llm_gateway_model_cooling_down', undefined, 'The AI model this service uses is paused after a provider failure. Try again shortly.'],
+      // A turn that recorded no cause reads as before.
+      [undefined, undefined, 502, 'llm_gateway_provider_failed', undefined, 'llm_gateway shared chat turn did not produce a valid AI output'],
+    ];
+    for (const [reason, retry_at, status, code, retryAfter, message] of cases) {
+      const res = new FakeStreamRes();
+      await unanswered(reason, retry_at)(buildReq(makeBody()), asRes(res));
+      expect([reason, res.statusCode, res.headers['retry-after']]).toEqual([reason, status, retryAfter]);
+      expect(JSON.parse(res.body)).toEqual({ error: { code, type: 'server_error', message } });
+    }
+  });
+
+  describe('a model paused before the turn: the route check says the same', () => {
+    /** The quota the handler reads, with these sources paused until these times. */
+    const pausedQuota = (until: Record<string, number>, tokensToday = 0): NonNullable<LlmGatewayHandlerDeps['quota']> => ({
+      statusFor: (entry) => (until[entry.id] !== undefined ? { available: false, reason: 'quota_exhausted' } : { available: true }),
+      tokensToday: () => tokensToday,
+      isInCooldown: (id) => until[id] !== undefined,
+      cooldownUntil: (id) => until[id],
+      currentCursor: () => 0,
+    });
+    const poolEntry = (id: string) => ({
+      id, type: 'api' as const, provider: 'openai-compatible' as const, model: 'pool-model', api_key: 'pool-key',
+      speed: 'fast' as const, supports_json: true, enabled: true, context_window_tokens: 32_768,
+    });
+    const send = async (deps: LlmGatewayHandlerDeps) => {
+      const res = new FakeStreamRes();
+      await createLlmGatewayPortHandler(deps)(buildReq(makeBody()), asRes(res));
+      return { status: res.statusCode, retryAfter: res.headers['retry-after'], error: (JSON.parse(res.body) as { error: { code: string; message: string } }).error };
+    };
+
+    it('a paused slot is a 503 with Retry-After, and its model is not asked (found live)', async () => {
+      const provider = makeProvider();
+      expect(await send({ ...makeDeps(provider), quota: pausedQuota({ slot_1: NOW + 18_000 }) })).toEqual({
+        status: 503, retryAfter: '18', error: { code: 'llm_gateway_model_cooling_down', type: 'server_error',
+          message: 'The AI model this service uses is paused after a provider failure. Try again in 18 seconds.' },
+      });
+      expect(provider.complete).not.toHaveBeenCalled();
+    });
+
+    it('a slot paused while the request body arrives is told the same at the second look', async () => {
+      // The route is looked at before the body is read and again after it: the pause starts between.
+      const until: Record<string, number> = {};
+      const provider = makeProvider();
+      const handler = createLlmGatewayPortHandler({ ...makeDeps(provider), quota: pausedQuota(until) });
+      const req = new PassThrough() as unknown as IncomingMessage;
+      Object.assign(req, { url: '/v1/chat/completions', method: 'POST', headers: { authorization: 'Bearer bearer-1' } });
+      const res = new FakeStreamRes();
+      const body = makeBody();
+      const pending = handler(req, asRes(res));
+      (req as unknown as PassThrough).write(body.slice(0, 12));
+      until.slot_1 = NOW + 18_000;
+      (req as unknown as PassThrough).end(body.slice(12));
+      await pending;
+      expect([res.statusCode, res.headers['retry-after']]).toEqual([503, '18']);
+      expect((JSON.parse(res.body) as { error: { code: string } }).error.code).toBe('llm_gateway_model_cooling_down');
+      expect(provider.complete).not.toHaveBeenCalled();
+    });
+
+    it('a pool whose every entry is paused says when the first may be tried again', async () => {
+      const config = { ...baseConfig(), llm_gateway_default_route: 'pool' as const, slot_1: undefined,
+        free_pool: [poolEntry('pool-a'), poolEntry('pool-b')] };
+      const deps = { ...makeDeps(makeProvider()), getLlmConfig: vi.fn(() => config),
+        quota: pausedQuota({ 'pool-a': NOW + 50_000, 'pool-b': NOW + 12_000 }) };
+      expect(await send(deps)).toMatchObject({ status: 503, retryAfter: '12', error: { code: 'llm_gateway_model_cooling_down' } });
+    });
+
+    it('⛔ a slot past its day\'s budget as well promises no time: unavailable, as before', async () => {
+      const config = baseConfig();
+      const capped = { ...config, slot_1: { ...config.slot_1!, daily_budget_tokens: 1_000 } };
+      const deps = { ...makeDeps(makeProvider()), getLlmConfig: vi.fn(() => capped), quota: pausedQuota({ slot_1: NOW + 18_000 }, 1_000) };
+      expect(await send(deps)).toEqual({ status: 503, retryAfter: undefined,
+        error: { code: 'llm_gateway_route_unavailable', type: 'server_error', message: 'slot:slot_1 is not currently available.' } });
+    });
+
+    it('⛔ CONTROL: a quota that cannot say until when reads as before', async () => {
+      const { cooldownUntil: _omitted, ...quota } = pausedQuota({ slot_1: NOW + 18_000 });
+      expect(await send({ ...makeDeps(makeProvider()), quota })).toEqual({ status: 503, retryAfter: undefined,
+        error: { code: 'llm_gateway_route_unavailable', type: 'server_error', message: 'slot:slot_1 is not currently available.' } });
+    });
+  });
+
+  it('streamed, the same cause goes in-band, with the wait in its message', async () => {
+    const res = new FakeStreamRes();
+    await unanswered('cooldown', NOW + 30_000)(buildReq(makeBody({ stream: true })), asRes(res));
+    expect(res.statusCode).toBe(200);
+    const chunks = parseChunks(res.body);
+    expect(chunks).toHaveLength(1);
+    expect((chunks[0] as Chunk).error).toEqual({
+      code: 'llm_gateway_model_cooling_down', type: 'server_error',
+      message: 'The AI model this service uses is paused after a provider failure. Try again in 30 seconds.',
+    });
   });
 });
 

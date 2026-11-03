@@ -38,7 +38,7 @@
  *
  *  Spec: D-169 § N.5 #3 (live surface). */
 
-import { REMINDER_LIST_LINK } from '@recued/contracts';
+import { parseReminderLink } from '@recued/contracts';
 
 import type { BroadcastSubscriber } from './realtime/subscriber.js';
 
@@ -136,8 +136,8 @@ const safeNotifyLink = (value: unknown): string | undefined => {
   // stop the link being rendered at all.
   if (/^#views\/view_[a-f0-9-]{36}$/.test(value)) return value;
   if (/^#data\/view\/view_[a-f0-9-]{36}$/.test(value)) return value;
-  // D-324 — a delivered reminder links to the upcoming list. One exact address.
-  if (value === REMINDER_LIST_LINK) return value;
+  // New reminders open their record; previously sent list links still work.
+  if (parseReminderLink(value)) return value;
   if (value === '#today') return value;
   if (value === '#settings/notifications') return value;
   if (/^#yours\/asset\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;

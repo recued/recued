@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { recordFirstDigest } from './measures.js';
 import { assetDateAt, calendarDayMs, shiftAssetDate, dueSpan, zonedWallClockToEpochMs,
-  type ProactiveToday, type SituationCluster, type SituationDeliverySettings, type SituationDeliveryStatus, type SituationItem, type SituationResult } from '@recued/contracts';
+  type ProactiveToday, type SituationAgendaSettings, type SituationAgendaStatus, type SituationCluster, type SituationDeliverySettings,
+  type SituationDeliveryStatus, type SituationDigestLookAhead, type SituationItem, type SituationResult } from '@recued/contracts';
 import type { NotificationSendArgs } from '../notification-handler.js';
 import type { SituationStore } from '../storage/situation-store.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
@@ -20,7 +21,27 @@ import { assetRenewal } from './asset-rule-timing.js';
 import type { Collection } from '../collections/types.js';
 import { isMirroredCollection } from '../collections/mirrored-collection.js';
 
-export const DEFAULT_SITUATION_DELIVERY: SituationDeliverySettings = { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true };
+export const DEFAULT_SITUATION_DELIVERY: Required<SituationDeliverySettings> = { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true, look_ahead_days: 7 };
+/** §15.7 amendment (2026-11-02) — the windows a digest may cover. Keyed by the contract's type,
+ *  so a new length cannot be added there without being added here. */
+const LOOK_AHEAD_DAYS: Readonly<Record<SituationDigestLookAhead, true>> = { 2: true, 3: true, 7: true, 14: true };
+const isLookAhead = (value: unknown): value is SituationDigestLookAhead => typeof value === 'number' && Object.hasOwn(LOOK_AHEAD_DAYS, value);
+/** A weekly digest covers at least a week: a shorter window leaves days no digest ever lists. */
+const WEEKLY_MIN_LOOK_AHEAD = 7;
+/** §15.7 amendment (2026-11-02, later) — the Agenda, off until the owner turns it on, and daily
+ *  until they choose a week (2026-11-03). */
+export const DEFAULT_SITUATION_AGENDA: Required<SituationAgendaSettings> = { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 };
+/** The Agenda's runs, daily and weekly alike. The Digest's status, send budget and retention
+ *  leave them out, and the Agenda keeps its own, so the two never take each other's sends. */
+const AGENDA_MODES = "('agenda','agenda_manual')";
+/** A fuller day ends with a count and a link to Today. A week holds this many for each day. */
+const AGENDA_MAX_LINES = 40;
+const AGENDA_WEEK_DAYS = 7;
+const HHMM = /^(?:[01]\d|2[0-3]):[0-5]\d$/u;
+const isIsoWeekday = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 7;
+/** A local date's ISO weekday, Monday=1. */
+const isoWeekdayOf = (day: string): number => ((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+const shiftDays = (day: string, amount: number): string => shiftAssetDate(day, { amount: Math.abs(amount), unit: 'days' }, amount < 0 ? -1 : 1);
 const ownerSource = { channel: 'chat', actor: 'user_self', user_id: 'owner', chat_session_id: 'scheduled-situations' } as const;
 const uiContext: SituationReadContext = { owner: true, grants: { isVerbOpGranted: () => true, isCollectionReadGranted: () => true, isTopicReadGranted: () => true } };
 /** An asset's details and a trip's destination and days are read-time context,
@@ -73,6 +94,9 @@ export const createScheduledSituations = (deps: {
   memoryAllowed?: (cluster: SituationCluster) => boolean;
   /** A person's name as the owner's contacts give it, for an id an item's `who` carries. */
   personName?: (id: string) => string | undefined;
+  /** Whether a calendar event (by its record id) has fresh Meeting preparation notes, for the
+   *  Agenda's "prep notes ready". Absent ⇒ the Agenda never says so. */
+  prepNotesReady?: (calendarRecordId: string) => boolean;
   now?: () => number;
 }) => {
   const now = deps.now ?? Date.now; let access: SituationAccess | undefined; let active: Promise<unknown> | undefined; let stopped = false;
@@ -109,30 +133,73 @@ export const createScheduledSituations = (deps: {
   deps.db.exec('CREATE TABLE IF NOT EXISTS scheduled_situation_listed (id TEXT PRIMARY KEY, at INTEGER NOT NULL)');
   if (unrecorded) deps.db.prepare("INSERT OR IGNORE INTO scheduled_situation_listed(id,at) SELECT id,? FROM situations WHERE id LIKE 'situation-%'").run(now());
   const listed = deps.db.prepare('INSERT INTO scheduled_situation_listed(id,at) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET at=excluded.at');
-  const settings = (): SituationDeliverySettings => ({ ...DEFAULT_SITUATION_DELIVERY,
-    ...deps.store.readSetting<Partial<SituationDeliverySettings>>('situations.delivery', {}),
-    frequency: deps.store.readSetting('digest.frequency', DEFAULT_SITUATION_DELIVERY.frequency) });
+  // What the owner chose. An older server stored a field it did not know as it came, so a
+  // window that is not one of the choices reads as the default.
+  const chosen = (): Required<SituationDeliverySettings> => {
+    const value = { ...DEFAULT_SITUATION_DELIVERY, ...deps.store.readSetting<Partial<SituationDeliverySettings>>('situations.delivery', {}),
+      frequency: deps.store.readSetting('digest.frequency', DEFAULT_SITUATION_DELIVERY.frequency) };
+    return isLookAhead(value.look_ahead_days) ? value : { ...value, look_ahead_days: DEFAULT_SITUATION_DELIVERY.look_ahead_days };
+  };
+  // What the digest does. The frequency is also written alone (`yours.change` `settings.update`),
+  // so a weekly digest is held to a week here, where every send and the status read it, and a
+  // daily choice of fewer days comes back when the digest is daily again.
+  const settings = (): Required<SituationDeliverySettings> => {
+    const value = chosen();
+    return value.frequency === 'weekly' && value.look_ahead_days < WEEKLY_MIN_LOOK_AHEAD ? { ...value, look_ahead_days: WEEKLY_MIN_LOOK_AHEAD } : value;
+  };
   const setSettings = (patch: Partial<SituationDeliverySettings>): void => {
-    const next = { ...settings(), ...patch };
+    const next = { ...chosen(), ...patch };
     if (!['daily', 'weekly', 'off'].includes(next.frequency) || !Number.isInteger(next.weekday) || next.weekday < 1 || next.weekday > 7
-      || !/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(next.time) || typeof next.day_of !== 'boolean') throw new Error('Choose a valid overview schedule');
+      || !/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(next.time) || typeof next.day_of !== 'boolean' || !isLookAhead(next.look_ahead_days)) throw new Error('Choose a valid overview schedule');
+    // Asked for outright, a weekly digest shorter than a week is refused rather than quietly
+    // lengthened; a frequency changed alone keeps the window, which `settings` reads as above.
+    if (patch.look_ahead_days !== undefined && next.frequency === 'weekly' && next.look_ahead_days < WEEKLY_MIN_LOOK_AHEAD)
+      throw new Error(`A weekly digest looks at least ${WEEKLY_MIN_LOOK_AHEAD} days ahead`);
     deps.store.writeSetting('situations.delivery', next); deps.store.writeSetting('digest.frequency', next.frequency);
     deps.store.writeSetting('situations.schedule_changed_at', now());
   };
+  // The Agenda's settings: each field as written, or its default when it is not one Recued accepts.
+  // Settings saved before the weekly choice name no frequency, and read as daily.
+  const agendaSettings = (): Required<SituationAgendaSettings> => {
+    const stored = deps.store.readSetting<Partial<SituationAgendaSettings>>('situations.agenda', {});
+    return { enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_SITUATION_AGENDA.enabled,
+      time: typeof stored.time === 'string' && HHMM.test(stored.time) ? stored.time : DEFAULT_SITUATION_AGENDA.time,
+      day: stored.day === 'today' || stored.day === 'tomorrow' ? stored.day : DEFAULT_SITUATION_AGENDA.day,
+      frequency: stored.frequency === 'daily' || stored.frequency === 'weekly' ? stored.frequency : DEFAULT_SITUATION_AGENDA.frequency,
+      weekday: isIsoWeekday(stored.weekday) ? stored.weekday : DEFAULT_SITUATION_AGENDA.weekday };
+  };
+  // A save that names only some fields keeps the rest: a client from before the weekly choice
+  // sends three, and a weekly agenda stays weekly.
+  const setAgenda = (patch: Partial<SituationAgendaSettings>): void => {
+    const next = { ...agendaSettings(), ...patch };
+    if (typeof next.enabled !== 'boolean' || typeof next.time !== 'string' || !HHMM.test(next.time) || (next.day !== 'today' && next.day !== 'tomorrow')
+      || (next.frequency !== 'daily' && next.frequency !== 'weekly') || !isIsoWeekday(next.weekday))
+      throw new Error('Choose a valid agenda schedule');
+    deps.store.writeSetting('situations.agenda', { enabled: next.enabled, time: next.time, day: next.day, frequency: next.frequency, weekday: next.weekday });
+    deps.store.writeSetting('situations.agenda_changed_at', now());
+  };
+  // One feature's runs: the Digest's (its due-day notes and Send now included) or the Agenda's.
+  const runsOf = (agenda: boolean) => `mode ${agenda ? '' : 'NOT '}IN ${AGENDA_MODES}`;
+  const receipts = (agenda: boolean) => {
+    const row = deps.db.prepare(`SELECT * FROM scheduled_situation_runs WHERE ${runsOf(agenda)} ORDER BY at DESC,rowid DESC LIMIT 1`).get() as RunRow | undefined;
+    const sent = deps.db.prepare(`SELECT * FROM scheduled_situation_runs WHERE ${runsOf(agenda)} AND state='sent' ORDER BY at DESC,rowid DESC LIMIT 1`).get() as RunRow | undefined;
+    return { last_run: row ? { at: row.at, mode: row.mode, state: row.state, text: row.text, delivered_to: JSON.parse(row.delivered_to) as string[] } : null,
+      last_sent: sent ? { at: sent.at, mode: sent.mode, text: sent.text, delivered_to: JSON.parse(sent.delivered_to) as string[] } : null,
+      pending: (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_runs WHERE ${runsOf(agenda)} AND state IN ('pending','sending')`).get() as { n: number }).n,
+      uncertain: (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_runs WHERE ${runsOf(agenda)} AND state='uncertain'`).get() as { n: number }).n };
+  };
+  const agendaStatus = (): SituationAgendaStatus => {
+    const next = nextAgenda();
+    return { settings: agendaSettings(), ...receipts(true), ...(next === null ? {} : { next_at: next, time_zone: deps.timeZone() }) };
+  };
   const status = (): SituationDeliveryStatus => {
-    const row = deps.db.prepare('SELECT * FROM scheduled_situation_runs ORDER BY at DESC,rowid DESC LIMIT 1').get() as RunRow | undefined;
-    const sent = deps.db.prepare("SELECT * FROM scheduled_situation_runs WHERE state='sent' ORDER BY at DESC,rowid DESC LIMIT 1").get() as RunRow | undefined;
     const next = nextDigest();
-    return { settings: settings(), last_run: row ? { at: row.at, mode: row.mode, state: row.state, text: row.text, delivered_to: JSON.parse(row.delivered_to) } : null,
-      last_sent: sent ? { at: sent.at, mode: sent.mode, text: sent.text, delivered_to: JSON.parse(sent.delivered_to) } : null,
-      pending: (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_runs WHERE state IN ('pending','sending')").get() as { n: number }).n,
-      uncertain: (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_runs WHERE state='uncertain'").get() as { n: number }).n,
-      ...(next === null ? {} : { next_at: next, time_zone: deps.timeZone() }) };
+    return { settings: settings(), ...receipts(false), ...(next === null ? {} : { next_at: next, time_zone: deps.timeZone() }) };
   };
   const hhmm = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
   // When the digest is due on a day, and whose run that is. Shared by the tick that sends
   // it and the status that says when it next goes, so the two cannot disagree.
-  const dueTime = (config: SituationDeliverySettings): { due: string; late: boolean } => {
+  const dueTime = (config: { time: string }): { due: string; late: boolean } => {
     // A time inside quiet hours goes out when they end: by its own time alone, an
     // evening time in a window past midnight never came round.
     const set = Number(config.time.slice(0, 2)) * 60 + Number(config.time.slice(3, 5));
@@ -145,7 +212,7 @@ export const createScheduledSituations = (deps: {
     // Carried past midnight, a weekly send goes the morning after its day, not
     // the morning of it.
     const sendDay = late ? shiftAssetDate(day, { amount: 1, unit: 'days' }, -1) : day;
-    const weekday = ((new Date(`${sendDay}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+    const weekday = isoWeekdayOf(sendDay);
     const weeklyDay = shiftAssetDate(sendDay, { amount: (weekday - config.weekday + 7) % 7, unit: 'days' }, -1);
     return weeklyDay >= changedDay ? `overview:${weeklyDay}` : null;
   };
@@ -153,20 +220,19 @@ export const createScheduledSituations = (deps: {
     const changedAt = deps.store.readSetting<number>('situations.schedule_changed_at', 0);
     return changedAt > 0 ? assetDateAt(changedAt, zone) : '0001-01-01';
   };
-  /** §15.7 amendment — when the next digest goes, as `tickOnce` would send it: the first day
-   *  from today whose run is not done yet, at its due time, or now when that has passed.
-   *  Inside quiet hours it waits for their end that day, else for the next day's run. Null
-   *  when the digest is off or nothing can send. */
-  const nextDigest = (): number | null => {
-    const config = settings();
-    if (config.frequency === 'off' || stopped || !access || !deps.isVaultUnlocked()) return null;
+  /** §15.7 amendment — when a run set for `time` next goes, as `tickOnce` would send it: the
+   *  first day from today whose run (`runFor`) is not done yet, at its due time, or now when that
+   *  has passed. Inside quiet hours it waits for their end that day, else for the next day's
+   *  run. Null when nothing can send. The Digest and the Agenda both read it. */
+  const nextRunAt = (time: string, runFor: (day: string, late: boolean, zone: string) => string | null): number | null => {
+    if (stopped || !access || !deps.isVaultUnlocked()) return null;
     const at = now(); const zone = deps.timeZone(); const today = assetDateAt(at, zone);
-    const { due, late } = dueTime(config); const changedDay = changedDayIn(zone);
+    const { due, late } = dueTime({ time });
     const done = deps.db.prepare("SELECT 1 FROM scheduled_situation_runs WHERE id=? AND state IN ('sent','skipped','uncertain')");
     const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     for (let offset = 0; offset <= 8; offset++) {
       const day = shiftAssetDate(today, { amount: offset, unit: 'days' });
-      const run = overviewRun(config, day, late, changedDay); if (!run || done.get(run)) continue;
+      const run = runFor(day, late, zone); if (!run || done.get(run)) continue;
       const dueAt = zonedWallClockToEpochMs(`${day}T${due}`, zone); if (dueAt === null) return null;
       const from = Math.max(dueAt, at); if (!deps.isQuiet(from)) return from;
       const minute = clock.format(from); const set = Number(minute.slice(0, 2)) * 60 + Number(minute.slice(3, 5));
@@ -174,6 +240,43 @@ export const createScheduledSituations = (deps: {
       if (end !== null && end > set) return zonedWallClockToEpochMs(`${day}T${hhmm(end)}`, zone);
     }
     return null;
+  };
+  const nextDigest = (): number | null => {
+    const config = settings();
+    if (config.frequency === 'off') return null;
+    const changedDay = changedDayIn(deps.timeZone());
+    return nextRunAt(config.time, (day, late) => overviewRun(config, day, late, changedDay));
+  };
+  /** The days a run lists, from `start` up to `end`. A daily run belongs to the day it goes
+   *  (`slot`) and lists that day or the next; carried past midnight by quiet hours, it lists that
+   *  morning's day either way. §15.7 amendment (2026-11-03): a weekly run belongs to the latest of
+   *  its weekdays, counted from the day before when carried past midnight as the Digest's is, and
+   *  lists seven days from that day or the next; carried past midnight, from that morning. */
+  const agendaSpan = (agenda: Required<SituationAgendaSettings>, day: string, late: boolean): { slot: string; start: string; end: string } => {
+    if (agenda.frequency === 'daily') {
+      const start = agenda.day === 'tomorrow' && !late ? shiftDays(day, 1) : day;
+      return { slot: day, start, end: shiftDays(start, 1) };
+    }
+    const sendDay = late ? shiftDays(day, -1) : day;
+    const slot = shiftDays(sendDay, -((isoWeekdayOf(sendDay) - agenda.weekday + 7) % 7));
+    const start = late || agenda.day === 'tomorrow' ? shiftDays(slot, 1) : slot;
+    return { slot, start, end: shiftDays(start, AGENDA_WEEK_DAYS) };
+  };
+  // One agenda a day, keyed by the day it goes, as a daily digest is; a weekly one keyed by its
+  // weekday until the next. A run whose time came before the owner last changed the Agenda is not
+  // caught up: turned on in the evening, it starts with the next one rather than going at once.
+  // One missed while the server was down still goes, a day's later that day and a week's later
+  // that week, and lists only the days still to come.
+  const agendaRun = (day: string, late: boolean, zone: string): { id: string; from: string; end: string } | null => {
+    const agenda = agendaSettings(); const span = agendaSpan(agenda, day, late); const weekly = agenda.frequency === 'weekly';
+    // When it fell due: a weekly time carried past midnight, the morning after its weekday.
+    const dueAt = zonedWallClockToEpochMs(`${weekly && late ? shiftDays(span.slot, 1) : span.slot}T${dueTime(agenda).due}`, zone);
+    if (dueAt === null || dueAt < deps.store.readSetting<number>('situations.agenda_changed_at', 0)) return null;
+    return { id: weekly ? `agenda_week:${span.slot}` : `agenda:${span.slot}`, from: span.start > day ? span.start : day, end: span.end };
+  };
+  const nextAgenda = (): number | null => {
+    const agenda = agendaSettings();
+    return agenda.enabled ? nextRunAt(agenda.time, (day, late, zone) => agendaRun(day, late, zone)?.id ?? null) : null;
   };
   const collect = async (from: number, to: number, surface: 'today' | 'digest' | 'push', context: SituationReadContext): Promise<SituationResult> => {
     const opted = surface === 'digest' && deps.store.readSetting<string>('last_time.choice', 'unasked') === 'on';
@@ -244,7 +347,7 @@ export const createScheduledSituations = (deps: {
     const people = deps.personName ? Object.fromEntries([...ids].flatMap(id => { const name = deps.personName!(id); return name ? [[id, name]] : []; })) : undefined;
     return { ...await deps.overview(), situations, occurrences: visibleOccurrences, ...(Object.keys(summaries).length ? { summaries } : {}), ...(people ? { people } : {}) };
   };
-  const tickOnce = async (manual = false): Promise<void> => {
+  const digestTick = async (manual = false): Promise<void> => {
     if (stopped || !access || !deps.isVaultUnlocked()) return;
     const at = now(); const zone = deps.timeZone(); const day = assetDateAt(at, zone); const config = settings();
     const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -277,7 +380,7 @@ export const createScheduledSituations = (deps: {
       if (stopped || !deps.isVaultUnlocked() || (!manual && deps.isQuiet(now()))) return;
       const previous = deps.db.prepare('SELECT * FROM scheduled_situation_runs WHERE id=?').get(id) as RunRow | undefined;
       if (previous && ['sent', 'skipped', 'uncertain'].includes(previous.state)) continue;
-      const budget = (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_attempts WHERE day=? AND mode!='manual'").get(day) as { n: number }).n;
+      const budget = (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_attempts WHERE day=? AND mode!='manual' AND mode NOT IN ${AGENDA_MODES}`).get(day) as { n: number }).n;
       if (!manual && budget >= 2) continue;
       // An interrupted send is allowed one clearly marked repeat. Its second
       // uncertainty remains visible in Settings until the owner sends again.
@@ -286,7 +389,8 @@ export const createScheduledSituations = (deps: {
       }
       const context = access.context(ownerSource, null);
       const from = dueSpan(calendarDayMs(day)!, zone).start;
-      const endDay = mode === 'day_of' ? shiftAssetDate(day, { amount: 1, unit: 'days' }) : shiftAssetDate(day, { amount: 7, unit: 'days' });
+      // A due-day note covers today; a digest, scheduled or sent now, the days the owner chose.
+      const endDay = shiftAssetDate(day, { amount: mode === 'day_of' ? 1 : config.look_ahead_days, unit: 'days' });
       const to = dueSpan(calendarDayMs(endDay)!, zone).start - 1;
       const result = await collect(from, to, mode === 'day_of' ? 'push' : 'digest', context);
       // Scheduled pushes leave questions in Yours; clock asks remain the
@@ -393,7 +497,7 @@ export const createScheduledSituations = (deps: {
       if (stopped || !deps.isVaultUnlocked() || (!manual && deps.isQuiet(now()))) return;
       const sendAt = now(); const sendDay = assetDateAt(sendAt, zone);
       const attempt = deps.db.transaction(() => {
-        const used = (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_attempts WHERE day=? AND mode!='manual'").get(sendDay) as { n: number }).n;
+        const used = (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_attempts WHERE day=? AND mode!='manual' AND mode NOT IN ${AGENDA_MODES}`).get(sendDay) as { n: number }).n;
         if (!manual && used >= 2) return null;
         deps.db.prepare("INSERT INTO scheduled_situation_runs(id,mode,day,at,state,text,attempts) VALUES(?,?,?,?,'sending',?,1) ON CONFLICT(id) DO UPDATE SET state='sending',text=excluded.text,attempts=attempts+1,at=excluded.at,day=excluded.day")
           .run(id, mode, sendDay, sendAt, text);
@@ -419,9 +523,125 @@ export const createScheduledSituations = (deps: {
       })();
     }
   };
+  const dayTitle = (day: string): string =>
+    new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(Date.parse(`${day}T00:00:00Z`));
+  /** §15.7 amendment (2026-11-02, later) — the Agenda's lines for its days, from `from` up to `end`,
+   *  in time order, all-day first: everything Today would show on each, recurring events
+   *  included, and repeated whether or not it changed. Read through the same gated query as the
+   *  Digest, whole: every group and every item (`everyItem`). What the owner dismissed stays off,
+   *  as it does on every surface that interrupts them, and what an item's own reminder keeps
+   *  private reads "Private reminder". On the day it goes, what has already ended is left out:
+   *  the query drops what is over (`valid_until`) before anything relates to it. An open task
+   *  whose time has passed is not over, so it stays. Amended 2026-11-03: a week goes a day at a
+   *  time, each under its date, and a day with nothing on is left out. Something that lasts
+   *  several days is on each of them. */
+  const agendaLines = async (from: string, end: string, context: SituationReadContext): Promise<string[]> => {
+    const zone = deps.timeZone(); const at = now();
+    const startOf = (day: string) => dueSpan(calendarDayMs(day)!, zone).start;
+    const result = await deps.query({ time: { from: startOf(from), to: startOf(end) - 1 }, surface: 'today' }, { ...context, everyItem: true });
+    const questions = new Set(occurrences.all().filter(row => row.question).flatMap(row => row.commitment_id ? [row.commitment_id] : []));
+    const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    const items = result.clusters.flatMap(cluster => deps.memoryAllowed?.(cluster) === false ? [] : cluster.items)
+      .filter(item => item.when.value && !questions.has(item.ref.id) && !dismissals.hides(item, at));
+    const several = shiftDays(from, 1) < end; const lines: string[] = [];
+    for (let day = from; day < end; day = shiftDays(day, 1)) {
+      const start = startOf(day); const stop = startOf(shiftDays(day, 1));
+      const seen = new Set<string>(); const rows: Array<{ allDay: boolean; at: number; line: string; title: string }> = [];
+      for (const item of items) {
+        const when = item.when.value!; const key = JSON.stringify([item.ref.collection, item.ref.id, item.ref.field ?? null]);
+        // On the day: a point inside it, or a span that overlaps it. The query's own window
+        // reaches back for what is overdue, and a line belongs to its own day only.
+        const point = when.from === when.to;
+        if (seen.has(key) || (point ? when.from < start || when.from >= stop : when.from >= stop || when.to <= start)) continue;
+        seen.add(key);
+        const allDay = item.when_day !== undefined || (!point && when.from <= start && when.to >= stop);
+        const label = allDay ? 'All day ·' : when.from < start ? `Until ${clock.format(when.to)} ·` : clock.format(when.from);
+        // A calendar item's id is `<calendar>:<record id>`; its prep notes are keyed by the record id.
+        const prepared = item.ref.collection === 'calendar' && deps.prepNotesReady?.(item.ref.id.slice(item.ref.id.indexOf(':') + 1)) === true;
+        const title = privateItem(item) ? 'Private reminder'
+          : `${item.what.value}${prepared ? ' · prep notes ready' : ''}${item.basis === 'inferred' ? ' · Recued’s guess' : ''}`;
+        rows.push({ allDay, at: allDay ? start : when.from, line: `${label} ${title}`, title });
+      }
+      if (!rows.length) continue;
+      rows.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.at - b.at || a.title.localeCompare(b.title));
+      if (several) lines.push(...lines.length ? [''] : [], dayTitle(day));
+      lines.push(...rows.slice(0, AGENDA_MAX_LINES).map(row => row.line));
+      if (rows.length > AGENDA_MAX_LINES) lines.push(`And ${rows.length - AGENDA_MAX_LINES} more${several ? ' that day' : ''}. Open Today for the rest.`);
+    }
+    return lines;
+  };
+  /** One Agenda run: built, then sent with the Digest's receipts — a run marked `sending` with its
+   *  attempt counted before the send, one marked repeat after a send cut short, then uncertain —
+   *  on a budget of its own, so neither feature spends the other's two sends a day. Titled with
+   *  its day, or its first and last. */
+  const sendAgenda = async (id: string, mode: 'agenda' | 'agenda_manual', from: string, end: string): Promise<void> => {
+    const manual = mode === 'agenda_manual'; const zone = deps.timeZone();
+    const previous = deps.db.prepare('SELECT * FROM scheduled_situation_runs WHERE id=?').get(id) as RunRow | undefined;
+    if (previous && ['sent', 'skipped', 'uncertain'].includes(previous.state)) return;
+    const used = (day: string) => (deps.db.prepare("SELECT count(*) AS n FROM scheduled_situation_attempts WHERE day=? AND mode='agenda'").get(day) as { n: number }).n;
+    if (!manual && used(assetDateAt(now(), zone)) >= 2) return;
+    if (previous?.state === 'sending' && previous.attempts >= 2) {
+      deps.db.prepare("UPDATE scheduled_situation_runs SET state='uncertain' WHERE id=?").run(id); return;
+    }
+    const lines = await agendaLines(from, end, access!.context(ownerSource, null));
+    if (stopped || !deps.isVaultUnlocked() || (!manual && deps.isQuiet(now()))) return;
+    if (!lines.length) {
+      deps.db.prepare("INSERT INTO scheduled_situation_runs(id,mode,day,at,state) VALUES(?,?,?,?,'skipped') ON CONFLICT(id) DO UPDATE SET state='skipped',at=excluded.at,day=excluded.day")
+        .run(id, mode, assetDateAt(now(), zone), now()); return;
+    }
+    if (previous?.state === 'sending') lines.unshift('Repeating once because the previous delivery could not be confirmed.');
+    const text = lines.join('\n').slice(0, 12_000);
+    const sendAt = now(); const sendDay = assetDateAt(sendAt, zone);
+    const attempt = deps.db.transaction(() => {
+      if (!manual && used(sendDay) >= 2) return null;
+      deps.db.prepare("INSERT INTO scheduled_situation_runs(id,mode,day,at,state,text,attempts) VALUES(?,?,?,?,'sending',?,1) ON CONFLICT(id) DO UPDATE SET state='sending',text=excluded.text,attempts=attempts+1,at=excluded.at,day=excluded.day")
+        .run(id, mode, sendDay, sendAt, text);
+      return Number(deps.db.prepare("INSERT INTO scheduled_situation_attempts(run_id,day,at,mode,outcome) VALUES(?,?,?,?,'sending')").run(id, sendDay, sendAt, mode).lastInsertRowid);
+    })();
+    if (attempt === null) return;
+    let delivered: readonly string[] = []; const last = shiftDays(end, -1);
+    const title = `Agenda · ${last === from ? dayTitle(from) : `${dayTitle(from)} to ${dayTitle(last)}`}`;
+    try { delivered = (await deps.send({ title, text, ui_link_url: '#today' })).delivered_to; }
+    catch { deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='uncertain' WHERE id=?").run(attempt); return; }
+    if (!delivered.length) {
+      deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='not_delivered' WHERE id=?").run(attempt);
+      deps.db.prepare("UPDATE scheduled_situation_runs SET state='pending' WHERE id=?").run(id); return;
+    }
+    deps.db.transaction(() => {
+      deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='delivered' WHERE id=?").run(attempt);
+      deps.db.prepare("UPDATE scheduled_situation_runs SET state='sent',delivered_to=? WHERE id=?").run(JSON.stringify(delivered), id);
+    })();
+  };
+  /** The Agenda's part of a tick, or its Send now. What a run lists is `agendaSpan`'s. An agenda
+   *  still waiting from an earlier day, or from an earlier week or the other frequency, is not
+   *  sent late: a known failure is superseded, an unknown send stays uncertain. */
+  const agendaTick = async (manual: boolean): Promise<void> => {
+    if (stopped || !access || !deps.isVaultUnlocked()) return;
+    const agenda = agendaSettings(); const at = now(); const zone = deps.timeZone(); const day = assetDateAt(at, zone);
+    const { due, late } = dueTime(agenda);
+    if (manual) {
+      // Send now lists what the agenda would if it went now: today or tomorrow, and a week as if
+      // today were its weekday, so it shows all seven days on any day.
+      const span = agendaSpan({ ...agenda, weekday: isoWeekdayOf(day) }, day, false);
+      await sendAgenda(`agenda_manual:${randomUUID()}`, 'agenda_manual', span.start, span.end); return;
+    }
+    const current = agenda.enabled ? agendaRun(day, late, zone) : null;
+    for (const older of deps.db.prepare("SELECT id,state FROM scheduled_situation_runs WHERE mode='agenda' AND state IN ('pending','sending')").all() as Array<Pick<RunRow, 'id' | 'state'>>) {
+      if (older.id !== current?.id) deps.db.prepare('UPDATE scheduled_situation_runs SET state=? WHERE id=?').run(older.state === 'sending' ? 'uncertain' : 'superseded', older.id);
+    }
+    const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    if (!current || clock.format(at) < due || deps.isQuiet(at)) return;
+    await sendAgenda(current.id, 'agenda', current.from, current.end);
+  };
+  const tickOnce = async (kind: 'tick' | 'digest' | 'agenda'): Promise<void> => {
+    // Each feature runs on its own: a Digest that fails does not hold the day's Agenda.
+    try { if (kind !== 'agenda') await digestTick(kind === 'digest'); }
+    finally { if (kind !== 'digest') await agendaTick(kind === 'agenda'); }
+  };
   /** Retention: an overview run or attempt older than `before` goes, except a run
-   * still to retry, the last run and the last sent one that Settings shows, and an
-   * uncertain run no later send has followed. A cluster still new that the overview
+   * still to retry, the last run and the last sent one that Settings shows (the Digest's
+   * and the Agenda's each), and an uncertain run no later send of its own feature has
+   * followed. A cluster still new that the overview
    * has not listed since `before` goes: if it comes back it is new again. What the
    * overview kept about a situation that is gone goes with it. */
   const prune = (before: number): { overview_runs: number; overview_attempts: number; overview_clusters: number; overview_cached: number } => {
@@ -431,17 +651,20 @@ export const createScheduledSituations = (deps: {
         WHERE s.id LIKE 'situation-%' AND COALESCE(l.at,s.updated_at)<?`).all(before) as { id: string }[]).map(row => row.id)),
       overview_attempts: deps.db.prepare('DELETE FROM scheduled_situation_attempts WHERE at<?').run(before).changes,
       overview_runs: deps.db.prepare(`DELETE FROM scheduled_situation_runs WHERE at<? AND state NOT IN ('pending','sending')
-        AND rowid NOT IN (SELECT rowid FROM scheduled_situation_runs ORDER BY at DESC,rowid DESC LIMIT 1)
-        AND rowid NOT IN (SELECT rowid FROM scheduled_situation_runs WHERE state='sent' ORDER BY at DESC,rowid DESC LIMIT 1)
-        AND NOT (state='uncertain' AND NOT EXISTS (SELECT 1 FROM scheduled_situation_runs later WHERE later.state='sent' AND later.at>scheduled_situation_runs.at))`).run(before).changes,
+        AND rowid NOT IN (SELECT rowid FROM scheduled_situation_runs WHERE ${runsOf(false)} ORDER BY at DESC,rowid DESC LIMIT 1)
+        AND rowid NOT IN (SELECT rowid FROM scheduled_situation_runs WHERE ${runsOf(false)} AND state='sent' ORDER BY at DESC,rowid DESC LIMIT 1)
+        AND rowid NOT IN (SELECT rowid FROM scheduled_situation_runs WHERE ${runsOf(true)} ORDER BY at DESC,rowid DESC LIMIT 1)
+        AND rowid NOT IN (SELECT rowid FROM scheduled_situation_runs WHERE ${runsOf(true)} AND state='sent' ORDER BY at DESC,rowid DESC LIMIT 1)
+        AND NOT (state='uncertain' AND NOT EXISTS (SELECT 1 FROM scheduled_situation_runs later WHERE later.state='sent' AND later.at>scheduled_situation_runs.at
+          AND (later.mode IN ${AGENDA_MODES}) = (scheduled_situation_runs.mode IN ${AGENDA_MODES})))`).run(before).changes,
       overview_cached: deps.db.prepare('DELETE FROM scheduled_situation_seen WHERE id NOT IN (SELECT id FROM situations)').run().changes
         + deps.db.prepare('DELETE FROM scheduled_situation_summaries WHERE id NOT IN (SELECT id FROM situations)').run().changes
         + deps.db.prepare('DELETE FROM scheduled_situation_listed WHERE id NOT IN (SELECT id FROM situations)').run().changes,
     }))();
   };
-  const run = (manual = false): Promise<void> => {
+  const run = (kind: 'tick' | 'digest' | 'agenda' = 'tick'): Promise<void> => {
     if (active) return active as Promise<void>;
-    const pending = tickOnce(manual); active = pending;
+    const pending = tickOnce(kind); active = pending;
     void pending.finally(() => { if (active === pending) active = undefined; }).catch(() => {}); return pending;
   };
   /** ⛔ A STOP DOES NOT WAIT FOR THE SEND. A run reads the window twice, may
@@ -463,8 +686,8 @@ export const createScheduledSituations = (deps: {
     if (stopped) return Promise.resolve();
     return releasedAtStop(run(), stops.signal, undefined);
   };
-  return { bindAccess(value: SituationAccess) { access = value; }, today, status, settings, setSettings, prune, tick,
-    sendNow: () => run(true), async stop() {
+  return { bindAccess(value: SituationAccess) { access = value; }, today, status, settings, setSettings, agendaStatus, agendaSettings, setAgenda, prune, tick,
+    sendNow: () => run('digest'), sendAgendaNow: () => run('agenda'), async stop() {
       stopped = true; stops.abort();
       if (active) await settleWithin(active, STOP_GRACE_MS);
     } };

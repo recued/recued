@@ -98,3 +98,23 @@ describe('D-329 — the chat asks a write\'s own check, through every wrapper', 
     expect(await registry.askValueLabels!('work.update', { kind: 'asset', id: 'a1' }, ownerChat)).toBeUndefined();
   });
 });
+
+describe('D-336 slice G — a held save is told what it meets, through every wrapper', () => {
+  it.each([
+    ['with the marketplace catalogue the serve path passes', { installOfferCatalogue: catalogue() }],
+    ['without one', {}],
+  ] as const)('reaches memory.write\'s notices from the real chat wire, %s', async (_name, overrides) => {
+    const { createInMemoryCollection } = await import('@recued/storage');
+    const { createUserMemoryStore } = await import('../user-memory-store.js');
+    const store = createUserMemoryStore(createInMemoryCollection(), {} as never, {});
+    const daughter = await store.create({
+      kind: 'note', summary: "Mia is Dana's daughter.",
+      claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { text: 'Dana' } },
+    });
+    const registry = await composedRegistry({ ...overrides, getUserMemoryStore: () => store });
+    const met = await registry.askNotices!('memory.write',
+      { summary: "Mia is Dana's sister.", claim: { subject: 'Mia', relation: 'sister of', object: 'Dana' } }, ownerChat);
+    // No admission gate in this harness, so nothing is quoted to the model; the owner is told.
+    expect(met).toEqual({ memory_conflicts: [{ kind: 'contradicts', memory_id: daughter.memory_id, summary: "Mia is Dana's daughter." }] });
+  });
+});

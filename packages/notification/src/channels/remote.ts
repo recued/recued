@@ -24,14 +24,15 @@
  *  verified payload (the I-9 contract: an `InboundReply` is trusted,
  *  authentication is the inbound path's responsibility — see types.ts).
  *
- *  P2a limitation (→ D-158 P3 hardening): the `ask_id → vendor message`
- *  map is in-memory and process-scoped. Within a process it makes
- *  `deliverAsk` idempotent (a re-delivery is a no-op, not a second
- *  message) and lets `closeAsk` strip the buttons. Across a restart the
- *  map is empty: the boot re-delivery sweep re-posts the prompt, and
- *  `closeAsk` no-ops. Both are harmless — the block's first-answer-wins
- *  dedup makes a stale button safe — but persisting the vendor message
- *  id is D-158 P3.
+ *  The `ask_id → vendor message` record makes `deliverAsk` idempotent (a
+ *  re-delivery is a no-op, not a second message) and lets `closeAsk` strip
+ *  the buttons. D-158 P3 (2026-11-02): it outlives the process when the
+ *  server gives the channel a store (`promptRecords`). Before, it was the
+ *  process's alone: after a restart the boot re-delivery sweep posted every
+ *  open prompt again, and `closeAsk` could not reach one an earlier process
+ *  sent, which kept its buttons once answered or expired (harmless, the
+ *  block's first answer wins, but every restart left duplicates). Without a
+ *  store the channel still works that way.
  *
  *  Spec: D-158 § P2 / A.4 / I-9.
  */
@@ -42,6 +43,7 @@ import type {
   ParsedInbound,
   TransportSendResult,
 } from '@recued/transport';
+import type { Collection } from '@recued/storage';
 import type { Channel, ChannelCapability } from './channel.js';
 import { matchTextAnswer, renderAnswerHint } from '../ask-text-answer.js';
 import type {
@@ -128,6 +130,20 @@ export interface RemoteChannelDeps {
    *  honest state on a non-public deployment — the resolver refuses a private
    *  hostname by design — and the ask then carries the typed-reply hint alone. */
   answerLink?: (ask_id: string, via?: string) => string | undefined;
+  /** D-158 P3 — where a delivered prompt's record outlives the process, keyed
+   *  `<channel>:<ask_id>`: read once when the channel is built, kept when a
+   *  prompt goes out, removed when it closes. Absent ⇒ in memory only, as
+   *  before (see the file header). */
+  promptRecords?: Collection<RemotePromptRecord>;
+}
+
+/** What a later process needs of a prompt this channel sent (D-158 P3): which
+ *  message to strip, with what text, and what a typed reply may name. */
+export interface RemotePromptRecord {
+  readonly vendor_message_id: string;
+  readonly close_text: string;
+  readonly options: readonly AskOption[];
+  readonly expected_sender?: string;
 }
 
 /** Narrow at the one place it matters. A channel built `inline` MUST have the
@@ -179,8 +195,8 @@ export const createRemoteChannel = (
   const name: ChannelName = transport.vendor;
 
   /** ask_id → what `closeAsk` needs to strip a delivered prompt's
-   *  buttons. In-memory, process-scoped (see the file header for the
-   *  restart limitation). */
+   *  buttons. Kept in `promptRecords` too when the server gives the
+   *  channel one (D-158 P3, see the file header); else this process's alone. */
   const delivered = new Map<
     string,
     {
@@ -208,6 +224,48 @@ export const createRemoteChannel = (
       presentation?: 'buttons' | 'text' | 'notice';
     }
   >();
+
+  const recordKey = (ask_id: string): string => `${name}:${ask_id}`;
+  /** D-158 P3 — the records an earlier process kept, read once. `deliverAsk`
+   *  and `closeAsk` wait for it, so the boot sweep's re-delivery finds a prompt
+   *  already shown; a typed reply (`parseInboundReply`, sync) reads what has
+   *  loaded by then. A store that cannot be read costs what it did before. */
+  const loaded: Promise<void> = deps.promptRecords === undefined
+    ? Promise.resolve()
+    : deps.promptRecords.listByPrefix(`${name}:`).then((rows) => {
+      for (const { key, value } of rows) {
+        const ask_id = key.slice(name.length + 1);
+        if (delivered.has(ask_id)) continue;
+        delivered.set(ask_id, {
+          vendor_message_id: value.vendor_message_id,
+          close_text: value.close_text,
+          options: value.options,
+          closed: false,
+          expected_sender: value.expected_sender,
+        });
+      }
+    }, () => undefined);
+  const keep = async (ask_id: string): Promise<void> => {
+    const entry = delivered.get(ask_id);
+    if (deps.promptRecords === undefined || entry === undefined) return;
+    try {
+      await deps.promptRecords.set(recordKey(ask_id), {
+        vendor_message_id: entry.vendor_message_id,
+        close_text: entry.close_text,
+        options: entry.options,
+        ...(entry.expected_sender !== undefined ? { expected_sender: entry.expected_sender } : {}),
+      });
+    } catch {
+      // A record that cannot be kept costs what it did before: a re-post after a restart.
+    }
+  };
+  const forget = async (ask_id: string): Promise<void> => {
+    try {
+      await deps.promptRecords?.delete(recordKey(ask_id));
+    } catch {
+      // A record left behind only stops a re-delivery of an ask already closed.
+    }
+  };
 
   const credentialOrThrow = async (
     op: string,
@@ -309,9 +367,10 @@ export const createRemoteChannel = (
     },
 
     async deliverAsk(ask_id, message, options) {
-      // Within-process idempotency — the boot re-delivery sweep, or any
-      // double call, must not post a second prompt for an ask already
-      // delivered this process.
+      // Idempotency — the boot re-delivery sweep, or any double call, must not
+      // post a second prompt for an ask already delivered, by this process or
+      // (D-158 P3) by an earlier one whose record the store kept.
+      await loaded;
       if (delivered.has(ask_id)) return;
 
       // D-163 N.3 / I-2 — the block MUST NOT route an ask here when the channel
@@ -352,6 +411,7 @@ export const createRemoteChannel = (
           closed: false,
           expected_sender: credential.expected_sender,
         });
+        await keep(ask_id);
         return;
       }
       const { token, recipient } = await credentialOrThrow('deliverAsk');
@@ -385,9 +445,12 @@ export const createRemoteChannel = (
         // the vendor's own callback, not by matching a sender.
         expected_sender: undefined,
       });
+      await keep(ask_id);
     },
 
     async closeAsk(ask_id) {
+      // D-158 P3 — a prompt an earlier process sent is known by its record.
+      await loaded;
       const entry = delivered.get(ask_id);
       // ⛔ Mark settled BEFORE the early returns below. Those exist for a prompt
       // with no buttons to strip — exactly the non-interactive case — so leaving
@@ -395,9 +458,11 @@ export const createRemoteChannel = (
       // already decided somewhere else. First-answer-wins is enforced upstream
       // too, but a channel that keeps offering a settled question is its own bug.
       if (entry !== undefined) entry.closed = true;
-      // Unknown ask — never delivered this process, or delivered before
-      // a restart — or delivered with no vendor message id: a no-op,
-      // per the `Channel.closeAsk` contract.
+      // A closed ask is not delivered again, so its record has done its work.
+      await forget(ask_id);
+      // Unknown ask — never delivered (or, with no store, delivered before a
+      // restart) — or delivered with no vendor message id: a no-op, per the
+      // `Channel.closeAsk` contract.
       if (entry === undefined || entry.vendor_message_id === '') return;
       // Best-effort throughout — a credential that has since vanished,
       // or a failed close, leaves a stale (but, per the block's first-

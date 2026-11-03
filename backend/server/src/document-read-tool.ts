@@ -1,10 +1,12 @@
 /** Shared attachment reader. Conversion and byte access always use the ordinary executor. */
 import { createHash } from 'node:crypto';
-import type { ChatDispatchContext, ChatDispatchResult, CollectionRecord, RecipeDefinition } from '@recued/contracts';
+import type { ChatDispatchContext, ChatDispatchResult, CollectionRecord } from '@recued/contracts';
 import type { Tier1Handler } from '@recued/middleware/internal-tool-registry/index.js';
 import { buildPackOpResolution } from './pack-inventory.js';
 import { isCollectionReadGrantedForDispatch, wrapRecipeRunResult, type ChatToolHandlerDeps } from './chat-tool-handlers.js';
-import { DOCUMENT_READ_RECIPE_ID, registerResumedRunFinisher } from './resumed-run-finishers.js';
+import { registerResumedRunFinisher } from './resumed-run-finishers.js';
+import { documentReadRecipe } from './document-read-recipe.js';
+export { documentReadRecipe } from './document-read-recipe.js';
 import type { ExecuteResponse } from './types.js';
 import { isWatchedFolderCollection, parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
 import { sourceCitation, sourceCitationHint } from './chat-source-citations.js';
@@ -88,18 +90,6 @@ export const documentReadPlanner = (deps: ChatToolHandlerDeps, requested: string
 };
 export const documentReadPlan = (deps: ChatToolHandlerDeps, record: CollectionRecord, requested = 'auto', version?: string) =>
   documentReadPlanner(deps, requested)(record, version);
-
-export const documentReadRecipe = (converter?: string, metadataOnly = false): RecipeDefinition => ({
-  recipe_id: DOCUMENT_READ_RECIPE_ID, version: 1, ttl: 0,
-  metadata: { name: 'Read a work document', description: 'Extract readable evidence from one selected file.', author: 'recued',
-    supported_platforms: [], tags: ['kernel', 'document'], budget_ms: 110000 },
-  variables: { source: { type: 'file_ref', label: 'Document' } }, prefetch_steps: [],
-  steps: converter ? [
-    { id: 'convert', op: `recued-core.${converter}.document.to_markdown`, args: { source: '{{config.source}}' } },
-    { id: 'read', op: 'core.storage.file.read-temp', args: { ref: '{{step.convert.file_ref}}' } },
-  ] : [{ id: 'read', op: 'core.storage.data-file-read', args: { record_id: '{{config.source}}', ...(metadataOnly ? { metadata_only: true } : {}) } }],
-  output: { render: [{ type: 'summary', source: 'step.read' }] },
-});
 
 export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handler => {
   // Bounded process cache alongside the optional encrypted durable index. Every

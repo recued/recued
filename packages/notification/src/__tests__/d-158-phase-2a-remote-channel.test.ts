@@ -6,7 +6,9 @@ import {
   type CredentialResolver,
   type NotificationMessage,
   type RemoteChannelCredential,
+  type RemotePromptRecord,
 } from '@recued/notification';
+import { createInMemoryCollection, type Collection } from '@recued/storage';
 import type {
   InteractiveTransport,
   TransportSendResult,
@@ -376,5 +378,81 @@ describe('D-192 seam 10 — every declared chat transport can back a remote chan
         resolveCredential: credentialResolver(),
       }),
     ).toThrow(/not a registered notification channel/);
+  });
+});
+
+describe('D-158 P3 — what a channel sent outlives the process', () => {
+  // A restart builds the channel again over the same records. The boot sweep re-delivers every
+  // open ask, and an answer's close must reach a prompt the earlier process sent.
+  const records = () => createInMemoryCollection<RemotePromptRecord>();
+  const closeText = 'Decision ready\n\nApprove the plan?';
+
+  it('a prompt sent before a restart is not sent again, and closing it strips its buttons', async () => {
+    const store = records();
+    const first = fakeTransport('telegram', { sendPromptResult: ok('msg-1001') });
+    const before = createRemoteChannel({ transport: first.transport, resolveCredential: credentialResolver(), promptRecords: store });
+    await before.deliverAsk('ask-1', askMessage, askOptions);
+    expect(first.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(await store.get('telegram:ask-1')).toMatchObject({ vendor_message_id: 'msg-1001', close_text: closeText, options: askOptions });
+
+    // The restart: a new process, a new channel, the same records.
+    const again = fakeTransport('telegram', { sendPromptResult: ok('msg-2001') });
+    const after = createRemoteChannel({ transport: again.transport, resolveCredential: credentialResolver(), promptRecords: store });
+    await after.deliverAsk('ask-1', askMessage, askOptions);
+    expect(again.sendPrompt).not.toHaveBeenCalled();
+
+    await after.closeAsk('ask-1');
+    expect(again.closePrompt).toHaveBeenCalledWith(expect.objectContaining({ vendor_message_id: 'msg-1001', text: closeText }));
+    expect(await store.get('telegram:ask-1')).toBeNull();
+  });
+
+  it('⛔ closing first after a restart (the expiry sweep before any re-delivery) still strips the first prompt', async () => {
+    const store = records();
+    const first = fakeTransport('telegram', { sendPromptResult: ok('msg-1001') });
+    await createRemoteChannel({ transport: first.transport, resolveCredential: credentialResolver(), promptRecords: store })
+      .deliverAsk('ask-1', askMessage, askOptions);
+    const again = fakeTransport('telegram');
+    const after = createRemoteChannel({ transport: again.transport, resolveCredential: credentialResolver(), promptRecords: store });
+    await after.closeAsk('ask-1');
+    expect(again.closePrompt).toHaveBeenCalledWith(expect.objectContaining({ vendor_message_id: 'msg-1001', text: closeText }));
+  });
+
+  it('⛔ CONTROL: without records, a restart sends the prompt again and cannot close the first', async () => {
+    const first = fakeTransport('telegram', { sendPromptResult: ok('msg-1001') });
+    await createRemoteChannel({ transport: first.transport, resolveCredential: credentialResolver() })
+      .deliverAsk('ask-1', askMessage, askOptions);
+    const again = fakeTransport('telegram', { sendPromptResult: ok('msg-2001') });
+    const after = createRemoteChannel({ transport: again.transport, resolveCredential: credentialResolver() });
+    await after.deliverAsk('ask-1', askMessage, askOptions);
+    expect(again.sendPrompt).toHaveBeenCalledTimes(1);
+    await after.closeAsk('ask-1');
+    expect(again.closePrompt).toHaveBeenCalledWith(expect.objectContaining({ vendor_message_id: 'msg-2001' }));
+  });
+
+  it('keeps each channel to its own records', async () => {
+    const store = records();
+    const slack = fakeTransport('slack', { sendPromptResult: ok('ts-1') });
+    await createRemoteChannel({ transport: slack.transport, resolveCredential: credentialResolver(), promptRecords: store })
+      .deliverAsk('ask-1', askMessage, askOptions);
+    const telegram = fakeTransport('telegram', { sendPromptResult: ok('msg-1') });
+    await createRemoteChannel({ transport: telegram.transport, resolveCredential: credentialResolver(), promptRecords: store })
+      .deliverAsk('ask-1', askMessage, askOptions);
+    expect(telegram.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(await store.get('slack:ask-1')).toMatchObject({ vendor_message_id: 'ts-1' });
+    expect(await store.get('telegram:ask-1')).toMatchObject({ vendor_message_id: 'msg-1' });
+  });
+
+  it('⛔ records that cannot be read or kept cost only what they did before: the prompt still goes out', async () => {
+    const broken: Collection<RemotePromptRecord> = {
+      ...records(),
+      listByPrefix: async () => { throw new Error('locked'); },
+      set: async () => { throw new Error('locked'); },
+    };
+    const fake = fakeTransport('telegram', { sendPromptResult: ok('msg-1') });
+    const channel = createRemoteChannel({ transport: fake.transport, resolveCredential: credentialResolver(), promptRecords: broken });
+    await channel.deliverAsk('ask-1', askMessage, askOptions);
+    expect(fake.sendPrompt).toHaveBeenCalledTimes(1);
+    await channel.closeAsk('ask-1');
+    expect(fake.closePrompt).toHaveBeenCalledWith(expect.objectContaining({ vendor_message_id: 'msg-1' }));
   });
 });

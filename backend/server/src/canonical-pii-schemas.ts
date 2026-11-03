@@ -231,6 +231,12 @@ const HUBSPOT_CONTACT_SCHEMA: EntitySchemaIngredientInput = {
     { key: 'mailing_address.address1', type: 'string', source_path: 'properties.address', privacy: 'address' },
     { key: 'mailing_address.address2', type: 'string', source_path: 'properties.address2', privacy: 'address' },
     { key: 'mailing_address.zip', type: 'string', source_path: 'properties.zip', privacy: 'address' },
+    // D-336 (spec §55) — the same street + postal identifiers as the vendor-neutral
+    // projection names them (`mailing_street` / `mailing_postal_code`, the vCard address
+    // parts), so a canonical read or search aliases them too. City, region and country
+    // stay untagged, as above.
+    { key: 'mailing_street', type: 'string', source_path: 'properties.address', privacy: 'address' },
+    { key: 'mailing_postal_code', type: 'string', source_path: 'properties.zip', privacy: 'address' },
   ],
   source_operations: {
     read: { catalog: 'hubspot-catalog', operation: 'contact.read' },
@@ -278,6 +284,9 @@ const SALESFORCE_CONTACT_SCHEMA: EntitySchemaIngredientInput = {
     { key: 'mailing_address.address1', type: 'string', source_path: 'MailingStreet', privacy: 'address' },
     { key: 'mailing_address.address2', type: 'string', source_path: 'mailing_address.address2', privacy: 'address' },
     { key: 'mailing_address.zip', type: 'string', source_path: 'MailingPostalCode', privacy: 'address' },
+    // D-336 (spec §55) — the vendor-neutral projection's names for the same two.
+    { key: 'mailing_street', type: 'string', source_path: 'MailingStreet', privacy: 'address' },
+    { key: 'mailing_postal_code', type: 'string', source_path: 'MailingPostalCode', privacy: 'address' },
   ],
   source_operations: {
     read: { catalog: 'salesforce-catalog', operation: 'contact.read' },
@@ -648,6 +657,10 @@ const CRM_CONTACT_FIELD_PRIVACY: Readonly<Record<string, EntityFieldPrivacy>> =
     'mailing_address.address1': 'address',
     'mailing_address.address2': 'address',
     'mailing_address.zip': 'address',
+    // D-336 (spec §55) — the vCard address parts the vendor-neutral contact carries: the
+    // street and postcode, the strong identifiers, as above (city / region / country are not).
+    mailing_street: 'address',
+    mailing_postal_code: 'address',
   });
 
 /** Canonical CRM-ENGAGEMENT field → privacy kind.

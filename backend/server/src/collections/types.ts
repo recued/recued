@@ -102,6 +102,10 @@ export interface Collection {
   /** Filtered listing — hot-field equality filters + `received_at`
    *  range + pagination. See `CollectionListQuery`. */
   list(query: CollectionListQuery): CollectionRecord[];
+  /** Metadata-only size of an unfiltered list, before pagination. A collection
+   *  with default visibility rules supplies this so workload previews do not
+   *  count hidden records or hydrate their bodies. */
+  countRecords?(): number;
   /** FTS5 body search. Results sorted by rank (lowest first per
    *  FTS5 BM25 convention). CAS-stored records are NOT indexed
    *  (documented limit — matches Phase A's shared_store). */

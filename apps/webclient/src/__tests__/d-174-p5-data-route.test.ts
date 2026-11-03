@@ -21,10 +21,11 @@ import type {
   WorkEntityKind,
 } from '@recued/contracts';
 import { FILE_VENDOR_DECLARATIONS, WORK_ENTITY_KINDS } from '@recued/contracts';
+import * as mailMessageSurface from '../data/mail-message-surface.js';
 import { bootstrapSavedDataRoute } from '../data/saved-data-route.js';
 import { MAIL_FACTS_FILTER_ATTR } from '../data/mail-facts-surface.js';
 import { REMINDERS_FIELD_ATTR } from '../data/reminders-surface.js';
-import type { ReminderView } from '@recued/contracts';
+import type { MemoryClaimsEntry, ReminderView } from '@recued/contracts';
 import { MAIL_FACTS_FIELD_ATTR } from '../data/mail-fact-templates.js';
 import { reconcileRecoveryContext } from '../shell/recovery-return-reconciliation.js';
 import {
@@ -41,6 +42,13 @@ import {
   DATA_ROUTE_CONTACT_DETAIL_ATTR,
   DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR,
   DATA_ROUTE_CONTACT_DIALOG_ATTR,
+  DATA_ROUTE_CONTACT_MERGE_ACTION,
+  DATA_ROUTE_CONTACT_MERGE_NAME_ACTION,
+  DATA_ROUTE_CONTACT_MERGE_FIELD_ACTION,
+  DATA_ROUTE_CONTACT_MERGE_FIELD_ATTR,
+  DATA_ROUTE_CONTACT_MERGE_VALUE_ATTR,
+  DATA_ROUTE_CONTACT_MERGE_NAME_ATTR,
+  DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR,
   DATA_ROUTE_CONTACT_LINKS_ATTR,
   DATA_ROUTE_CONTACT_LOAD_MORE_ATTR,
   DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR,
@@ -77,6 +85,8 @@ import {
   DATA_ROUTE_VERIFICATION_NEXT_ATTR,
   DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR,
   MEMORY_SAVES_WAIT_MS,
+  CONTACT_ADD_EMAIL_UPDATE,
+  CONTACT_CHANGE_EMAIL_UPDATE,
   bootstrapDataRoute,
   type DataCollectionSearchAllCaller,
   type BootstrapDataRouteOptions,
@@ -109,6 +119,7 @@ import {
   type DataWorkEntityListCaller,
   type DataWorkEntityUpsertCaller,
   type WorkEntitySourceListCaller,
+  contactRefOption,
 } from '../data/bootstrap-data-route.js';
 import {
   COLLECTION_DETAIL_CLOSE_ACTION,
@@ -121,6 +132,7 @@ import {
 } from '../data/collection-explorer.js';
 import {
   MEMORY_ADD_ACTION,
+  MEMORY_CLAIM_COUNTS_ATTR,
   MEMORY_COMPOSE_CANCEL_ACTION,
   MEMORY_COMPOSE_DISCARD_COMMIT_ACTION,
   MEMORY_COMPOSE_DISCARD_GUARD_ATTR,
@@ -135,6 +147,15 @@ import {
   MEMORY_UNREVOKE_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
   MEMORY_EDIT_ACTION,
+  MEMORY_EXPORT_ACTION,
+  MEMORY_CLAIM_ADD_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_ACTION,
+  MEMORY_CLAIM_ADD_THING_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_UPDATE,
+  MEMORY_CLAIM_LINK_ACTION,
+  MEMORY_CLAIM_PICK_ACTION,
+  MEMORY_CLAIM_REMOVE_ACTION,
+  MEMORY_CLAIM_YOU_ACTION,
   MEMORY_FIELD_ATTR,
   MEMORY_IMPORT_ACTION,
   MEMORY_IMPORT_CANCEL_ACTION,
@@ -322,7 +343,7 @@ const emitClick = (
 
 const emitMemoryInput = (
   routeRoot: FakeEl,
-  field: 'kind' | 'summary' | 'body' | 'import',
+  field: 'kind' | 'summary' | 'body' | 'import' | 'claim-subject' | 'claim-relation' | 'claim-object',
   value: string,
 ): void => {
   emitInput(routeRoot, {
@@ -579,6 +600,8 @@ const mountRoute = (overrides: {
   manageRescheduleLinkCaller?: DataManageRescheduleLinkCaller;
   contactListCaller?: DataContactListCaller;
   contactGetCaller?: DataContactGetCaller;
+  contactClaimsCaller?: BootstrapDataRouteOptions['contactClaimsCaller'];
+  mailCompose?: BootstrapDataRouteOptions['mailCompose'];
   /** D-205 item 3 — the per-source view. Opt-in, so the bare rig renders the detail
    *  page exactly as it did before and "unwired ⇒ no other-sources block" is the
    *  default state under test. */
@@ -602,6 +625,15 @@ const mountRoute = (overrides: {
   now?: () => number;
   contactUpsertCaller?: DataContactUpsertCaller;
   contactDeleteCaller?: DataContactDeleteCaller;
+  /** D-336 slice H — the picker's add; absent, the route offers none. */
+  contactCreateByNameCaller?: NonNullable<BootstrapDataRouteOptions['contactCreateByNameCaller']>;
+  contactAddEmailCaller?: NonNullable<BootstrapDataRouteOptions['contactAddEmailCaller']>;
+  /** D-336 slice R — the Edit form's change of a saved address. */
+  contactChangeEmailCaller?: NonNullable<BootstrapDataRouteOptions['contactChangeEmailCaller']>;
+  /** D-336 slice R — the contact an address with no row of its own names. */
+  contactResolveCaller?: NonNullable<BootstrapDataRouteOptions['contactResolveCaller']>;
+  /** D-336 slice P — the Edit form's merge into the contact that has the address. */
+  contactMergePairCaller?: NonNullable<BootstrapDataRouteOptions['contactMergePairCaller']>;
   formResponseListCaller?: DataFormResponseListCaller;
   formResponseGetCaller?: DataFormResponseGetCaller;
   formResponseUpdateCaller?: DataFormResponseUpdateCaller;
@@ -615,6 +647,8 @@ const mountRoute = (overrides: {
   mirrorSearchCaller?: DataMirrorSearchCaller;
   fileReadCaller?: DataFileReadCaller;
   memoryListCaller?: NonNullable<BootstrapDataRouteOptions['memoryListCaller']>;
+  memoryClaimCountsCaller?: NonNullable<BootstrapDataRouteOptions['memoryClaimCountsCaller']>;
+  assetAddCaller?: NonNullable<BootstrapDataRouteOptions['assetAddCaller']>;
   memoryGetCaller?: NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>;
   memoryCreateCaller?: NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>;
   memoryUpdateCaller?: NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>;
@@ -831,8 +865,12 @@ const mountRoute = (overrides: {
     ...(overrides.contactContributionsCaller !== undefined
       ? { contactContributionsCaller: overrides.contactContributionsCaller }
       : {}),
+    ...(overrides.contactClaimsCaller !== undefined
+      ? { contactClaimsCaller: overrides.contactClaimsCaller }
+      : {}),
     contactUpsertCaller,
     contactDeleteCaller,
+    ...(overrides.mailCompose !== undefined ? { mailCompose: overrides.mailCompose } : {}),
     formResponseListCaller,
     formResponseGetCaller,
     formResponseUpdateCaller,
@@ -848,8 +886,29 @@ const mountRoute = (overrides: {
     // picker it once fed was retired once mail/calendar/files moved to the
     // collection explorer.
     mirrorSearchCaller,
+    ...(overrides.contactCreateByNameCaller !== undefined
+      ? { contactCreateByNameCaller: overrides.contactCreateByNameCaller }
+      : {}),
+    ...(overrides.contactAddEmailCaller !== undefined
+      ? { contactAddEmailCaller: overrides.contactAddEmailCaller }
+      : {}),
+    ...(overrides.contactChangeEmailCaller !== undefined
+      ? { contactChangeEmailCaller: overrides.contactChangeEmailCaller }
+      : {}),
+    ...(overrides.contactResolveCaller !== undefined
+      ? { contactResolveCaller: overrides.contactResolveCaller }
+      : {}),
+    ...(overrides.contactMergePairCaller !== undefined
+      ? { contactMergePairCaller: overrides.contactMergePairCaller }
+      : {}),
     ...(overrides.memoryListCaller !== undefined
       ? { memoryListCaller: overrides.memoryListCaller }
+      : {}),
+    ...(overrides.memoryClaimCountsCaller !== undefined
+      ? { memoryClaimCountsCaller: overrides.memoryClaimCountsCaller }
+      : {}),
+    ...(overrides.assetAddCaller !== undefined
+      ? { assetAddCaller: overrides.assetAddCaller }
       : {}),
     ...(overrides.memoryGetCaller !== undefined
       ? { memoryGetCaller: overrides.memoryGetCaller }
@@ -1034,6 +1093,57 @@ const mountRoute = (overrides: {
 // `apps/webclient/src/today/__tests__/today-route.test.ts` (D-290). Today is
 // its own `#today` route; the Data route no longer hosts it, so the three
 // read-ownership tests now drive the surface that actually owns the read.
+
+describe('Contact email refresh ownership', () => {
+  it('retires the pending open on refresh and keeps its late answer from disturbing a newer attempt', async () => {
+    type Surface = ReturnType<typeof mailMessageSurface.createMailMessageSurface>;
+    type Request = Parameters<Surface['openCreate']>[0];
+    type Result = Awaited<ReturnType<Surface['openCreate']>>;
+    const deferred = () => {
+      let resolve!: (result: Result) => void;
+      const promise = new Promise<Result>(done => { resolve = done; });
+      return { promise, resolve };
+    };
+    const older = deferred(), newer = deferred();
+    const requests: Request[] = [];
+    const open = vi.fn((request: Request): Promise<Result> => {
+      requests.push(request);
+      return requests.length === 1 ? older.promise : requests.length === 2 ? newer.promise : Promise.resolve({ opened: false });
+    });
+    const create = mailMessageSurface.createMailMessageSurface;
+    const factory = vi.spyOn(mailMessageSurface, 'createMailMessageSurface').mockImplementation(options => ({
+      ...create(options), openCreate: open,
+    }));
+    let rig: ReturnType<typeof mountRoute> | undefined;
+    try {
+      rig = mountRoute({ contactGetCaller: async ({ email }) => ({ contact: contactRecord({ email }) }),
+        mailCompose: { listMailInstances: async () => ({ instances: [] }), runExecute: async () => ({ success: true }) } });
+      await rig.route.whenLoaded();
+      await rig.route.openContactDetail('sam@example.com');
+      const click = () => emitClick(rig!.root.children[0]!, 'contact-email', { 'data-contact-email': 'sam@example.com' });
+      click();
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(requests[0]!.isCurrent()).toBe(true);
+      rig.route.refresh();
+      await rig.route.whenLoaded();
+      expect(requests[0]!.isCurrent()).toBe(false);
+      click();
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(requests[1]!.isCurrent()).toBe(true);
+      older.resolve({ opened: false, error: 'Retired mailbox failure' });
+      await older.promise; await Promise.resolve();
+      click();
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(requests[1]!.isCurrent()).toBe(true);
+      newer.resolve({ opened: false, error: 'Current mailbox failure' });
+      await newer.promise; await Promise.resolve();
+      click();
+      expect(open).toHaveBeenCalledTimes(3);
+    } finally {
+      rig?.route.dispose(); factory.mockRestore();
+    }
+  });
+});
 
 describe('Task editor completion', () => {
   type OwnerTask = Extract<WorkEntity, { _kind: 'task' }>;
@@ -1605,6 +1715,1026 @@ describe('D-174 P5 Data route', () => {
     expect(memoryRestoreCaller).toHaveBeenCalledWith({ memory_id: 'umem_7' });
     expect(routeRoot.innerHTML).toContain('Back again');
     expect(routeRoot.innerHTML).not.toContain('Forgotten by your chat');
+    rig.route.dispose();
+  });
+
+  it('D-336 slice E — a new note with a relationship: the summary follows it, a name links to a contact, and the save carries both', async () => {
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'umem_new', provenance_edges_written: 0 }),
+    );
+    const contactListCaller = vi.fn<DataContactListCaller>(async () => ({
+      contacts: [contactRecord({ email: 'dana@example.com', name: 'Dana Whitfield', contact_id: 'ct-dana' })], total: 1,
+    }));
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller: vi.fn(async () => ({ entries: [] })),
+      memoryCreateCaller,
+      contactListCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'kind', 'fact');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_ACTION);
+    expect(routeRoot.innerHTML).toContain('<legend class="memory-field-label">Relationship</legend>');
+    emitMemoryInput(routeRoot, 'claim-subject', 'Mia');
+    emitMemoryInput(routeRoot, 'claim-relation', 'daughter of');
+    emitMemoryInput(routeRoot, 'claim-object', 'Dana');
+    // Link the second part: the contacts matching its words are offered.
+    emitClick(routeRoot, MEMORY_CLAIM_LINK_ACTION, { 'data-memory-claim-end': 'object', 'data-memory-claim-link': 'contact' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(contactListCaller).toHaveBeenCalledWith({ query: 'Dana', limit: 8 });
+    expect(routeRoot.innerHTML).toContain('data-memory-claim-pick-id="ct-dana"');
+    emitClick(routeRoot, MEMORY_CLAIM_PICK_ACTION, {
+      'data-memory-claim-end': 'object', 'data-memory-claim-pick-id': 'ct-dana', 'data-memory-claim-pick-name': 'Dana Whitfield',
+    });
+    expect(routeRoot.innerHTML).toContain('data-memory-claim-linked="object"');
+    // The new note's summary was built from the relationship, never typed.
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(memoryCreateCaller).toHaveBeenCalledWith({
+      kind: 'fact',
+      summary: "Mia is Dana Whitfield's daughter.",
+      body: '',
+      claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-dana', name: 'Dana Whitfield' } },
+    });
+    rig.route.dispose();
+  });
+
+  /** D-336 slice H — the picker makes the contact when the search finds nobody (§3.6). */
+  const startLinkingDana = async (overrides: Partial<Parameters<typeof mountRoute>[0]> = {}) => {
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'umem_new', provenance_edges_written: 1 }),
+    );
+    const contactListCaller = vi.fn<DataContactListCaller>(async () => ({ contacts: [], total: 0 }));
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller: vi.fn(async () => ({ entries: [] })),
+      memoryCreateCaller,
+      contactListCaller,
+      ...overrides,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'kind', 'fact');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'claim-subject', 'Mia');
+    emitMemoryInput(routeRoot, 'claim-relation', 'daughter of');
+    emitMemoryInput(routeRoot, 'claim-object', 'Dana');
+    emitClick(routeRoot, MEMORY_CLAIM_LINK_ACTION, { 'data-memory-claim-end': 'object', 'data-memory-claim-link': 'contact' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    return { rig, routeRoot, memoryCreateCaller };
+  };
+
+  it('D-336 slice H — nobody by that name: the picker adds the contact, links it, and the save carries it', async () => {
+    const contactCreateByNameCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactCreateByNameCaller']>>(
+      async ({ name }) => ({ contact: contactRecord({
+        email: 'mention-only-ct-new@_recued.invalid', name, contact_id: 'ct-new', identity_status: 'mention_only',
+      }) }),
+    );
+    const { rig, routeRoot, memoryCreateCaller } = await startLinkingDana({ contactCreateByNameCaller });
+    expect(routeRoot.innerHTML).toContain('No contact matches “Dana”.');
+    expect(routeRoot.innerHTML).toContain('>Add “Dana” as a contact</button>');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_CONTACT_ACTION, { 'data-memory-claim-end': 'object' });
+    expect(routeRoot.innerHTML).toContain('Adding “Dana”…');
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(contactCreateByNameCaller).toHaveBeenCalledTimes(1);
+    expect(contactCreateByNameCaller).toHaveBeenCalledWith({ name: 'Dana' });
+    expect(routeRoot.innerHTML).toContain('data-memory-claim-linked="object"');
+    expect(routeRoot.innerHTML).toContain('Dana<span class="memory-field-hint"> · a contact</span>');
+    expect(routeRoot.innerHTML).not.toContain('_recued.invalid');
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(memoryCreateCaller).toHaveBeenCalledWith({
+      kind: 'fact',
+      summary: "Mia is Dana's daughter.",
+      body: '',
+      claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-new', name: 'Dana' } },
+    });
+    rig.route.dispose();
+  });
+
+  /** Audit 2026-11-01 (second) — the guards asked which end was adding, not which add: Dana's
+   *  answer, back after the owner wrote Sam and added him, linked Dana and dropped Sam's. */
+  it('D-336 — an older add\'s answer never lands on a newer one: the newest choice is linked', async () => {
+    const pending: Array<{ name: string; finish: (contact: ContactRecord) => void }> = [];
+    const contactCreateByNameCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactCreateByNameCaller']>>(
+      ({ name }) => new Promise((resolve) => { pending.push({ name, finish: (contact) => resolve({ contact }) }); }),
+    );
+    const { rig, routeRoot, memoryCreateCaller } = await startLinkingDana({ contactCreateByNameCaller });
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_CONTACT_ACTION, { 'data-memory-claim-end': 'object' });
+    emitMemoryInput(routeRoot, 'claim-object', 'Sam');
+    emitClick(routeRoot, MEMORY_CLAIM_LINK_ACTION, { 'data-memory-claim-end': 'object', 'data-memory-claim-link': 'contact' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(routeRoot.innerHTML).toContain('>Add “Sam” as a contact</button>');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_CONTACT_ACTION, { 'data-memory-claim-end': 'object' });
+    expect(pending.map((p) => p.name)).toEqual(['Dana', 'Sam']);
+    // Dana's answer comes back first, and lands on nothing.
+    pending[0]!.finish(contactRecord({ email: 'mention-only-ct-dana@_recued.invalid', name: 'Dana', contact_id: 'ct-dana', identity_status: 'mention_only' }));
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(routeRoot.innerHTML).not.toContain('data-memory-claim-linked="object"');
+    expect(routeRoot.innerHTML).toContain('Adding “Sam”…');
+    pending[1]!.finish(contactRecord({ email: 'mention-only-ct-sam@_recued.invalid', name: 'Sam', contact_id: 'ct-sam', identity_status: 'mention_only' }));
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(routeRoot.innerHTML).toContain('data-memory-claim-linked="object"');
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(memoryCreateCaller).toHaveBeenCalledWith(expect.objectContaining({
+      claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-sam', name: 'Sam' } },
+    }));
+    rig.route.dispose();
+  });
+
+  it('D-336 — an older lookup\'s answer never lands on a newer one: Sam is not offered Dana', async () => {
+    const answers: Array<{ query: string; finish: (contacts: ContactRecord[]) => void }> = [];
+    const contactListCaller = vi.fn<DataContactListCaller>((args) => new Promise((resolve) => {
+      answers.push({ query: String((args as { query?: unknown }).query ?? ''), finish: (contacts) => resolve({ contacts, total: contacts.length }) });
+    }));
+    const { rig, routeRoot } = await startLinkingDana({ contactListCaller, contactCreateByNameCaller: vi.fn() });
+    emitMemoryInput(routeRoot, 'claim-object', 'Sam');
+    emitClick(routeRoot, MEMORY_CLAIM_LINK_ACTION, { 'data-memory-claim-end': 'object', 'data-memory-claim-link': 'contact' });
+    expect(answers.map((a) => a.query)).toEqual(['Dana', 'Sam']);
+    // Dana's search comes back while Sam's is still out, and lands on nothing.
+    answers[0]!.finish([contactRecord({ email: 'dana@example.test', name: 'Dana Whitfield', contact_id: 'ct-dana' })]);
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(routeRoot.innerHTML).not.toContain('data-memory-claim-pick-id="ct-dana"');
+    expect(routeRoot.innerHTML).toContain('Looking…');
+    answers[1]!.finish([]);
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(routeRoot.innerHTML).toContain('No contact matches “Sam”.');
+    expect(routeRoot.innerHTML).toContain('>Add “Sam” as a contact</button>');
+    rig.route.dispose();
+  });
+
+  it('D-336 slice H — an older server, or none wired, offers no add that cannot work', async () => {
+    const refused = vi.fn<NonNullable<BootstrapDataRouteOptions['contactCreateByNameCaller']>>(async () => {
+      throw Object.assign(new Error('unknown method contact.create_by_name'), { code: 'unknown_method' });
+    });
+    const older = await startLinkingDana({ contactCreateByNameCaller: refused });
+    emitClick(older.routeRoot, MEMORY_CLAIM_ADD_CONTACT_ACTION, { 'data-memory-claim-end': 'object' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(older.routeRoot.innerHTML).toContain(MEMORY_CLAIM_ADD_CONTACT_UPDATE);
+    expect(older.routeRoot.innerHTML).not.toContain('as a contact</button>');
+    expect(older.routeRoot.innerHTML).not.toContain('data-memory-claim-linked="object"');
+    older.rig.route.dispose();
+    // A failure of another kind keeps the offer, to try again.
+    const busy = await startLinkingDana({ contactCreateByNameCaller: vi.fn(async () => { throw new Error('The server is busy.'); }) });
+    emitClick(busy.routeRoot, MEMORY_CLAIM_ADD_CONTACT_ACTION, { 'data-memory-claim-end': 'object' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(busy.routeRoot.innerHTML).toContain('The server is busy.');
+    expect(busy.routeRoot.innerHTML).toContain('>Add “Dana” as a contact</button>');
+    busy.rig.route.dispose();
+    const unwired = await startLinkingDana();
+    expect(unwired.routeRoot.innerHTML).toContain('No contact matches “Dana”.');
+    expect(unwired.routeRoot.innerHTML).not.toContain('as a contact</button>');
+    unwired.rig.route.dispose();
+  });
+
+  it('D-336 slice H — a contact with no address shows none: never its placeholder, in the list, its page or the picker', async () => {
+    const mia = contactRecord({ email: 'mention-only-ct-mia@_recued.invalid', _id: 'mention-only-ct-mia@_recued.invalid', name: 'Mia', contact_id: 'ct-mia', identity_status: 'mention_only' });
+    const rig = mountRoute({
+      contactListCaller: vi.fn<DataContactListCaller>(async () => ({ contacts: [mia], total: 1 })),
+      contactGetCaller: vi.fn<DataContactGetCaller>(async () => ({ contact: mia })),
+    });
+    await rig.route.whenLoaded();
+    const listHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(listHtml).toContain('<span class="data-row-meta">No email address</span>');
+    expect(listHtml).not.toContain('<span class="data-row-meta">mention-only-');
+    await rig.route.openContactDetail(mia.email);
+    const pageHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(pageHtml).toMatch(/<h2 class="data-section-title"[^>]*>Mia<\/h2>\s*<span class="data-row-meta">No email address<\/span>/u);
+    rig.route.dispose();
+    // The relationship's picker lists her by her name alone.
+    const picker = await startLinkingDana({
+      contactListCaller: vi.fn<DataContactListCaller>(async () => ({ contacts: [{ ...mia, name: 'Dana' }], total: 1 })),
+    });
+    expect(picker.routeRoot.innerHTML).toContain('data-memory-claim-pick-id="ct-mia"');
+    expect(picker.routeRoot.innerHTML).not.toContain('_recued.invalid</span>');
+    picker.rig.route.dispose();
+    // So does a reference field's picker; the id it stores is still her key.
+    expect(contactRefOption(mia)).toEqual({ id: mia.email, label: 'Mia' });
+    expect(contactRefOption(contactRecord())).toEqual({ id: 'sam@example.com', label: 'Sam Rivera', sublabel: 'sam@example.com' });
+  });
+
+  /** D-336 slice I — Mia, added from a name, and a server that gives her an address. */
+  const mountMia = (overrides: Parameters<typeof mountRoute>[0] = {}) => {
+    const mia = contactRecord({ email: 'mention-only-ct-mia@_recued.invalid', _id: 'mention-only-ct-mia@_recued.invalid', name: 'Mia', contact_id: 'ct-mia', identity_status: 'mention_only' });
+    let current = mia;
+    // The server reads her by her new address, and by the placeholder she had.
+    const contactGetCaller = vi.fn<DataContactGetCaller>(async ({ email }) => ({ contact: email === mia.email || email === current.email ? current : null }));
+    const contactAddEmailCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactAddEmailCaller']>>(async ({ email }) => {
+      current = { ...mia, email, _id: email, identity_status: 'verified' };
+      return { contact: current };
+    });
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => ({ contact: { ...current, ...args } as ContactRecord }));
+    const replaceState = vi.fn();
+    const pushState = vi.fn();
+    const rig = mountRoute({
+      contactListCaller: vi.fn<DataContactListCaller>(async () => ({ contacts: [current], total: 1 })),
+      contactGetCaller, contactAddEmailCaller, contactUpsertCaller, replaceState, pushState, ...overrides,
+    });
+    const html = (): string => rig.root.children[0]?.innerHTML ?? '';
+    const dialogHtml = (): string => html().slice(html().indexOf(DATA_ROUTE_CONTACT_DIALOG_ATTR));
+    const emailInput = (): string => dialogHtml().match(/<input[^>]*data-recued-data-contact-field="email"[^>]*>/su)?.[0] ?? '';
+    return { rig, mia, contactGetCaller, contactAddEmailCaller, contactUpsertCaller, replaceState, pushState, html, dialogHtml, emailInput };
+  };
+
+  it('D-336 slice I — a contact with no address takes its email on its Edit form, and its page moves to it', async () => {
+    const m = mountMia();
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openContactDetail(m.mia.email);
+    // Its Activity panel goes by its name, never its placeholder.
+    expect(m.html()).toContain('<h4 class="memory-entity-detail-title">About Mia</h4>');
+    await m.rig.route.openEditContactDialog(m.mia.email);
+    expect(m.emailInput()).toContain('value=""');
+    expect(m.emailInput()).not.toContain('readonly');
+    // D-336 slice R — a saved one can be changed now, so the hint no longer says it cannot.
+    expect(m.dialogHtml()).toContain('<p class="data-row-subtle" data-contact-email-hint>No email address yet.</p>');
+    expect(m.dialogHtml()).not.toContain('_recued.invalid');
+    m.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactAddEmailCaller).toHaveBeenCalledWith({ contact_id: 'ct-mia', email: 'mia@example.test' });
+    // Only the address changed, so nothing else is sent.
+    expect(m.contactUpsertCaller).not.toHaveBeenCalled();
+    expect(m.html()).not.toContain(DATA_ROUTE_CONTACT_DIALOG_ATTR);
+    expect(m.html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="mia@example.test"`);
+    expect(m.html()).toMatch(/<h2 class="data-section-title"[^>]*>Mia<\/h2>\s*<span class="data-row-meta">mia@example\.test<\/span>/u);
+    // The address the page had is replaced, so Back does not return to it.
+    expect(m.replaceState).toHaveBeenLastCalledWith(null, '', '#data/contact/mia%40example.test');
+    expect(m.pushState.mock.calls.map((call) => call[2])).not.toContain('#data/contact/mia%40example.test');
+    // A contact with an address keeps its Activity title as it was.
+    expect(m.html()).toContain('<h4 class="memory-entity-detail-title">About <code>mia@example.test</code></h4>');
+    m.rig.route.dispose();
+  });
+
+  it('D-336 slice I — with other changes, the address goes first and the rest is saved under it; without one, under the placeholder', async () => {
+    const m = mountMia();
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openEditContactDialog(m.mia.email);
+    m.rig.route.setContactDialogValues({ email: 'mia@example.test', phone: '+15555550123' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactAddEmailCaller).toHaveBeenCalledTimes(1);
+    expect(m.contactUpsertCaller).toHaveBeenCalledWith({ email: 'mia@example.test', name: 'Mia', phone: '+15555550123' });
+    expect(m.contactAddEmailCaller.mock.invocationCallOrder[0]!).toBeLessThan(m.contactUpsertCaller.mock.invocationCallOrder[0]!);
+    m.rig.route.dispose();
+
+    const kept = mountMia();
+    await kept.rig.route.whenLoaded();
+    await kept.rig.route.openEditContactDialog(kept.mia.email);
+    kept.rig.route.setContactDialogValues({ phone: '+15555550123' });
+    await kept.rig.route.confirmContactDialog();
+    expect(kept.contactAddEmailCaller).not.toHaveBeenCalled();
+    expect(kept.contactUpsertCaller).toHaveBeenCalledWith({ email: kept.mia.email, name: 'Mia', phone: '+15555550123' });
+    expect(kept.html()).not.toContain(DATA_ROUTE_CONTACT_DIALOG_ATTR);
+    kept.rig.route.dispose();
+  });
+
+  /** D-336 slice P — the server refuses Mia an address that is Mia Whitfield's, and says whose. */
+  const taken = () => vi.fn<NonNullable<BootstrapDataRouteOptions['contactAddEmailCaller']>>(async () => {
+    throw Object.assign(new Error('“mia@example.test” is already Mia Whitfield\'s address.'), {
+      code: 'conflict', details: { reason: 'address_taken', contact_email: 'mia@example.test', contact_name: 'Mia Whitfield' },
+    });
+  });
+  const whitfield = contactRecord({ email: 'mia@example.test', _id: 'mia@example.test', name: 'Mia Whitfield', contact_id: 'ct-whit' });
+
+  it('D-336 slice P — an address another contact has offers to merge into it, and the merge opens that contact', async () => {
+    const contactMergePairCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactMergePairCaller']>>(async () => ({
+      survivor: whitfield, losers: [],
+    }));
+    const m = mountMia({ contactAddEmailCaller: taken(), contactMergePairCaller });
+    m.contactGetCaller.mockImplementation(async ({ email }) => ({ contact: email === whitfield.email ? whitfield : m.mia }));
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openContactDetail(m.mia.email);
+    await m.rig.route.openEditContactDialog(m.mia.email);
+    m.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.dialogHtml()).toContain('“mia@example.test” is already Mia Whitfield&#39;s address.');
+    expect(m.dialogHtml()).toContain(DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR);
+    expect(m.dialogHtml()).toContain('This contact\'s notes and details join Mia Whitfield\'s.');
+    // The two names differ, so the owner says which to keep: the kept contact's, to start.
+    expect(m.dialogHtml()).toContain('<legend>Name to keep</legend>');
+    expect(m.dialogHtml()).toMatch(/data-recued-data-contact-merge-name="Mia Whitfield"\s*checked>Mia Whitfield/u);
+    expect(m.dialogHtml()).toMatch(/data-recued-data-contact-merge-name="Mia"\s*>Mia</u);
+    expect(m.dialogHtml()).toContain('>Merge into Mia Whitfield</button>');
+    emitClick(m.rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_ACTION);
+    await vi.waitFor(() => expect(m.html()).not.toContain(DATA_ROUTE_CONTACT_DIALOG_ATTR));
+    expect(contactMergePairCaller).toHaveBeenCalledWith({ survivor_email: 'mia@example.test', other_email: m.mia.email, name: 'Mia Whitfield' });
+    await vi.waitFor(() => expect(m.html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="mia@example.test"`));
+    expect(m.contactUpsertCaller).not.toHaveBeenCalled();
+    m.rig.route.dispose();
+  });
+
+  it('D-336 slice P\'s open item — the offer asks about each field the two hold differently, the kept contact\'s picked, and sends the picks', async () => {
+    const mia = contactRecord({
+      email: 'mention-only-ct-mia@_recued.invalid', _id: 'mention-only-ct-mia@_recued.invalid', name: 'Mia', contact_id: 'ct-mia',
+      identity_status: 'mention_only', phone: '+15550002222', birthday: '2015-06-02', anniversary: '--05-01',
+    });
+    const whit = { ...whitfield, phone: '+15550001111', birthday: '2015-06-02', company: 'Acme' };
+    const contactGetCaller = vi.fn<DataContactGetCaller>(async ({ email }) => ({ contact: email === mia.email ? mia : email === whit.email ? whit : null }));
+    const contactMergePairCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactMergePairCaller']>>(async () => ({ survivor: whit, losers: [] }));
+    const rig = mountRoute({
+      contactListCaller: vi.fn<DataContactListCaller>(async () => ({ contacts: [mia], total: 1 })),
+      contactGetCaller, contactAddEmailCaller: taken(), contactMergePairCaller,
+    });
+    const html = (): string => rig.root.children[0]?.innerHTML ?? '';
+    await rig.route.whenLoaded();
+    await rig.route.openEditContactDialog(mia.email);
+    rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await rig.route.confirmContactDialog();
+    // The kept contact is read, and the offer then asks about the fields the two hold differently.
+    await vi.waitFor(() => expect(html()).toContain('Phone to keep'));
+    expect(contactGetCaller).toHaveBeenCalledWith({ email: 'mia@example.test' });
+    expect(html()).toContain('Name to keep');
+    for (const same of ['Birthday to keep', 'Company to keep', 'Anniversary to keep']) expect(html()).not.toContain(same);
+    expect(html()).toMatch(/data-recued-data-contact-merge-value="\+15550001111"\s*checked>/u);
+    emitClick(rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_FIELD_ACTION,
+      { [DATA_ROUTE_CONTACT_MERGE_FIELD_ATTR]: 'phone', [DATA_ROUTE_CONTACT_MERGE_VALUE_ATTR]: '+15550002222' });
+    // A value neither holds, or a field not asked about, changes nothing.
+    emitClick(rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_FIELD_ACTION,
+      { [DATA_ROUTE_CONTACT_MERGE_FIELD_ATTR]: 'phone', [DATA_ROUTE_CONTACT_MERGE_VALUE_ATTR]: '+19990000000' });
+    emitClick(rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_FIELD_ACTION,
+      { [DATA_ROUTE_CONTACT_MERGE_FIELD_ATTR]: 'company', [DATA_ROUTE_CONTACT_MERGE_VALUE_ATTR]: 'Acme' });
+    expect(html()).toMatch(/data-recued-data-contact-merge-value="\+15550002222"\s*checked>/u);
+    emitClick(rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_ACTION);
+    await vi.waitFor(() => expect(contactMergePairCaller).toHaveBeenCalledWith({
+      survivor_email: 'mia@example.test', other_email: mia.email, name: 'Mia Whitfield', phone: '+15550002222',
+    }));
+    rig.route.dispose();
+  });
+
+  it('D-336 slice P — the owner may keep the other name, and two contacts of one name are asked nothing', async () => {
+    const contactMergePairCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactMergePairCaller']>>(async () => ({
+      survivor: { ...whitfield, name: 'Mia' }, losers: [],
+    }));
+    const m = mountMia({ contactAddEmailCaller: taken(), contactMergePairCaller });
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openEditContactDialog(m.mia.email);
+    m.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await m.rig.route.confirmContactDialog();
+    emitClick(m.rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_NAME_ACTION, { [DATA_ROUTE_CONTACT_MERGE_NAME_ATTR]: 'Mia' });
+    expect(m.dialogHtml()).toMatch(/data-recued-data-contact-merge-name="Mia"\s*checked>Mia</u);
+    // A name that is neither changes nothing.
+    emitClick(m.rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_NAME_ACTION, { [DATA_ROUTE_CONTACT_MERGE_NAME_ATTR]: 'Someone else' });
+    emitClick(m.rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_ACTION);
+    await vi.waitFor(() => expect(contactMergePairCaller).toHaveBeenCalledWith({
+      survivor_email: 'mia@example.test', other_email: m.mia.email, name: 'Mia',
+    }));
+    m.rig.route.dispose();
+
+    const sameName = vi.fn<NonNullable<BootstrapDataRouteOptions['contactMergePairCaller']>>(async () => ({ survivor: whitfield, losers: [] }));
+    const same = mountMia({
+      contactAddEmailCaller: vi.fn(async () => {
+        throw Object.assign(new Error('“mia@example.test” is already Mia\'s address.'), {
+          code: 'conflict', details: { reason: 'address_taken', contact_email: 'mia@example.test', contact_name: 'Mia' },
+        });
+      }),
+      contactMergePairCaller: sameName,
+    });
+    await same.rig.route.whenLoaded();
+    await same.rig.route.openEditContactDialog(same.mia.email);
+    same.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await same.rig.route.confirmContactDialog();
+    expect(same.dialogHtml()).toContain(DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR);
+    expect(same.dialogHtml()).not.toContain('Name to keep');
+    emitClick(same.rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_ACTION);
+    await vi.waitFor(() => expect(sameName).toHaveBeenCalledWith({ survivor_email: 'mia@example.test', other_email: same.mia.email }));
+    same.rig.route.dispose();
+  });
+
+  it('D-336 slice P — no merge is offered by an older server\'s refusal, or with no merge to call; a failed one keeps the offer', async () => {
+    const older = mountMia({
+      contactAddEmailCaller: vi.fn(async () => { throw Object.assign(new Error('“mia@example.test” is already Mia Whitfield\'s address.'), { code: 'conflict' }); }),
+      contactMergePairCaller: vi.fn(),
+    });
+    await older.rig.route.whenLoaded();
+    await older.rig.route.openEditContactDialog(older.mia.email);
+    older.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await older.rig.route.confirmContactDialog();
+    expect(older.dialogHtml()).not.toContain(DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR);
+    older.rig.route.dispose();
+
+    // A refusal for another reason offers no merge, whatever contact it names.
+    const otherReason = mountMia({
+      contactAddEmailCaller: vi.fn(async () => {
+        throw Object.assign(new Error('This contact already has an email address.'), {
+          code: 'conflict', details: { reason: 'has_address', contact_email: 'mia@example.test' },
+        });
+      }),
+      contactMergePairCaller: vi.fn(),
+    });
+    await otherReason.rig.route.whenLoaded();
+    await otherReason.rig.route.openEditContactDialog(otherReason.mia.email);
+    otherReason.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await otherReason.rig.route.confirmContactDialog();
+    expect(otherReason.dialogHtml()).not.toContain(DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR);
+    otherReason.rig.route.dispose();
+
+    const unwired = mountMia({ contactAddEmailCaller: taken() });
+    await unwired.rig.route.whenLoaded();
+    await unwired.rig.route.openEditContactDialog(unwired.mia.email);
+    unwired.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await unwired.rig.route.confirmContactDialog();
+    expect(unwired.dialogHtml()).not.toContain(DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR);
+    unwired.rig.route.dispose();
+
+    const failing = mountMia({
+      contactAddEmailCaller: taken(),
+      contactMergePairCaller: vi.fn(async () => { throw Object.assign(new Error('This contact was merged into another already.'), { code: 'conflict' }); }),
+    });
+    await failing.rig.route.whenLoaded();
+    await failing.rig.route.openEditContactDialog(failing.mia.email);
+    failing.rig.route.setContactDialogValues({ email: 'mia@example.test' });
+    await failing.rig.route.confirmContactDialog();
+    emitClick(failing.rig.root.children[0]!, DATA_ROUTE_CONTACT_MERGE_ACTION);
+    await vi.waitFor(() => expect(failing.dialogHtml()).toContain('This contact was merged into another already.'));
+    expect(failing.dialogHtml()).toContain('>Merge into Mia Whitfield</button>');
+    // Typing again drops the offer: it answered the address refused.
+    failing.rig.route.setContactDialogValues({ email: 'mia.w@example.test' });
+    expect(failing.dialogHtml()).not.toContain(DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR);
+    failing.rig.route.dispose();
+  });
+
+  it('D-336 slice I — a refused address saves nothing and keeps the owner\'s typing; an older server is told apart', async () => {
+    const refused = mountMia({
+      contactAddEmailCaller: vi.fn(async () => { throw Object.assign(new Error('“mia@example.test” is already Mia Whitfield\'s address.'), { code: 'conflict' }); }),
+    });
+    await refused.rig.route.whenLoaded();
+    await refused.rig.route.openEditContactDialog(refused.mia.email);
+    refused.rig.route.setContactDialogValues({ email: 'mia@example.test', phone: '+15555550123' });
+    await refused.rig.route.confirmContactDialog();
+    expect(refused.contactUpsertCaller).not.toHaveBeenCalled();
+    expect(refused.dialogHtml()).toContain('“mia@example.test” is already Mia Whitfield&#39;s address.');
+    expect(refused.emailInput()).toContain('value="mia@example.test"');
+    expect(refused.emailInput()).not.toContain('readonly');
+    refused.rig.route.dispose();
+
+    const olderCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactAddEmailCaller']>>(async () => {
+      throw Object.assign(new Error('unknown method contact.add_email'), { code: 'unknown_method' });
+    });
+    const older = mountMia({ contactAddEmailCaller: olderCaller });
+    await older.rig.route.whenLoaded();
+    await older.rig.route.openEditContactDialog(older.mia.email);
+    older.rig.route.setContactDialogValues({ email: 'mia@example.test', phone: '+15555550123' });
+    await older.rig.route.confirmContactDialog();
+    expect(older.dialogHtml()).toContain(CONTACT_ADD_EMAIL_UPDATE);
+    // The field empties and locks, so Save keeps the rest.
+    expect(older.emailInput()).toContain('value=""');
+    expect(older.emailInput()).toContain('readonly');
+    expect(older.dialogHtml()).not.toContain('No email address yet.');
+    expect(older.contactUpsertCaller).not.toHaveBeenCalled();
+    await older.rig.route.confirmContactDialog();
+    expect(olderCaller).toHaveBeenCalledTimes(1);
+    expect(older.contactUpsertCaller).toHaveBeenCalledWith({ email: older.mia.email, name: 'Mia', phone: '+15555550123' });
+    older.rig.route.dispose();
+  });
+
+  /** Audit 2026-11-01 — `Mia<mia@example.test>` was given to a contact, which then had no
+   *  way to put it right. */
+  it('D-336 slice I — an address with a name or brackets around it is stopped on the form, and nothing is sent', async () => {
+    const m = mountMia();
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openEditContactDialog(m.mia.email);
+    for (const typed of ['Mia<mia@example.test>', 'Mia <mia@example.test>', 'mia@example']) {
+      m.rig.route.setContactDialogValues({ email: typed });
+      await m.rig.route.confirmContactDialog();
+      expect(m.dialogHtml(), typed).toContain('Write the email address alone, like dana@example.com.');
+    }
+    expect(m.contactAddEmailCaller).not.toHaveBeenCalled();
+    expect(m.contactUpsertCaller).not.toHaveBeenCalled();
+    m.rig.route.dispose();
+  });
+
+  it('D-336 slice I — when the rest fails after the address was saved, the form shows the address and saves the rest under it', async () => {
+    let busy = true;
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => {
+      if (busy) { busy = false; throw new Error('The server is busy.'); }
+      return { contact: contactRecord({ email: args.email }) };
+    });
+    const m = mountMia({ contactUpsertCaller });
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openContactDetail(m.mia.email);
+    await m.rig.route.openEditContactDialog(m.mia.email);
+    m.rig.route.setContactDialogValues({ email: 'mia@example.test', phone: '+15555550123' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.dialogHtml()).toContain('The server is busy.');
+    expect(m.emailInput()).toContain('value="mia@example.test"');
+    expect(m.emailInput()).toContain('readonly');
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactAddEmailCaller).toHaveBeenCalledTimes(1);
+    expect(contactUpsertCaller).toHaveBeenLastCalledWith({ email: 'mia@example.test', name: 'Mia', phone: '+15555550123' });
+    expect(m.html()).not.toContain(DATA_ROUTE_CONTACT_DIALOG_ATTR);
+    // Audit 2026-11-01 — the retry moves her page to the address, as one save would have.
+    expect(m.html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="mia@example.test"`);
+    expect(m.replaceState).toHaveBeenLastCalledWith(null, '', '#data/contact/mia%40example.test');
+    m.rig.route.dispose();
+  });
+
+  it('D-336 slice I — an address stays locked: a contact that has one, and a host that cannot add one', async () => {
+    const unwired = mountMia({ contactAddEmailCaller: undefined });
+    await unwired.rig.route.whenLoaded();
+    // `mountMia` passes the caller through `overrides`; undefined leaves it unwired.
+    await unwired.rig.route.openEditContactDialog(unwired.mia.email);
+    expect(unwired.emailInput()).toContain('value=""');
+    expect(unwired.emailInput()).toContain('readonly');
+    expect(unwired.dialogHtml()).not.toContain('No email address yet.');
+    unwired.rig.route.dispose();
+
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    await rig.route.openEditContactDialog('sam@example.com');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const input = html.slice(html.indexOf(DATA_ROUTE_CONTACT_DIALOG_ATTR)).match(/<input[^>]*data-recued-data-contact-field="email"[^>]*>/su)?.[0] ?? '';
+    expect(input).toContain('value="sam@example.com"');
+    expect(input).toContain('readonly');
+    expect(html).not.toContain('No email address yet.');
+    rig.route.dispose();
+  });
+
+  /** D-336 slice R — Dana, who has an address, and a server that changes it. */
+  const mountDana = (overrides: Parameters<typeof mountRoute>[0] = {}) => {
+    const dana = contactRecord({ email: 'dana@work.example.test', _id: 'dana@work.example.test', name: 'Dana Whitfield', contact_id: 'ct-dana' });
+    let current = dana;
+    const contactGetCaller = vi.fn<DataContactGetCaller>(async ({ email }) => ({ contact: email === current.email ? current : null }));
+    const contactChangeEmailCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactChangeEmailCaller']>>(async ({ email }) => {
+      current = { ...dana, email, _id: email };
+      return { contact: current };
+    });
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => ({ contact: { ...current, ...args } as ContactRecord }));
+    const replaceState = vi.fn();
+    const rig = mountRoute({
+      contactListCaller: vi.fn<DataContactListCaller>(async () => ({ contacts: [current], total: 1 })),
+      contactGetCaller, contactChangeEmailCaller, contactUpsertCaller, replaceState, ...overrides,
+    });
+    const html = (): string => rig.root.children[0]?.innerHTML ?? '';
+    const dialogHtml = (): string => html().slice(html().indexOf(DATA_ROUTE_CONTACT_DIALOG_ATTR));
+    const emailInput = (): string => dialogHtml().match(/<input[^>]*data-recued-data-contact-field="email"[^>]*>/su)?.[0] ?? '';
+    return { rig, dana, contactGetCaller, contactChangeEmailCaller, contactUpsertCaller, replaceState, html, dialogHtml, emailInput };
+  };
+  const CHANGE_HINT = 'If you change it, the old address stays with this contact as a second one.';
+
+  it('D-336 slice R — a contact\'s saved address can be changed on its Edit form, and its page moves to the new one', async () => {
+    const m = mountDana();
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openContactDetail(m.dana.email);
+    await m.rig.route.openEditContactDialog(m.dana.email);
+    expect(m.emailInput()).toContain('value="dana@work.example.test"');
+    expect(m.emailInput()).not.toContain('readonly');
+    expect(m.dialogHtml()).toContain(CHANGE_HINT);
+    m.rig.route.setContactDialogValues({ email: 'dana@home.example.test' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactChangeEmailCaller).toHaveBeenCalledWith({ contact_id: 'ct-dana', email: 'dana@home.example.test' });
+    // Only the address changed, so nothing else is sent.
+    expect(m.contactUpsertCaller).not.toHaveBeenCalled();
+    expect(m.html()).not.toContain(DATA_ROUTE_CONTACT_DIALOG_ATTR);
+    expect(m.html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="dana@home.example.test"`);
+    expect(m.replaceState).toHaveBeenLastCalledWith(null, '', '#data/contact/dana%40home.example.test');
+    m.rig.route.dispose();
+  });
+
+  it('D-336 slice R — with other changes the address goes first; one left as it is, in any case, is not changed', async () => {
+    const m = mountDana();
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openEditContactDialog(m.dana.email);
+    m.rig.route.setContactDialogValues({ email: 'dana@home.example.test', phone: '+15555550123' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactUpsertCaller).toHaveBeenCalledWith({ email: 'dana@home.example.test', name: 'Dana Whitfield', phone: '+15555550123' });
+    expect(m.contactChangeEmailCaller.mock.invocationCallOrder[0]!).toBeLessThan(m.contactUpsertCaller.mock.invocationCallOrder[0]!);
+    m.rig.route.dispose();
+
+    for (const typed of ['dana@work.example.test', ' Dana@Work.Example.TEST ']) {
+      const kept = mountDana();
+      await kept.rig.route.whenLoaded();
+      await kept.rig.route.openEditContactDialog(kept.dana.email);
+      kept.rig.route.setContactDialogValues({ email: typed, phone: '+15555550123' });
+      await kept.rig.route.confirmContactDialog();
+      expect(kept.contactChangeEmailCaller, typed).not.toHaveBeenCalled();
+      // Saved under the address it is keyed on, whatever case was typed.
+      expect(kept.contactUpsertCaller, typed).toHaveBeenCalledWith({ email: 'dana@work.example.test', name: 'Dana Whitfield', phone: '+15555550123' });
+      kept.rig.route.dispose();
+    }
+  });
+
+  it('D-336 slice R — a refused address saves nothing, and one another contact has offers the merge; an older server is told apart', async () => {
+    const contactMergePairCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactMergePairCaller']>>(async () => ({ survivor: whitfield, losers: [] }));
+    const refused = mountDana({
+      contactChangeEmailCaller: vi.fn(async () => {
+        throw Object.assign(new Error('“mia@example.test” is already Mia Whitfield\'s address.'), {
+          code: 'conflict', details: { reason: 'address_taken', contact_email: 'mia@example.test', contact_name: 'Mia Whitfield' },
+        });
+      }),
+      contactMergePairCaller,
+    });
+    await refused.rig.route.whenLoaded();
+    await refused.rig.route.openEditContactDialog(refused.dana.email);
+    refused.rig.route.setContactDialogValues({ email: 'mia@example.test', phone: '+15555550123' });
+    await refused.rig.route.confirmContactDialog();
+    expect(refused.contactUpsertCaller).not.toHaveBeenCalled();
+    expect(refused.dialogHtml()).toContain('“mia@example.test” is already Mia Whitfield&#39;s address.');
+    expect(refused.dialogHtml()).toContain(DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR);
+    expect(refused.emailInput()).toContain('value="mia@example.test"');
+    refused.rig.route.dispose();
+
+    const olderCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactChangeEmailCaller']>>(async () => {
+      throw Object.assign(new Error('unknown method contact.change_email'), { code: 'unknown_method' });
+    });
+    const older = mountDana({ contactChangeEmailCaller: olderCaller });
+    await older.rig.route.whenLoaded();
+    await older.rig.route.openEditContactDialog(older.dana.email);
+    older.rig.route.setContactDialogValues({ email: 'dana@home.example.test', phone: '+15555550123' });
+    await older.rig.route.confirmContactDialog();
+    expect(older.dialogHtml()).toContain(CONTACT_CHANGE_EMAIL_UPDATE);
+    // The field goes back to the address it has and locks, so Save keeps the rest.
+    expect(older.emailInput()).toContain('value="dana@work.example.test"');
+    expect(older.emailInput()).toContain('readonly');
+    expect(older.dialogHtml()).not.toContain(CHANGE_HINT);
+    expect(older.contactUpsertCaller).not.toHaveBeenCalled();
+    await older.rig.route.confirmContactDialog();
+    expect(olderCaller).toHaveBeenCalledTimes(1);
+    expect(older.contactUpsertCaller).toHaveBeenCalledWith({ email: 'dana@work.example.test', name: 'Dana Whitfield', phone: '+15555550123' });
+    older.rig.route.dispose();
+  });
+
+  it('D-336 slice R — an emptied address, or one with a name around it, is stopped on the form; unwired, it stays locked', async () => {
+    const m = mountDana();
+    await m.rig.route.whenLoaded();
+    await m.rig.route.openEditContactDialog(m.dana.email);
+    for (const [typed, said] of [['', 'Email is required.'], ['Dana <dana@home.example.test>', 'Write the email address alone, like dana@example.com.']] as const) {
+      m.rig.route.setContactDialogValues({ email: typed });
+      await m.rig.route.confirmContactDialog();
+      expect(m.dialogHtml(), typed).toContain(said);
+    }
+    expect(m.contactChangeEmailCaller).not.toHaveBeenCalled();
+    expect(m.contactUpsertCaller).not.toHaveBeenCalled();
+    m.rig.route.dispose();
+
+    const unwired = mountDana({ contactChangeEmailCaller: undefined });
+    await unwired.rig.route.whenLoaded();
+    await unwired.rig.route.openEditContactDialog(unwired.dana.email);
+    expect(unwired.emailInput()).toContain('readonly');
+    expect(unwired.dialogHtml()).not.toContain(CHANGE_HINT);
+    unwired.rig.route.dispose();
+  });
+
+  it('D-336 slice R — a page opened at the address a contact was changed from goes to the contact; a stranger\'s stays', async () => {
+    const dana = contactRecord({ email: 'dana@home.example.test', _id: 'dana@home.example.test', name: 'Dana Whitfield', contact_id: 'ct-dana' });
+    // As the server: the old address is no contact's own row, but it names Dana.
+    const contactGetCaller = vi.fn<DataContactGetCaller>(async ({ email }) => ({ contact: email === dana.email ? dana : null }));
+    const contactResolveCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactResolveCaller']>>(async ({ email }) =>
+      email === 'dana@work.example.test' ? { contact_id: 'ct-dana', contact: dana } : { contact_id: null });
+    const replaceState = vi.fn();
+    const pushState = vi.fn();
+    const rig = mountRoute({ contactGetCaller, contactResolveCaller, replaceState, pushState });
+    const html = (): string => rig.root.children[0]?.innerHTML ?? '';
+    await rig.route.whenLoaded();
+    await rig.route.openContactDetail('dana@work.example.test');
+    await vi.waitFor(() => expect(html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="dana@home.example.test"`));
+    expect(contactResolveCaller).toHaveBeenCalledWith({ email: 'dana@work.example.test' });
+    // The address it went to replaces the old one, so Back does not return to it.
+    expect(pushState.mock.calls.map((call) => call[2])).not.toContain('#data/contact/dana%40home.example.test');
+
+    // A stranger's address is no one's: the page stays, and says so.
+    await rig.route.openContactDetail('nobody@example.test');
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="nobody@example.test"`);
+    // A contact's own address is never asked about.
+    expect(contactResolveCaller.mock.calls.map(([args]) => args.email)).toEqual(['dana@work.example.test', 'nobody@example.test']);
+    await rig.route.openContactDetail('dana@home.example.test');
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    expect(contactResolveCaller).toHaveBeenCalledTimes(2);
+    rig.route.dispose();
+
+    // A failed lookup, or a host that cannot make one, leaves the page where it was.
+    for (const resolve of [vi.fn(async () => { throw new Error('offline'); }), undefined]) {
+      const quiet = mountRoute({ contactGetCaller, ...(resolve !== undefined ? { contactResolveCaller: resolve } : {}) });
+      await quiet.route.whenLoaded();
+      await quiet.route.openContactDetail('dana@work.example.test');
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      expect(quiet.root.children[0]?.innerHTML).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="dana@work.example.test"`);
+      quiet.route.dispose();
+    }
+  });
+
+  it('D-336 slice I — a page opened by the placeholder a contact had goes to its address; a real address stays put', async () => {
+    const m = mountMia();
+    await m.rig.route.whenLoaded();
+    await m.contactAddEmailCaller({ contact_id: 'ct-mia', email: 'mia@example.test' });
+    await m.rig.route.openContactDetail(m.mia.email);
+    await vi.waitFor(() => expect(m.html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="mia@example.test"`));
+    m.rig.route.dispose();
+
+    const rig = mountRoute({ contactGetCaller: vi.fn<DataContactGetCaller>(async () => ({ contact: contactRecord({ email: 'samuel@example.com', _id: 'samuel@example.com' }) })) });
+    await rig.route.whenLoaded();
+    await rig.route.openContactDetail('sam@example.com');
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(rig.root.children[0]?.innerHTML).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="sam@example.com"`);
+    rig.route.dispose();
+  });
+
+  it('D-336 slice E — a summary the owner writes stays theirs, and a part left out is asked for', async () => {
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'umem_new', provenance_edges_written: 0 }),
+    );
+    const rig = mountRoute({ initialTab: 'memory', memoryListCaller: vi.fn(async () => ({ entries: [] })), memoryCreateCaller });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'kind', 'fact');
+    emitMemoryInput(routeRoot, 'summary', 'Mia, Dana’s eldest');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'claim-subject', 'Mia');
+    emitMemoryInput(routeRoot, 'claim-relation', 'daughter of');
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    expect(memoryCreateCaller).not.toHaveBeenCalled();
+    expect(routeRoot.innerHTML).toContain('A relationship needs a first part, a relation and a second part.');
+    emitClick(routeRoot, MEMORY_CLAIM_YOU_ACTION, { 'data-memory-claim-end': 'object' });
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(memoryCreateCaller).toHaveBeenCalledWith({
+      kind: 'fact', summary: 'Mia, Dana’s eldest', body: '',
+      claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { owner: true } },
+    });
+    rig.route.dispose();
+  });
+
+  it('D-336 slice E — a relationship alone is a change Cancel asks about', async () => {
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller: vi.fn(async () => ({ entries: [] })),
+      memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitClick(routeRoot, MEMORY_COMPOSE_CANCEL_ACTION);
+    expect(routeRoot.innerHTML, 'an untouched form closes').not.toContain(MEMORY_COMPOSE_DISCARD_GUARD_ATTR);
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'claim-subject', 'Mia');
+    emitClick(routeRoot, MEMORY_COMPOSE_CANCEL_ACTION);
+    expect(routeRoot.innerHTML).toContain(MEMORY_COMPOSE_DISCARD_GUARD_ATTR);
+    rig.route.dispose();
+  });
+
+  it("D-336 slice E — editing a note shows its relationship, and removing it drops it from the note", async () => {
+    const claim = { subject: { text: 'Mia' }, relation: 'daughter of', object: { text: 'Dana' } };
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(async ({ memory_id }) => ({
+      memory_id, origin_actor: 'user_self' as const, kind: 'fact', ts: NOW, summary: "Mia is Dana's daughter", claim,
+    }));
+    const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(
+      async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 }),
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller: vi.fn(async () => ({ entries: [{ memory_id: 'umem_1', origin_actor: 'user_self' as const, kind: 'fact', ts: NOW, summary: "Mia is Dana's daughter", claim }] })),
+      memoryGetCaller,
+      memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+      memoryUpdateCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    emitClick(routeRoot, MEMORY_EDIT_ACTION, { 'data-memory-id': 'umem_1' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(routeRoot.innerHTML).toContain('value="daughter of"');
+    emitClick(routeRoot, MEMORY_CLAIM_REMOVE_ACTION);
+    expect(routeRoot.innerHTML).toContain('Add a relationship');
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(memoryUpdateCaller).toHaveBeenCalledWith({
+      memory_id: 'umem_1', kind: 'fact', summary: "Mia is Dana's daughter", body: '', claim: null,
+    });
+    rig.route.dispose();
+  });
+
+  it("D-336 slice D — a contact's page lists what memory says they are to others, each sentence opening its note", async () => {
+    const claimsCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactClaimsCaller']>>(async () => ({
+      claims: [
+        { memory_id: 'umem_2', origin_actor: 'contracted_user' as const, ts: NOW, by: 'record' as const,
+          claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-sam', name: 'Sam Rivera' } } },
+        { memory_id: 'umem_1', origin_actor: 'user_self' as const, ts: NOW - 1, by: 'name' as const,
+          claim: { subject: { text: 'Sam Rivera' }, relation: 'lives in', object: { text: 'Cork' } } },
+      ],
+    }));
+    const rig = mountRoute({ initialTab: 'contact', contactClaimsCaller: claimsCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openContactDetail('sam@example.com');
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    const html = rig.root.children[0]!.innerHTML;
+    expect(claimsCaller).toHaveBeenCalledWith('sam@example.com');
+    expect(html).toContain('>Relationships</h3>');
+    // Escaped as the page writes text: the apostrophe is `&#39;`.
+    expect(html).toContain(`<a href="#data/memory/umem_2">Mia is Sam Rivera&#39;s daughter.</a>`);
+    expect(html).toContain(`<a href="#data/memory/umem_1">Sam Rivera lives in Cork.</a> <span class="data-row-subtle data-contact-relationship-match">matched by name</span>`);
+    // The section sits above the timeline.
+    expect(html.indexOf('>Relationships</h3>')).toBeLessThan(html.indexOf('>Activity</h3>'));
+    rig.route.dispose();
+  });
+
+  it('D-336 slice D — no section when no note names the contact, a status when the read fails, none on an older server', async () => {
+    const page = async (caller: NonNullable<BootstrapDataRouteOptions['contactClaimsCaller']>) => {
+      const rig = mountRoute({ initialTab: 'contact', contactClaimsCaller: caller });
+      await rig.route.whenLoaded();
+      await rig.route.openContactDetail('sam@example.com');
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      const html = rig.root.children[0]!.innerHTML;
+      rig.route.dispose();
+      return html;
+    };
+    expect(await page(async () => ({ claims: [] }))).not.toContain('Relationships');
+    expect(await page(async () => { throw new Error('boom'); })).toContain('Relationships could not be read. Reopen the contact to retry.');
+    const old = Object.assign(new Error('unknown method memory.claims'), { code: 'unknown_method' });
+    expect(await page(async () => { throw old; })).not.toContain('Relationships');
+  });
+
+  describe('D-336 — a "matched by name" relationship offers to link the name to this contact', () => {
+    const own = { memory_id: 'umem_1', origin_actor: 'user_self' as const, ts: NOW - 1, by: 'name' as const,
+      claim: { subject: { text: 'Sam Rivera' }, relation: 'lives in', object: { text: 'Cork' } } };
+    const agent = { memory_id: 'umem_2', origin_actor: 'contracted_user' as const, ts: NOW, by: 'name' as const,
+      claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { text: 'sam  RIVERA' } } };
+    const SAM = { contact_id: 'ct-sam', name: 'Sam Rivera' };
+    const flush = async () => { for (let i = 0; i < 12; i += 1) await Promise.resolve(); };
+    const open = async (claims: MemoryClaimsEntry[][], over: Partial<Parameters<typeof mountRoute>[0]> = {}) => {
+      const answers = [...claims];
+      const claimsCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactClaimsCaller']>>(async () => ({ claims: answers.length > 1 ? answers.shift()! : answers[0]! }));
+      const rig = mountRoute({
+        initialTab: 'contact', contactClaimsCaller: claimsCaller,
+        contactGetCaller: vi.fn(async () => ({ contact: contactRecord({ contact_id: 'ct-sam' }) })),
+        ...over,
+      });
+      await rig.route.whenLoaded();
+      await rig.route.openContactDetail('sam@example.com');
+      await flush();
+      return { rig, claimsCaller, routeRoot: rig.root.children[0]! };
+    };
+    const LINK = (id: string, sentence: string) => `<button type="button" class="data-button" data-recued-data-action="link-contact-relationship" data-relationship-id="${id}" `
+      + `aria-label="Link to this contact: ${sentence}">Link to this contact</button>`;
+
+    it("links the owner's own note in place, and the list read again shows it linked", async () => {
+      const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(async () => ({ ...own, kind: 'note', body: 'b' }));
+      const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(async () => ({ memory_id: 'umem_1', provenance_edges_written: 0 }));
+      const linked = { ...own, by: 'record' as const, claim: { ...own.claim, subject: SAM } };
+      const { rig, claimsCaller, routeRoot } = await open([[own], [linked]], { memoryGetCaller, memoryUpdateCaller, memoryReplaceCaller: vi.fn() });
+      expect(claimsCaller).toHaveBeenCalledWith('ct-sam');
+      expect(routeRoot.innerHTML).toContain(`<span class="data-row-subtle data-contact-relationship-match">matched by name</span> ${LINK('umem_1', 'Sam Rivera lives in Cork.')}`);
+      emitClick(routeRoot, 'link-contact-relationship', { 'data-relationship-id': 'umem_1' });
+      expect(routeRoot.innerHTML).toContain('aria-disabled="true" aria-busy="true">Linking…</button>');
+      await flush();
+      expect(memoryGetCaller).toHaveBeenCalledWith({ memory_id: 'umem_1' });
+      // Only the claim is sent, the matching end linked; the note's words stay as they are.
+      expect(memoryUpdateCaller).toHaveBeenCalledWith({ memory_id: 'umem_1', claim: { ...own.claim, subject: SAM } });
+      expect(claimsCaller).toHaveBeenCalledTimes(2);
+      const html = routeRoot.innerHTML;
+      expect(html).toContain('<p role="status">Linked.</p>');
+      expect(html).not.toContain('matched by name');
+      expect(html).not.toContain('link-contact-relationship');
+      rig.route.dispose();
+    });
+
+    it("replaces an AI's note with the owner's version, its words and date kept, and says the note is now theirs", async () => {
+      const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(async () => ({
+        ...agent, kind: 'chat_memory', summary: "Mia is Sam's daughter.", body: 'From the chat.', event_at: 5,
+      }));
+      const memoryReplaceCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryReplaceCaller']>>(async () => ({ memory_id: 'umem_3', provenance_edges_written: 1 }));
+      const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>();
+      const { rig, routeRoot } = await open([[agent], []], { memoryGetCaller, memoryReplaceCaller, memoryUpdateCaller });
+      // The name matches as a key does, whatever its spacing and case.
+      expect(routeRoot.innerHTML).toContain(LINK('umem_2', 'Mia is sam  RIVERA&#39;s daughter.'));
+      emitClick(routeRoot, 'link-contact-relationship', { 'data-relationship-id': 'umem_2' });
+      await flush();
+      expect(memoryReplaceCaller).toHaveBeenCalledWith({
+        memory_id: 'umem_2', kind: 'chat_memory', summary: "Mia is Sam's daughter.", body: 'From the chat.', event_at: 5,
+        claim: { ...agent.claim, object: SAM },
+      });
+      expect(memoryUpdateCaller).not.toHaveBeenCalled();
+      expect(routeRoot.innerHTML).toContain('<p role="status">Linked. The note is now yours, in place of the AI’s.</p>');
+      rig.route.dispose();
+    });
+
+    it('offers no link where it could be wrong or cannot be made', async () => {
+      const callers = { memoryGetCaller: vi.fn(), memoryUpdateCaller: vi.fn(), memoryReplaceCaller: vi.fn() };
+      const rows: MemoryClaimsEntry[] = [
+        // Linked already, at one end or at the other with their name in words too.
+        { ...own, memory_id: 'umem_a', by: 'record', claim: { ...own.claim, subject: SAM } },
+        { ...own, memory_id: 'umem_e', by: 'record', claim: { subject: { text: 'Sam Rivera' }, relation: 'friend of', object: SAM } },
+        // The name is a place here: "lives in" takes a place as its second part.
+        { ...own, memory_id: 'umem_b', claim: { subject: { text: 'Mia' }, relation: 'lives in', object: { text: 'Sam Rivera' } } },
+        // Both parts name them, so neither is known to be them.
+        { ...own, memory_id: 'umem_c', claim: { subject: { text: 'Sam Rivera' }, relation: 'friend of', object: { text: 'Sam Rivera' } } },
+        // A run's record is no note to change.
+        { ...own, memory_id: 'umem_d', origin_actor: 'system' as never },
+      ];
+      const { rig, routeRoot } = await open([rows], callers);
+      expect(routeRoot.innerHTML).toContain('data-contact-relationship="umem_d"');
+      expect(routeRoot.innerHTML).not.toContain('link-contact-relationship');
+      rig.route.dispose();
+      // Without the callers to change a note, or a contact id to link to, there is no button.
+      const noWrite = await open([[own, agent]], { memoryGetCaller: vi.fn() });
+      expect(noWrite.routeRoot.innerHTML).toContain('matched by name');
+      expect(noWrite.routeRoot.innerHTML).not.toContain('link-contact-relationship');
+      noWrite.rig.route.dispose();
+      const noId = await open([[own, agent]], { ...callers, contactGetCaller: vi.fn(async () => ({ contact: contactRecord() })) });
+      expect(noId.routeRoot.innerHTML).toContain('matched by name');
+      expect(noId.routeRoot.innerHTML).not.toContain('link-contact-relationship');
+      noId.rig.route.dispose();
+    });
+
+    it('says why a link failed on its line, and a note that changed since is not linked blind', async () => {
+      const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(async () => { throw new Error('The server <said> no'); });
+      const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(async () => ({ ...own, kind: 'note' }));
+      const { rig, claimsCaller, routeRoot } = await open([[own]], { memoryGetCaller, memoryUpdateCaller });
+      emitClick(routeRoot, 'link-contact-relationship', { 'data-relationship-id': 'umem_1' });
+      await flush();
+      expect(routeRoot.innerHTML).toContain(`${LINK('umem_1', 'Sam Rivera lives in Cork.')}<span class="data-contact-mail-error" role="alert"> The server &lt;said&gt; no</span>`);
+      expect(claimsCaller).toHaveBeenCalledTimes(1);
+      // The note no longer names them in words (linked elsewhere since): nothing is written.
+      memoryGetCaller.mockResolvedValueOnce({ ...own, kind: 'note', claim: { ...own.claim, subject: { contact_id: 'ct-other', name: 'Sam Rivera' } } });
+      memoryUpdateCaller.mockClear();
+      emitClick(routeRoot, 'link-contact-relationship', { 'data-relationship-id': 'umem_1' });
+      await flush();
+      expect(memoryUpdateCaller).not.toHaveBeenCalled();
+      expect(routeRoot.innerHTML).toContain('This note no longer names this contact in words. Reopen the contact to see it.');
+      rig.route.dispose();
+    });
+
+    it('an older server with no memory.replace says it needs an update', async () => {
+      const old = Object.assign(new Error('unknown method memory.replace'), { code: 'unknown_method' });
+      const { rig, routeRoot } = await open([[agent]], {
+        memoryGetCaller: vi.fn(async () => ({ ...agent, kind: 'chat_memory' })),
+        memoryReplaceCaller: vi.fn(async () => { throw old; }),
+      });
+      emitClick(routeRoot, 'link-contact-relationship', { 'data-relationship-id': 'umem_2' });
+      await flush();
+      expect(routeRoot.innerHTML).toContain('Your Recued server needs an update to link an AI’s note.');
+      rig.route.dispose();
+    });
+  });
+
+  it("D-336 slice D — #data/memory/<id> opens that note in the Memory lens", async () => {
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(async ({ memory_id }) => ({
+      memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory', ts: NOW, summary: "Mia is Sam Rivera's daughter",
+    }));
+    const rig = mountRoute({
+      initialTab: 'memory',
+      initialEntityId: 'umem_2',
+      memoryListCaller: vi.fn(async () => ({ entries: [] })),
+      memoryGetCaller,
+    });
+    await rig.route.whenLoaded();
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(memoryGetCaller).toHaveBeenCalledWith({ memory_id: 'umem_2' });
+    expect(rig.root.children[0]!.innerHTML).toContain('<p class="memory-detail-summary">Mia is Sam Rivera&#39;s daughter</p>');
+    rig.route.dispose();
+  });
+
+  it('D-336 — exports a note with its claim, a linked end as its name and id, as memory.import reads it', async () => {
+    const claim = {
+      subject: { text: 'Mia' },
+      relation: 'daughter of',
+      object: { contact_id: 'ct-dana', name: 'Dana Whitfield' },
+    } as const;
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({
+        entries: [{
+          memory_id: 'umem_1',
+          origin_actor: 'contracted_user',
+          kind: 'chat_memory',
+          summary: "Mia is Dana Whitfield's daughter",
+          ts: NOW,
+          claim,
+        }],
+      }),
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller: vi.fn(async ({ memory_id }) => ({ memory_id, origin_actor: 'contracted_user' as const, kind: 'chat_memory', ts: NOW })),
+      memoryCreateCaller: vi.fn(async () => ({ memory_id: 'x', provenance_edges_written: 0 })),
+      memoryImportCaller: vi.fn(async () => ({ merged: 0, inserted: 0, deduped: 0, skipped: 0 })),
+    });
+    // The download: a Blob of the JSON, and an anchor the route clicks.
+    const files: string[] = [];
+    const doc = rig.doc as unknown as Record<string, unknown>;
+    doc.body = makeFakeEl('body');
+    const createElement = rig.doc.createElement;
+    doc.createElement = (tag: string) => Object.assign(createElement(tag), { click: () => undefined });
+    doc.defaultView = {
+      Blob: class { constructor(readonly parts: string[]) {} },
+      URL: {
+        createObjectURL: (blob: { parts: string[] }) => { files.push(blob.parts.join('')); return 'blob:memory'; },
+        revokeObjectURL: () => undefined,
+      },
+    };
+    await rig.route.whenLoaded();
+    emitClick(rig.root.children[0]!, MEMORY_EXPORT_ACTION);
+    for (let i = 0; i < 12; i += 1) await Promise.resolve();
+
+    expect(files).toHaveLength(1);
+    const exported = JSON.parse(files[0]!) as { entries: Array<Record<string, unknown>> };
+    expect(exported.entries).toEqual([{
+      memory_id: 'umem_1', origin_actor: 'contracted_user', kind: 'chat_memory', ts: NOW,
+      summary: "Mia is Dana Whitfield's daughter", claim,
+    }]);
     rig.route.dispose();
   });
 
@@ -3270,6 +4400,36 @@ describe('D-174 P5 Data route', () => {
     });
 
     rig.route.dispose();
+  });
+
+  /** Audit 2026-11-01 (second, the owner's ask) — a new contact's address is checked whole
+   *  before it is sent: the form took `Mia <mia@example.test>`, which then keyed the contact. */
+  it('a new contact\'s address is one address alone; an edit keeps the address the contact has', async () => {
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => ({ contact: contactRecord({ email: args.email }) }));
+    const rig = mountRoute({ contactUpsertCaller });
+    await rig.route.whenLoaded();
+    rig.route.openCreateContactDialog();
+    for (const typed of ['Mia <mia@example.test>', 'Mia<mia@example.test>', 'mia@example']) {
+      rig.route.setContactDialogValues({ email: typed, name: 'Mia' });
+      await rig.route.confirmContactDialog();
+      expect(rig.root.children[0]?.innerHTML ?? '', typed).toContain('Write the email address alone, like dana@example.com.');
+    }
+    expect(contactUpsertCaller).not.toHaveBeenCalled();
+    rig.route.setContactDialogValues({ email: 'mia@example.test', name: 'Mia' });
+    await rig.route.confirmContactDialog();
+    expect(contactUpsertCaller).toHaveBeenCalledWith({ email: 'mia@example.test', name: 'Mia' });
+    rig.route.dispose();
+
+    // An edit sends the contact's own address, unchecked: the form cannot change it.
+    const legacy = contactRecord({ email: 'old friend <old@example.test>', _id: 'old friend <old@example.test>', name: 'Old Friend' });
+    const edits = vi.fn<DataContactUpsertCaller>(async () => ({ contact: legacy }));
+    const old = mountRoute({ contactUpsertCaller: edits, contactGetCaller: vi.fn<DataContactGetCaller>(async () => ({ contact: legacy })) });
+    await old.route.whenLoaded();
+    await old.route.openEditContactDialog(legacy.email);
+    old.route.setContactDialogValues({ phone: '+15555550123' });
+    await old.route.confirmContactDialog();
+    expect(edits).toHaveBeenCalledWith(expect.objectContaining({ email: legacy.email, phone: '+15555550123' }));
+    old.route.dispose();
   });
 
   // D-325 §15.8 — the dialog left an emptied birthday out of the save, so the
@@ -8848,13 +10008,13 @@ describe('D-324 — Data → Owned → Reminders', () => {
     rig.route.dispose();
   });
 
-  it('re-reads when a reminder rings, and only on its own tab', async () => {
+  it.each(['#data/reminder', '#data/reminder/rem_1'])('re-reads when a reminder rings, and only on its own tab: %s', async (link_url) => {
     const { subscribe, listeners } = makeSubscribe();
     const list = listed([view()]);
     const rig = mountRoute({ subscribe, liveRefreshDebounceMs: 0, reminderCallers: { list } });
     await rig.route.whenLoaded();
     const rang = () => listeners.get('notification.notify')!({
-      kind: 'notification.notify', title: 'Reminder', text: 'Call the dentist', link_url: '#data/reminder', cursor: 1,
+      kind: 'notification.notify', title: 'Reminder', text: 'Call the dentist', link_url, cursor: 1,
     });
     rang();
     await rig.route.whenLoaded();
@@ -9104,6 +10264,124 @@ describe('Data → Files — a folder Recued watches', () => {
     emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, { [COLLECTION_RECORD_ID_ATTR]: LOCAL_ID });
     await vi.waitFor(() => expect(rig.root.children[0]!.innerHTML)
       .toContain('data-recued-data-action="file-use-in-chat">Import and use in Chat</button>'));
+    rig.route.dispose();
+  });
+});
+
+describe('D-336 slice K — the Memory view counts what the relation list misses', () => {
+  const settle = async () => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); };
+
+  it('reads the counts beside the feed and shows their line above it', async () => {
+    const memoryClaimCountsCaller = vi.fn(async () => ({
+      agent_notes: 4, agent_notes_without_claim: 2, own_relations: [{ relation: 'taught piano to', notes: 1 }],
+    }));
+    const rig = mountRoute({ initialTab: 'memory', memoryListCaller: vi.fn(async () => ({ entries: [] })), memoryClaimCountsCaller });
+    await rig.route.whenLoaded();
+    await settle();
+    const html = rig.root.children[0]!.innerHTML;
+    expect(memoryClaimCountsCaller).toHaveBeenCalledTimes(1);
+    expect(html).toContain(MEMORY_CLAIM_COUNTS_ATTR);
+    expect(html).toContain('2 of the 4 notes an AI saved have no relationship.');
+    expect(html).toContain('Relations in your own words: "taught piano to" (1).');
+    rig.route.dispose();
+  });
+
+  it('shows no line where the server cannot count, and the feed as before', async () => {
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller: vi.fn(async () => ({ entries: [] })),
+      memoryClaimCountsCaller: vi.fn(async () => { throw new Error('unknown_method: memory.claim_counts'); }),
+    });
+    await rig.route.whenLoaded();
+    await settle();
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).not.toContain(MEMORY_CLAIM_COUNTS_ATTR);
+    expect(html).toContain('No memory entries');
+    rig.route.dispose();
+  });
+
+  it('drops the line when the feed itself fails, so no count sits over the error', async () => {
+    let fail = false;
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller: vi.fn(async () => { if (fail) throw new Error('the server went away'); return { entries: [] }; }),
+      memoryClaimCountsCaller: vi.fn(async () => ({ agent_notes: 2, agent_notes_without_claim: 1, own_relations: [] })),
+    });
+    await rig.route.whenLoaded();
+    await settle();
+    expect(rig.root.children[0]!.innerHTML).toContain(MEMORY_CLAIM_COUNTS_ATTR);
+    fail = true;
+    rig.route.refresh();
+    await rig.route.whenLoaded();
+    await settle();
+    expect(rig.root.children[0]!.innerHTML).not.toContain(MEMORY_CLAIM_COUNTS_ATTR);
+    rig.route.dispose();
+  });
+});
+
+describe('D-336 slice L — the Memory form adds a thing you own from its name', () => {
+  const settle = async () => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); };
+  const startLinkingRex = async (assetAddCaller: NonNullable<BootstrapDataRouteOptions['assetAddCaller']>) => {
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'umem_new', provenance_edges_written: 0 }),
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller: vi.fn(async () => ({ entries: [] })),
+      memoryCreateCaller,
+      assetAddCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'kind', 'fact');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'claim-subject', 'Lena');
+    emitMemoryInput(routeRoot, 'claim-relation', 'owns');
+    emitMemoryInput(routeRoot, 'claim-object', 'Rex');
+    emitClick(routeRoot, MEMORY_CLAIM_LINK_ACTION, { 'data-memory-claim-end': 'object', 'data-memory-claim-link': 'asset' });
+    await settle();
+    return { rig, routeRoot, memoryCreateCaller };
+  };
+
+  it('nothing you own by that name: the picker adds the thing, links it, and the save carries it', async () => {
+    const assetAddCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['assetAddCaller']>>(async () => ({ id: 'asset-rex' }));
+    const { rig, routeRoot, memoryCreateCaller } = await startLinkingRex(assetAddCaller);
+    expect(routeRoot.innerHTML).toContain('Nothing you own matches “Rex”.');
+    expect(routeRoot.innerHTML).toContain('>Add “Rex” as a thing you own</button>');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_THING_ACTION, { 'data-memory-claim-end': 'object' });
+    expect(routeRoot.innerHTML).toContain('Adding “Rex”…');
+    await settle();
+    expect(assetAddCaller).toHaveBeenCalledTimes(1);
+    expect(assetAddCaller).toHaveBeenCalledWith({ name: 'Rex', idempotency_key: expect.any(String) });
+    expect(routeRoot.innerHTML).toContain('data-memory-claim-linked="object"');
+    expect(routeRoot.innerHTML).toContain('Rex<span class="memory-field-hint"> · a thing you own</span>');
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    await settle();
+    expect(memoryCreateCaller).toHaveBeenCalledWith(expect.objectContaining({
+      claim: { subject: { text: 'Lena' }, relation: 'owns', object: { asset_id: 'asset-rex', name: 'Rex' } },
+    }));
+    rig.route.dispose();
+  });
+
+  it('a failed add says why and keeps its key: trying again cannot add the thing twice', async () => {
+    let calls = 0;
+    const assetAddCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['assetAddCaller']>>(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('The server went away.');
+      return { id: 'asset-rex' };
+    });
+    const { rig, routeRoot } = await startLinkingRex(assetAddCaller);
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_THING_ACTION, { 'data-memory-claim-end': 'object' });
+    await settle();
+    expect(routeRoot.innerHTML).toContain('The server went away.');
+    expect(routeRoot.innerHTML).toContain('>Add “Rex” as a thing you own</button>');
+    emitClick(routeRoot, MEMORY_CLAIM_ADD_THING_ACTION, { 'data-memory-claim-end': 'object' });
+    await settle();
+    const keys = assetAddCaller.mock.calls.map(([args]) => args.idempotency_key);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+    expect(routeRoot.innerHTML).toContain('data-memory-claim-linked="object"');
     rig.route.dispose();
   });
 });

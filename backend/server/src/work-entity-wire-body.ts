@@ -8,13 +8,15 @@
  *  exist to prevent (D-192, Slice-5 rescope
  *  note).
  *
- *  The catalog gateway passes caller args through in WIRE-KEY form; the
- *  connection-api adapter's body builder (`extractDotPrefix(params, 'body')`)
- *  splits ONLY the first `body.` segment. So a 2-level REST body key
- *  (`body.data.workspace`) reaches the adapter as the literal flat key
- *  `data.workspace` — the vendor never sees it inside `data`. Nesting BELOW the
- *  first segment must therefore be composed HERE, into an object value the
- *  adapter emits verbatim:
+ *  The catalog gateway passes caller args through in WIRE-KEY form. The
+ *  connection-api adapter's body builder once split ONLY the first `body.`
+ *  segment, so a 2-level REST body key (`body.data.workspace`) reached the
+ *  vendor as the literal flat key `data.workspace`; nesting below the first
+ *  segment was composed HERE, into an object value the adapter emits verbatim.
+ *  ⚠ Since 2026-11-02 the adapter nests a dotted JSON body key itself
+ *  (`nestJsonBodyFields`, D-337 §7.23), so a REST body would reach the vendor
+ *  nested either way. This composition is kept as it is: it also shapes a
+ *  GraphQL variable set, and the bodies it sends are already nested:
  *
  *    rest:    body.data.name + body.data.workspace  →  body.data = { name, workspace }
  *    graphql: title + teamId                         →  title, teamId  (flat variables)

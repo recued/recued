@@ -1,4 +1,4 @@
-import type { ContactMergeCandidate, ContactMergeSplitPreview, ContactMergeSplitInspection, ContactMergeSplitRequest, ContactRecord } from '@recued/contracts';
+import { isMentionOnlyEmail, type ContactMergeCandidate, type ContactMergeSplitPreview, type ContactMergeSplitInspection, type ContactMergeSplitRequest, type ContactRecord } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
 
 export interface ContactMergeRecoveryCallers {
@@ -9,7 +9,10 @@ export interface ContactMergeRecoveryCallers {
 const escape = (value: string) => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const vendorName = (vendor: string) => vendor === 'hubspot' ? 'HubSpot'
   : vendor === 'salesforce' ? 'Salesforce' : vendor === 'dynamics' ? 'Dynamics 365' : vendor;
-const label = (record: ContactRecord) => record.name?.trim() || record.email;
+/** D-336 slice P — a contact with no address is keyed on a placeholder, never shown (slice H):
+ *  the owner can merge one into a contact by name (`contact.merge.pair`). */
+const address = (email: string) => (isMentionOnlyEmail(email) ? 'No email address' : email);
+const label = (record: ContactRecord) => record.name?.trim() || address(record.email);
 const message = (value: unknown) => (value as { code?: string })?.code === 'unknown_method'
   ? 'Update your Recued server to review and separate merged contacts.'
   : value instanceof Error ? value.message : 'This request could not be completed. Try reading the current state again.';
@@ -134,10 +137,10 @@ export const createContactMergeRecovery = (callers: ContactMergeRecoveryCallers 
       if (!open) return '';
       const heading = `<h3 tabindex="-1" data-merge-recovery-focus="heading">${preview ? 'Review separation' : receipt ? 'Contacts are separate' : 'Merged history'}</h3>`;
       let body: string;
-      if (receipt) body = `${receiptNotice ? `<p role="alert">${escape(receiptNotice)}</p>` : ""}<p role="status">The individual contact records are available. Open each one to review its details.</p><ul>${receipt.map(contact => `<li><a href="${escape(serializeShellRoute('data', 'contact', contact.email))}">${escape(label(contact))}</a> · ${escape(contact.email)}</li>`).join('')}</ul>${button('back', 'Back to merged history')}`;
+      if (receipt) body = `${receiptNotice ? `<p role="alert">${escape(receiptNotice)}</p>` : ""}<p role="status">The individual contact records are available. Open each one to review its details.</p><ul>${receipt.map(contact => `<li><a href="${escape(serializeShellRoute('data', 'contact', contact.email))}">${escape(label(contact))}</a> · ${escape(address(contact.email))}</li>`).join('')}</ul>${button('back', 'Back to merged history')}`;
       else if (preview) {
         const person = (email: string) => label([...preview!.separating, ...preview!.remaining].find(contact => contact.email === email)!);
-        const group = (title: string, records: ContactRecord[]) => `<section class="contact-merge-group"><h4>${title}</h4><ul>${records.map(contact => `<li>${escape(label(contact))}<br><span class="data-row-subtle">${escape(contact.email)}</span></li>`).join('')}</ul></section>`;
+        const group = (title: string, records: ContactRecord[]) => `<section class="contact-merge-group"><h4>${title}</h4><ul>${records.map(contact => `<li>${escape(label(contact))}<br><span class="data-row-subtle">${escape(address(contact.email))}</span></li>`).join('')}</ul></section>`;
         body = `<p>Review the two people and their connected records before separating. A merged branch stays together.</p>
           <div class="contact-merge-groups">${group('Contact to separate', preview.separating)}${group('Remaining contact', preview.remaining)}</div>
           <p>Field values and email aliases stay with the contacts where they were recorded. Later edits stay with the contact that received them. Notes and links moved by the original merge stay with their current contact.</p>
@@ -146,7 +149,7 @@ export const createContactMergeRecovery = (callers: ContactMergeRecoveryCallers 
           <div class="data-contact-toolbar">${button('back', 'Keep merged')}${button('separate', busy ? 'Separating…' : 'Separate contacts')}</div>`;
       } else body = `<p>Review previous merges and separate contacts that belong to different people. The preview uses their current state.</p>
         ${button('refresh', 'Refresh history')}${loading ? '<p role="status">Loading merged contacts…</p>' : ''}
-        <ul class="contact-merge-history">${rows.map(row => `<li><div><p>${escape(row.email_a)}<br>${escape(row.email_b)}</p><p class="data-row-subtle">Merged ${row.resolved_at === undefined ? 'time not recorded' : escape(new Date(row.resolved_at).toLocaleString())}</p></div>${button('review', 'Review separation', `data-merge-recovery-id="${escape(row.id)}"`, `review-${row.id}`)}</li>`).join('')}</ul>
+        <ul class="contact-merge-history">${rows.map(row => `<li><div><p>${escape(address(row.email_a))}<br>${escape(address(row.email_b))}</p><p class="data-row-subtle">Merged ${row.resolved_at === undefined ? 'time not recorded' : escape(new Date(row.resolved_at).toLocaleString())}</p></div>${button('review', 'Review separation', `data-merge-recovery-id="${escape(row.id)}"`, `review-${row.id}`)}</li>`).join('')}</ul>
         ${!loading && !rows.length && !error ? '<p>No merged contacts are recorded here.</p>' : ''}${cursor ? button('more', 'Load more merges') : ''}`;
       return `<section class="contact-merge-recovery" aria-label="Contact merge recovery" aria-busy="${loading || busy}">${heading}${error ? `<p role="alert">${escape(error)}</p>` : ''}${body}</section>`;
     },

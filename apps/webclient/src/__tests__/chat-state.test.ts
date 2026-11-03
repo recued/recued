@@ -334,6 +334,27 @@ describe('reduceChatThreadEvent', () => {
     expect(s.messages).toHaveLength(1);
   });
 
+  it('D-337: the record of an answered approval joins the open thread as it lands, in order', () => {
+    let s = initialChatThreadState();
+    s = hydrateThreadFromSnapshot(s, {
+      ...mkSession('sess-1'),
+      messages: [{ ...mkAssistantMessage('a1', 'sess-1'), ts: 2000 }],
+    });
+    const stored = (id: string, role: ChatMessage['role'], ts: number): ServerEvent => ({
+      kind: 'chat.session_changed',
+      session_id: 'sess-1',
+      field: 'message',
+      value: { ...mkUserMessage(id, 'sess-1'), role, contributor: 'tool_result', content: 'Approved: Add a calendar event.', ts },
+      cursor: 1,
+    } as unknown as ServerEvent);
+    s = reduceChatThreadEvent(s, stored('r1', 'system', 3000));
+    s = reduceChatThreadEvent(s, stored('r1', 'system', 3000));  // Replay.
+    expect(s.messages.map((m) => [m.id, m.role])).toEqual([['a1', 'assistant'], ['r1', 'system']]);
+    // A tool row is never taken from this event.
+    s = reduceChatThreadEvent(s, stored('t1', 'tool', 4000));
+    expect(s.messages.map((m) => m.id)).toEqual(['a1', 'r1']);
+  });
+
   it('patches picker on session_changed', () => {
     let s = initialChatThreadState();
     s = hydrateThreadFromSnapshot(s, { ...mkSession('sess-1'), messages: [] });

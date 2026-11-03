@@ -2216,9 +2216,11 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
     } else {
       obj.connection_requirements.forEach((entry: unknown, idx: number) => {
         const path = `connection_requirements[${idx}]`;
-        for (const msg of validateConnectionRequirementShape(entry)) {
-          add('error', 'pack_connection_requirement_invalid', path, msg);
-        }
+        validateConnectionRequirementShape(entry, (issue) => {
+          const located = path + issue.path.map(key => typeof key === 'number' ? `[${key}]`
+            : /^[A-Za-z_][\w]*$/.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`).join('');
+          add('error', 'pack_connection_requirement_invalid', located, issue.message);
+        });
         // D-320 ruling 9 / 11 — a pack that signs in through another pack's
         // connections must depend on that pack, so installing it installs the
         // holder, and must not name itself.

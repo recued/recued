@@ -14,7 +14,10 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getMailMessageAttachments } from '../collections/mail/message-attachments.js';
+import { makeFileReadRpcHandlers } from '../file-read-rpc-handler.js';
+import type { WsClient } from '../ws-server.js';
 
 import type { AnnotationRpcDeps } from '../annotation-handler.js';
 import { attachFile } from '../collections/file/attach-file.js';
@@ -65,6 +68,7 @@ const scopedFile = (slug: string, record_id: string): string =>
 const worlds: Array<() => Promise<void>> = [];
 afterEach(async () => {
   while (worlds.length > 0) await worlds.pop()!();
+  vi.restoreAllMocks();
 });
 
 /** One server's stores, with IMAP mailboxes added by `mailbox`. `failUnlink`:
@@ -146,8 +150,108 @@ const world = (options: { readonly failUnlink?: boolean } = {}) => {
   const stored = (): string[] => files.list({ platform: 'file', slug: 'received', limit: 50 }).map((file) => file.record_id).sort();
   const reader = createMailAttachmentReader(registry, annotations, legacyAttachmentsAmbiguousIn(registry));
 
-  return { db, bus, instances, registry, files, annotations, attachDeps, mailbox, legacyAttachment, bytesOf, linked, stored, reader };
+  return { db, bus, blobs, instances, registry, files, annotations, attachDeps, mailbox, legacyAttachment, bytesOf, linked, stored, reader };
 };
+
+describe('saved attachments in the owner mail reader', () => {
+  const deps = (w: ReturnType<typeof world>) => ({ registry: w.registry, annotations: w.annotations, blobs: w.blobs,
+    getIncarnation: (slug: string) => w.instances.getIncarnation!('mail', slug) });
+  it('lists only this mailbox’s linked files and opens them through the existing preview without sending or fetching mail', async () => {
+    const w = world(), work = w.mailbox('work', [email([part('%PDF-1.4 work')])]), home = w.mailbox('home', [email([part('%PDF-1.4 home')])]);
+    await work.collection.sync.start(); await home.collection.sync.start();
+    const id = work.row().record_id, get = vi.spyOn(w.blobs, 'get');
+    const selected = await getMailMessageAttachments(deps(w), { slug: 'work', record_id: id });
+    expect(selected.items).toHaveLength(1);
+    expect(selected.items[0]).toMatchObject({ file_id: scopedFile('work', id), filename: 'invoice.pdf', size: 13,
+      selection_revision: expect.stringMatching(/^[a-f0-9]{64}$/), content_hash: w.files.get(scopedFile('work', id))!.blob_hash });
+    expect(selected.items[0]!.unavailable_reason).toBeUndefined(); expect(get).not.toHaveBeenCalled();
+    const handlers = makeFileReadRpcHandlers({ getFileReadDeps: () => ({ registry: w.registry, blobs: w.blobs }) })!.handlers;
+    const item = selected.items[0]!;
+    const preview = await handlers['data.file.attachments.preview']({ record_id: item.file_id, selection_revision: item.selection_revision },
+      { ws: null, realm: 'test', instance_id: 'owner', display_name: 'Owner', connected_at: NOW } satisfies WsClient);
+    expect(preview.content?.bytes_b64).toBe(Buffer.from('%PDF-1.4 work').toString('base64'));
+  });
+  it('keeps missing saved bytes and deleted links visible as unavailable files', async () => {
+    const w = world(), work = w.mailbox('work', [email([part('invoice')])]); await work.collection.sync.start();
+    const id = work.row().record_id, input = { slug: 'work', record_id: id };
+    const has = vi.spyOn(w.blobs, 'has').mockResolvedValueOnce(false);
+    const missing = await getMailMessageAttachments(deps(w), input);
+    expect(missing.items[0]?.unavailable_reason).toContain('bytes are missing'); expect(missing.items[0]?.selection_revision).toBeUndefined();
+    has.mockRestore();
+    const file = scopedFile('work', id), lifecycle = w.files.attachmentLifecycle!;
+    w.files.mutateLifecycle!({ record_id: file, action: 'delete', revision: lifecycle.preview(file).revision });
+    const deleted = await getMailMessageAttachments(deps(w), input);
+    expect(deleted.items[0]?.unavailable_reason).toContain('no longer retained');
+  });
+  it('refuses stale conversation or enrollment identities, including a replacement during the asynchronous metadata read', async () => {
+    const w = world(), work = w.mailbox('work', [email([part('invoice')])]); await work.collection.sync.start();
+    let incarnation = w.instances.getIncarnation!('mail', 'work')!;
+    const read = { ...deps(w), getIncarnation: () => incarnation }, input = { slug: 'work', record_id: work.row().record_id };
+    await expect(getMailMessageAttachments(read, { ...input, expected_incarnation: 'old' })).rejects.toMatchObject({ code: 'resource_changed' });
+    await expect(getMailMessageAttachments(read, { ...input, conversation: { incarnation, thread_id: 'other-thread' } })).rejects.toMatchObject({ code: 'resource_changed' });
+    vi.spyOn(w.blobs, 'has').mockImplementationOnce(async () => { incarnation = 'replacement'; return true; });
+    await expect(getMailMessageAttachments(read, input)).rejects.toMatchObject({ code: 'resource_changed' });
+  });
+  it('does not offer a selection whose file changed while checking its retained bytes', async () => {
+    const w = world(), work = w.mailbox('work', [email([part('invoice')])]); await work.collection.sync.start();
+    const input = { slug: 'work', record_id: work.row().record_id }, file = scopedFile('work', input.record_id);
+    vi.spyOn(w.blobs, 'has').mockImplementationOnce(async () => {
+      w.files.renameLifecycle!({ record_id: file, filename: 'Revised.pdf', revision: w.files.attachmentLifecycle!.preview(file).revision }); return true;
+    });
+    const value = await getMailMessageAttachments(deps(w), input);
+    expect(value.items[0]?.unavailable_reason).toContain('changed'); expect(value.items[0]?.selection_revision).toBeUndefined();
+    expect((await getMailMessageAttachments(deps(w), input)).items[0]).toMatchObject({ filename: 'Revised.pdf', selection_revision: expect.any(String) });
+  });
+  it('does not offer a file whose message link disappeared during the retained-byte check', async () => {
+    const w = world(), work = w.mailbox('work', [email([part('invoice')])]); await work.collection.sync.start();
+    const input = { slug: 'work', record_id: work.row().record_id }, file = scopedFile('work', input.record_id);
+    vi.spyOn(w.blobs, 'has').mockImplementationOnce(async () => {
+      const link = w.annotations.outboundLinksSync!('mail', input.record_id).find(link => link.to_id === file)!;
+      await w.annotations.deleteLink(link._id); return true;
+    });
+    const value = await getMailMessageAttachments(deps(w), input);
+    expect(value.items[0]?.unavailable_reason).toContain('no longer confirmed');
+    expect(value.items[0]?.selection_revision).toBeUndefined(); expect(value.items[0]?.content_hash).toBeUndefined();
+  });
+  it('withdraws a legacy file when another mailbox makes its email id ambiguous during the retained-byte check', async () => {
+    const w = world(), work = w.mailbox('work', [email([], { has_attachments: true })]);
+    await work.collection.sync.start();
+    const input = { slug: 'work', record_id: work.row().record_id };
+    const file = await w.legacyAttachment(input.record_id, 'legacy invoice');
+    const home = w.mailbox('home', [email([], { has_attachments: true })]);
+    vi.spyOn(w.blobs, 'has').mockImplementationOnce(async () => {
+      await home.collection.sync.start(); return true;
+    });
+    const value = await getMailMessageAttachments(deps(w), input);
+    expect(value.items).toEqual([expect.objectContaining({ file_id: file, unavailable_reason: expect.any(String) })]);
+    expect(value.items[0]?.selection_revision).toBeUndefined(); expect(value.items[0]?.content_hash).toBeUndefined();
+  });
+  it('rechecks an earlier file after a later attachment finishes its retained-byte check', async () => {
+    const w = world(), work = w.mailbox('work', [email([part('one'), { ...part('two'), source_part_id: 'part-1' }])]);
+    await work.collection.sync.start();
+    const input = { slug: 'work', record_id: work.row().record_id };
+    const first = w.reader(work.row(), 'work').attachments[0]!.file_ref;
+    let checks = 0;
+    vi.spyOn(w.blobs, 'has').mockImplementation(async () => {
+      if (++checks === 2) w.files.renameLifecycle!({ record_id: first, filename: 'Revised.pdf',
+        revision: w.files.attachmentLifecycle!.preview(first).revision });
+      return true;
+    });
+    const value = await getMailMessageAttachments(deps(w), input);
+    const changed = value.items.find(item => item.file_id === first)!;
+    expect(changed.unavailable_reason).toContain('changed');
+    expect(changed.selection_revision).toBeUndefined(); expect(changed.content_hash).toBeUndefined();
+    expect(value.items.find(item => item.file_id !== first)?.selection_revision).toEqual(expect.any(String));
+  });
+  it('bounds dense attachment sets and discloses missing attachment links', async () => {
+    const w = world(), work = w.mailbox('work', [email(Array.from({ length: 102 }, (_, index) => ({ ...part('invoice'), source_part_id: `part-${index}` })))]);
+    await work.collection.sync.start();
+    const result = await getMailMessageAttachments(deps(w), { slug: 'work', record_id: work.row().record_id });
+    expect(result.items).toHaveLength(100); expect(result.truncated).toBe(true);
+    const withoutLinks = await getMailMessageAttachments({ ...deps(w), annotations: undefined }, { slug: 'work', record_id: work.row().record_id });
+    expect(withoutLinks.items).toEqual([]); expect(withoutLinks.warnings).toContain('Attachment links could not be checked.');
+  });
+});
 
 describe('two IMAP mailboxes holding an email under one id', () => {
   it('keep one attachment file each, which neither re-ingest overwrites, and keep each verdict', async () => {

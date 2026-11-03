@@ -33,6 +33,7 @@ import {
   createGraphCalAdapterFactory,
   createGraphCalProvider,
   graphRecurrenceRule,
+  type GraphCalDateTime,
   type GraphCalEvent,
   type GraphCalProviderConfig,
 } from '../graph-provider.js';
@@ -232,6 +233,50 @@ describe('canonicalizeGraphEvent', () => {
     expect(c.start_at).toBe(Date.parse('2026-05-01T00:00:00Z'));
     expect(c.end_at).toBe(Date.parse('2026-05-02T00:00:00Z'));
     expect(c.timezone).toBe('America/Los_Angeles');
+  });
+
+  // D-336 (spec §57) — measured live 2026-11-03: a create asking for UTC was answered in the zone
+  // its request named, labelled with it. Read as UTC, a 10:00 Los Angeles event was held at 02:00.
+  it('reads a clock labelled with a zone in that zone, as Outlook answers a write', () => {
+    const c = canonicalizeGraphEvent({
+      id: 'made', iCalUId: 'made@x', subject: 'Made in Los Angeles',
+      start: { dateTime: '2026-11-07T10:00:00.0000000', timeZone: 'America/Los_Angeles' },
+      end: { dateTime: '2026-11-07T10:30:00.0000000', timeZone: 'America/Los_Angeles' },
+      isAllDay: false, originalStartTimeZone: 'America/Los_Angeles',
+    }, 'cal');
+    expect(c.start_at).toBe(Date.parse('2026-11-07T18:00:00Z'));
+    expect(c.end_at).toBe(Date.parse('2026-11-07T18:30:00Z'));
+  });
+
+  it('reads each date at its own offset, summer time included', () => {
+    const c = canonicalizeGraphEvent({
+      id: 'summer', iCalUId: 'summer@x', subject: 'x',
+      start: { dateTime: '2026-07-07T10:00:00.0000000', timeZone: 'America/Los_Angeles' },
+      end: { dateTime: '2026-07-07T11:00:00.0000000', timeZone: 'America/Los_Angeles' },
+    }, 'cal');
+    expect(c.start_at).toBe(Date.parse('2026-07-07T17:00:00Z'));
+    expect(c.end_at).toBe(Date.parse('2026-07-07T18:00:00Z'));
+  });
+
+  it('keeps an all-day date at midnight UTC, whatever zone labels it', () => {
+    const c = canonicalizeGraphEvent({
+      id: 'day', iCalUId: 'day@x', subject: 'Leave',
+      start: { dateTime: '2026-11-07T00:00:00.0000000', timeZone: 'America/Los_Angeles' },
+      end: { dateTime: '2026-11-08T00:00:00.0000000', timeZone: 'America/Los_Angeles' },
+      isAllDay: true,
+    }, 'cal');
+    expect(c.start_at).toBe(Date.parse('2026-11-07T00:00:00Z'));
+    expect(c.end_at).toBe(Date.parse('2026-11-08T00:00:00Z'));
+  });
+
+  it('reads a label Intl cannot read as UTC, as before (Recued never sends one)', () => {
+    const c = canonicalizeGraphEvent({
+      id: 'win', iCalUId: 'win@x', subject: 'x',
+      start: { dateTime: '2026-11-07T10:00:00.0000000', timeZone: 'Pacific Standard Time' },
+      end: { dateTime: '2026-11-07T10:30:00.0000000', timeZone: 'Pacific Standard Time' },
+    }, 'cal');
+    expect(c.start_at).toBe(Date.parse('2026-11-07T10:00:00Z'));
+    expect(c.end_at).toBe(Date.parse('2026-11-07T10:30:00Z'));
   });
 
   it('maps isCancelled → cancelled status', () => {
@@ -1433,16 +1478,24 @@ describe('GraphCalProvider — startSync', () => {
 describe('GraphCalProvider — createEvent', () => {
   it('offers only selected Outlook calendars with verified edit permission', async () => {
     const { fetcher } = makeRouter([{ match: url => url.includes('/me/calendars'), response: { status: 200, body: { value: [
-      { id: 'work', name: 'Work', canEdit: true }, { id: 'read', canEdit: false }, { id: 'unknown' }, { id: 'outside', canEdit: true },
+      { id: 'work', name: 'Work', canEdit: true, isDefaultCalendar: true, owner: { address: 'me@example.com' } },
+      { id: 'shared', name: 'Shared', canEdit: true, isTallyingResponses: true, owner: { address: 'someone@example.com' } },
+      { id: 'secondary', name: 'Secondary', canEdit: true, isTallyingResponses: false, owner: { address: 'me@example.com' } }, { id: 'read', canEdit: false }, { id: 'unknown' }, { id: 'outside', canEdit: true },
     ] } } }]);
-    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig({ calendar_filter: ['work', 'read', 'unknown'] }),
+    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig({ calendar_filter: ['work', 'shared', 'secondary', 'read', 'unknown'] }),
       accountStore: seedStore(), providerConfig, fetcher });
     cleanup.push(() => provider.close());
-    expect(await provider.listWritableCalendars!()).toEqual([{ calendar_id: 'work', name: 'Work' }]);
+    expect(await provider.listWritableCalendars!()).toEqual([
+      // D-336 (spec §48) — the default calendar is the account's main one.
+      { calendar_id: 'work', name: 'Work', is_default: true, can_invite: true },
+      { calendar_id: 'shared', name: 'Shared', invitation_unavailable_reason: 'Choose your primary Outlook calendar to send invitations and track responses.' },
+      { calendar_id: 'secondary', name: 'Secondary', invitation_unavailable_reason: 'Choose your primary Outlook calendar to send invitations and track responses.' },
+    ]);
   });
 
   it('POSTs /me/calendars/{id}/events and returns a canonical payload', async () => {
     const store = seedStore();
+    const posted: Array<Record<string, unknown>> = [];
     const { fetcher, calls } = makeRouter([
       {
         match: (u, init) =>
@@ -1466,7 +1519,10 @@ describe('GraphCalProvider — createEvent', () => {
       config: mkConfig(),
       accountStore: store,
       providerConfig,
-      fetcher,
+      fetcher: (url, init) => {
+        if (init?.method === 'POST') posted.push(JSON.parse(init.body ?? '{}'));
+        return fetcher(url, init);
+      },
       scheduler: () => () => undefined,
     });
     cleanup.push(() => provider.close());
@@ -1477,11 +1533,13 @@ describe('GraphCalProvider — createEvent', () => {
       end_at: Date.parse('2026-04-23T16:00:00Z'),
       timezone: 'UTC',
       is_all_day: false,
-      status: 'confirmed',
+      status: 'confirmed', send_invitations: true,
+      attendees: [{ email: 'guest@example.com', display_name: 'Guest', response_status: 'needs_action' }],
     });
     expect(payload.event.source_id).toBe('new-1');
     expect(payload.event.summary).toBe('Made it');
     expect(calls.find((c) => c.method === 'POST')).toBeTruthy();
+    expect(posted).toEqual([expect.objectContaining({ attendees: [{ emailAddress: { address: 'guest@example.com', name: 'Guest' }, type: 'required' }] })]);
   });
 
   it('maps 429 to quota_exceeded', async () => {
@@ -1585,6 +1643,26 @@ describe('GraphCalProvider — updateEvent', () => {
     expect(calls.find((c) => c.method === 'PATCH')).toBeTruthy();
   });
 
+  // D-336 (spec §46) — a cancel by status changed nothing on Outlook and reported success.
+  it('refuses a status it cannot set before any call, and lets a confirmed one through', async () => {
+    const store = seedStore();
+    const { fetcher, calls } = makeRouter([{
+      match: (u, init) => u.endsWith('/me/calendars/cal-1/events/evt-1') && init?.method === 'PATCH',
+      response: { status: 200, body: { id: 'evt-1', iCalUId: 'u', subject: 'Renamed',
+        start: { dateTime: '2026-11-02T10:00:00', timeZone: 'UTC' }, end: { dateTime: '2026-11-02T11:00:00', timeZone: 'UTC' },
+        createdDateTime: '2026-11-01T00:00:00Z', lastModifiedDateTime: '2026-11-02T09:00:00Z' } },
+    }]);
+    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher, scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    for (const status of ['cancelled', 'tentative'] as const) {
+      await expect(provider.updateEvent({ calendar_id: 'cal-1', source_id: 'evt-1', patch: { status } }))
+        .rejects.toMatchObject({ code: 'change_unsupported', message: expect.stringContaining('delete it') });
+    }
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(0);
+    await provider.updateEvent({ calendar_id: 'cal-1', source_id: 'evt-1', patch: { summary: 'Renamed', status: 'confirmed' } });
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
+  });
+
   it("rejects scope='this_and_future' with rrule_unsupported", async () => {
     const store = seedStore();
     const { fetcher } = makeRouter([]);
@@ -1655,6 +1733,53 @@ describe('GraphCalProvider — deleteEvent', () => {
     await expect(
       provider.deleteEvent({ calendar_id: 'cal-1', source_id: 'gone' }),
     ).rejects.toMatchObject({ code: 'event_not_found' });
+  });
+
+  it('D-336 (spec §56): sends the reviewed version, and an event changed since is refused, never deleted', async () => {
+    const store = seedStore();
+    const sent: Array<string | undefined> = [];
+    const { fetcher } = makeRouter([
+      {
+        match: (u, init) => {
+          if (!(u.endsWith('/me/events/evt-1') && init?.method === 'DELETE')) return false;
+          // The router's type names the method only; the fetcher hands it the whole request.
+          sent.push((init as { headers?: Record<string, string> } | undefined)?.headers?.['If-Match']);
+          return true;
+        },
+        // Outlook's answer to an If-Match that no longer holds.
+        response: { status: 412, body: '' },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.deleteEvent({
+      calendar_id: 'cal-1', source_id: 'evt-1', expected_etag: 'W/"v2"',
+    })).rejects.toMatchObject({ code: 'version_conflict' });
+    expect(sent).toEqual(['W/"v2"']);
+  });
+
+  it('D-336 (spec §58): checks the owner\'s delete at its handoff, and a refusal there sends nothing', async () => {
+    const order: string[] = [];
+    const { fetcher } = makeRouter([{
+      match: (u, init) => u.endsWith('/me/events/evt-1') && init?.method === 'DELETE' && order.push('sent') > 0,
+      response: { status: 204, body: '' },
+    }]);
+    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    await provider.deleteEvent({ calendar_id: 'cal-1', source_id: 'evt-1', before_send: () => { order.push('checked'); } });
+    expect(order).toEqual(['checked', 'sent']);
+    await expect(provider.deleteEvent({ calendar_id: 'cal-1', source_id: 'evt-1',
+      before_send: () => { throw new Error('This calendar connection does not allow deleting events.'); } }))
+      .rejects.toThrow('does not allow deleting');
+    expect(order).toEqual(['checked', 'sent']);
   });
 });
 
@@ -2023,5 +2148,73 @@ describe('GraphCalProvider — a time is sent as the wall clock of its zone', ()
       patch: { start_at: START, end_at: START + 3_600_000, timezone: 'Europe/London', is_all_day: false },
     }));
     expect(body.start).toEqual({ dateTime: '2026-10-17T18:00:00', timeZone: 'Europe/London' });
+  });
+});
+
+describe('GraphCalProvider — a write is read in the zone Outlook answers it in (D-336 spec §57)', () => {
+  // ⛔ Every request asks for UTC, and every double above answers in UTC whatever was sent. Outlook
+  // does not. Measured live 2026-11-03: a create, and an update that sends times, is answered in
+  // the zone its request named, labelled with it; an update that sends no times is answered in
+  // UTC. This double answers the same way. The UTC-only doubles hid an 8-hour error in every
+  // create and move made in a zone west or east of UTC.
+  const START = Date.parse('2026-11-07T18:00:00Z'); // 10:00 in Los Angeles
+  const answer = (body: string | undefined) => {
+    const sent = JSON.parse(body ?? '{}') as { start?: GraphCalDateTime; end?: GraphCalDateTime; isAllDay?: boolean };
+    const echo = (t: GraphCalDateTime) => ({ dateTime: `${t.dateTime}.0000000`, timeZone: t.timeZone });
+    return {
+      id: 'evt-1', iCalUId: 'evt-1@x', subject: 'x', isAllDay: sent.isAllDay ?? false,
+      start: sent.start ? echo(sent.start) : { dateTime: '2026-11-07T18:00:00.0000000', timeZone: 'UTC' },
+      end: sent.end ? echo(sent.end) : { dateTime: '2026-11-07T18:30:00.0000000', timeZone: 'UTC' },
+      originalStartTimeZone: 'America/Los_Angeles',
+      createdDateTime: '2026-11-03T09:19:14Z', lastModifiedDateTime: '2026-11-03T09:19:14Z',
+    };
+  };
+  const provider = () => {
+    const fetcher: HttpFetcher = async (url, init) => {
+      const write = (url.endsWith('/me/calendars/cal-1/events') && init?.method === 'POST')
+        || (url.endsWith('/me/calendars/cal-1/events/evt-1') && init?.method === 'PATCH');
+      const reply = write ? answer(init?.body) : { error: 'unmapped', url };
+      return {
+        status: write ? 200 : 404, ok: write,
+        async json() { return reply; },
+        async text() { return JSON.stringify(reply); },
+      };
+    };
+    const p = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => p.close());
+    return p;
+  };
+
+  it('a create holds the time it was made for', async () => {
+    const payload = await provider().createEvent('cal-1', {
+      calendar_id: 'cal-1', summary: 'x', start_at: START, end_at: START + 1_800_000,
+      timezone: 'America/Los_Angeles', is_all_day: false, status: 'confirmed',
+    });
+    expect(payload.event.start_at).toBe(START);
+    expect(payload.event.end_at).toBe(START + 1_800_000);
+  });
+
+  it('a move holds its new time, and a rename the time it had', async () => {
+    const moved = await provider().updateEvent({
+      calendar_id: 'cal-1', source_id: 'evt-1',
+      patch: { start_at: START + 3_600_000, end_at: START + 5_400_000, timezone: 'America/Los_Angeles', is_all_day: false },
+    });
+    expect(moved.event.start_at).toBe(START + 3_600_000);
+    expect(moved.event.end_at).toBe(START + 5_400_000);
+    const renamed = await provider().updateEvent({ calendar_id: 'cal-1', source_id: 'evt-1', patch: { summary: 'y' } });
+    expect(renamed.event.start_at).toBe(START);
+  });
+
+  it('an all-day create keeps its date', async () => {
+    const midnight = Date.parse('2026-11-07T00:00:00Z');
+    const payload = await provider().createEvent('cal-1', {
+      calendar_id: 'cal-1', summary: 'x', start_at: midnight, end_at: midnight + 86_400_000,
+      timezone: 'America/Los_Angeles', is_all_day: true, status: 'confirmed',
+    });
+    expect(payload.event.start_at).toBe(midnight);
+    expect(payload.event.end_at).toBe(midnight + 86_400_000);
   });
 });

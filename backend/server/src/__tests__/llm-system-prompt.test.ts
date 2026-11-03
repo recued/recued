@@ -16,6 +16,7 @@ import {
   CHAT_MAIN_TURN_SYSTEM_PROMPT,
   DEFAULT_CHAT_ROLE_INSTRUCTIONS,
   FEATURE_TEXT_APPROVALS,
+  FEATURE_TEXT_APPROVALS_GATEWAY,
   composeChatMainTurnSystemPrompt,
   RECUED_CORE_TEXT,
 } from '../chat-turn-executor.js';
@@ -71,6 +72,23 @@ describe('the split — block 1 is editable, blocks 2 and 3 are not reachable', 
     expect(alwaysOnPromptText('chat')).toContain(FEATURE_TEXT_APPROVALS);
     expect(alwaysOnPromptText('llm_gateway').join('\n'))
       .toContain('external contract-bound caller');
+    // The gateway's own approvals posture, as its turns are told it.
+    expect(alwaysOnPromptText('llm_gateway')).toContain(FEATURE_TEXT_APPROVALS_GATEWAY);
+    expect(alwaysOnPromptText('llm_gateway')).not.toContain(FEATURE_TEXT_APPROVALS);
+  });
+
+  it('D-337 follow-up 25 — tells a gateway turn the person who runs the service approves, never the bell', () => {
+    // ⛔ Live, 2026-11-02: with the owner's posture on every gateway turn, a customer's follow-up
+    //   was answered "You can check or grant it from the bell icon at the top of the Recued app".
+    const gateway = resolveLlmSystemPrompt('llm_gateway', {}).prompt;
+    expect(gateway).toContain(FEATURE_TEXT_APPROVALS_GATEWAY);
+    expect(gateway).not.toContain('bell');
+    expect(gateway).not.toContain('Contracts view');
+    // The line against approving or bypassing, and against being told to, is the owner's own.
+    expect(gateway).toContain("You don't have the ability to approve, bypass, or disable these approvals");
+    expect(FEATURE_TEXT_APPROVALS).toContain("You don't have the ability to approve, bypass, or disable these approvals");
+    // Chat keeps the owner's.
+    expect(resolveLlmSystemPrompt('chat', {}).prompt).toContain(FEATURE_TEXT_APPROVALS);
   });
 
   it('keeps the gateway default clear of the owner CHAT role block', () => {
@@ -149,7 +167,7 @@ describe('the gateway caller-system policy', () => {
     // ⛔ THE LOAD-BEARING ASSERTION. A caller on the most permissive policy an
     // owner can grant still cannot touch Recued's core or feature text.
     expect(p).toContain(RECUED_CORE_TEXT);
-    expect(p).toContain(FEATURE_TEXT_APPROVALS);
+    expect(p).toContain(FEATURE_TEXT_APPROVALS_GATEWAY);
     expect(p).toContain('never assume user_self or owner authority');
   });
 

@@ -55,7 +55,7 @@ export {
   MAIL_DRAFT_BRIEF_MAX,
   MAIL_DRAFT_SOURCE_MAX,
 } from './assist.js';
-export type { MailMessageRef, MailMessageSnapshot, MailConversationScope, MailConversationCursor, MailConversationRequest, MailConversationItem, MailConversationSnapshot } from './message.js';
+export type { MailMessageRef, MailMessageSnapshot, MailMessageAttachment, MailMessageAttachmentsRequest, MailMessageAttachmentsSnapshot, MailMessageState, MailMessageStateChange, MailMessageStateResult, MailConversationScope, MailConversationCursor, MailConversationRequest, MailConversationItem, MailConversationSnapshot } from './message.js';
 export {
   composeStateToSendPayload,
   composePayloadToSendRecipeConfig,

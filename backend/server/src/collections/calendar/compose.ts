@@ -61,6 +61,7 @@ import {
 import {
   checkCalendarCreate,
   checkCalendarUpdate,
+  defaultCalendarFor,
   handleCalendarCreate,
   handleCalendarDelete,
   handleCalendarGet,
@@ -153,6 +154,9 @@ export interface CalendarStack {
     create(input: { slug: string }): void;
     update(input: { slug: string; source_id: string; patch: Record<string, unknown> }): void;
   };
+  /** D-336 (spec §48) — the calendar on an account that a chat create naming none goes on
+   *  (`defaultCalendarFor`): its main one, or its only writable one. Throws the refusal. */
+  defaultCalendar(input: { slug: string }): Promise<string>;
   /** Feed to `collectionDeps.calendarEnroll`. Carries `onEnrolled`/
    *  `onDeleted` hooks that maintain the live-collection map. */
   enrollDeps: CalendarEnrollDeps;
@@ -527,6 +531,7 @@ export const composeCalendarStack = (
       create: (input) => { checkCalendarCreate(dispatchDeps, input); },
       update: (input) => { checkCalendarUpdate(dispatchDeps, input as Parameters<typeof checkCalendarUpdate>[1]); },
     },
+    defaultCalendar: (input) => defaultCalendarFor(dispatchDeps, input),
     enrollDeps,
     startAll,
     disposeAll,

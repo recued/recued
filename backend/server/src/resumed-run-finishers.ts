@@ -24,6 +24,8 @@
 import type { ChatDispatchResult, Checkpoint } from '@recued/contracts';
 import { projectRunResultForAgent } from './run-result-agent-projection.js';
 import type { ExecuteResponse } from './types.js';
+import { DOCUMENT_READ_RECIPE_ID } from './document-read-recipe.js';
+import { PREVIEW_CONVERSION_RECIPE_PREFIX } from './file-preview-conversion-guard.js';
 
 export interface ResumedRunFinisher {
   /** The tool the caller invoked, which names the owner-chat result row. */
@@ -83,7 +85,7 @@ export const takeResumedRunFinisher = (
 /** `document.read`'s reader recipe (`documentReadRecipe`). Its output is the
  *  selected file's bytes, raw or converted, which only the reader's own checks
  *  may turn into a result. */
-export const DOCUMENT_READ_RECIPE_ID = 'read-work-document';
+export { DOCUMENT_READ_RECIPE_ID } from './document-read-recipe.js';
 
 /** The reader recipe's run with no finisher left: the reader's checks cannot
  *  run here, so none of the run's output is delivered. Matched on the inline
@@ -93,6 +95,10 @@ const withheldReaderFinisher = (
   checkpoint: Pick<Checkpoint, 'recipe_id' | 'recipe_snapshot'>,
   config: Record<string, unknown> | undefined,
 ): ResumedRunFinisher | undefined => {
+  if (checkpoint.recipe_id?.startsWith(PREVIEW_CONVERSION_RECIPE_PREFIX) && checkpoint.recipe_snapshot !== undefined) {
+    return { tool_name: 'file.preview', finish: async () => ({ ok: true, result: { status: 'unavailable',
+      hint: 'This temporary conversion is no longer available in the preview. Open the file and convert it again.' } }) };
+  }
   if (checkpoint.recipe_id !== DOCUMENT_READ_RECIPE_ID || checkpoint.recipe_snapshot === undefined) return undefined;
   const steps = checkpoint.recipe_snapshot.steps;
   const converted = Array.isArray(steps)

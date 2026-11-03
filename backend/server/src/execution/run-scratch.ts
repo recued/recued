@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 
@@ -81,6 +81,10 @@ export const assertPathUnderRunScratch = (filePath: string, run_id: string): voi
   }
 };
 
+export class TempFileReadTooLarge extends Error {
+  constructor(readonly size_bytes: number) { super('The temporary file exceeds the read ceiling.'); }
+}
+
 /** Read a `temp` ref's RAW bytes, confined to the run's scratch root. The one
  *  place the confinement check and the read are composed; every consumer goes
  *  through this or through {@link readConfinedTempFile} below it.
@@ -91,12 +95,33 @@ export const assertPathUnderRunScratch = (filePath: string, run_id: string): voi
  *  through the base64 form would cost three full copies of a file that can reach
  *  32 MiB (buffer → base64 string → decoded buffer) for no gain. The base64
  *  variant now delegates here, so the confinement check has ONE call site and a
- *  second consumer cannot arrive with its own subtly different path handling. */
+ *  second consumer cannot arrive with its own subtly different path handling.
+ *  An optional ceiling is checked before allocation and throughout the read. */
 export const readConfinedTempBytes = (
   temp: TempFileRef,
   run_id: string,
+  maxBytes?: number,
 ): { bytes: Buffer; mime_type: string; filename: string } => {
   assertPathUnderRunScratch(temp.path, run_id);
+  if (maxBytes !== undefined) {
+    const fd = openSync(temp.path, 'r');
+    try {
+      const before = fstatSync(fd);
+      if (before.size > maxBytes) throw new TempFileReadTooLarge(before.size);
+      // One extra byte detects growth without ever allocating a whole new
+      // file. The opened descriptor, rather than ref metadata, sets the size.
+      const buffer = Buffer.alloc(Math.min(before.size + 1, maxBytes + 1));
+      let size = 0;
+      while (size < buffer.length) {
+        const count = readSync(fd, buffer, size, buffer.length - size, null);
+        if (count === 0) break;
+        size += count;
+      }
+      if (size > maxBytes) throw new TempFileReadTooLarge(size);
+      if (size !== before.size || fstatSync(fd).size !== before.size) throw new Error('temp file_ref: the file changed while it was being read');
+      return { bytes: buffer.subarray(0, size), mime_type: temp.mime_type, filename: temp.filename };
+    } finally { closeSync(fd); }
+  }
   return {
     bytes: readFileSync(temp.path),
     mime_type: temp.mime_type,

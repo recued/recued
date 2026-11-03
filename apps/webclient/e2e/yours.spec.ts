@@ -36,6 +36,51 @@ const openAttachedFileMenu = async (scope: Locator) => {
   if (!await trigger.locator('..').evaluate(node => (node as HTMLDetailsElement).open)) await trigger.click();
 };
 
+test('D-336 slice D — a thing lists what memory says about it, each sentence opening its note', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_claims#yours/asset/passport`);
+  const route = page.locator('[data-recued-yours]');
+  const relationships = route.locator('[data-yours-relationships]');
+  await expect(relationships.getByRole('heading', { name: 'Relationships', exact: true })).toBeVisible();
+  const owned = relationships.locator('[data-yours-relationship="umem_rel_1"]');
+  await expect(owned.getByRole('link', { name: 'Mia owns the blue bicycle.', exact: true })).toHaveAttribute('href', '#data/memory/umem_rel_1');
+  const kept = relationships.locator('[data-yours-relationship="umem_rel_2"]');
+  await expect(kept.getByRole('link', { name: 'The blue bicycle is kept at the boat club.', exact: true })).toBeVisible();
+  await expect(kept).toContainText('matched by name');
+  await expect(owned).not.toContainText('matched by name');
+});
+
+test('D-336 §45 — a "matched by name" line links its name to this thing, the owner\'s note in place and an AI\'s replaced', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_claims=link#yours/asset/passport`);
+  const route = page.locator('[data-recued-yours]');
+  const relationships = route.locator('[data-yours-relationships]');
+  const lent = relationships.locator('[data-yours-relationship="umem_lent"]');
+  await expect(lent).toContainText('matched by name');
+  // Where its relation takes a person, the name is not this thing: matched, never offered.
+  const friend = relationships.locator('[data-yours-relationship="umem_friend"]');
+  await expect(friend).toContainText('matched by name');
+  await expect(friend.getByRole('button')).toHaveCount(0);
+  await lent.getByRole('button', { name: /^Link to this thing/ }).click();
+  await expect(route.locator('[data-yours-status]')).toHaveText('Linked.');
+  await expect(lent).not.toContainText('matched by name');
+  const calls = () => page.evaluate(() => (window as unknown as { __memoryLinkCalls: Array<{ method: string; args: Record<string, unknown> }> }).__memoryLinkCalls);
+  expect(await calls()).toEqual([{ method: 'memory.update', args: { memory_id: 'umem_lent',
+    claim: { subject: { asset_id: 'passport', name: 'Ana’s passport' }, relation: 'lent to', object: { text: 'Dana' } } } }]);
+  const gift = relationships.locator('[data-yours-relationship="umem_gift"]');
+  await gift.getByRole('button', { name: /^Link to this thing/ }).click();
+  await expect(route.locator('[data-yours-status]')).toHaveText('Linked. The note is now yours, in place of the AI’s.');
+  expect((await calls())[1]).toEqual({ method: 'memory.replace', args: { memory_id: 'umem_gift', kind: 'chat_memory',
+    summary: 'Ana’s passport was a gift from Rosa.', body: 'From chat.',
+    claim: { subject: { asset_id: 'passport', name: 'Ana’s passport' }, relation: 'gift from', object: { text: 'Rosa' } } } });
+  await expect(relationships.getByRole('button', { name: /^Link to this thing/ })).toHaveCount(0);
+});
+
+test('D-336 slice D — a thing no note names shows no Relationships section', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  const route = page.locator('[data-recued-yours]');
+  await expect(route.getByRole('heading', { name: 'Ana’s passport', exact: true })).toBeVisible();
+  await expect(route.locator('[data-yours-relationships]')).toHaveCount(0);
+});
+
 test('Asset cards show task counts and authoritative due dates with estimates kept explicit', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=summaries#yours/assets`);
   const route = page.locator('[data-recued-yours]'); const renewal = route.locator('[data-yours-asset="card-renewal"]');
@@ -2033,18 +2078,20 @@ for (const width of [390, 1280]) {
     });
   }
 
-  for (const field of ['How often', 'Day', 'Time', 'Also send a note on the day something is due'] as const) {
+  for (const field of ['How often', 'Day', 'Time', 'How far ahead', 'Also send a note on the day something is due'] as const) {
     test(`Coming up reverted ${field} leaves without an unsaved warning at ${width}px`, async ({ page }) => {
       await openOverviewSettings(page, width); const control = overviewPanel(page).getByLabel(field, { exact: true });
       const original = await control.elementHandle();
       if (field === 'How often') await control.selectOption('daily');
       else if (field === 'Day') await control.selectOption('4');
       else if (field === 'Time') await control.fill('10:30');
+      else if (field === 'How far ahead') await control.selectOption('14');
       else await control.uncheck();
       expect(await overviewWouldBlockUnload(page)).toBe(true);
       if (field === 'How often') await control.selectOption('weekly');
       else if (field === 'Day') await control.selectOption('1');
       else if (field === 'Time') await control.fill('08:00');
+      else if (field === 'How far ahead') await control.selectOption('7');
       else await control.check();
       expect(await overviewWouldBlockUnload(page)).toBe(false);
       expect(await original!.evaluate(node => node.isConnected)).toBe(true);
@@ -2267,7 +2314,8 @@ test('Approval & notifications reads as channels, what you are told about, its t
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   await page.waitForFunction(() => window.__app?.ready === true);
   const section = page.locator('[data-recued-settings-section="notifications"]');
-  await expect(section.locator('h3')).toHaveText(['Channels', 'Your secret phrase', 'What you are notified about', 'Digest', 'Quiet hours', 'Reminders for shared assets']);
+  // §15.7 amendment (2026-11-02, later): the Agenda answers the same question for one day, under the Digest.
+  await expect(section.locator('h3')).toHaveText(['Channels', 'Your secret phrase', 'What you are notified about', 'Digest', 'Agenda', 'Quiet hours', 'Reminders for shared assets']);
   await expect(section.locator('[data-household-delivery] h4')).toHaveText(['Post them in a Telegram group', 'Show their tasks on a Home Assistant to-do list']);
   // The card names its assets and links to them, so it reads as the assets' setting.
   const shared = section.locator('[data-household-shared]');
@@ -2335,6 +2383,28 @@ test('Approval & notifications saves the digest settings and shows its last sent
   await expect(panel.getByLabel('How often', { exact: true })).toHaveValue('daily');
   await panel.getByRole('button', { name: 'Send now', exact: true }).click();
   await panel.getByText('What it sent', { exact: true }).click(); await expect(panel).toContainText('Lisbon trip · Passport expiry');
+});
+
+test('Approval & notifications shows the Agenda under the Digest, guards it while unsaved, and saves and sends it', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const agenda = page.locator('[data-situation-agenda]');
+  await expect(agenda.getByLabel('Time', { exact: true })).toHaveValue('07:00');
+  // A card of its own, right under the Digest's.
+  expect(await page.evaluate(() => {
+    const digest = document.querySelector('[data-situation-delivery]')!; const own = document.querySelector('[data-situation-agenda]')!;
+    return digest.parentElement!.nextElementSibling === own.parentElement;
+  })).toBe(true);
+  await agenda.getByLabel('Send me an agenda', { exact: true }).check();
+  await agenda.getByLabel('Which day', { exact: true }).selectOption('tomorrow');
+  expect(await overviewWouldBlockUnload(page)).toBe(true);
+  const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+  await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual(['Discard the unsaved agenda settings?']);
+  await expect(page).toHaveURL(/#settings\/notifications$/u);
+  await agenda.getByRole('button', { name: 'Save agenda settings', exact: true }).click();
+  await expect(agenda.getByRole('status')).toHaveText('Agenda settings saved.'); expect(await overviewWouldBlockUnload(page)).toBe(false);
+  await agenda.getByRole('button', { name: 'Send now', exact: true }).click();
+  await agenda.getByText('What it sent', { exact: true }).click(); await expect(agenda).toContainText('09:00 Morning briefing · prep notes ready');
 });
 
 for (const width of [390, 1280]) {

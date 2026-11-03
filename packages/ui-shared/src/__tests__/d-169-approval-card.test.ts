@@ -35,6 +35,7 @@ import {
   ASK_CARD_OPTION_ATTR,
   ASK_CARD_ERROR_ATTR,
   ASK_CARD_LINK_ATTR,
+  ASK_CARD_CHAT_LINK_ATTR,
   ASK_CARD_SUMMARY_ATTR,
   type AskCardModel,
   type AskCardOptions,
@@ -1348,5 +1349,36 @@ describe('the card says what the action changes in the composer\'s words', () =>
       ].join('\n'),
     }), vi.fn());
     expect(textsOf(collectByAttr(event, ASK_CARD_SUMMARY_ATTR)[0]!)).toContain('Dental check-up');
+  });
+});
+
+describe('D-336 slice N — a held chat write\'s card in Chat', () => {
+  const chatLink = (root: FakeEl): FakeEl | undefined => collectByAttr(root, ASK_CARD_CHAT_LINK_ATTR)[0];
+  const HREF = '#chat/session/sess-1/plan/plan-1';
+
+  it('links to its card, where it can be changed before the yes, and is not an answer', () => {
+    const { card } = renderWithDocument(model({ title: 'Save to memory' }), () => {}, { chatHref: HREF, chatChangeable: true });
+    const link = chatLink(card);
+    expect(link?.tagName).toBe('A');
+    expect(link?.getAttribute('href')).toBe(HREF);
+    expect(link?.getAttribute(ASK_CARD_CHAT_LINK_ATTR)).toBe('ask-1');
+    expect(link?.textContent).toBe('Change it in Chat');
+    expect(link?.getAttribute('aria-label')).toBe('Change it in Chat: Save to memory');
+    expect(link?.attrs.has(ASK_CARD_OPTION_ATTR)).toBe(false);
+    expect(optionButtons(card)).toHaveLength(2);
+  });
+
+  it('says Review in Chat where that card cannot change the call', () => {
+    const link = chatLink(renderWithDocument(model(), () => {}, { chatHref: HREF }).card);
+    expect(link?.textContent).toBe('Review in Chat');
+    expect(link?.getAttribute('aria-label')).toBe('Review in Chat: Approve sending the email?');
+  });
+
+  it('renders nothing without one, and drops anything that is not an in-app Chat route', () => {
+    expect(chatLink(render(model(), () => {}))).toBeUndefined();
+    for (const hostile of ['javascript:alert(1)', 'https://example.test/#chat/session/s/plan/p', '#approvals', 'chat/session/s/plan/p']) {
+      expect(chatLink(renderWithDocument(model(), () => {}, { chatHref: hostile, chatChangeable: true }).card), hostile)
+        .toBeUndefined();
+    }
   });
 });

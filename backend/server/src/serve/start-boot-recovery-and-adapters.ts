@@ -220,6 +220,9 @@ export const startBootRecoveryAndAdapters = async (
       await options.preapprovalStorage.recover();
     }
 
+    // The repairs and the checkpoint sweep. The asks themselves are swept once
+    // the server runs, after `startCollectionAdapters` below has registered the
+    // mailboxes and calendars they reach (D-158 P3, `compose-listeners.ts`).
     if (notificationBlock && checkpointStore && auditLog) {
       await recoverNotificationBlockAtBoot({
         canPublishReviewedCheckpoint: checkpoint => options.preapprovalStorage?.repository?.canPublishCheckpoint(checkpoint.checkpoint_id) ?? false,

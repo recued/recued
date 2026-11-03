@@ -70,6 +70,8 @@ import {
   isAssetDate,
   zonedWallClockToEpochMs,
   type ApprovalValueLabels,
+  type HeldCallNotices,
+  type MemorySaveConflict,
   type Asset,
   type AssetContributionKind,
   type AssetPatch,
@@ -109,6 +111,7 @@ import {
   type ChatAccountCandidate,
   type CrmConnectionFreshness,
   type ChatDispatchContext,
+  type ChatPlanMade,
   type ChatDispatchResult,
   type ConnectionMcpAnnotationState,
   type ContactAliasPlatform,
@@ -127,7 +130,15 @@ import {
   type ScopeSearchCandidate,
   recipeGrantEntry,
   truncateUtf8,
+  MEMORY_RELATION_GROUPS,
+  MEMORY_RELATIONS,
+  memoryClaimKey,
+  type MemoryClaim,
+  type MemoryRelationRow,
+  readOwnerOperationOverride,
+  type ScanFn,
 } from '@recued/contracts';
+import { recordMade } from './claim-link.js';
 import {
   confidenceShape,
   runScopeSearchFanout,
@@ -165,11 +176,18 @@ import type {
 } from './collections/calendar/calendar-collection.js';
 import type { RecipeStore } from './recipe-store.js';
 import {
+  approvalChannelOf,
+  approvalElsewhereMessage,
   projectRunResultForAgent,
   runCancellationMessage,
 } from './run-result-agent-projection.js';
+import {
+  askAfterWaiting, conversationCarriesOn, HELD_CARRIES_ON_MESSAGE, notAskedYetMessage,
+} from './chat-carries-on.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import { createMailReadHandler } from './mail-read-tool.js';
+import { checkContactWrite, contactAskLabels, createContactWriteHandler } from './contact-write-tool.js';
+import { crmChangeRefusal, crmContactChangeCheck } from './named-in-part.js';
 import { mailEvidenceMetadata } from './mail-evidence.js';
 import { mailboxAddressOf } from './mail-senders.js';
 import { resolveRecipeId } from './recipe-tool-name.js';
@@ -205,6 +223,22 @@ import {
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import { createStoreBackedMemoryWriteAdapter } from './memory-write-adapter.js';
+import {
+  aboutEndKeys,
+  claimContactEmails,
+  claimOfCall,
+  claimsContradict,
+  conflictSummary,
+  findClaimConflicts,
+  lineageOf,
+  ownerClaim,
+  parseClaimArg,
+  resolveClaimArg,
+  rowsAbout,
+  type ClaimConflicts,
+  type ClaimRecordLookups,
+  type ClaimRecords,
+} from './memory-claim.js';
 import { authoringContractId } from './grant-governing-contract.js';
 import {
   checkForgetOwnEntry,
@@ -262,21 +296,36 @@ import {
   dispatchRawOp,
   type RawOpDispatchDeps,
   type RawOpDispatchOutcome,
+  type WaitingTier1Call,
 } from './raw-op-dispatch.js';
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
+import { recipeMayAsk, type RecipeAskLookups } from './recipe-asks-owner.js';
 import { missingPacksOfRefusal } from './install-offers/needed-packs.js';
 import type { InstalledRecipeScheduleInput, InstalledRecipeScheduler } from './schedule-installed-recipe.js';
 import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
 import { calendarAddressOf } from './collections/calendar/provider.js';
 import { parseInstantWithOffset } from '@recued/transforms';
 import { eventWhenOnTurnClock } from './chat-clock.js';
+import { calendarEventApprovalLabel } from './held-calendar-labels.js';
 
 /** Executor closure shape. `chat-tool-handlers` calls this rather than
  *  importing `handleExecute` directly so tests can substitute a fake
  *  without standing up the full execute-deps cone. bin.ts binds the
  *  production executor to `(req) => handleExecute(executeDeps, req)`
  *  after `executeDeps` finalises. */
-export type ChatRecipeExecutor = (request: ExecuteRequest) => Promise<ExecuteResponse>;
+export type ChatRecipeExecutor = (
+  request: ExecuteRequest,
+  /** Host-set only, never from the request: the tool a caller with its own key called the
+   *  recipe by (`InternalExecuteOverrides.entry_tool_name`), as the MCP door passes it, and a
+   *  chat door's look at each record change the run makes (`record_change_check`, spec §53). */
+  internal?: {
+    readonly entry_tool_name?: string;
+    readonly record_change_check?: (call: {
+      readonly operation_id: string;
+      readonly record_id: string;
+    }) => Promise<string | undefined>;
+  },
+) => Promise<ExecuteResponse>;
 
 /** Late-bound dep providers. Each getter resolves at dispatch time so
  *  stores wired after the chat orchestrator (enrichment, the enrichment-
@@ -323,6 +372,9 @@ export interface ChatToolHandlerDeps {
   getChatStore?: () => {
     listMessages(session_id: string): Promise<ReadonlyArray<{
       attachments?: ReadonlyArray<{ file_id: string }>;
+      /** D-336 slice U — read by `contact.write` for whether the user named a contact in part. */
+      role?: string;
+      content?: string;
     }>>;
   } | undefined;
   /** ⛔ WIRED BUT UNCALLED — DELIBERATE. DO NOT TIDY THIS AWAY.
@@ -383,6 +435,19 @@ export interface ChatToolHandlerDeps {
    *  model would route run-history questions here and get an empty pool back.
    *  ⇒ The description and the handler agree. This comment was the outlier. */
   getUserMemoryStore?: () => UserMemoryStore | undefined;
+  /** D-336 slice E — the owner's lookups for a claim's linked ends (`ownerClaimRecords`): a
+   *  held `memory.write` whose claim the owner changed on its card checks that claim by them,
+   *  as the owner's own forms do. */
+  getOwnerClaimRecords?: () => ClaimRecordLookups;
+  /** D-336 slice O — the held calls of a Tier-1 tool still waiting for the owner, any
+   *  caller's, oldest first (`listWaitingTier1Calls`): a held save is told of the saves of
+   *  the same fact waiting beside it. Absent ⇒ none are compared, as before. */
+  getWaitingCalls?: (tool: string) => Promise<readonly WaitingTier1Call[]>;
+  /** D-336 slice Q — what a write made (a contact `contact.write` added, a note `memory.write`
+   *  saved), told as it runs, with where its call came from: the server links a save to the
+   *  contact its turn, or its AI app, added under the same name (`createClaimLinker`). Absent ⇒
+   *  nothing is linked. */
+  onRecordMade?: (made: ChatPlanMade, ctx: ChatDispatchContext) => Promise<void>;
   /** D-198 Slice 4 — the redaction-marker store, so `memory.search` HONORS the
    *  "forget this" overlay: a redacted (forgotten) row is omitted from recall
    *  (§5), never handed back to the model. Threaded alongside the user_memory
@@ -416,6 +481,16 @@ export interface ChatToolHandlerDeps {
    *  which is today's behaviour and keeps every dbless / partial harness working
    *  unchanged. */
   scanInstalledPacks?: InstalledPackScan;
+  /** D-337 slice L — the contract rows the owner's standing rulings live in
+   *  (`readOwnerOperationOverride`), so a recipe read before it runs, while a call of its turn
+   *  waits, sees a step the owner set to ask every time. Absent ⇒ no ruling is read: such a
+   *  recipe still asks when it reaches that step, as before. */
+  getContractScan?: () => ScanFn | undefined;
+  /** D-337 slice O — the vendor operations a vendor-neutral CRM write can run on, one per catalog
+   *  of the owner's CRM connections (`vendorNeutralWriteTargets`), so that recipe read sees each
+   *  one's own setting. Absent ⇒ such a write counts as asking, as before. */
+  neutralWriteTargets?: (crmAlias: string, verb: string) =>
+    ReadonlyArray<{ readonly catalog_slug: string; readonly operation: string }> | undefined;
   /** D-225 § 9.5.1 step 2b — the raw-op dispatch deps, late-bound like
    *  `getExecuteRecipe` (they compose after the executor). Supplied ⇒ a chat
    *  caller can INVOKE the `recued_op_*` tools `createChatRawOpSource` offers.
@@ -648,6 +723,9 @@ const runFailureDetail = (result: ExecuteResponse): string => {
 export const wrapRecipeRunResult = (
   result: ExecuteResponse,
   toolLabel?: string,
+  /** The conversation the run was asked from (`ctx.execution_source`): a held run's approval
+   *  is said to be answered there when it goes there ({@link approvalChannelOf}). */
+  conversation?: unknown,
 ): ChatDispatchResult => {
   // Host-owned metadata: never infer this from `result_ref`, recipe ids, or
   // model-visible output. It exists only when the execute handler confirmed
@@ -666,7 +744,7 @@ export const wrapRecipeRunResult = (
       ...runAddress,
     };
   }
-  const projected = projectRunResultForAgent(result);
+  const projected = projectRunResultForAgent(result, { conversation });
   if (result.awaiting_approval === true) {
     return {
       ok: true,
@@ -1893,6 +1971,23 @@ const createMailSearchHandler =
 const isCalendarCollection = (c: Collection): c is CalendarCollection =>
   'table' in c && (c as Partial<CalendarCollection>).table !== undefined;
 
+/** D-336 (spec §56) — an event named by the `record_id` calendar.search shows first
+ *  (`cal:<hash>`), where `calendar.update` takes its `source_id`: that id names one event on
+ *  one calendar, so it is taken as that event, on its own calendar. Live, the model passed it as
+ *  `source_id` in each of two runs (§54, §56), refused each time as not found, and once told the
+ *  user the event was still waiting for approval. Undefined for any other id. */
+const calendarEventOfRecordId = (
+  deps: Pick<ChatToolHandlerDeps, 'getCollectionRegistry'>,
+  id: string,
+): { slug: string; source_id: string } | undefined => {
+  if (!id.startsWith('cal:')) return undefined;
+  for (const c of deps.getCollectionRegistry()?.list().filter(isCalendarCollection) ?? []) {
+    const row = c.table.getByRecordId(id);
+    if (row !== null) return { slug: c.slug, source_id: row.source_id };
+  }
+  return undefined;
+};
+
 const createCalendarSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -1950,6 +2045,9 @@ const createCalendarSearchHandler =
             aggregated.push({
               collection_slug: c.slug,
               record_id: m.record_id,
+              // D-336 (spec §56) — the id `calendar.update` takes. Its description says to pass
+              // what this search returned, and this search never returned it.
+              source_id: m.source_id,
               hot_fields: m.hot,
               ...(when !== undefined ? { when } : {}),
               rank: m.rank,
@@ -1977,6 +2075,8 @@ const createCalendarSearchHandler =
               // Exact Data/collection.get address. `source_id` is provider
               // native and cannot round-trip through the generic explorer.
               record_id: r.record_id,
+              // D-336 (spec §56) — and the id a write takes, which this said it carried.
+              source_id: r.source_id,
               hot_fields: r.hot,
               ...(when !== undefined ? { when } : {}),
               received_at: r.received_at,
@@ -2136,10 +2236,10 @@ export const MEMORY_READ_OP_ID = 'core.memory.read';
  *  source ⇒ excluded (fail closed; the audit rows still flow, so no regression).
  *  Per-topic `scope_restrictions` (build-plan §D) ride the grant itself; v1
  *  gates the whole pool read per §3's separate-server-per-product curation. */
-type AiToolGrantGate = Pick<OpAdmissionGate, 'isOpGranted' | 'isOwnerGoverned'>;
+export type AiToolGrantGate = Pick<OpAdmissionGate, 'isOpGranted' | 'isOwnerGoverned'>;
 /** A scheduled prompt retains system provenance while using current owner
  * grants. Ordinary recipe and housekeeping system sources stay excluded. */
-const isAiToolPrincipal = (gate: AiToolGrantGate, source: ExecutionSource): boolean =>
+export const isAiToolPrincipal = (gate: AiToolGrantGate, source: ExecutionSource): boolean =>
   source.actor === 'user_self' || source.actor === 'contracted_user'
   || source.channel === 'schedule' && source.prompt_schedule !== undefined && gate.isOwnerGoverned(source);
 
@@ -2874,11 +2974,38 @@ const createMemorySearchHandler =
       const until = typeof args.until === 'number' ? args.until : undefined;
       const offset = decodeMemoryCursor(args.cursor);
 
+      const inRange = (r: UserMemoryRow): boolean =>
+        (since === undefined || effectiveTime(r) >= since) && (until === undefined || effectiveTime(r) <= until);
+
+      // D-336 slice C — `about`: what is saved about a person or a thing, found by the
+      // notes' claims, in whatever words or language they were saved, either way round.
+      // A note saved with no claim is found by `query` only, so when no current note in
+      // range names them in its claim and a query came too, the words answer. Decided on
+      // the notes the page could hold: a replaced or removed one still names them in the
+      // claim index, and once left the words of its correction unread (audit 2026-10-31).
+      let aboutRows: UserMemoryRow[] | undefined;
+      /** The claimed notes `about` reached, none current in range, when the words answer. */
+      let aboutStale: UserMemoryRow[] | undefined;
+      if (args.about !== undefined && args.about !== null) {
+        const ends = await aboutEndKeys(args.about, claimRecords(deps, ctx));
+        if (!ends.ok) return emptyMemoryResult(`nothing was looked up: ${ends.message}`);
+        const rows = await rowsAbout(store, ends.value);
+        let answers = query === undefined;
+        for (const r of rows) {
+          if (answers) break;
+          answers = !redacted.has(r.memory_id) && inRange(r) && !(await liveReplacementOf(store, redacted, r.memory_id));
+        }
+        if (answers) aboutRows = rows;
+        else aboutStale = rows;
+      }
+      const aboutNone = `no claim on a current note${since !== undefined || until !== undefined ? ' in that time' : ''} names`;
+
       let ordered: UserMemoryRow[];
       // Which relaxation rung answered + each hit's bm25 rank. Both absent on
       // the no-query path — "the 20 most recent" is a listing, not a match, so
-      // reporting match quality about it would be a fabricated signal.
-      let matchKind: MemorySearchResult['match'];
+      // reporting match quality about it would be a fabricated signal. `claim`
+      // when `about` answered: the notes' claims name what was asked about.
+      let matchKind: MemorySearchResult['match'] | 'claim';
       /** Why rung 4 did not run, when it did not. Shapes the empty's hint so
        *  "no semantic neighbour" and "semantic recall was never possible" stay
        *  distinguishable to the agent. */
@@ -2886,7 +3013,11 @@ const createMemorySearchHandler =
         | 'no_embedder' | 'not_embedded' | 'cohort_mismatch' | 'embed_failed'
         | undefined;
       const rankById = new Map<string, number | null>();
-      if (query !== undefined) {
+      if (aboutRows !== undefined) {
+        // Unranked, so newest first, the order the feed reads in.
+        ordered = [...aboutRows].sort((a, b) => effectiveTime(b) - effectiveTime(a));
+        if (aboutRows.length > 0) matchKind = 'claim';
+      } else if (query !== undefined) {
         // Fetch PAST the requested offset so `next_cursor` stays truthful when
         // the agent pages deep (a fixed over-fetch would silently cap paging).
         const overFetch = offset + MEMORY_SEARCH_PAGE_SIZE * MEMORY_SEARCH_OVERFETCH;
@@ -2956,7 +3087,8 @@ const createMemorySearchHandler =
       // longer counts: forgetting the newer version brings the older one back.
       // The listing already holds every row; a ranked page asks per hit.
       const replaced = new Set<string>();
-      if (query === undefined) {
+      // The listing holds every row; a ranked page or a claim recall asks per row.
+      if (query === undefined && aboutRows === undefined) {
         for (const r of ordered) {
           if (r.replaces !== undefined && !redacted.has(r.memory_id)) replaced.add(r.replaces);
         }
@@ -2966,11 +3098,7 @@ const createMemorySearchHandler =
         }
       }
       const filtered = ordered.filter(
-        (r) =>
-          !redacted.has(r.memory_id)
-          && !replaced.has(r.memory_id)
-          && (since === undefined || effectiveTime(r) >= since)
-          && (until === undefined || effectiveTime(r) <= until),
+        (r) => !redacted.has(r.memory_id) && !replaced.has(r.memory_id) && inRange(r),
       );
 
       const page = filtered.slice(offset, offset + MEMORY_SEARCH_PAGE_SIZE);
@@ -2981,22 +3109,25 @@ const createMemorySearchHandler =
       // search reads each word as it is spelled, so a revoked note is also asked by the
       // claim words, which read every naming word in `SAME_CLAIM_WORDS` as "called": the
       // query's, two at least, all in the note. One per revoke: the versions it covers
-      // would each repeat it.
+      // would each repeat it. D-336 slice C: a claim recall (`about`) reaches a revoked
+      // note whose claim names what was asked about, in any words or language.
       const rejected: Array<ReturnType<typeof rejectionOf>> = [];
-      if (offset === 0 && query !== undefined) {
-        const reached = matchKind === 'exact' || matchKind === 'relaxed'
+      if (offset === 0 && (query !== undefined || aboutRows !== undefined)) {
+        const reached = aboutRows !== undefined || matchKind === 'exact' || matchKind === 'relaxed'
           ? ordered.filter((r) => revokes.has(r.memory_id))
           : [];
-        for (const memory_id of revokes.keys()) {
-          const row = await store.getRow(memory_id);
-          if (row !== null && coversClaim(query, noteClaimWords(row))) reached.push(row);
+        if (aboutRows === undefined && query !== undefined) {
+          // The words answer, and a revoked note about them is still an answer to `about`.
+          for (const r of aboutStale ?? []) if (revokes.has(r.memory_id)) reached.push(r);
+          for (const memory_id of revokes.keys()) {
+            const row = await store.getRow(memory_id);
+            if (row !== null && coversClaim(query, noteClaimWords(row))) reached.push(row);
+          }
         }
         const heads = new Set<string>();
         for (const r of reached) {
           const revoke = revokes.get(r.memory_id)!;
-          if (heads.has(revoke.head)) continue;
-          if (since !== undefined && effectiveTime(r) < since) continue;
-          if (until !== undefined && effectiveTime(r) > until) continue;
+          if (heads.has(revoke.head) || !inRange(r)) continue;
           heads.add(revoke.head);
           rejected.push(rejectionOf(r));
           if (rejected.length === MEMORY_SEARCH_REJECTED_MAX) break;
@@ -3009,11 +3140,18 @@ const createMemorySearchHandler =
             memories: [],
             rejected,
             budget: { limit_bytes: MEMORY_SEARCH_BUDGET_BYTES, used_bytes: 0, truncated_count: 0 },
-            hint: `nothing current matches '${query}', but the owner marked a matching memory wrong — see rejected`,
+            hint: aboutRows !== undefined || (aboutStale ?? []).some((r) => revokes.has(r.memory_id) && inRange(r))
+              ? 'nothing current is saved about them, but the owner marked a memory about them wrong — see rejected'
+              : `nothing current matches '${query}', but the owner marked a matching memory wrong — see rejected`,
           },
         };
       }
       if (page.length === 0) {
+        if (aboutRows !== undefined) {
+          return emptyMemoryResult(
+            `${aboutNone} them. A note saved without a claim is found only by its words, so search with \`query\` too before concluding nothing is saved`,
+          );
+        }
         if (query === undefined) {
           return emptyMemoryResult('no memories saved yet — write one with memory.write');
         }
@@ -3077,6 +3215,7 @@ const createMemorySearchHandler =
           },
           ...(matchKind !== undefined ? { match: matchKind } : {}),
           ...(margin !== null ? { top_margin: margin } : {}),
+          ...(aboutStale !== undefined ? { hint: `${aboutNone} what you passed in \`about\`; these matched your query by its words` } : {}),
           ...(hasMore ? { next_cursor: encodeMemoryCursor(offset + page.length) } : {}),
           ...(rejected.length > 0 ? { rejected } : {}),
         },
@@ -3085,6 +3224,316 @@ const createMemorySearchHandler =
       return executionError(errMessage(e));
     }
   };
+
+// ────────────────────────────────────────────────────────────────
+// memory.relations — D-336 the relations a saved fact can name
+// ────────────────────────────────────────────────────────────────
+
+/** How a claim is written, on each group's answer: what a model needs when it picks a
+ *  relation and fills its ends. ⚠ The last sentence keeps `memory.write`'s rule on what
+ *  to save in force: a lasting preference or habit is worth saving, one for this
+ *  conversation alone is not (owner, 2026-10-31), and a figure that moves is saved only
+ *  as the event that set it. */
+export const MEMORY_RELATIONS_HOW =
+  'Pass it as memory.write\'s `claim` beside the summary: {"subject", "relation", "object"}, read as a sentence, subject first. '
+  + 'Write it the way the user gave the fact, never turned round: "Mia is Dana\'s daughter" is Mia, daughter of, Dana; '
+  + '"Dana is Mia\'s mother" is Dana, mother of, Mia. A possessive reads as of: "Dana\'s daughter is called Mia" is Mia, '
+  + 'daughter of, Dana. Keep the relation the fact states (daughter of, not child of); `general` is for a fact that says no more. '
+  + 'An end is a name or a short phrase as the user said it. A person end can also be "owner" for the user ("my daughter Mia": '
+  + 'Mia, daughter of, owner) or {"contact": target_id} for someone found with contact.search, and a thing end {"asset": id} '
+  + 'for a thing found with work.search. Someone who is not a contact yet can be added with contact.write, which the user '
+  + 'approves first; until then, write their name. The relations are English whatever language the user speaks; the summary stays in '
+  + 'their words. One claim a note: for a chain ("Lena is my cousin\'s boyfriend\'s mother"), claim its first step, Lena, '
+  + 'mother of, my cousin\'s boyfriend. When no relation fits, save without a claim. What to save is still memory.write\'s '
+  + 'rule: a lasting preference or habit is worth saving ("Dana is vegetarian": Dana, avoids, meat), one for this '
+  + 'conversation alone is not, and a price, a rate or a deadline is saved only as the event that set it.';
+
+const projectRelationRow = (row: MemoryRelationRow) => ({
+  relations: row.relations,
+  ...(row.general !== undefined ? { general: row.general } : {}),
+  subject: row.subject,
+  object: row.object,
+  example: `"${row.example.said}": ${row.example.subject}, ${row.example.relation}, ${row.example.object}`,
+  ...(row.note !== undefined ? { note: row.note } : {}),
+});
+
+/** D-336 — `memory.relations`, in `work.type`'s shape: the list a saved fact's claim is
+ *  written from, fetched when a fact about a person or a thing is saved, so the catalog
+ *  carries the tool and not the list. Chat and the MCP wire carry this one tool. Gated
+ *  by the memory write's op: the list is read for saving. */
+const createMemoryRelationsHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const args = raw === undefined || raw === null ? {} : asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+    if (!admitMemoryWrite(deps.getOpAdmissionGate?.(), ctx.execution_source)) {
+      return {
+        ok: false,
+        reason: 'classification_blocked',
+        detail: 'memory.relations is not granted to this contract: it needs the switch that saves to your memory',
+      };
+    }
+    const groups = MEMORY_RELATION_GROUPS.map((g) => g.group);
+    if (args.group === undefined || args.group === null) {
+      return {
+        ok: true,
+        result: {
+          groups: MEMORY_RELATION_GROUPS.map((g) => ({ group: g.group, covers: g.covers })),
+          // D-336 slice F — the guide sends a date to the contact write (§3.1, §3.7).
+          note: 'Pass one `group` for its relations, how to write them and an example of each. A birthday or an '
+            + "anniversary is not saved to memory: write it on the person's contact with contact.write.",
+        },
+      };
+    }
+    const group = typeof args.group === 'string' ? args.group.trim().toLowerCase() : '';
+    const rows = MEMORY_RELATIONS.filter((row) => row.group === group);
+    if (rows.length === 0) {
+      return invalidArgs(`memory.relations: \`group\` is one of ${groups.join(', ')}; omit it to list them`);
+    }
+    return { ok: true, result: { group, relations: rows.map(projectRelationRow), how: MEMORY_RELATIONS_HOW } };
+  };
+
+/** D-336 — the records a claim's linked ends name, read as the caller itself could
+ *  read them: a contact only where it may read contacts and is not held to spheres
+ *  (the fence `contact.read` meets), a thing the user owns through `work.read`'s own
+ *  checks. A record it may not read is refused with the reason, never looked up. */
+const claimRecords = (deps: ChatToolHandlerDeps, ctx: ChatDispatchContext): ClaimRecords => ({
+  contact: async (target) => {
+    const cannot = 'this contract cannot read contacts, so the claim cannot link one; write the person\'s name instead';
+    if (!isCollectionReadGrantedForDispatch(deps, ctx, 'contact')) return { refused: cannot };
+    const access = deps.getSituationAccess?.();
+    if (access) {
+      try {
+        if (createReadScope(access, ctx.execution_source).limited) return { refused: cannot };
+      } catch {
+        return { refused: cannot };
+      }
+    }
+    const store = deps.getContactStore();
+    if (!store) return null;
+    let row: ContactRecord | null;
+    if (target.includes('@')) {
+      let canonical = target;
+      try { canonical = store.resolveCanonicalEmail(target).canonical_email; } catch { /* a broken chain: read the row itself */ }
+      row = store.get(canonical);
+    } else {
+      row = store.getByContactIdResolved(target);
+    }
+    if (row === null || row.contact_id === undefined) return null;
+    const name = row.name?.trim();
+    return { contact_id: row.contact_id, name: name !== undefined && name !== '' ? name : row.email, email: row.email };
+  },
+  asset: async (id) => {
+    const read = await runWorkEntityReadTool(workEntityReadToolsDeps(deps), { kind: 'asset', id }, ctx);
+    if (!read.ok) return { refused: read.detail ?? 'that thing could not be read' };
+    const result = read.result as { found?: unknown; refused?: unknown; hint?: unknown; entity?: { id?: unknown; name?: unknown } | null };
+    if (result.refused === true) {
+      return { refused: typeof result.hint === 'string' ? result.hint : 'this contract cannot read that thing' };
+    }
+    if (result.found !== true || typeof result.entity?.id !== 'string') {
+      return typeof result.hint === 'string' ? { refused: result.hint } : null;
+    }
+    const name = typeof result.entity.name === 'string' ? result.entity.name.trim() : '';
+    return { asset_id: result.entity.id, name: name !== '' ? name : 'a thing you own' };
+  },
+});
+
+/** D-336 — how the owner knows the records a held `memory.write`'s claim links: a
+ *  contact by its name, a thing they own by its name. Recorded on the ask and the
+ *  card (`value_labels`, under `claim`), never shown to the AI; the card shows the
+ *  claim as one line (`tier1CallDetails`). */
+export const memoryAskLabels = async (
+  deps: ChatToolHandlerDeps,
+  raw: unknown,
+  ctx: ChatDispatchContext,
+): Promise<ApprovalValueLabels | undefined> => {
+  const claim = asObject(asObject(raw)?.claim);
+  if (!claim) return undefined;
+  const records = claimRecords(deps, ctx);
+  const names: Record<string, string> = {};
+  for (const end of [claim.subject, claim.object]) {
+    const linked = asObject(end);
+    if (!linked) continue;
+    if (typeof linked.contact === 'string') {
+      const found = await records.contact(linked.contact.trim());
+      if (found !== null && !('refused' in found)) names[linked.contact] = found.name;
+    } else if (typeof linked.asset === 'string') {
+      const found = await records.asset(linked.asset.trim());
+      if (found !== null && !('refused' in found)) names[linked.asset] = found.name;
+    }
+  }
+  return Object.keys(names).length > 0 ? { claim: names } : undefined;
+};
+
+// ────────────────────────────────────────────────────────────────
+// D-336 slice G — the notes a save meets: contradictions, and others on the same thing
+// ────────────────────────────────────────────────────────────────
+
+/** The most notes of each kind a save is told of. */
+const MEMORY_CONFLICTS_SHOWN = 3;
+
+/** D-336 slice G (§3.9) — what the AI is told of the notes a save meets, in words it can
+ *  act on. Never a refusal: either note may be the correction. The AI's own earlier note is
+ *  corrected by forgetting it (`memory.forget`), held for the owner beside the save.
+ *  ⛔ NOT a second save with `replaces`, which §3.9 first said: live (bench task 417) the AI
+ *  did just that while the first save still waited, both were approved, and memory held the
+ *  new fact twice. A replacement cannot combine with a save already waiting; a forget does,
+ *  whatever the owner approves. Where the note is the owner's, D-198's precedence holds:
+ *  theirs wins, and the AI asks. Slice J: the same fact saved already asks nothing of the
+ *  AI but to tell the user, which combines with whatever the owner answers; while the save
+ *  waits (`held`), the owner can say no to it. ⚠ Model-facing — `chat-prompt-optimization-log.md`. */
+const memoryConflictNote = (
+  conflicts: ClaimConflicts,
+  author: string | undefined,
+  held = false,
+): string | undefined => {
+  const told: string[] = [];
+  const mine = (row: UserMemoryRow): boolean => author !== undefined && memoryRowAuthor(row) === author;
+  for (const row of conflicts.contradicts.slice(0, MEMORY_CONFLICTS_SHOWN)) {
+    const said = `"${conflictSummary(row)}" ('${row.memory_id}')`;
+    told.push(mine(row)
+      ? `It contradicts ${said}, which you saved. If this corrects it, forget that one with memory.forget.`
+      : row.origin_actor === 'user_self'
+        ? `It contradicts the user's own note ${said}. Their note wins: tell them, and ask which is right; they can change it in the Memory view.`
+        : `It contradicts ${said}, which another agent saved and you cannot change. Tell the user; they can change it in the Memory view.`);
+  }
+  const same = conflicts.same.slice(0, MEMORY_CONFLICTS_SHOWN)
+    .map((row) => `"${conflictSummary(row)}" ('${row.memory_id}')`).join(' and ');
+  if (same !== '') {
+    told.push(held
+      ? `Memory already holds this fact, as ${same}. Tell the user it is saved already: they can say no to this save.`
+      : `Memory already held this fact, as ${same}. Tell the user it was saved already.`);
+  }
+  for (const row of conflicts.also.slice(0, MEMORY_CONFLICTS_SHOWN)) {
+    const said = `"${conflictSummary(row)}" ('${row.memory_id}')`;
+    told.push(mine(row)
+      ? `Memory also holds ${said}, which you saved, with the same relation. If this replaces it, forget that one with memory.forget; if both are true, nothing more is needed.`
+      : `Memory also holds ${said} with the same relation. If it is out of date, tell the user they can change it in the Memory view.`);
+  }
+  return told.length > 0 ? told.join(' ') : undefined;
+};
+
+/** The notes a save meets, as its card and its ask list them (`MemorySaveConflict`). */
+const memoryConflictList = (conflicts: ClaimConflicts): MemorySaveConflict[] => [
+  ...conflicts.contradicts.slice(0, MEMORY_CONFLICTS_SHOWN)
+    .map((row) => ({ kind: 'contradicts' as const, memory_id: row.memory_id, summary: conflictSummary(row) })),
+  ...conflicts.same.slice(0, MEMORY_CONFLICTS_SHOWN)
+    .map((row) => ({ kind: 'saved_already' as const, memory_id: row.memory_id, summary: conflictSummary(row) })),
+  ...conflicts.also.slice(0, MEMORY_CONFLICTS_SHOWN)
+    .map((row) => ({ kind: 'also_in_memory' as const, memory_id: row.memory_id, summary: conflictSummary(row) })),
+];
+
+/** The notes a save of `claim` would meet, from the store as it stands: the note it
+ *  replaces and that note's earlier versions are not compared (§3.9). */
+const memoryConflictsOf = async (
+  deps: ChatToolHandlerDeps,
+  store: UserMemoryStore,
+  claim: MemoryClaim,
+  replaces: string | undefined,
+): Promise<ClaimConflicts> => findClaimConflicts(
+  store,
+  await forgottenIds(deps.getMemoryRedactionStore?.()),
+  claim,
+  replaces === undefined ? new Set() : await lineageOf(store, replaces),
+);
+
+/** D-336 slice G — what a held `memory.write` meets, told when it is held
+ *  (`InternalToolRegistry.askNotices`): the owner's card and ask list the notes, and the AI
+ *  reads them beside "it was sent to the owner". The AI is told only what it could read
+ *  itself: a caller without the memory read gets no note quoted. The claim is the call's, as
+ *  its check reads it; one it would refuse meets nothing. */
+export const memoryAskNotices = async (
+  deps: ChatToolHandlerDeps,
+  raw: unknown,
+  ctx: ChatDispatchContext,
+): Promise<HeldCallNotices | undefined> => {
+  const store = deps.getUserMemoryStore?.();
+  const args = asObject(raw);
+  if (!store || !args || args.claim === undefined || args.claim === null) return undefined;
+  const parsed = parseClaimArg(args.claim);
+  if (!parsed.ok) return undefined;
+  const resolved = await resolveClaimArg(parsed.value, claimRecords(deps, ctx));
+  if (!resolved.ok) return undefined;
+  const replaces = typeof args.replaces === 'string' && args.replaces.trim() !== '' ? args.replaces.trim() : undefined;
+  const conflicts = await memoryConflictsOf(deps, store, resolved.value.claim, replaces);
+  const author = ctx.execution_source ? authoringContractId(ctx.execution_source) : undefined;
+  const waiting = await waitingSavesOf(deps, resolved.value.claim, author);
+  const listed: MemorySaveConflict[] = [
+    ...memoryConflictList(conflicts),
+    ...waiting.same.slice(0, MEMORY_CONFLICTS_SHOWN).map((twin) => ({ kind: 'asked_already' as const, summary: twin.summary })),
+    ...waiting.contradicts.slice(0, MEMORY_CONFLICTS_SHOWN)
+      .map((other) => ({ kind: 'contradicts_asked' as const, summary: other.summary })),
+  ];
+  if (listed.length === 0) return undefined;
+  const told = [
+    admitMemoryRead(deps.getOpAdmissionGate?.(), ctx.execution_source) ? memoryConflictNote(conflicts, author, true) : undefined,
+    askedAlreadyNote(waiting.same.filter((twin) => twin.mine)),
+    contradictsAskedNote(waiting.contradicts.filter((other) => other.mine)),
+  ].filter((note): note is string => note !== undefined);
+  const agent = told.length > 0 ? told.join(' ') : undefined;
+  return { ...(agent !== undefined ? { agent } : {}), memory_conflicts: listed };
+};
+
+/** A save still waiting for the owner, by its summary; `mine` when the caller asked it. */
+interface WaitingSave {
+  readonly summary: string;
+  readonly mine: boolean;
+}
+
+/** D-336 slice O — the saves of the same claim asked before this one and still waiting for
+ *  the owner (`same`), oldest first, each by its summary. Any caller's, for the owner's card
+ *  and ask; `mine` marks the caller's own (its contract, or the owner's own chats), the only
+ *  ones its AI is told of: another app's waiting call is not this one's to read. A waiting
+ *  save's claim is read as it will run, by the owner's lookups. One that cannot be read
+ *  compares nothing. Slice S: and those this claim contradicts (`contradicts`), by the rule a
+ *  note in memory is contradicted (`claimsContradict`). */
+const waitingSavesOf = async (
+  deps: ChatToolHandlerDeps,
+  claim: MemoryClaim,
+  author: string | undefined,
+): Promise<{ readonly same: WaitingSave[]; readonly contradicts: WaitingSave[] }> => {
+  const same: WaitingSave[] = [];
+  const contradicts: WaitingSave[] = [];
+  let waiting: readonly WaitingTier1Call[];
+  try {
+    waiting = await deps.getWaitingCalls?.('memory.write') ?? [];
+  } catch {
+    return { same, contradicts };
+  }
+  const records = deps.getOwnerClaimRecords?.() ?? {};
+  const key = memoryClaimKey(claim);
+  for (const call of waiting) {
+    const summary = typeof call.args.summary === 'string' ? call.args.summary.trim() : '';
+    const theirs = summary === '' ? undefined : claimOfCall(call.args.claim, records);
+    if (theirs === undefined) continue;
+    const found = memoryClaimKey(theirs) === key ? same : claimsContradict(claim, theirs) ? contradicts : undefined;
+    found?.push({ summary, mine: author !== undefined && authoringContractId(call.execution_source) === author });
+  }
+  return { same, contradicts };
+};
+
+/** D-336 slice O — what the AI is told of its own saves of the same fact still waiting. As for
+ *  a fact saved already (slice J), it is asked only to tell the user, which combines with
+ *  whatever the owner answers either save. ⚠ Model-facing — `chat-prompt-optimization-log.md`. */
+const askedAlreadyNote = (mine: ReadonlyArray<{ readonly summary: string }>): string | undefined => {
+  const said = mine.slice(0, MEMORY_CONFLICTS_SHOWN).map((twin) => `"${twin.summary}"`).join(' and ');
+  return said === ''
+    ? undefined
+    : `You asked to save this fact already, as ${said}, still waiting for the owner. `
+      + 'Tell the user it was asked already: they can say no to this one.';
+};
+
+/** D-336 slice S — what the AI is told of its own saves still waiting that this one
+ *  contradicts. Neither is a note yet, so there is nothing to forget: as for the owner's own
+ *  note, it asks the user which is right, and the owner says no to the other. ⚠ Model-facing —
+ *  `chat-prompt-optimization-log.md`. */
+const contradictsAskedNote = (mine: ReadonlyArray<{ readonly summary: string }>): string | undefined => {
+  const said = mine.slice(0, MEMORY_CONFLICTS_SHOWN).map((other) => `"${other.summary}"`).join(' and ');
+  return said === ''
+    ? undefined
+    : `It contradicts ${said}, which you asked to save, still waiting for the owner. `
+      + 'Tell the user, and ask which is right: they can say no to the wrong one.';
+};
 
 // ────────────────────────────────────────────────────────────────
 // memory.write — D-198 Slice 4 collective-memory write (contracted_user)
@@ -3141,6 +3590,15 @@ const createMemoryWriteHandler =
     if (replaces !== undefined && despiteRevoked !== undefined) {
       return invalidArgs('pass replaces or despite_revoked, not both');
     }
+    // D-336 — the summary decomposed (`claim`): its relation must be listed and its ends
+    // the kinds the relation names. Checked before the owner is asked (D-329), like the
+    // rest of the call; refused, the agent can save again without it.
+    // Slice E — a claim the owner changed on the card while approving is theirs instead: a
+    // claim as their own forms write it, by their rules, a relation of their own words
+    // allowed (§3.11). Only the resume says so (`owner_edits`), never the call.
+    const ownersClaim = ctx.owner_edits?.includes('claim') === true;
+    const claimArg = ownersClaim || args.claim === undefined || args.claim === null ? undefined : parseClaimArg(args.claim);
+    if (claimArg !== undefined && !claimArg.ok) return invalidArgs(claimArg.message);
 
     // Grant gate — the enforcement boundary (§3). Owner chat resolves to the
     // permissive owner contract; a door needs `core.memory.write` (default-off).
@@ -3166,13 +3624,34 @@ const createMemoryWriteHandler =
     // forget can prove the entry is the caller's own.
     const author = ctx.execution_source ? authoringContractId(ctx.execution_source) : undefined;
 
+    // D-336 — a claim's linked ends, read as this caller could read them; a contact it
+    // names also links the note to that contact, as `provenance_entity_ids` does.
+    let claim: MemoryClaim | undefined;
+    let claimLinks: readonly string[] = [];
+    if (claimArg !== undefined) {
+      const resolved = await resolveClaimArg(claimArg.value, claimRecords(deps, ctx));
+      if (!resolved.ok) return invalidArgs(resolved.message);
+      claim = resolved.value.claim;
+      claimLinks = resolved.value.links;
+    } else if (ownersClaim && args.claim !== undefined && args.claim !== null) {
+      // Checked again now, as a new save is: a contact or thing removed since is refused.
+      const records = deps.getOwnerClaimRecords?.() ?? {};
+      const checked = ownerClaim(args.claim, records);
+      if (!checked.ok) return invalidArgs(checked.message);
+      claim = checked.value;
+      claimLinks = claimContactEmails(checked.value, records);
+    }
+
     const body =
       typeof args.body === 'string' && args.body.length > 0 ? args.body : undefined;
-    const provenance = Array.isArray(args.provenance_entity_ids)
-      ? args.provenance_entity_ids.filter(
-          (x): x is string => typeof x === 'string' && x.length > 0,
-        )
-      : [];
+    const provenance = [...new Set([
+      ...(Array.isArray(args.provenance_entity_ids)
+        ? args.provenance_entity_ids.filter(
+            (x): x is string => typeof x === 'string' && x.length > 0,
+          )
+        : []),
+      ...claimLinks,
+    ])];
     const write = (replacing: string | undefined) =>
       createStoreBackedMemoryWriteAdapter({
         store,
@@ -3180,6 +3659,7 @@ const createMemoryWriteHandler =
         ...(hasSession ? { session } : {}),
         ...(author !== undefined ? { author_contract_id: author } : {}),
         ...(replacing !== undefined ? { replaces: replacing } : {}),
+        ...(claim !== undefined ? { claim } : {}),
       }).write({
         kind: 'chat_memory',
         summary,
@@ -3235,7 +3715,13 @@ const createMemoryWriteHandler =
           ? undefined
           : `the owner replaced '${despiteRevoked}' with their own version ('${owners}'). Leave it as it is; if it looks wrong, tell the user`;
       }
-      const hit = await matchRevokedClaim(store, redactions, body === undefined ? summary : `${summary} ${body}`);
+      // D-336 slice B — an equal claim key matches too, in any wording or language.
+      const hit = await matchRevokedClaim(
+        store,
+        redactions,
+        body === undefined ? summary : `${summary} ${body}`,
+        claim === undefined ? undefined : memoryClaimKey(claim),
+      );
       if (hit === undefined) return undefined;
       const on = new Date(hit.revoked_at).toISOString().slice(0, 10);
       const owners = await ownersVersion(hit.memory_id);
@@ -3254,6 +3740,24 @@ const createMemoryWriteHandler =
         ?? await revokeRefusal();
       return refused === undefined ? WOULD_RUN : invalidArgs(refused);
     }
+    // D-336 slice G — the notes this save meets (§3.9), told with its result and never a
+    // refusal; quoted only to a caller that could read them itself.
+    const conflicts = claim === undefined ? undefined : await memoryConflictsOf(deps, store, claim, replaces);
+    const note = conflicts === undefined || !admitMemoryRead(deps.getOpAdmissionGate?.(), ctx.execution_source)
+      ? undefined
+      : memoryConflictNote(conflicts, author);
+    const told: Record<string, unknown> = conflicts === undefined || note === undefined ? {} : {
+      ...(conflicts.contradicts.length > 0
+        ? { contradicts: conflicts.contradicts.slice(0, MEMORY_CONFLICTS_SHOWN).map((row) => ({ memory_id: row.memory_id, summary: conflictSummary(row) })) }
+        : {}),
+      ...(conflicts.same.length > 0
+        ? { saved_already: conflicts.same.slice(0, MEMORY_CONFLICTS_SHOWN).map((row) => ({ memory_id: row.memory_id, summary: conflictSummary(row) })) }
+        : {}),
+      ...(conflicts.also.length > 0
+        ? { also_in_memory: conflicts.also.slice(0, MEMORY_CONFLICTS_SHOWN).map((row) => ({ memory_id: row.memory_id, summary: conflictSummary(row) })) }
+        : {}),
+      note,
+    };
     try {
       if (despiteRevoked !== undefined) {
         // D-198 §13 — saved again on purpose, and (being `write`) approved by the owner:
@@ -3271,7 +3775,8 @@ const createMemoryWriteHandler =
         });
         if (!outcome.ok) return invalidArgs(outcome.refused);
         emitMemoryUser(deps.getEventBus?.(), outcome.result.memory_id);
-        return { ok: true, result: { ...outcome.result, revoke_closed: despiteRevoked } };
+        await recordMade(deps, { kind: 'memory', memory_id: outcome.result.memory_id }, ctx);
+        return { ok: true, result: { ...outcome.result, revoke_closed: despiteRevoked, ...told } };
       }
       if (replaces === undefined) {
         const refused = await revokeRefusal();
@@ -3279,7 +3784,8 @@ const createMemoryWriteHandler =
         const result = await write(undefined);
         // Fan a `memory` refresh so paired Memory lenses live-update (§7.7).
         emitMemoryUser(deps.getEventBus?.(), result.memory_id);
-        return { ok: true, result };
+        await recordMade(deps, { kind: 'memory', memory_id: result.memory_id }, ctx);
+        return { ok: true, result: { ...result, ...told } };
       }
       // D-198 §10 — check then write under the store's revision lock, so two
       // writes batched into one turn cannot both replace the same entry.
@@ -3290,7 +3796,8 @@ const createMemoryWriteHandler =
       });
       if (!outcome.ok) return invalidArgs(outcome.refused);
       emitMemoryUser(deps.getEventBus?.(), outcome.result.memory_id);
-      return { ok: true, result: { ...outcome.result, replaces } };
+      await recordMade(deps, { kind: 'memory', memory_id: outcome.result.memory_id }, ctx);
+      return { ok: true, result: { ...outcome.result, replaces, ...told } };
     } catch (e) {
       return executionError(errMessage(e));
     }
@@ -4153,6 +4660,33 @@ const buildExecuteRequest = (
   };
 };
 
+/** D-337 slice L — a recipe that may ask the owner partway through is not run while a call of its
+ *  turn waits for their answer (`recipeMayAsk`): `not_asked_yet`, as slice K answers a write or a
+ *  pack action, and the model runs it once the conversation carries on. `null` ⇒ run it. */
+const recipeNotAskedYet = (
+  deps: ChatToolHandlerDeps,
+  recipe: RecipeDefinition,
+  ctx: ChatDispatchContext,
+): ChatDispatchResult | null => {
+  const waitingFor = askAfterWaiting(ctx.execution_source, ctx.turn_state);
+  if (waitingFor === undefined || ctx.execution_source === undefined) return null;
+  const getManifest = (slug: string) => deps.getExecutorConfig().manifests.get(slug);
+  const packs = deps.scanInstalledPacks;
+  const contracts = deps.getContractScan?.();
+  const lookups: RecipeAskLookups = {
+    getManifest,
+    packOps: () => (packs !== undefined ? buildPackOpResolution(packs, getManifest) : new Map()),
+    ...(contracts !== undefined
+      ? { ownerRuling: (ingredient_id: string, operation_id: string) =>
+          readOwnerOperationOverride({ scan: contracts, ingredient_id, operation_id }) }
+      : {}),
+    ...(deps.neutralWriteTargets !== undefined ? { neutralWriteTargets: deps.neutralWriteTargets } : {}),
+  };
+  return recipeMayAsk(recipe, ctx.execution_source, lookups)
+    ? { ok: false, reason: 'not_asked_yet', detail: notAskedYetMessage(waitingFor) }
+    : null;
+};
+
 const createRecipeRunHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -4189,9 +4723,21 @@ const createRecipeRunHandler =
         }
       }
     }
+    // D-337 slice L — not run while a call of this turn waits, when it may ask the owner.
+    const runRecipe = (req.recipe as RecipeDefinition | undefined)
+      ?? (req.recipe_id ? deps.getRecipeStore().get(req.recipe_id) : null);
+    if (runRecipe) {
+      const notAsked = recipeNotAskedYet(deps, runRecipe, ctx);
+      if (notAsked !== null) return notAsked;
+      // D-336 (spec §48–§49) — a CRM change given an id that is not a CRM record's, or a CRM
+      // contact the user named only in part, is refused first.
+      const refused = await crmChangeRefusal(deps, runRecipe, req, ctx, 'recipe.run');
+      if (refused !== undefined) return refused;
+    }
     try {
-      const result = await execute(req);
-      return wrapRecipeRunResult(result);
+      // D-336 (spec §53) — and a contact the run finds itself is asked about at its change.
+      const result = await execute(req, { record_change_check: crmContactChangeCheck(deps, ctx, 'recipe.run') });
+      return wrapRecipeRunResult(result, undefined, ctx.execution_source);
     } catch (e) {
       return refusalOf(e);
     }
@@ -4247,6 +4793,9 @@ export const createChatTier2Dispatch =
     // owner's own chat handed the recipe whatever the model wrote.
     const dateIssue = recipeDateArgumentIssue(recipe, args);
     if (dateIssue !== null) return invalidArgs(dateIssue);
+    // D-337 slice L — not run while a call of this turn waits, when it may ask the owner.
+    const notAsked = recipeNotAskedYet(deps, recipe, ctx);
+    if (notAsked !== null) return notAsked;
     // D-137 Trio #D Codex P1 fold — channel-aware trigger_source so
     // Tier 2 recipes invoked over MCP wire trip the same engine gates
     // as legacy `recued_runRecipe` would (the legacy path explicitly
@@ -4264,9 +4813,22 @@ export const createChatTier2Dispatch =
       !Object.prototype.hasOwnProperty.call(recipe.variables ?? {}, 'connections'),
     );
     if (typeof req === 'string') return invalidArgs(req);
+    // D-336 (spec §48–§49) — a CRM change given an id that is not a CRM record's, or a CRM
+    // contact the user named only in part, is refused first.
+    const refused = await crmChangeRefusal(deps, recipe, req, ctx, toolName);
+    if (refused !== undefined) return refused;
     try {
-      const result = await execute(req);
-      return wrapRecipeRunResult(result);
+      // The tool the recipe was called by: a key's grant names it, and a run checks that the grant
+      // it ran under still holds before each local write and when it resumes after an approval.
+      // ⛔ Without it a contracted run (the LLM gateway's) was checked against `<metadata.author>/
+      // <recipe_id>`, never the `kitchen/<recipe_id>` its key grants: a Kitchen-saved recipe's
+      // calendar or other local write was refused (found driving D-337 ruling 4 live, 2026-11-02).
+      const result = await execute(req, {
+        entry_tool_name: toolName,
+        // D-336 (spec §53) — and a contact the run finds itself is asked about at its change.
+        record_change_check: crmContactChangeCheck(deps, ctx, toolName),
+      });
+      return wrapRecipeRunResult(result, undefined, ctx.execution_source);
     } catch (e) {
       return refusalOf(e);
     }
@@ -4374,7 +4936,7 @@ export interface CalendarWriteDeps {
     slug: string;
     source_id: string;
     patch: Record<string, unknown>;
-  }) => Promise<{ source_id: string }>;
+  }) => Promise<{ source_id: string; deleted?: true }>;
   /** D-329 — what each write checks before it calls the calendar, asked before the owner
    *  is: it throws that write's own refusal. Absent ⇒ the arguments' checks alone. */
   readonly checkCalendarCreate?: (input: { slug: string }) => void;
@@ -4383,6 +4945,9 @@ export interface CalendarWriteDeps {
     source_id: string;
     patch: Record<string, unknown>;
   }) => void;
+  /** D-336 (spec §48) — the calendar on an account a create naming none goes on: its main
+   *  one, or its only writable one; throws the refusal. Absent ⇒ the local calendar's. */
+  readonly defaultCalendar?: (input: { slug: string }) => Promise<string>;
 }
 
 export const WORK_ENTITY_UPDATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
@@ -4664,18 +5229,23 @@ const createCalendarCreateHandler =
       ? args.calendar_id.trim()
       : DEFAULT_LOCAL_CALENDAR_SLUG;
     // D-329 — a check makes the write's own checks, its calendar's included, and stops
-    // before it calls the calendar.
+    // before it calls the calendar. D-336 (spec §48) — which calendar on the account it goes
+    // on is one of them: an account with several and no main one is refused before the owner
+    // is asked, not after.
     if (check) {
-      try { cal.checkCalendarCreate?.({ slug }); }
-      catch (e) { return invalidArgs(`calendar.create: ${e instanceof Error ? e.message : String(e)}`); }
+      try {
+        cal.checkCalendarCreate?.({ slug });
+        await cal.defaultCalendar?.({ slug });
+      } catch (e) { return invalidArgs(`calendar.create: ${e instanceof Error ? e.message : String(e)}`); }
       return WOULD_RUN;
     }
     try {
+      const calendarId = cal.defaultCalendar ? await cal.defaultCalendar({ slug }) : DEFAULT_LOCAL_CALENDAR_ID;
       const { source_id } = await cal.calendarCreate({
         slug,
-        calendar_id: DEFAULT_LOCAL_CALENDAR_ID,
+        calendar_id: calendarId,
         event: {
-          calendar_id: DEFAULT_LOCAL_CALENDAR_ID,
+          calendar_id: calendarId,
           summary,
           ...(typeof args.description === 'string' && args.description.length > 0
             ? { description: args.description }
@@ -4707,7 +5277,9 @@ const createCalendarUpdateHandler =
     let normalized: ReturnType<typeof calendarChatUpdateInput>;
     try { normalized = calendarChatUpdateInput(args); }
     catch (error) { return invalidArgs(error instanceof Error ? error.message : String(error)); }
-    const { slug, source_id: sourceId, patch } = normalized;
+    // D-336 (spec §56) — the search's `record_id` names the event, and its calendar.
+    const named = calendarEventOfRecordId(deps, normalized.source_id);
+    const { slug, source_id: sourceId, patch } = named !== undefined ? { ...normalized, ...named } : normalized;
 
     if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, CALENDAR_UPDATE_OP_ID)) {
       return {
@@ -4725,10 +5297,18 @@ const createCalendarUpdateHandler =
       return WOULD_RUN;
     }
     try {
-      const { source_id } = await cal.calendarUpdate({ slug, source_id: sourceId, patch });
+      const { source_id, deleted } = await cal.calendarUpdate({ slug, source_id: sourceId, patch });
       return {
         ok: true,
-        result: { updated: true, source_id, calendar: slug, fields: Object.keys(patch) },
+        // D-336 (spec §56) — an Outlook event cancelled is deleted: say so, so the model does not
+        // look for it again. ⚠ Model-facing.
+        result: deleted === true
+          ? {
+            cancelled: true, deleted: true, source_id, calendar: slug,
+            note: 'Outlook keeps no cancelled events, so it was deleted. If the user organized it, '
+              + 'Outlook sends its guests a cancellation.',
+          }
+          : { updated: true, source_id, calendar: slug, fields: Object.keys(patch) },
       };
     } catch (e) {
       return executionError(
@@ -5425,7 +6005,9 @@ export const workAskLabels = async (deps: ChatToolHandlerDeps, raw: unknown): Pr
   return Object.keys(labels).length > 0 ? labels : undefined;
 };
 /** D-329 — how the owner knows the event a held `calendar.update` changes: its title and
- *  when it is, on the turn's clock (the MCP wire has none, so there its title alone). */
+ *  when it is, on the turn's clock (the MCP wire has none, so there its title alone).
+ *  D-336 (spec §48) — and, on a Google event with guests, that Google emails them: the change
+ *  asks it to, as the owner's own edit does. */
 export const calendarAskLabels = async (
   deps: ChatToolHandlerDeps,
   raw: unknown,
@@ -5434,14 +6016,13 @@ export const calendarAskLabels = async (
   const args = asObject(raw);
   const id = typeof args?.source_id === 'string' ? args.source_id : undefined;
   if (args === null || id === undefined) return undefined;
-  const slug = typeof args.calendar_id === 'string' && args.calendar_id.trim() ? args.calendar_id.trim() : DEFAULT_LOCAL_CALENDAR_SLUG;
-  const calendar = deps.getCollectionRegistry()?.list()
-    .filter(isCalendarCollection).find((collection) => collection.slug === slug);
-  const event = calendar?.table.get(id)?.event;
-  const summary = typeof event?.summary === 'string' ? event.summary.trim() : '';
-  if (summary.length === 0) return undefined;
-  const when = eventWhenOnTurnClock(event, ctx.time_zone);
-  return { source_id: { [id]: when === undefined ? summary : `${summary}, ${when}` } };
+  // D-336 (spec §56) — named by the search's `record_id`, it is that event, on its own calendar.
+  const named = calendarEventOfRecordId(deps, id);
+  const slug = named?.slug
+    ?? (typeof args.calendar_id === 'string' && args.calendar_id.trim() ? args.calendar_id.trim() : DEFAULT_LOCAL_CALENDAR_SLUG);
+  // The same label a recipe's held change of the event has (spec §52).
+  const label = calendarEventApprovalLabel(deps.getCollectionRegistry(), slug, named?.source_id ?? id, ctx.time_zone);
+  return label === undefined ? undefined : { source_id: { [id]: label } };
 };
 
 /** D-325 (2026-10-24) — `work.type`: what a type of thing the owner keeps holds,
@@ -6055,12 +6636,14 @@ export const buildChatTier1Handlers = (
 ): Record<string, Tier1Handler> => wrapSphereFence(wrapCollectionFence(wrapEmptyResults({
   'contact.search': createContactSearchHandler(deps),
   'contact.read': createContactReadHandler(deps),
+  'contact.write': createContactWriteHandler(deps),
   'mail.search': createMailSearchHandler(deps),
   'mail.read': createMailReadHandler(deps),
   'document.read': createDocumentReadHandler(deps),
   'document.search': createDocumentSearchHandler(deps),
   'calendar.search': createCalendarSearchHandler(deps),
   'memory.search': createMemorySearchHandler(deps),
+  'memory.relations': createMemoryRelationsHandler(deps),
   'memory.write': createMemoryWriteHandler(deps),
   'memory.forget': createMemoryForgetHandler(deps),
   'enrichment.search': createEnrichmentSearchHandler(deps),
@@ -6388,6 +6971,11 @@ const dispatchChatCanonicalOp = async (
     ...(a.args !== undefined ? { args: a.args as Record<string, unknown> } : {}),
   });
   if (!built.ok) return { ok: false, reason: 'execution_error', detail: built.reason };
+  // D-336 (spec §48–§49) — a CRM change given an id that is not a CRM record's, or a CRM
+  // contact the user named only in part, is refused first. The record's id is the call's own
+  // argument, so the run's settings are not needed to read it.
+  const refused = await crmChangeRefusal(deps, built.recipe, {}, ctx, toolName);
+  if (refused !== undefined) return refused;
 
   const execute = deps.getExecuteRecipe?.();
   if (!execute) {
@@ -6466,8 +7054,10 @@ export const createChatRawOpDispatch = (
       args: opArgs,
       executionSource: ctx.execution_source,
       ...(ctx.contract_snapshot ? { contractSnapshot: ctx.contract_snapshot } : {}),
+      // D-337 slice K — not asked while a call of this turn waits for the owner.
+      askAfter: () => askAfterWaiting(ctx.execution_source, ctx.turn_state),
     });
-    return projectRawOpOutcome(outcome);
+    return projectRawOpOutcome(outcome, ctx.execution_source);
   } catch (e) {
     return executionError(errMessage(e));
   }
@@ -6490,11 +7080,16 @@ export const createChatRawOpDispatch = (
  *  already surface, so chat adds no second consent of its own. */
 export const projectRawOpOutcome = (
   outcome: RawOpDispatchOutcome,
+  /** The conversation the operation was asked from, as for a held run. */
+  conversation?: unknown,
 ): ChatDispatchResult => {
   switch (outcome.kind) {
     case 'result':
       return { ok: true, result: outcome.result };
-    case 'held':
+    case 'held': {
+      // D-329 — where else the owner answers it, as a held run says: the conversation's own
+      // channel first, when the request goes there.
+      const elsewhere = approvalElsewhereMessage(outcome.approval_channels ?? [], approvalChannelOf(conversation));
       return {
         ok: true,
         run_held: { kind: 'approval' },
@@ -6504,8 +7099,12 @@ export const projectRawOpOutcome = (
           awaiting_approval: true,
           op: outcome.op_id,
           message: HELD_FOR_APPROVAL_CHAT_MESSAGE,
+          ...(elsewhere !== undefined ? { approval_elsewhere: elsewhere } : {}),
+          // D-337 — the conversation carries on with the outcome, as a held run's says.
+          ...(conversationCarriesOn(conversation) ? { after_approval: HELD_CARRIES_ON_MESSAGE } : {}),
         },
       };
+    }
     case 'ask':
       return {
         ok: true,
@@ -6517,6 +7116,9 @@ export const projectRawOpOutcome = (
         reason: outcome.code !== undefined ? 'invalid_args' : 'execution_error',
         detail: outcome.message,
       };
+    // D-337 slice K — not asked: nothing was held, so nothing waits on it.
+    case 'not_asked':
+      return { ok: false, reason: 'not_asked_yet', detail: notAskedYetMessage(outcome.waiting) };
   }
 };
 
@@ -6544,6 +7146,7 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
     'calendar.update': checkedBy(createCalendarUpdateHandler, deps),
     'memory.write': checkedBy(createMemoryWriteHandler, deps),
     'memory.forget': checkedBy(createMemoryForgetHandler, deps),
+    'contact.write': (args: unknown, ctx: ChatDispatchContext) => checkContactWrite(deps, args, ctx),
     'recipe.stop': checkedBy(createRecipeStopHandler, deps),
     'recipe.schedule': checkedBy(createRecipeScheduleHandler, deps),
     'schedule.run_prompt': checkedBy((d, check) => createPromptScheduleHandler(d, 'run_prompt', check), deps),
@@ -6553,9 +7156,15 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
     'schedule.remove': checkedBy((d, check) => createPromptScheduleHandler(d, 'remove', check), deps),
   },
   tier1AskLabels: {
+    'memory.write': (args: unknown, ctx: ChatDispatchContext) => memoryAskLabels(deps, args, ctx),
+    'contact.write': (args: unknown, ctx: ChatDispatchContext) => contactAskLabels(deps, args, ctx),
     'work.create': (args: unknown) => workAskLabels(deps, args),
     'work.update': (args: unknown) => workAskLabels(deps, args),
     'calendar.update': (args: unknown, ctx: ChatDispatchContext) => calendarAskLabels(deps, args, ctx),
+  },
+  // D-336 slice G — what a held write meets, told when it is held.
+  tier1AskNotices: {
+    'memory.write': (args: unknown, ctx: ChatDispatchContext) => memoryAskNotices(deps, args, ctx),
   },
   tier2Source: createChatTier2Source(deps),
   manifestLookup: createChatManifestLookup(deps),

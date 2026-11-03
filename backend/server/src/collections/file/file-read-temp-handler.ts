@@ -1,7 +1,7 @@
 import { RpcError } from '@recued/contracts';
 import type { TempFileRef } from '@recued/contracts';
 
-import { readConfinedTempFile } from '../../execution/run-scratch.js';
+import { readConfinedTempBytes, TempFileReadTooLarge } from '../../execution/run-scratch.js';
 
 /** D-274 — `file-read-temp` (backs `core.storage.file.read-temp`): hand a
  *  run-scoped `temp` file_ref's BYTES back to the recipe that produced it.
@@ -52,15 +52,12 @@ export const handleFileReadTemp = (
   args: FileReadTempRequest,
 ): FileReadTempResponse => {
   // Fails closed on an empty run_id or a path escaping the run's scratch root.
-  const { bytes_b64, mime_type, filename } = readConfinedTempFile(args.ref, args.run_id);
-  const size_bytes = Buffer.from(bytes_b64, 'base64').byteLength;
-  if (size_bytes > FILE_READ_TEMP_MAX_BYTES) {
-    throw new RpcError(
-      'payload_too_large',
-      `file.read-temp: ${size_bytes} bytes is past the ${FILE_READ_TEMP_MAX_BYTES}-byte ceiling — `
-      + 'persist it and read the record instead',
-      413,
-    );
+  try {
+    const { bytes, mime_type, filename } = readConfinedTempBytes(args.ref, args.run_id, FILE_READ_TEMP_MAX_BYTES);
+    return { bytes_b64: bytes.toString('base64'), mime_type, filename, size_bytes: bytes.length };
+  } catch (error) {
+    if (!(error instanceof TempFileReadTooLarge)) throw error;
+    throw new RpcError('payload_too_large',
+      `file.read-temp: ${error.size_bytes} bytes is past the ${FILE_READ_TEMP_MAX_BYTES}-byte ceiling — persist it and read the record instead`, 413);
   }
-  return { bytes_b64, mime_type, filename, size_bytes };
 };

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { CalendarAdapterError, type CalendarEventUpdateRequest } from '@recued/contracts';
+import { CalendarAdapterError, type CalendarEventUpdateRequest, type CalendarEventCreateRequest } from '@recued/contracts';
 import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import { createBlobStore } from '../../../storage/blob-store.js';
@@ -12,13 +12,17 @@ import { createCalendarCollection, type CalendarCollection } from '../calendar-c
 import { createLocalCalendarProvider, LOCAL_CALENDAR_CAPS } from '../local-provider.js';
 import type { CalendarProvider, ProviderEventEditContext, ProviderEventPayload } from '../provider.js';
 import { getOwnerCalendarEvent } from '../invitation-handler.js';
-import { updateOwnerCalendarEvent } from '../remote-event-handler.js';
+import { checkOwnerCalendarEventDeletion, deleteOwnerCalendarEvent, updateOwnerCalendarEvent } from '../remote-event-handler.js';
+import { createOwnerCalendarEvent, listCalendarEventDestinations } from '../event-create-handler.js';
+import { createCalendarEventCreationStore } from '../../../storage/calendar-event-creations.js';
 
 const NOW = Date.parse('2026-10-30T16:00:00Z');
 const ref = { slug: 'work', source_id: 'event-1' };
 let db: Database.Database, dir: string, collection: CalendarCollection, provider: CalendarProvider;
 let instances: ReturnType<typeof createInstanceStore>, remote: ProviderEventPayload;
 let context: Omit<ProviderEventEditContext, 'payload'>;
+/** The calendar has deleted the event: it answers a read with "not found". */
+let removed = false;
 const deps = () => ({ instances, getCollection: (slug: string) => slug === 'work' ? collection : undefined });
 const request = async (patch: CalendarEventUpdateRequest['patch'] = { summary: 'Customer review' }): Promise<CalendarEventUpdateRequest> => {
   const view = await getOwnerCalendarEvent(deps(), ref);
@@ -34,8 +38,17 @@ beforeEach(async () => {
     organizer: { email: 'me@example.com' }, attendees: [{ email: 'guest@example.com', response_status: 'accepted' }],
     conference_url: 'https://meeting.example.com/original', reminders: [{ method: 'popup', minutes: 15 }] } };
   context = { editable_fields: ['summary', 'description', 'location', 'start_at', 'end_at'], edit_notice: 'Changes are saved to Team.' };
+  removed = false;
   provider = { ...createLocalCalendarProvider({ slug: 'work', now: () => NOW, readEvent: () => null }), kind: 'gcal', accountEmail: 'me@example.com',
-    readEventForEdit: vi.fn(async () => ({ ...context, payload: structuredClone(remote) })),
+    readEventForEdit: vi.fn(async () => {
+      if (removed) throw new CalendarAdapterError('event_not_found', 'Gone');
+      return { ...context, payload: structuredClone(remote) };
+    }),
+    deleteEvent: vi.fn(async input => {
+      input.before_send?.();
+      if (input.expected_etag !== remote.etag) throw new CalendarAdapterError('version_conflict', 'Changed');
+      removed = true;
+    }),
     updateEvent: vi.fn(async input => {
       input.before_send?.();
       if (input.expected_etag !== remote.etag) throw new CalendarAdapterError('version_conflict', 'Changed');
@@ -146,4 +159,181 @@ it('fences a replacement connection and rejects cached confirmation after a prov
   const prior = instances.get('calendar', 'work')!; instances.delete('calendar', 'work'); instances.upsert(prior);
   await expect(updateOwnerCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'resource_changed' });
   expect(provider.updateEvent).not.toHaveBeenCalled();
+});
+
+const meeting = (): CalendarEventCreateRequest => ({ slug: 'work', calendar_id: 'team',
+  expected_incarnation: instances.getIncarnation!('calendar', 'work')!,
+  creation_id: '7865c879-d028-4093-bbd3-107986e7841d', summary: 'New meeting', description: 'Agenda', location: 'Room 2',
+  start_at: NOW, end_at: NOW + 3_600_000, timezone: 'America/Los_Angeles', is_all_day: false,
+  guests: [{ email: 'Ada@Example.com', display_name: 'Ada' }, { email: 'ada@example.com' }], send_invitations: true });
+const invitationPayload = (event: Parameters<CalendarProvider['createEvent']>[1]): ProviderEventPayload => ({
+  event: { ...remote.event, source_id: 'created-meeting', ical_uid: 'created-meeting@example.com',
+    summary: event.summary, description: event.description, location: event.location,
+    start_at: event.start_at, end_at: event.end_at, timezone: event.timezone, is_all_day: event.is_all_day,
+    attendees: event.attendees }, description_bytes: Buffer.byteLength(event.description ?? ''),
+});
+
+it('creates only the reviewed guests once and recovers a completed invitation without sending again', async () => {
+  provider.listWritableCalendars = vi.fn(async () => [{ calendar_id: 'team', name: 'Team', can_invite: true as const }]);
+  let release!: () => void;
+  const held = new Promise<void>(done => { release = done; });
+  const write = vi.spyOn(provider, 'createEvent').mockImplementation(async (_calendar, event, beforeSend) => {
+    await held; beforeSend?.(); return invitationPayload(event);
+  });
+  const input = meeting(), store = createCalendarEventCreationStore(db);
+  expect((await listCalendarEventDestinations(deps())).destinations[0]?.can_invite).toBe(true);
+  const first = createOwnerCalendarEvent(deps(), store, input);
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  release(); const saved = await first;
+  expect(write.mock.calls[0]?.[1]).toMatchObject({ send_invitations: true,
+    attendees: [{ email: 'ada@example.com', display_name: 'Ada', response_status: 'needs_action' }] });
+  expect(saved.invitations_requested).toBe(true);
+  expect(saved.snapshot.event.attendees).toEqual([{ email: 'ada@example.com', display_name: 'Ada', response_status: 'needs_action' }]);
+  provider.listWritableCalendars = vi.fn(async () => []);
+  expect(await createOwnerCalendarEvent(deps(), createCalendarEventCreationStore(db), input)).toEqual(saved);
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, guests: [{ email: 'different@example.com' }] }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  expect(write).toHaveBeenCalledTimes(1);
+});
+
+it('rechecks invitation capability before claiming a save and refuses unreviewed recipients', async () => {
+  const write = vi.spyOn(provider, 'createEvent');
+  provider.listWritableCalendars = vi.fn(async () => [{ calendar_id: 'team', name: 'Team', can_invite: true as const }]);
+  expect((await listCalendarEventDestinations(deps())).destinations[0]?.can_invite).toBe(true);
+  provider.listWritableCalendars = vi.fn(async () => [{ calendar_id: 'team', name: 'Team' }]);
+  const input = meeting(), store = createCalendarEventCreationStore(db);
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(store.get(input.creation_id)).toBeUndefined();
+  provider.listWritableCalendars = vi.fn(async () => [{ calendar_id: 'team', name: 'Team', can_invite: true as const }]);
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, send_invitations: undefined })).rejects.toMatchObject({ code: 'invalid_args' });
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, guests: [{ email: 'ada@example.com, hidden@example.com' }] }))
+    .rejects.toMatchObject({ code: 'invalid_args' });
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, guests: [{ email: 'ada@example.com\r\nBcc: hidden@example.com' }] }))
+    .rejects.toMatchObject({ code: 'invalid_args' });
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, guests: [{ email: 'ada@example.com;' }] }))
+    .rejects.toMatchObject({ code: 'invalid_args' });
+  expect(store.get(input.creation_id)).toBeUndefined();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('keeps an invitation save uncertain when the provider did not acknowledge the reviewed guests', async () => {
+  provider.listWritableCalendars = vi.fn(async () => [{ calendar_id: 'team', name: 'Team', can_invite: true as const }]);
+  const write = vi.spyOn(provider, 'createEvent').mockImplementation(async (_calendar, event, beforeSend) => {
+    beforeSend?.(); const payload = invitationPayload(event); delete payload.event.attendees; return payload;
+  });
+  const input = meeting(), store = createCalendarEventCreationStore(db);
+  await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
+  const reopened = new Database(db.serialize());
+  try { await expect(createOwnerCalendarEvent(deps(), createCalendarEventCreationStore(reopened), input)).rejects.toMatchObject({ code: 'outcome_unknown' }); }
+  finally { reopened.close(); }
+  expect(write).toHaveBeenCalledTimes(1);
+});
+
+// D-336 (spec §58) — Data → Calendar's Delete was local-only: nothing in it could delete a Google,
+// Outlook or CalDAV event.
+const deletion = async () => {
+  const view = await getOwnerCalendarEvent(deps(), ref);
+  return { ...ref, expected_version: view.resource_version, expected_incarnation: view.incarnation! };
+};
+
+it('deletes an event the owner organizes from its connected calendar, the reviewed version, telling its guests', async () => {
+  const view = await getOwnerCalendarEvent(deps(), ref);
+  expect(view).toMatchObject({ provider_verified: true,
+    provider_delete: { notice: 'This deletes the event from your Google calendar and emails its guests that it is cancelled.' } });
+  expect(view.deletable).toBeUndefined();
+  const input = { ...ref, expected_version: view.resource_version, expected_incarnation: view.incarnation! };
+  expect(await deleteOwnerCalendarEvent(deps(), input)).toEqual({ ...ref, incarnation: input.expected_incarnation, deleted: true });
+  expect(provider.deleteEvent).toHaveBeenCalledExactlyOnceWith({ calendar_id: 'team', source_id: 'event-1', scope: 'this_instance',
+    expected_etag: '"e1"', notify_attendees: true, before_send: expect.any(Function) });
+  expect(collection.table.get('event-1')).toBeNull();
+  expect(await checkOwnerCalendarEventDeletion(deps(), input)).toEqual({ ...ref, incarnation: input.expected_incarnation, snapshot: null });
+});
+
+it('says what a delete does: Google emails guests unless it was told not to, Outlook tells them itself', async () => {
+  const notice = async () => (await getOwnerCalendarEvent(deps(), ref)).provider_delete?.notice;
+  context.notify_attendees = false;
+  expect(await notice()).toBe('This deletes the event from your Google calendar.');
+  delete context.notify_attendees;
+  const reconnect = (kind: 'graph' | 'caldav') => {
+    Object.defineProperty(collection.provider, 'kind', { value: kind });
+    instances.upsert({ platform: 'calendar', slug: 'work', adapter_type: kind, config: {}, caps: LOCAL_CALENDAR_CAPS, auth_state: 'healthy', last_synced_at: NOW });
+  };
+  reconnect('graph');
+  expect(await notice()).toBe('This deletes the event from your Outlook calendar. Outlook sends its guests a cancellation.');
+  remote.event.attendees = [];
+  expect(await notice()).toBe('This deletes the event from your Outlook calendar.');
+  reconnect('caldav');
+  expect(await notice()).toBe('This deletes the event from your calendar server.');
+});
+
+it('offers no delete for an invitation, a recurring or locked event, or a connection that may not delete', async () => {
+  remote.event.organizer = { email: 'boss@example.com' };
+  expect((await getOwnerCalendarEvent(deps(), ref)).provider_delete).toBeUndefined();
+  await expect(deleteOwnerCalendarEvent(deps(), await deletion())).rejects.toMatchObject({ code: 'forbidden' });
+  remote.event.organizer = { email: 'me@example.com' }; remote.event.recurrence_rule = 'FREQ=WEEKLY';
+  expect((await getOwnerCalendarEvent(deps(), ref)).provider_delete).toBeUndefined();
+  delete remote.event.recurrence_rule; context.read_only_reason = 'Google has locked this event’s details.';
+  expect((await getOwnerCalendarEvent(deps(), ref)).provider_delete).toBeUndefined();
+  delete context.read_only_reason;
+  expect((await getOwnerCalendarEvent(deps(), ref)).provider_delete).toBeDefined();
+  instances.updateCaps('calendar', 'work', { ...LOCAL_CALENDAR_CAPS, delete_event: 'no' });
+  expect((await getOwnerCalendarEvent(deps(), ref)).provider_delete).toBeUndefined();
+  await expect(deleteOwnerCalendarEvent(deps(), await deletion())).rejects.toMatchObject({ code: 'forbidden' });
+  expect(provider.deleteEvent).not.toHaveBeenCalled();
+});
+
+it('refuses a version changed since the review, in Recued or in the calendar', async () => {
+  const input = await deletion(); remote.event.summary = 'Changed elsewhere'; remote.etag = '"new"';
+  await expect(deleteOwnerCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'resource_changed' });
+  expect(provider.deleteEvent).not.toHaveBeenCalled();
+  expect(collection.table.get('event-1')?.event.summary).toBe('Changed elsewhere');
+  vi.mocked(provider.deleteEvent).mockImplementationOnce(async args => {
+    args.before_send?.(); throw new CalendarAdapterError('version_conflict', 'HTTP 412 Precondition Failed');
+  });
+  await expect(deleteOwnerCalendarEvent(deps(), await deletion()))
+    .rejects.toMatchObject({ code: 'resource_conflict', status: 409, message: 'This event changed in its calendar.' });
+  expect(collection.table.get('event-1')?.event.summary).toBe('Changed elsewhere');
+});
+
+it('rechecks the connection at the provider handoff, and blocks a second delete while one is in flight', async () => {
+  const input = await deletion();
+  let sent = false, release!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  vi.mocked(provider.deleteEvent).mockImplementationOnce(async args => {
+    entered(); await new Promise<void>(resolve => { release = resolve; }); args.before_send!(); sent = true;
+  });
+  const deleting = deleteOwnerCalendarEvent(deps(), input); await started;
+  await expect(deleteOwnerCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'conflict' });
+  instances.updateCaps('calendar', 'work', { ...LOCAL_CALENDAR_CAPS, delete_event: 'no' }); release();
+  await expect(deleting).rejects.toMatchObject({ code: 'forbidden' });
+  expect(sent).toBe(false); expect(collection.table.get('event-1')).not.toBeNull();
+});
+
+it('recovers a lost acknowledgement by a check, never by a second delete', async () => {
+  const input = await deletion();
+  vi.mocked(provider.deleteEvent).mockImplementationOnce(async args => {
+    args.before_send?.(); removed = true; throw new CalendarAdapterError('io_error', 'Acknowledgement lost');
+  });
+  await expect(deleteOwnerCalendarEvent(deps(), input))
+    .rejects.toMatchObject({ code: 'upstream_error', message: 'The calendar could not confirm the deletion.' });
+  expect(collection.table.get('event-1')).not.toBeNull();
+  expect(await checkOwnerCalendarEventDeletion(deps(), input)).toEqual({ ...ref, incarnation: input.expected_incarnation, snapshot: null });
+  expect(collection.table.get('event-1')).toBeNull();
+  expect(provider.deleteEvent).toHaveBeenCalledTimes(1);
+});
+
+it('a check proves nothing from a calendar it cannot read, and counts a Google event read back as cancelled as gone', async () => {
+  const input = await deletion();
+  vi.mocked(provider.readEventForEdit!).mockRejectedValueOnce(new CalendarAdapterError('io_error', 'Offline'));
+  await expect(checkOwnerCalendarEventDeletion(deps(), input)).rejects.toMatchObject({ code: 'upstream_error' });
+  vi.mocked(provider.readEventForEdit!).mockRejectedValueOnce(new CalendarAdapterError('calendar_not_found', 'No calendar'));
+  await expect(checkOwnerCalendarEventDeletion(deps(), input)).rejects.toMatchObject({ code: 'upstream_error' });
+  expect((await checkOwnerCalendarEventDeletion(deps(), input)).snapshot).toMatchObject({ provider_verified: true, event: { source_id: 'event-1' } });
+  remote.event.status = 'cancelled';
+  expect((await checkOwnerCalendarEventDeletion(deps(), input)).snapshot).toBeNull();
+  expect(collection.table.get('event-1')).toBeNull();
+  const prior = instances.get('calendar', 'work')!; instances.delete('calendar', 'work'); instances.upsert(prior);
+  await expect(checkOwnerCalendarEventDeletion(deps(), input)).rejects.toMatchObject({ code: 'resource_changed' });
+  expect(provider.deleteEvent).not.toHaveBeenCalled();
 });

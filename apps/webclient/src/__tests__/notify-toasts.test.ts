@@ -286,6 +286,10 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     ['https://recued.example/#data/view/view_00000000-0000-4000-8000-000000000001', true],
     // D-324 — a delivered reminder's link to the list, exactly.
     ['#data/reminder', true],
+    ['#data/reminder/rem_00000000-0000-4000-8000-000000000001', true],
+    ['#data/reminder/', false],
+    ['#data/reminder/%2F', false],
+    ['#data/reminder/rem_1\n', false],
     ['#data/reminder/../settings', false],
     // D-325 — an occasion reminder and the last-time opt-in open their Yours page.
     ['#yours/occasions/occasion/occasion-anniversary', true],

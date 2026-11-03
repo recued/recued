@@ -102,6 +102,8 @@ import type {
 } from './execution-case-recipe-draft.js';
 import { planApproval as planApprovalModule } from '@recued/gateway';
 import type { AuditLogStore } from '@recued/storage';
+import { readHeldPlanEdit, type HeldPlanEdit } from './chat-plan-edits.js';
+import type { ClaimRecordLookups } from './memory-claim.js';
 import type { WsClient } from './ws-server.js';
 import type { ChatBroadcastEmitter } from './chat-orchestrator.js';
 import type { ChatOrchestrator } from './chat-orchestrator.js';
@@ -152,7 +154,20 @@ export interface ChatRpcDeps {
   answerHeldPlanAsk?: (
     run_id: string,
     option: 'approve' | 'deny',
+    /** D-336 slice E — run once the ask is found open, just before it is answered `approve`:
+     *  the owner's change to the call, written where the resume reads it. A throw answers
+     *  nothing. */
+    beforeApprove?: () => Promise<void>,
   ) => Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'>;
+  /** D-336 slice E — apply the owner's change to a held proposal (`chat.plan.approve`'s
+   *  `edited_args`): onto its hold's checkpoint, which the resume runs, and into the
+   *  proposal's arguments, which the card shows. Throws `conflict` when the hold was already
+   *  answered. Absent ⇒ a change is refused (`not_configured`), never ignored. With no
+   *  change (audit 2026-11-01), it sets the hold back to what the card shows, if they differ. */
+  editHeldPlan?: (plan: ChatPlanProposal, edit?: HeldPlanEdit) => Promise<ChatPlanProposal>;
+  /** D-336 slice E — the owner's lookups for a claim's linked ends, checking the claim they
+   *  changed on a card (`ownerClaimRecords`). */
+  claimRecords?: ClaimRecordLookups;
   /** D-137 P5 follow-on § A.9 — Bob's per-pair inbound MCP token
    *  store. The six `chat.inbound_token.*` rpcs persist through this
    *  store; the verifier swap-in at the MCP HTTP port handler also
@@ -1464,12 +1479,16 @@ const heldPlan = async (
  *
  *  ⛔ A CANCEL WHOSE ASK WAS ALREADY APPROVED IS NOT A CANCEL. The write ran, or is running,
  *  on that approval, so the plan keeps its state; marking it cancelled would say the opposite
- *  of what happened. */
+ *  of what happened.
+ *
+ *  D-336 slice E — `edit`, the owner's change made while approving, is written once the ask
+ *  is found open and before it is answered, so the write runs it (`chat-plan-edits.ts`). */
 const resolveHeldPlanRpc = async (
   deps: ChatRpcDeps,
   method: 'chat.plan.approve' | 'chat.plan.cancel',
   next_status: 'approved' | 'cancelled',
   plan: ChatPlanProposal,
+  edit?: HeldPlanEdit,
 ): Promise<{ plan: ChatPlanProposal }> => {
   const store = deps.planApprovalStore!;
   if (deps.answerHeldPlanAsk === undefined) {
@@ -1479,9 +1498,19 @@ const resolveHeldPlanRpc = async (
       501,
     );
   }
+  const editHeldPlan = deps.editHeldPlan;
+  if (edit !== undefined && editHeldPlan === undefined) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: changes made while approving are not wired, so plan_id '${plan.plan_id}' was not answered`,
+      501,
+    );
+  }
   const answer = await deps.answerHeldPlanAsk(
     plan.hold!.run_id,
     next_status === 'approved' ? 'approve' : 'deny',
+    // Every yes from the card, with a change or not: the hold must run what the card shows.
+    editHeldPlan === undefined ? undefined : async () => { await editHeldPlan(plan, edit); },
   );
   if (answer === 'ignored') {
     throw new RpcError('bad_request', `${method}: the approval for plan_id '${plan.plan_id}' refused this answer`, 400);
@@ -1524,7 +1553,8 @@ const resolveHeldPlanRpc = async (
       next_status === 'approved' ? 'chat_plan_approved' : 'chat_plan_cancelled',
       `${resolved.session_id}:${resolved.turn_id}:${resolved.tool}`,
       JSON.stringify({ plan_id: resolved.plan_id, tier: resolved.tier, classification: resolved.classification,
-        hold_run_id: plan.hold!.run_id }),
+        hold_run_id: plan.hold!.run_id,
+        ...(edit !== undefined && next_status === 'approved' ? { edited: Object.keys(edit.overrides) } : {}) }),
     );
     try {
       deps.broadcast?.emit({ kind: 'chat.plan_resolved', session_id: resolved.session_id,
@@ -1565,7 +1595,13 @@ const resolvePlanRpc = async (
   const plan_id = ensureNonEmptyString(method, 'plan_id', safe.plan_id);
   // D-329 — a held write's card answers its hold's ask; the settlement does the rest.
   const held = await heldPlan(deps, plan_id, next_status);
-  if (held !== undefined) return resolveHeldPlanRpc(deps, method, next_status, held);
+  // D-336 slice E — the owner's change, made while approving: checked before anything is
+  // answered. A plan that takes none refuses one rather than run what it first showed.
+  const edited = next_status === 'approved' ? safe.edited_args : undefined;
+  if (held !== undefined) {
+    const edit = readHeldPlanEdit(held, edited, deps.claimRecords ?? {});
+    return resolveHeldPlanRpc(deps, method, next_status, held, edit);
+  }
   // Approval must recover the exact reviewed payload before any state change.
   // Cancellation is the safe exception: the durable store may cancel a
   // proposed shell even when corrupt ciphertext made its details unreadable.
@@ -1584,6 +1620,9 @@ const resolvePlanRpc = async (
         `${method}: plan_id '${plan_id}' is already resolved (status=${existing.status})`,
         400,
       );
+    }
+    if (edited !== undefined && (edited === null || typeof edited !== 'object' || Object.keys(edited).length > 0)) {
+      throw new RpcError('bad_request', `${method}: plan_id '${plan_id}' takes no change while approving`, 400);
     }
   }
   const now = deps.now ?? Date.now;

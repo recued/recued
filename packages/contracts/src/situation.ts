@@ -206,15 +206,52 @@ export interface SituationRevision {
   before: SituationSnapshot | null;
   after: SituationSnapshot;
 }
+/** D-325 §15.7 amendment (2026-11-02) — how many days a digest covers, counted from the day it
+ *  goes, that day included: 2 is today and tomorrow. A weekly digest covers at least 7, so no
+ *  day falls between two digests. */
+export type SituationDigestLookAhead = 2 | 3 | 7 | 14;
 export interface SituationDeliverySettings {
   frequency: 'daily' | 'weekly' | 'off';
   /** ISO weekday, Monday=1. */
   weekday: number;
   time: string;
   day_of: boolean;
+  /** How far ahead the digest looks. A current server always names it. Absent from an older
+   *  server, whose digest always covers 7 days and which would store the field but ignore it,
+   *  so a client sends it only to a server that named it. */
+  look_ahead_days?: SituationDigestLookAhead;
+}
+/** D-325 §15.7 amendment (2026-11-02, later) — the Agenda: a message apart from the Digest
+ *  that lists one day in time order, recurring events included, and repeats what has not
+ *  changed. Amended 2026-11-03: it can go once a week instead, listing seven days. */
+export interface SituationAgendaSettings {
+  enabled: boolean;
+  /** HH:MM in the server's zone. */
+  time: string;
+  /** The day it lists: the day it goes, or the next one. A weekly agenda's seven days start there. */
+  day: 'today' | 'tomorrow';
+  /** §15.7 amendment (2026-11-03) — each day, or once a week on `weekday`. A current server
+   *  always names both. A server whose Agenda is daily only names neither and drops both from a
+   *  save, so a client offers Weekly only to a server that named it. */
+  frequency?: 'daily' | 'weekly';
+  /** ISO weekday a weekly agenda goes on, Monday=1. */
+  weekday?: number;
+}
+export interface SituationAgendaStatus {
+  settings: SituationAgendaSettings;
+  last_run: { at: number; mode: string; state: string; text: string; delivered_to: string[] } | null;
+  last_sent: { at: number; mode: string; text: string; delivered_to: string[] } | null;
+  pending: number;
+  uncertain: number;
+  /** When the next agenda goes, quiet hours included, and the server's zone to say it in.
+   *  Absent while it is off or nothing can send. A weekly agenda missed on its weekday goes
+   *  later that week, so this can name a day that is not its weekday. */
+  next_at?: number;
+  time_zone?: string;
 }
 export interface SituationDeliveryStatus {
   settings: SituationDeliverySettings;
+  /** The Digest's own runs: its due-day notes and Send now included, the Agenda's never. */
   last_run: { at: number; mode: string; state: string; text: string; delivered_to: string[] } | null;
   last_sent?: { at: number; mode: string; text: string; delivered_to: string[] } | null;
   pending?: number;

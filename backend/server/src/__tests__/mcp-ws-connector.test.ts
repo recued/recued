@@ -23,12 +23,16 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
 });
 
-/** Start a ws server on an ephemeral port; resolve with the port. */
+/** Start a ws server on an ephemeral IPv4 loopback port; resolve with the port.
+ *  ⛔ On 127.0.0.1, where the client dials. Bound to every interface (`::`), macOS lets another
+ *  socket take 127.0.0.1 on the same port, and the client reaches that one: in a full sweep a
+ *  connect failed with `read ECONNRESET` in 13 ms, which another server on that port reproduces
+ *  (probed). On loopback the port is this server's alone. */
 const listenWss = (
   onConnection: (socket: WsSocket, req: http.IncomingMessage) => void,
 ): Promise<number> =>
   new Promise((resolve) => {
-    const wss = new WebSocketServer({ port: 0 });
+    const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
     wss.on('connection', onConnection);
     wss.on('listening', () => {
       cleanups.push(() => new Promise<void>((r) => {
@@ -116,7 +120,7 @@ describe('mcp-ws-connector — real socket', () => {
     const server = http.createServer();
     server.on('upgrade', (_req, socket) => { held.push(socket); /* never respond */ });
     const port = await new Promise<number>((resolve) => {
-      server.listen(0, () => resolve((server.address() as AddressInfo).port));
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port));
     });
     cleanups.push(() => new Promise<void>((r) => {
       held.forEach((s) => s.destroy());

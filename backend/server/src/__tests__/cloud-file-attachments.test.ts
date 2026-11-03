@@ -81,11 +81,18 @@ describe('connected cloud attachments', () => {
       .rejects.toMatchObject({ code: 'remote_fetch_not_granted' });
   });
 
-  it('keeps unsupported and native exports metadata-only until Download is chosen', async () => {
+  it('previews supported native exports and keeps unsupported exports metadata-only', async () => {
     const f = fixture(); const id = remoteFileRecordId(scope, 'one');
     f.add('one', 'Planning', { mime_type: 'application/vnd.google-apps.document' });
+    f.fetchImpl.mockResolvedValueOnce(new Response('exported document', { headers: {
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' } }));
     expect(await f.handlers['data.file.attachments.preview']({ record_id: id }, client)).toMatchObject({
-      filename: 'Planning.docx', can_download: true, unavailable_reason: expect.stringContaining('no preview') });
+      filename: 'Planning.docx', can_download: true, content: { kind: 'docx' }, origin: { label: 'Google Drive · work' },
+      export_as: { filename: 'Planning.docx' } });
+    expect(f.fetchImpl).toHaveBeenCalledTimes(1); f.fetchImpl.mockClear();
+    f.add('one', 'Planning sheet', { mime_type: 'application/vnd.google-apps.spreadsheet' });
+    expect(await f.handlers['data.file.attachments.preview']({ record_id: id }, client)).toMatchObject({
+      filename: 'Planning sheet.xlsx', can_download: true, unavailable_reason: expect.stringContaining('no preview') });
     f.add('one', 'Form', { mime_type: 'application/vnd.google-apps.form' });
     expect(await f.handlers['data.file.attachments.preview']({ record_id: id }, client)).toMatchObject({
       can_download: false, unavailable_reason: expect.stringContaining('cannot be exported') });

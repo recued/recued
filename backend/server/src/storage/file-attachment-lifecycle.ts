@@ -273,7 +273,8 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
     return { record_id: source, filename: snapshot?.hot_fields.filename ?? 'File', revision,
       ...(snapshot?.hot_fields.cloud_capture ? { cloud_capture: snapshot.hot_fields.cloud_capture } : {}),
       archived: !current || current.hot_fields.archived === 1, deleted: !current && versions.every(v => v.state !== 'retained'),
-      can_restore: current?.hot_fields.archived === 1,
+      can_restore: current?.hot_fields.archived === 1, can_rename: !!current && id === source,
+      ...(current ? { modified_at: current.modified_at } : {}),
       message_count: users.filter(u => u.message_id).length, conversation_count: new Set(users.map(u => u.session_id)).size,
       queued_count: users.filter(u => u.state === 'queued').length, delivery_count: deliveries.length,
       in_use: leases.length > 0 || users.some(u => u.state === 'running' || u.state === 'cancelling') || deliveries.some(d => d.state === 'sending'),
@@ -294,12 +295,16 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
       throw new RpcError('bad_request', 'File currently in use. Try again after the operation finishes.', 409);
     }
   };
-  const mutate = (id: string, action: FileLifecycleMutation['action'], revision: string, apply: (id: string) => void): FileLifecycleResult => db.transaction(() => {
-    const request = hash(JSON.stringify([id, action, revision]));
+  const mutate = (id: string, action: FileLifecycleMutation['action'] | 'rename', revision: string, apply: (id: string) => void, filename?: string): FileLifecycleResult => db.transaction(() => {
+    // Preserve lifecycle receipt identities; rename also binds the requested name.
+    const request = hash(JSON.stringify(action === 'rename' ? [id, action, revision, filename] : [id, action, revision]));
     const receipt = db.prepare('SELECT result FROM file_lifecycle_receipts WHERE request_id=?').get(request) as { result: string } | undefined;
     if (receipt) return { ...JSON.parse(receipt.result) as FileLifecyclePreview, replayed: true };
     const before = preview(id);
-    if (before.revision !== revision) throw new RpcError('bad_request', 'File usage changed. Review the updated impact before confirming again.', 409);
+    if (before.revision !== revision) throw new RpcError('bad_request', action === 'rename'
+      ? 'The saved file changed. Review its current name and usage before saving again.'
+      : 'File usage changed. Review the updated impact before confirming again.', 409);
+    if (action === 'rename' && !before.can_rename) throw new RpcError('bad_request', 'Only a saved library file can be renamed.', 409);
     if (action === 'restore' && !before.can_restore) {
       throw new RpcError('bad_request', before.deleted ? 'This file was permanently deleted and cannot be restored.'
         : !before.archived ? 'This file is already in your library.' : 'This file is no longer stored in the library and cannot be restored.', 409);
@@ -320,7 +325,7 @@ export const createFileAttachmentLifecycle = (db: Database.Database) => {
       }
     }
     const result = action === 'delete'
-      ? { ...before, archived: true, deleted: true, can_restore: false, revision: '', usages: [], usages_truncated: false }
+      ? { ...before, archived: true, deleted: true, can_restore: false, can_rename: false, revision: '', usages: [], usages_truncated: false }
       : preview(before.record_id);
     db.prepare('INSERT INTO file_lifecycle_receipts VALUES (?,?)').run(request, JSON.stringify(result));
     return result;

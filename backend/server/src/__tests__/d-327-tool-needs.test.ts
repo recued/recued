@@ -37,6 +37,7 @@ import {
   WORK_ENTITY_READ_OP_ID,
   WORK_ENTITY_UPDATE_OP_ID,
 } from '../chat-tool-handlers.js';
+import { CONTACT_WRITE_OP_ID } from '../contact-write-tool.js';
 import { documentReadRecipe } from '../document-read-tool.js';
 import { SITUATION_READ_OP } from '../situations/access.js';
 
@@ -68,6 +69,9 @@ const EXPECTED: Readonly<Record<Tier1ToolName, readonly string[]>> = {
   // so it is outside the table fence.
   'contact.search': [data('contact')],
   'contact.read': fencedCollection('contact.read'),
+  // `runContactWrite` checks its own op, then that the caller can read contacts
+  // (`isCollectionReadGrantedForDispatch(deps, ctx, 'contact')`): a write is outside the fence.
+  'contact.write': [CONTACT_WRITE_OP_ID, data('contact')],
   'mail.search': fencedCollection('mail.search'),
   // + `mail-read-tool.ts` leaves attachments out unless `file` is readable.
   'mail.read': [...fencedCollection('mail.read'), data('file')],
@@ -75,6 +79,8 @@ const EXPECTED: Readonly<Record<Tier1ToolName, readonly string[]>> = {
   'document.search': [...fencedCollection('document.search'), ...documentReadOps()],
   'calendar.search': fencedCollection('calendar.search'),
   'memory.search': [MEMORY_READ_OP_ID],
+  // The relations are read for saving, so `memory.relations` asks for the memory write.
+  'memory.relations': [MEMORY_WRITE_OP_ID],
   'memory.write': [MEMORY_WRITE_OP_ID],
   'memory.forget': [MEMORY_WRITE_OP_ID],
   // Per topic (`enrichment.<topic>`): no fixed switch to name.

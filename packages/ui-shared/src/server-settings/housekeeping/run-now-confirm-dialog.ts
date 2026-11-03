@@ -45,7 +45,7 @@ const renderScopeOfReadSection = (
           const count = entry.record_count;
           const countLine = count !== undefined
             ? `<span class="housekeeping-runnow-scope-count">${count} records</span>`
-            : '';
+            : '<span class="housekeeping-runnow-scope-count">Record count unavailable</span>';
           return `
             <li class="housekeeping-runnow-scope-entry">
               <code class="housekeeping-runnow-scope-collection">${e(entry.collection)}</code>
@@ -126,19 +126,17 @@ export const renderHousekeepingRunNowConfirmDialog = (
     // even when the run won't fire (AI-blocked path) or when no AI
     // is involved at all (deterministic path).
     const scopeSection = renderScopeOfReadSection(enrichment.scope_read ?? []);
-    /** "N source records", or an honest hedge when no scope was declared.
-     *  A standalone task is not walked by collection, so there is no N —
-     *  saying "0" would read as "nothing to do". */
+    /** An unavailable source count must never read as an empty source. */
     const records =
       enrichment.source_collection_count === undefined
-        ? 'its source records'
+        ? 'its source records (count unavailable)'
         : `${String(enrichment.source_collection_count)} source records`;
     const poolBadge = preview.ai_required
       ? renderPoolPolicyBadge(enrichment.effective_pool_policy, enrichment.global_byok_allowed)
       : '';
     if (preview.deterministic) {
       body = `
-        <p>This producer is deterministic — pure SQL aggregation, no token cost.</p>
+        <p>This runs without AI and has no token cost.</p>
         <p>Sweeps ${e(records)}.</p>
         ${scopeSection}
       `;
@@ -155,19 +153,17 @@ export const renderHousekeepingRunNowConfirmDialog = (
         ${poolBadge}
       `;
     } else {
-      // ⛔ No estimate is a real state, not a zero: this producer is not walked
-      // by collection, so the size of the run is not knowable ahead of it.
-      // Say that, and let the owner decide — the alternative was a button they
-      // could never press at all.
+      // An unavailable estimate is distinct from a known zero.
       const costLine =
         preview.estimated_tokens === undefined
-          ? 'Estimated cost: not known ahead of the run — this producer is not walked by collection.'
+          ? 'Estimated cost: unavailable before the run.'
           : preview.estimated_cost_usd !== undefined
             ? `Estimated cost: ~${preview.estimated_tokens.toLocaleString()} tokens ≈ $${preview.estimated_cost_usd.toFixed(2)}.`
             : `Estimated cost: ~${preview.estimated_tokens.toLocaleString()} tokens.`;
       body = `
         <p>${e(costLine)}</p>
-        <p>This will fire AI calls against ${e(records)} and consume your free-pool quota / BYOK budget.</p>
+        <p>Full source: ${e(records)}. Processing can use your free-pool quota / BYOK budget.</p>
+        <p>Estimates cover the full source population. Cycle limits and unchanged records may reduce the work; actual usage depends on the records processed and the model.</p>
         ${scopeSection}
         ${poolBadge}
       `;

@@ -19,6 +19,7 @@ import {
   createReadStream,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { assertPreviewConversionInput, recordPreviewConversionRead } from './file-preview-conversion-guard.js';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
@@ -239,6 +240,7 @@ export interface CliInvocationExecutorOptions {
    *  ⇒ an op declaring `input_materialize` fails closed. */
   readFileBytes?: (
     record_id: string,
+    maxBytes?: number,
   ) => Promise<{ bytes: Buffer; mime_type: string; filename: string }>;
   /** Parent directory for this executor's throwaway `recued-cli-in-*` /
    *  `recued-cli-out-*` dirs. Defaults to `os.tmpdir()`, which is what the
@@ -2209,6 +2211,7 @@ export const createCliInvocationExecutor = (
       && isInPlaceCapture(captureSpec)
       && captureSpec.from_input_arg === materialize.arg;
     const materializeOne = async (value: unknown, idx?: number): Promise<string> => {
+      const previewLimit = assertPreviewConversionInput(call.stepMeta?.recipe_id, isPinnedCasFileRef(value) ? value.record_id : value);
       // D-185 Slice 2 — a `temp` ref (a prior `storage:'temp'` op's run-scoped
       // output, e.g. the ffmpeg→whisper pipe) ALREADY is a local file: substitute
       // its path straight into the arg — no CAS read, no re-materialize.
@@ -2257,7 +2260,9 @@ export const createCliInvocationExecutor = (
           `cli_invocation '${call.operation_id}' declares input_materialize but no file reader is wired`,
         );
       }
-      const { bytes, filename } = await readFileBytes(recordId);
+      const { bytes, filename } = await (previewLimit === undefined ? readFileBytes(recordId) : readFileBytes(recordId, previewLimit));
+      assertPreviewConversionInput(call.stepMeta?.recipe_id, recordId);
+      if (previewLimit !== undefined && bytes.length > previewLimit) throw new Error('This file exceeds the preview conversion download limit.');
       if (pinned !== null) {
         const actualSha256 = createHash('sha256').update(bytes).digest('hex');
         if (actualSha256 !== pinned.content_sha256) {
@@ -2266,6 +2271,7 @@ export const createCliInvocationExecutor = (
           );
         }
       }
+      if (previewLimit !== undefined) recordPreviewConversionRead(call.stepMeta?.recipe_id, recordId, createHash('sha256').update(bytes).digest('hex'));
       const inputPath = join(ensureTempDir(), materializedInputBasename(filename, idx));
       writeFileSync(inputPath, bytes);
       return inputPath;

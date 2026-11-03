@@ -59,6 +59,37 @@ export const isContactIdentityStatus = (v: unknown): v is ContactIdentityStatus 
  *  with email) hit this default. */
 export const DEFAULT_CONTACT_IDENTITY_STATUS: ContactIdentityStatus = 'verified';
 
+/** The placeholder a contact with no email address is keyed on until it has one
+ *  (`mention-only-<contact_id>@_recued.invalid`): RFC 6761 reserves `.invalid`, so it is
+ *  never an address anyone can reach. The contact store mints it; D-336 slice H moved the
+ *  test here so the webclient shows such a contact as having no address, never this. */
+export const MENTION_ONLY_EMAIL_DOMAIN = '_recued.invalid';
+export const MENTION_ONLY_EMAIL_PREFIX = 'mention-only-';
+
+/** Whether `email` is the placeholder of a contact with no address (`MENTION_ONLY_EMAIL_DOMAIN`). */
+export const isMentionOnlyEmail = (email: string): boolean =>
+  typeof email === 'string'
+  && email.startsWith(MENTION_ONLY_EMAIL_PREFIX)
+  && email.endsWith(`@${MENTION_ONLY_EMAIL_DOMAIN}`);
+
+/** An RFC 5322 `atext` character, a letter of any script among them (RFC 6531). */
+const MAILBOX_ATEXT = "[\\p{L}\\p{N}!#$%&'*+/=?^_`{|}~-]";
+/** One domain label: letters and digits, hyphens inside, at most 63 long. */
+const MAILBOX_LABEL = '[\\p{L}\\p{N}](?:[\\p{L}\\p{N}-]{0,61}[\\p{L}\\p{N}])?';
+const MAILBOX_ADDRESS = new RegExp(`^${MAILBOX_ATEXT}+(?:\\.${MAILBOX_ATEXT}+)*@${MAILBOX_LABEL}(?:\\.${MAILBOX_LABEL})+$`, 'u');
+
+/** D-336 audit 2026-11-01 — one mailbox address and nothing around it, as a contact is keyed
+ *  on it: `local@domain`, the local part a dot-atom and the domain two or more labels, at most
+ *  64 and 254 characters (RFC 5321). `canonicalizeEmail` is no parser: it keeps a display name
+ *  and angle brackets (`mia <mia@example.test>`), and a contact keyed on that cannot be put
+ *  right, so a write that gives a contact its address checks this first. Refuses the
+ *  placeholder too (its domain is no label). Quoted local parts are refused: no one types one. */
+export const isMailboxAddress = (email: string): boolean => {
+  if (typeof email !== 'string' || email.length > 254) return false;
+  const at = email.lastIndexOf('@');
+  return at > 0 && at <= 64 && MAILBOX_ADDRESS.test(email);
+};
+
 // ────────────────────────────────────────────────────────────────
 // § A.4.2 — `network_domain`
 // ────────────────────────────────────────────────────────────────

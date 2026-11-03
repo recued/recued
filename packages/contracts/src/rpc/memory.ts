@@ -23,6 +23,7 @@
 
 import type { Actor } from '../commits.js';
 import type { ProvenanceAttribution } from '../provenance-attribution.js';
+import type { MemoryClaim } from '../memory-relations.js';
 
 /** Hard cap on entries returned by a single `memory.list` page. Mirrors
  *  `AUDIT_EXPORT_MAX_PAGE_SIZE`; the server clamps `limit` down to this. */
@@ -96,6 +97,9 @@ export interface MemoryListEntry {
   run_id?: string;
   /** Provenance edges (D-120 `links`), joined where `memory_id` matches. */
   links?: Array<{ entity_id: string; kind: string; ts: number }>;
+  /** D-336 — the note's fact as subject, relation and object, when it was saved with one.
+   *  Absent once the note is deleted or hidden. */
+  claim?: MemoryClaim;
   /** D-198 §10 — the earlier entry this one replaced (an agent's correction). */
   replaces?: string;
   /** D-198 §10 — the newer entry that replaced this one. Recall skips this entry;
@@ -114,6 +118,16 @@ export interface MemoryListEntry {
   /** D-198 §13 — when the owner REVOKED this agent's note (marked it wrong). Its text
    *  stays, shown to the owner; out of recall as a fact. `memory.unrevoke` lifts it. */
   revoked_at?: number;
+  /** D-336 slice G (§3.9) — the notes in memory this one contradicts: the same two ends,
+   *  with a relation the list says excludes its own. On a current note only, against
+   *  current notes, so the mark goes once one of them is replaced or removed. */
+  contradicts?: MemoryContradiction[];
+}
+
+/** D-336 slice G — a note another contradicts, by its id and its summary. */
+export interface MemoryContradiction {
+  memory_id: string;
+  summary: string;
 }
 
 /** Outbound shape for `memory.list`. `next_cursor` present iff another
@@ -142,6 +156,8 @@ export interface MemoryGetResponse {
   summary?: string;
   /** The full resolved body (inline or from CAS). */
   body?: string;
+  /** D-336 — the note's claim, as on `memory.list`. */
+  claim?: MemoryClaim;
   reason_code?: string;
   ts: number;
   event_at?: number;
@@ -166,6 +182,8 @@ export interface MemoryGetResponse {
   /** D-198 §13 — when the owner REVOKED this agent's note (marked it wrong). Its text
    *  stays, shown to the owner; out of recall as a fact. `memory.unrevoke` lifts it. */
   revoked_at?: number;
+  /** D-336 slice G — the notes this one contradicts, as on `memory.list`. */
+  contradicts?: MemoryContradiction[];
 }
 
 /** Inbound shape for `memory.restore` (D-198 §10) — the owner undoes an AGENT's
@@ -199,6 +217,9 @@ export interface MemoryCreateRequest {
   event_at?: number;
   /** Entity ids to link the new memory to (D-120 provenance edges). */
   provenance_entity_ids?: string[];
+  /** D-336 slice E — the note's fact as a relationship, beside its summary. The owner's
+   *  own relation is allowed; a linked end must be in contacts or among their things. */
+  claim?: MemoryClaim;
 }
 
 /** Inbound shape for `memory.update` — edits the caller's OWN `user_self`
@@ -211,6 +232,8 @@ export interface MemoryUpdateRequest {
   summary?: string;
   body?: unknown;
   event_at?: number;
+  /** D-336 slice E — a claim replaces the note's, `null` drops it, absent leaves it. */
+  claim?: MemoryClaim | null;
 }
 
 /** Inbound shape for `memory.replace` (D-198 §12) — the owner replaces an AGENT's
@@ -229,6 +252,8 @@ export interface MemoryReplaceRequest {
   /** Same shape and storage as `memory.create`'s body. */
   body?: unknown;
   event_at?: number;
+  /** D-336 slice E — your version's claim, often the agent's with a name linked. */
+  claim?: MemoryClaim;
 }
 
 /** Inbound shape for `memory.revoke` (D-198 §13) — the owner marks an AGENT's note
@@ -270,6 +295,49 @@ export interface MemorySavesResult {
   agents: number;
 }
 
+/** Inbound shape for `memory.claims` (D-336 slice D) — the notes whose claim names a
+ *  contact or a thing the owner keeps, for the Relationships section of its page. One of
+ *  the two: a contact by email or `contact_id`, a thing by any id the work tools use. A
+ *  method of its own, so an older server refuses it (`unknown_method`) and the page shows
+ *  no section. */
+export interface MemoryClaimsRequest {
+  contact?: string;
+  asset?: string;
+}
+
+/** One note a `memory.claims` answer lists. `by` says how it names the record: its claim
+ *  links the record (`record`), or names it in words that match the record's name
+ *  (`name`), which may be someone else of that name. */
+export interface MemoryClaimsEntry {
+  memory_id: string;
+  origin_actor: Actor;
+  summary?: string;
+  claim: MemoryClaim;
+  by: 'record' | 'name';
+  ts: number;
+  event_at?: number;
+}
+
+/** Result of a `memory.claims`: the current notes, newest first. A removed, replaced or
+ *  revoked note is never listed. */
+export interface MemoryClaimsResult {
+  claims: MemoryClaimsEntry[];
+}
+
+/** D-336 slice K (§5) — what the relation list misses, counted from this server's own notes,
+ *  since nothing leaves it (D-097). Only notes that stand count: none forgotten, hidden,
+ *  deleted or revoked, and none replaced by one that is not. */
+export interface MemoryClaimCountsResult {
+  /** The notes an AI saved. */
+  agent_notes: number;
+  /** Of those, the ones saved with no relationship: no listed relation fitted, or the AI gave
+   *  none. */
+  agent_notes_without_claim: number;
+  /** The relations written in the owner's own words (an agent's must be on the list), each with
+   *  how many notes use it, most used first. The words are the newest such note's. */
+  own_relations: Array<{ relation: string; notes: number }>;
+}
+
 /** Result of a `memory.create` / `memory.update` / `memory.replace` (the NEW
  *  row's id for a replace). */
 export interface MemoryMutationResult {
@@ -305,7 +373,9 @@ export interface MemoryDeleteResult {
  *  dedup key is origin-split (D-198 §5): `user_self` entries merge by
  *  `memory_id`; every other origin content-dedups (the substrate hashes the
  *  content — the D-136 `source_record_hash` precedent — so re-importing the
- *  same knowledge never duplicates). */
+ *  same knowledge never duplicates). D-336: the content is the words and the
+ *  claim, so two notes in the same words about two different people stay two;
+ *  one with no claim matches a note in its words, whatever that note's claim. */
 export interface MemoryImportEntry {
   /** Present for `user_self` entries (drives merge-by-id). Absent/ignored
    *  for "other" entries, which dedup by content. */
@@ -318,6 +388,10 @@ export interface MemoryImportEntry {
   ts?: number;
   event_at?: number;
   provenance_entity_ids?: string[];
+  /** D-336 §3.8 — the note's claim as exported. A linked end keeps its record when that
+   *  record exists here, else it becomes its name; a relation not in this server's
+   *  list comes in as written. A claim that is not one is left out; the note is not. */
+  claim?: MemoryClaim;
 }
 
 /** Inbound shape for `memory.import`. */
@@ -331,7 +405,8 @@ export interface MemoryImportResult {
   merged: number;
   /** Entries inserted as new rows. */
   inserted: number;
-  /** "Other" entries skipped because their content already exists. */
+  /** "Other" entries skipped because a note with their words already exists, and with their
+   *  claim when they have one. */
   deduped: number;
   /** Entries rejected (malformed, or a disallowed origin transition). */
   skipped: number;

@@ -85,7 +85,6 @@ import {
   REGEN_DETERMINISMS,
   REGEN_INPUT_INVARIANTS,
   AI_COOPERATIVE_OPT_OUT_RATIONALE_MIN_CHARS,
-  isLockedInputKey,
   isRecordsAction,
   recordsSlotKind,
   // D-177 P1b — fail-closed gate on declared `hash_exclude_args` (N.2).
@@ -122,6 +121,7 @@ import { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, SOFT_TIMEOUT_CEILING_MS } from './timeo
 // `tokenContainsTemplateHole` also backs the (literal-only) service argv[0] pin.
 import { cliCommandViolation, cliEnvViolations, cliInterpreterViolations, tokenContainsTemplateHole } from './cli-argv-safety.js';
 import { cliInstallProblems, cliProbeProblems, cliVersionProblems, type CliToolPolicyProblem } from './cli-tool-policy.js';
+import { restStaticRequestProblems, restMergeQueryProblems, restRequestPathSuffix } from './rest-request-policy.js';
 // D-192 P1 — fail-closed shape validation for `work_entity_sources`
 // declarations (manifest-internal; the doc-dependent op proof stays in
 // `crossCheckCatalogOpenApi` below).
@@ -208,8 +208,8 @@ export const validateIngredient = (
   opts?: ValidateIngredientOptions,
 ): ValidationResult => {
   const issues: ValidationIssue[] = [];
-  const add = (severity: ValidationSeverity, code: string, path: string, message: string): void => {
-    issues.push({ severity, code, path, message });
+  const add = (severity: ValidationSeverity, code: string, path: string, message: string, reference_span?: AuthoringReferenceSpan): void => {
+    issues.push({ severity, code, path, message, ...(reference_span ? { reference_span } : {}) });
   };
 
   // ── Top-level shape ───────────────────────────────────────
@@ -261,7 +261,7 @@ export const validateIngredient = (
   return { valid, issues };
 };
 
-type AddFn = (severity: ValidationSeverity, code: string, path: string, message: string) => void;
+type AddFn = (severity: ValidationSeverity, code: string, path: string, message: string, reference_span?: AuthoringReferenceSpan) => void;
 
 // ────────────────────────────────────────────────────────────────
 // Section validators — each focuses on one logical group
@@ -1831,52 +1831,9 @@ const validateApiBindingShape = (
           }
         }
       }
-      // D-165 RUNTIME — static_query / static_headers carry the binding's fixed
-      // wire bits (the `query.*` / `header.*` the gateway folds into the
-      // connection-api call); D-192 adds static_body (fixed `body.*` fields —
-      // the azure-devops WIQL text). All optional; when present each must be a
-      // flat object of string values.
-      for (const staticKey of ['static_query', 'static_headers', 'static_body'] as const) {
-        const sv = binding[staticKey];
-        if (sv === undefined) continue;
-        if (!isObjectRecord(sv) || Object.values(sv).some((v) => typeof v !== 'string')) {
-          add('error', 'CATALOG_BINDING_INVALID', `${bPath}.${staticKey}`,
-            `rest binding for '${opKey}' ${staticKey} must be an object of string values`);
-          continue;
-        }
-        // static_headers cannot bake an engine-locked header name (host /
-        // authorization / cookie) — the connection adapter owns those (D-112).
-        // Case-insensitive: HTTP header names are case-insensitive.
-        if (staticKey === 'static_headers') {
-          for (const hName of Object.keys(sv)) {
-            if (isLockedInputKey(`header.${hName.trim().toLowerCase()}`)) {
-              add('error', 'CATALOG_BINDING_INVALID', `${bPath}.static_headers.${hName}`,
-                `rest binding for '${opKey}' static_headers cannot set the engine-locked header '${hName}' (host / authorization / cookie are owned by the connection adapter, D-112)`);
-            }
-          }
-        }
-      }
-      // D-192 — static_body composes a JSON request body; on a bodyless method
-      // (GET / DELETE) the wire silently drops it, so a declaration there is a
-      // dead/misleading binding — reject at publish.
-      if (binding.static_body !== undefined
-        && typeof binding.method === 'string'
-        && !['POST', 'PUT', 'PATCH'].includes(binding.method)) {
-        add('error', 'CATALOG_BINDING_INVALID', `${bPath}.static_body`,
-          `rest binding for '${opKey}' static_body requires a body-carrying method (POST/PUT/PATCH), got ${binding.method}`);
-      }
-      // static_body keys are LITERAL top-level JSON property names (the
-      // adapter strips `body.` and encodes the remainder as-is) — a dotted
-      // key would emit a literal "a.b" property, which is almost never the
-      // intended nested tree. Fail closed; widen if a literal-dotted-property
-      // vendor ever appears (codex-review fold).
-      if (isObjectRecord(binding.static_body)) {
-        for (const bodyKey of Object.keys(binding.static_body)) {
-          if (bodyKey.includes('.')) {
-            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.static_body.${bodyKey}`,
-              `rest binding for '${opKey}' static_body key '${bodyKey}' contains a dot — keys are literal top-level JSON property names, not nested paths; compose nested bodies upstream or flatten the key`);
-          }
-        }
+      // Shared existing request rules supply structured key/value source targets.
+      for (const problem of restStaticRequestProblems(binding, opKey)) {
+        add('error', 'CATALOG_BINDING_INVALID', bPath + restRequestPathSuffix(problem.path), problem.message, problem.reference_span);
       }
       // Basecamp/int64 audit fold — closed opt-in JSON response normalization.
       // A typo must fail publish rather than silently reverting to lossy native
@@ -1941,26 +1898,8 @@ const validateApiBindingShape = (
             `rest binding for '${opKey}' request_json requires application/json when static Content-Type is declared`);
         }
       }
-      // D-182 (CRM Tier-P) — merge_query lists static_query keys whose value a
-      // caller `query.<k>` arg UNIONS with (instead of being clobbered). Each
-      // entry must name an existing static_query key (an absent key has no
-      // default list to extend → a typo / dead declaration).
-      {
-        const mq = (binding as { merge_query?: unknown }).merge_query;
-        if (mq !== undefined) {
-          const sq = isObjectRecord(binding.static_query) ? binding.static_query : {};
-          if (!Array.isArray(mq) || mq.some((k) => typeof k !== 'string')) {
-            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.merge_query`,
-              `rest binding for '${opKey}' merge_query must be an array of static_query key names`);
-          } else {
-            for (const k of mq) {
-              if (!Object.prototype.hasOwnProperty.call(sq, k)) {
-                add('error', 'CATALOG_BINDING_INVALID', `${bPath}.merge_query`,
-                  `rest binding for '${opKey}' merge_query names '${k}', which is not a declared static_query key`);
-              }
-            }
-          }
-        }
+      for (const problem of restMergeQueryProblems(binding, opKey)) {
+        add('error', 'CATALOG_BINDING_INVALID', bPath + restRequestPathSuffix(problem.path), problem.message, problem.reference_span);
       }
       break;
     }
@@ -2152,7 +2091,7 @@ const GRAPHQL_LEADING_KEYWORD_RE = /^(query|mutation|subscription)\b/;
  *  document (`query A {…} mutation B {…}`) cannot select a later mutation — the
  *  server rejects it ("must provide operation name…"). REVISIT this if
  *  `operationName` selection is ever added to the dispatch. */
-const graphqlOperationKind = (
+export const graphqlOperationKind = (
   query: string,
 ): 'query' | 'mutation' | 'subscription' | 'unknown' => {
   const prefix = GRAPHQL_IGNORED_PREFIX_RE.exec(query);
@@ -3721,6 +3660,20 @@ const validateAuthorityArgs = (m: Record<string, unknown>, add: AddFn): void => 
     return;
   }
   checkAuthorityArgsShape(declared, 'authority_args', add);
+  // D-336 (spec §43) — a path pins the input it names, so it must name one this ingredient
+  // takes. `notify-booking-visitor` kept `event_source_id`, the input it took before it became
+  // `booking_id`: an open grant pinned only its mailbox, and "Allow this session" on one
+  // booking's notice let the next go to any other booking's visitor without asking.
+  const input = own(m, 'input');
+  if (!Array.isArray(declared) || input === null || typeof input !== 'object' || Array.isArray(input)) return;
+  for (const entry of declared) {
+    if (typeof entry !== 'string' || entry === '') continue;
+    const root = entry.split('.')[0]!;
+    if (Object.hasOwn(input, root) || WIRE_AUTHORITY_ARG_PATHS.some((wire) => wire.split('.')[0] === root)) continue;
+    add('error', 'AUTHORITY_ARGS_NOT_AN_INPUT', 'authority_args',
+      `authority_args path '${entry}' names no input of this ingredient: an open grant would pin `
+        + 'nothing there, and the input that picks the destination would change freely');
+  }
 };
 
 const validateConnectionWrapper = (m: Record<string, unknown>, add: AddFn): void => {

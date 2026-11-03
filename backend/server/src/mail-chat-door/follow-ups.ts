@@ -34,6 +34,7 @@ import { MAIL_CHAT_DOOR_VENDOR, type ChatMessage, type ExecutionSource } from '@
 
 import { isNonTerminalToolResult } from '../chat-tool-call-context.js';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
+import { createHeldResultTurnStore } from '../storage/chat-held-result-store.js';
 import type { ChatStore } from '../storage/chat-store.js';
 
 /** Settlements, and watches already followed up, are kept this long. */
@@ -73,7 +74,9 @@ export const ensureMailChatFollowUpSchema = (db: Database.Database): void => {
 };
 
 /** What became of a settled run, read as the chat's own settlement reads it. */
-export const mailChatRunOutcome = (settled: PreflightRunSettled): { outcome: MailChatRunOutcome; detail?: string } => {
+export const mailChatRunOutcome = (
+  settled: Pick<PreflightRunSettled, 'result' | 'state'>,
+): { outcome: MailChatRunOutcome; detail?: string } => {
   const result = settled.result !== null && typeof settled.result === 'object'
     ? settled.result as Record<string, unknown>
     : {};
@@ -166,6 +169,8 @@ export const createMailChatFollowUps = (deps: {
     }
   };
   ensureMailChatFollowUpSchema(db);
+  // D-337 — a run its conversation carried on from: the model's answer says what became of it.
+  const continuedRuns = createHeldResultTurnStore(db);
   const insertWatch = db.prepare(`INSERT OR IGNORE INTO mail_chat_watched_runs
     (run_id, session_id, turn_id, tool_name, picker_json, watched_at) VALUES (?, ?, ?, ?, ?, ?)`);
   // After its turn's answer has gone (or settled otherwise): a follow-up never
@@ -203,6 +208,13 @@ export const createMailChatFollowUps = (deps: {
         outcome: MailChatRunOutcome; detail: string | null; source_json: string;
       }>) {
         const id = mailChatFollowUpId(row.run_id);
+        // ⛔ No fixed line beside the conversation's own answer. The chat records a continuation
+        // before this door hears its run settle (`runSettledSink` settles the chat first), so
+        // this check cannot run ahead of it.
+        if (continuedRuns.continued(row.run_id)) {
+          markFollowed.run(at, row.run_id);
+          continue;
+        }
         try {
           await chatStore.appendMessage({
             id,

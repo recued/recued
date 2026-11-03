@@ -23,9 +23,10 @@
  *  different op must change the list here: `d-327-tool-needs.test.ts` compares it
  *  with the handlers' own constants. */
 
-import type { ApprovalValueLabels } from './ask-detail-label.js';
+import { ANY_ARGUMENT, type ApprovalValueLabels } from './ask-detail-label.js';
 import type { Tier1ToolName } from './chat.js';
 import { COLLECTION_GRANT_PREFIX, PRIMITIVE_GRANT_PREFIX } from './grant-entry.js';
+import { memoryClaimArgLine } from './memory-relations.js';
 import type { WorkEntityKind } from './work-entities.js';
 
 /** What a switch lets happen, for a person deciding whether to allow it. */
@@ -105,6 +106,7 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.contact.business-context': t('See the business links of a contact', 'Counts the deals, tasks, meetings, bookings and projects linked to one contact. It uses no AI.'),
   'core.contact.upsert': t('Add or update a contact', 'Adds a contact, or updates the one with the same email.'),
   'core.contact.engagements.read': t('See your history with a contact', 'Lets an AI read the emails, meetings and other contact you have had with one person.'),
+  'core.contact.write': t('Change your contacts', "Lets an AI add a contact, or change a contact's name, phone, company, birthday or anniversary. Each change waits for your yes, unless you let it run without asking, and then counts as yours."),
 
   // ── Notifications and reminders
   'core.notification.send': t('Send you a notification', 'Sends a message to you on the channels you set up, like Slack, Telegram or email. It cannot reach anyone else.'),
@@ -281,6 +283,9 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.dom.click': t('Click on a web page', 'Clicks a link or a button on a web page open in your browser, through the Browser Bridge. A click can send, post or delete, and cannot be undone.'),
   'core.dom.tabs': t('See your open tabs', 'Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge.'),
   'core.dom.open': t('Open a web page', 'Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site.'),
+  'core.dom.wait': t('Wait for a web page', 'Waits until part of a web page open in your browser shows or goes, through the Browser Bridge. Changes nothing on the page.'),
+  'core.dom.table': t('Read a table on a web page', 'Reads a table on a web page open in your browser as rows of text, through the Browser Bridge. Password and card fields come back empty.'),
+  'core.dom.screenshot': t('Take a screenshot of a web page', 'Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs "Allow screenshots" in the Bridge\'s side panel.'),
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -314,6 +319,9 @@ export const tier1CallTitle = (tool: string, args: unknown): string | undefined 
     ? WORK_KIND_WORDS[call.kind as WorkEntityKind] : undefined;
   if (words !== undefined && tool === 'work.create') return `Add ${words}`;
   if (words !== undefined && tool === 'work.update') return call.done === true ? 'Tick a task off' : `Change ${words}`;
+  if (tool === 'contact.write') {
+    return typeof call.target_id === 'string' && call.target_id.trim() !== '' ? 'Change a contact' : 'Add a contact';
+  }
   return TIER1_TOOL_GUIDE[tool as Tier1ToolName].title;
 };
 
@@ -321,15 +329,52 @@ export const tier1CallTitle = (tool: string, args: unknown): string | undefined 
 const WORK_KIND_NOUNS: Readonly<Partial<Record<WorkEntityKind, string>>> = {
   task: 'Task', note: 'Note', commitment: 'Commitment', project: 'Project', asset: 'Thing',
 };
+/** D-336 slice G (§3.9) — a held save's conflicts as an approval lists them, after its
+ *  arguments: what it contradicts, in memory or (slice S) among the saves asked while it
+ *  waits, the same fact saved already (slice J), asked already (slice O) or asked again after
+ *  it, and what else memory holds on the same thing, each by the note's summary. Read
+ *  defensively, as off a stored hold: anything else names nothing. */
+export const memorySaveConflictRows = (conflicts: unknown): Record<string, string> => {
+  if (!Array.isArray(conflicts)) return {};
+  const summaries = (kind: string): string[] => conflicts.flatMap((conflict: unknown) => {
+    if (conflict === null || typeof conflict !== 'object' || Array.isArray(conflict)) return [];
+    const { kind: its, summary } = conflict as { kind?: unknown; summary?: unknown };
+    return its === kind && typeof summary === 'string' && summary.trim() !== '' ? [`"${summary.trim()}"`] : [];
+  });
+  const rows: Record<string, string> = {};
+  const contradicts = summaries('contradicts');
+  if (contradicts.length > 0) rows.Contradicts = contradicts.join(' · ');
+  // Slice S — and a save asked while this one waits that it contradicts. True however
+  // either is answered meanwhile, as "Asked already" is.
+  const contradictsAsked = summaries('contradicts_asked');
+  if (contradictsAsked.length > 0) rows['Contradicts what was asked'] = contradictsAsked.join(' · ');
+  const already = summaries('saved_already');
+  if (already.length > 0) rows['Saved already'] = already.join(' · ');
+  // D-336 slice O — a save of the same fact asked before this one. True however that one
+  // is answered meanwhile, so a card approved after its twin still says it rightly.
+  const asked = summaries('asked_already');
+  if (asked.length > 0) rows['Asked already'] = asked.join(' · ');
+  // Slice O's open item — and one asked after this one, while this one waits (the owner:
+  // "Asked again").
+  const again = summaries('asked_again');
+  if (again.length > 0) rows['Asked again'] = again.join(' · ');
+  const also = summaries('also_in_memory');
+  if (also.length > 0) rows['Also in memory'] = also.join(' · ');
+  return rows;
+};
+
 /** D-329 — one call of an AI tool's arguments as an approval lists them: the record it
  *  changes named as what it is ("Thing: Family car", not "id: Family car"), and its `kind`
  *  left to the title, which already says it ("Change a thing you own"). The names recorded
  *  for its values (`value_labels`) move with their keys. Display only: the call itself is
- *  what runs, and a key the new name would overwrite keeps its own name. */
+ *  what runs, and a key the new name would overwrite keeps its own name. D-336 slice G: a
+ *  held save's `memory_conflicts` follow its arguments ("Contradicts", "Saved already",
+ *  "Asked already", "Also in memory"). */
 export const tier1CallDetails = (
   tool: string,
   args: Readonly<Record<string, unknown>>,
   labels?: ApprovalValueLabels,
+  conflicts?: unknown,
 ): { args: Record<string, unknown>; labels?: ApprovalValueLabels } => {
   // A key's name on the approval, or `null` for a key the title already says.
   const shownAs: Record<string, string | null> = {};
@@ -339,17 +384,34 @@ export const tier1CallDetails = (
     Object.assign(shownAs, { kind: null, id: noun, belongs_to: 'Part of' });
   }
   if (tool === 'calendar.update') shownAs.source_id = 'Event';
+  if (tool === 'contact.write') shownAs.target_id = 'Contact';
   // Read off a stored hold, so a malformed value names nothing (`approvalValueLabel`).
   const known = labels !== null && typeof labels === 'object' && !Array.isArray(labels) ? labels : {};
   const shown: Record<string, unknown> = {};
   const named: Record<string, Readonly<Record<string, string>>> = {};
   for (const [key, value] of Object.entries(args)) {
+    // D-336 — a saved fact's claim reads as one line ("Mia, daughter of, Dana"), its
+    // linked ends by the names recorded for them.
+    if (tool === 'memory.write' && key === 'claim' && !Object.hasOwn(args, 'relationship')) {
+      const line = memoryClaimArgLine(value, Object.hasOwn(known, key) ? known[key] : undefined);
+      if (line !== undefined) {
+        shown.relationship = line;
+        continue;
+      }
+    }
     const renamed = Object.hasOwn(shownAs, key) ? shownAs[key] as string | null : key;
     if (renamed === null) continue;
     const as = renamed !== key && Object.hasOwn(args, renamed) ? key : renamed;
     shown[as] = value;
     if (Object.hasOwn(known, key)) named[as] = known[key]!;
   }
+  if (tool === 'memory.write') {
+    for (const [row, said] of Object.entries(memorySaveConflictRows(conflicts))) {
+      if (!Object.hasOwn(shown, row)) shown[row] = said;
+    }
+  }
+  // D-336 (spec §41) — the people the call carries, named wherever it carries them.
+  if (Object.hasOwn(known, ANY_ARGUMENT)) named[ANY_ARGUMENT] = known[ANY_ARGUMENT]!;
   return { args: shown, ...(Object.keys(named).length > 0 ? { labels: named } : {}) };
 };
 
@@ -366,6 +428,12 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
     title: 'Read the details of a contact',
     summary: 'Reads the title, birthday, address and relationship of one contact.',
     needs: [{ entry: `${COLLECTION_GRANT_PREFIX}contact` }],
+  },
+  'contact.write': {
+    title: 'Add or change a contact',
+    summary: "Adds a contact, or changes a contact's name, phone, company, birthday or anniversary. You approve each one.",
+    needs: [{ entry: 'core.contact.write' }, { entry: `${COLLECTION_GRANT_PREFIX}contact` }],
+    note: "A contact's relationship and privacy marks stay yours to set, in Contacts.",
   },
   'mail.search': {
     title: 'Search your mail',
@@ -409,6 +477,11 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
     title: 'Search your memory',
     summary: 'Finds facts and notes saved in your memory.',
     needs: [{ entry: 'core.memory.read' }],
+  },
+  'memory.relations': {
+    title: 'Look up how to save a fact about someone',
+    summary: 'Tells an AI how to save a fact about a person or a thing, like "Mia is Dana\'s daughter". Then one fact is saved the same way each time.',
+    needs: [{ entry: 'core.memory.write' }],
   },
   'memory.write': {
     title: 'Save to your memory',

@@ -192,6 +192,8 @@ export type CreateEventInput = Omit<
    *  local calendar and Google (`events.import`); Outlook (Graph) always
    *  assigns its own. Absent: the provider's own, as before. */
   ical_uid?: string;
+  /** Only an explicit invitation create requests guest notifications. Imports keep their semantics. */
+  send_invitations?: true;
 };
 
 /** Payload for `updateEvent` — a partial patch on the canonical
@@ -222,6 +224,12 @@ export interface UpdateEventInput {
 
 export interface DeleteEventInput {
   expected_etag?: string;
+  /** D-336 (spec §58) — paired owner deletes revalidate their connection and warehouse version
+   *  at handoff, as `UpdateEventInput.before_send` does. */
+  before_send?: () => void;
+  /** D-336 (spec §48) — ask the provider to tell the event's guests it is cancelled. Only
+   *  Google needs asking (`sendUpdates`); Outlook tells them itself. */
+  notify_attendees?: boolean;
   calendar_id: string;
   source_id: string;
   scope?: CalendarMutationScope;
@@ -249,8 +257,11 @@ export interface CalendarProvider {
    *  carries it as its owner, and a CalDAV username may be one. '' or absent
    *  while unknown, and for a calendar with no account (`local`). */
   readonly accountEmail?: string;
-  /** Live, selected calendars whose permissions allow a new event. */
-  listWritableCalendars?(): Promise<Array<{ calendar_id: string; name: string }>>;
+  /** Live, selected calendars whose permissions allow a new event. `is_default` marks the
+   *  account's own main calendar where the provider names one (Google's primary, Outlook's
+   *  default); a CalDAV server names none. */
+  listWritableCalendars?(): Promise<Array<{ calendar_id: string; name: string;
+    can_invite?: true; invitation_unavailable_reason?: string; is_default?: true }>>;
   /** Live event and per-field write permission, from the event's own calendar. */
   readEventForEdit?(calendar_id: string, source_id: string): Promise<ProviderEventEditContext>;
 

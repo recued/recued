@@ -52,6 +52,13 @@ describe('D-129 P3 — hubspot.contact entity registration', () => {
       'job_title',
       // HubSpot-only, like `company` — the portable home is `account.industry`.
       'industry',
+      // D-336 (spec §55) — the vCard contact the AI can set: the address in its ADR parts and BDAY.
+      'mailing_street',
+      'mailing_city',
+      'mailing_region',
+      'mailing_postal_code',
+      'mailing_country',
+      'birthday',
     ]);
   });
 

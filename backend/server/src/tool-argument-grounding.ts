@@ -397,8 +397,13 @@ export const groundingCorpusFromPacket = (body: string): string => {
     if (!Array.isArray(entries)) continue;
     o[field] = entries.map((entry) => {
       if (!entry || typeof entry !== 'object') return entry;
-      const { args: _args, detail: _detail, ...given } = entry as Record<string, unknown>;
-      return given;
+      const { args: _args, detail, ...given } = entry as Record<string, unknown>;
+      // D-336 slice G — a held write's answer is the server's, never the model's echoed:
+      // the plan it was put to the owner as, and what it meets (the id of a note it
+      // contradicts, which the model is told to forget). Live (bench task 417), stripping
+      // it refused that forget as a guessed id, and the loop then refused the same call
+      // again once a search had returned the id. A refusal's detail stays out.
+      return given.reason === 'awaiting_approval' && detail !== undefined ? { ...given, detail } : given;
     });
   }
   try { return JSON.stringify(o); } catch { return body; }

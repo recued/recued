@@ -92,11 +92,12 @@ export const readPromptScheduleOutcome = async (
   if (activeCall) return outcome(activeCall.state === 'running' ? 'running' : 'needs_attention', activeCall.state === 'held' ? 'action_held' : undefined);
   const failed = records.find(record => record.execution?.status === 'failed');
   if (failed) return outcome('failed', 'tool_failed', failed);
-  if (calls.some(call => call.state === 'failed' && !call.denied)) return outcome('needs_attention', 'tool_failed');
+  if (calls.some(call => call.state === 'failed' && !call.denied && !call.expired)) return outcome('needs_attention', 'tool_failed');
   const unknown = records.find(record => record.execution?.status === 'unknown');
   if (unknown || calls.some(call => call.state === 'interrupted')) return outcome('interrupted', 'outcome_unknown', unknown);
   const expired = records.find(record => record.plan.hold?.lapsed_at !== undefined);
-  if (expired) return outcome('needs_attention', 'approval_expired', expired);
+  // D-337 slice R — a held recipe run's approval that expired reads as a held write's does.
+  if (expired || calls.some(call => call.expired === true)) return outcome('needs_attention', 'approval_expired', expired);
   if (db.prepare(`SELECT 1 FROM chat_prompt_failure_signals
     WHERE failure_key=? AND schedule_id=? AND session_id=? AND source_kind='turn'`)
     .get(`turn:${turn}`, schedule.schedule_id, schedule.session_id)) return outcome('failed', 'turn_failed');

@@ -370,6 +370,37 @@ export const createBatchApprovalCoordinator = (
    *  member's; those fields are inert while the batch hooks intercept
    *  (the `batch_id` routes first) and exist for the v1-row-missing
    *  fallback + debuggability. */
+  /** D-336 (spec §40) — a batch's approval is drawn from one member's checkpoint, while each
+   *  member's run recorded how the owner knows its own values: a recipient as the contact it
+   *  is. Every member's labels are read in, so each line names its own. For the render only;
+   *  a member that cannot be read adds none. */
+  const withMemberLabels = async (row: BatchAskRecord, checkpoint: Checkpoint): Promise<Checkpoint> => {
+    if (row.members.length < 2 || checkpoint.preflight_context === undefined) return checkpoint;
+    const merged = new Map<string, Map<string, string>>();
+    const add = (labels: unknown): void => {
+      if (labels === null || typeof labels !== 'object' || Array.isArray(labels)) return;
+      for (const [key, byValue] of Object.entries(labels)) {
+        if (byValue === null || typeof byValue !== 'object' || Array.isArray(byValue)) continue;
+        for (const [value, label] of Object.entries(byValue)) {
+          const known = merged.get(key) ?? new Map<string, string>();
+          if (typeof label === 'string' && !known.has(value)) merged.set(key, known.set(value, label));
+        }
+      }
+    };
+    add(checkpoint.preflight_context.value_labels);
+    for (const member of row.members) {
+      if (member.checkpoint_id === checkpoint.checkpoint_id) continue;
+      try {
+        add((await deps.checkpointStore.get(member.checkpoint_id))?.preflight_context?.value_labels);
+      } catch {
+        // A label is never worth the ask.
+      }
+    }
+    if (merged.size === 0) return checkpoint;
+    const value_labels = Object.fromEntries([...merged].map(([key, known]) => [key, Object.fromEntries(known)]));
+    return { ...checkpoint, preflight_context: { ...checkpoint.preflight_context, value_labels } };
+  };
+
   const raiseBatchAsk = async (
     row: BatchAskRecord,
     checkpoint: Checkpoint,
@@ -430,7 +461,7 @@ export const createBatchApprovalCoordinator = (
       },
     };
     const { message, options, handler } = buildPreflightAsk({
-      checkpoint,
+      checkpoint: await withMemberLabels(row, checkpoint),
       context,
     });
     // Establish the stable decision group before the ask can be answered. An

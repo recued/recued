@@ -231,6 +231,11 @@ export type YoursCommand =
   | { action: 'file.detach'; asset_id: string; link_id: string; record_id: string }
   | { action: 'delivery.update'; settings: Partial<import('./situation.js').SituationDeliverySettings> }
   | { action: 'delivery.send_now' }
+  /** §15.7 amendment (2026-11-02, later) — the Agenda's settings and Send now. An older server
+   *  refuses both as an unknown change; a client offers them only to a server that answers
+   *  `yours.agenda`. */
+  | { action: 'agenda.update'; settings: Partial<import('./situation.js').SituationAgendaSettings> }
+  | { action: 'agenda.send_now' }
   | { action: 'subscriber.reconciled'; subscriber_id: string; revision: number; run_id: string }
   | { action: 'subscriber.contract'; trigger_id: string; contract_id: string | null }
   | { action: 'settings.update'; digest?: 'daily' | 'weekly' | 'off'; last_time?: 'on' | 'off'; measures?: boolean };

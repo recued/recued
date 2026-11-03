@@ -88,6 +88,10 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // tool: `contact.search` returns a name and an email, and the prefetch shows a
     // name and a ref.
     'contact.read',
+    // D-336 slice F (2026-10-31) — +1: `contact.write`. An AI adds a contact or changes
+    // one's details, a birthday told in chat among them, held for the owner like every
+    // write; birthdays and anniversaries stay off the memory pool (§3.7).
+    'contact.write',
     'mail.search',
     // Follow this work — +2: the exact body of one message, and an attachment's
     // text. `mail.search` returns previews, which can omit a withdrawal.
@@ -96,6 +100,10 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'document.search',
     'calendar.search',
     'memory.search',
+    // D-336 (2026-10-31) — +1: `memory.relations`. The relations a saved fact can
+    // name and how to write each, so one fact is one claim in any wording; fetched
+    // when saving, like `work.type`, rather than carried in every turn.
+    'memory.relations',
     'memory.write',
     // D-198 §10 — +1: `memory.forget`. An agent may now drop an entry it saved
     // (and correct one through `memory.write`'s `replaces`); before, a correction
@@ -216,7 +224,9 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // same main dish, which the first may make: shared identity again.
     // `memory.forget` walks an entry's earlier versions, so two forgets of one
     // lineage in one turn address the same rows: shared identity once more.
-    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'document.search', 'memory.forget',
+    // `contact.write` changes one contact's row, and two adds of one person would make
+    // two contacts: shared identity again (D-336 slice F).
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'document.search', 'memory.forget', 'contact.write',
       'schedule.run_prompt', 'schedule.update', 'schedule.pause', 'schedule.resume', 'schedule.remove']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
@@ -325,7 +335,7 @@ describe('D-137 P1 — CHAT_DISPATCH_CHANNELS closed list (§ A.1.1)', () => {
 });
 
 describe('D-137 P1 — CHAT_DISPATCH_REASONS closed list (§ A.1.1)', () => {
-  it('lists exactly twelve reason codes (P1: 9 + P3 plan-approval: 2 + D-181 run-cancel: 1)', () => {
+  it('lists exactly thirteen reason codes (P1: 9 + P3 plan-approval: 2 + D-181 run-cancel: 1 + D-337 not asked yet: 1)', () => {
     expect(CHAT_DISPATCH_REASONS).toEqual([
       'not_implemented',
       'unknown_tool',
@@ -342,8 +352,10 @@ describe('D-137 P1 — CHAT_DISPATCH_REASONS closed list (§ A.1.1)', () => {
       'plan_cancelled',
       // D-181 § 9 — the owner killed / cancelled-in-queue the dispatched run.
       'run_cancelled',
+      // D-337 slice K — not asked while a call of the same turn waits for approval.
+      'not_asked_yet',
     ]);
-    expect(CHAT_DISPATCH_REASON_SET.size).toBe(12);
+    expect(CHAT_DISPATCH_REASON_SET.size).toBe(13);
   });
 
   it('isChatDispatchReason accepts every reason + rejects unknown', () => {

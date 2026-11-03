@@ -16,6 +16,7 @@ import {
   type QuietHoursPolicy,
   type Reminder,
   type ReminderCancelResult,
+  type ReminderGetResult,
   type ReminderListResult,
   type ReminderListRequest,
   type ReminderOrigin,
@@ -44,6 +45,7 @@ export interface ReminderServiceDeps {
 
 export interface ReminderDispatchers {
   reminderCreate: (input: { text: string; at: number; origin?: ReminderOrigin; creation_id?: string }) => Promise<import('@recued/contracts').ReminderCreateResult>;
+  reminderGet: (input: { reminder_id: string }) => Promise<ReminderGetResult>;
   reminderList: (input: ReminderListRequest) => Promise<ReminderListResult>;
   reminderUpdate: (input: { reminder_id: string; text?: string; at?: number }) => Promise<ReminderUpdateResult>;
   reminderCancel: (input: { reminder_id: string }) => Promise<ReminderCancelResult>;
@@ -126,6 +128,11 @@ export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDi
         confirmation: reminder.state !== 'pending' ? `This alarm was already ${reminder.state}. It has not been scheduled again.`
           : note !== undefined ? `${shown.when}. ${note}` : shown.when,
       };
+    },
+
+    reminderGet: async (input) => {
+      const reminder = deps.store.get(input.reminder_id);
+      return { reminder: reminder === null ? null : view(reminder, now()) };
     },
 
     reminderList: async (input) => {

@@ -78,6 +78,11 @@ const PAIRS: readonly Pair[] = [
         canonical: 'industry',
         reason: 'same registry-only posture as job_title; the portable home is account.industry',
       },
+      {
+        canonical: 'birthday',
+        reason: 'same registry-only posture as job_title (D-336 spec §55): the canonical op path '
+          + 'reads and writes date_of_birth, the mirror does not',
+      },
     ],
   },
   {
@@ -103,6 +108,10 @@ const PAIRS: readonly Pair[] = [
     declared: [{
       canonical: 'job_title',
       reason: 'the Salesforce half of the same registry-only posture as hubspot.contact.job_title',
+    }, {
+      canonical: 'birthday',
+      reason: 'the Salesforce half of hubspot.contact.birthday: Birthdate is read and written by the '
+        + 'canonical op path only (D-336 spec §55)',
     }],
   },
   {

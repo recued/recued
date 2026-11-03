@@ -5,9 +5,13 @@
  *  file bytes to a recipe and its safety is entirely in what it declines.
  */
 
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 import {
   handleFileReadTemp,
   FILE_READ_TEMP_MAX_BYTES,
@@ -73,8 +77,10 @@ describe('file-read-temp', () => {
 
   it('⛔ refuses a file past the ceiling — this path puts bytes in step state', () => {
     const path = seed('big.jpg', Buffer.alloc(FILE_READ_TEMP_MAX_BYTES + 1, 7));
+    vi.mocked(readFileSync).mockClear();
     expect(() => handleFileReadTemp({ ref: ref(path, { filename: 'big.jpg' }), run_id: RUN }))
       .toThrow(/ceiling/i);
+    expect(readFileSync).not.toHaveBeenCalled();
   });
 
   it('allows a file exactly AT the ceiling', () => {

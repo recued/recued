@@ -10,6 +10,7 @@ import { IngredientError, type ResolvedCall } from '@recued/ingredients';
 import { withRunAbortContext } from '../../execution/run-abort-context.js';
 import { withPreapprovalIo, type PreapprovalIoContext } from '../../preapproval-io-context.js';
 
+import { createBrowserImageStore, type BrowserImageStore } from '../browser-images.js';
 import {
   classifyDomAction,
   classifyEntryAction,
@@ -124,6 +125,7 @@ const setupAdapter = (options: {
   dispatch?: BridgeDispatcher['dispatch'];
   getDispatcher?: () => BridgeDispatcher | undefined;
   defaultTimeoutMs?: number;
+  images?: BrowserImageStore;
 } = {}) => {
   const activeManifest = options.manifest === undefined
     ? manifest()
@@ -147,6 +149,7 @@ const setupAdapter = (options: {
     ...(options.defaultTimeoutMs !== undefined
       ? { defaultTimeoutMs: options.defaultTimeoutMs }
       : {}),
+    ...(options.images !== undefined ? { images: options.images } : {}),
   });
   return { adapter, dispatch, dispatcher, manifests };
 };
@@ -418,6 +421,45 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
           gap_reason: { kind: 'tab_unavailable', url_pattern: TARGET_A },
         },
       ],
+    });
+    // Neither Bridge said anything, so the old line stands.
+    expect(err.message).toBe(`DOM ingredient '${SLUG}' cannot run — every paired bridge reported a capacity gap (selector '#title')`);
+  });
+
+  // D-335 slice H — the Bridge words a gap for the AI to pass on, and the
+  // aggregate used to drop it, so "turn on Allow screenshots" never reached
+  // the AI.
+  describe('what the Bridges said reaches the AI', () => {
+    const OFF = 'Screenshots are off: turn on “Allow screenshots” in the Browser Bridge\'s side panel in Chrome.';
+    const MINIMIZED = 'Chrome\'s window with this page is minimized, so it cannot be pictured: restore the window and try again.';
+    const gap = (bridges: Array<{ id: string; label?: string; message?: string }>) => translateDispatchOutcome({
+      kind: 'aggregate_capacity_gap',
+      aggregate: { kind: 'aggregate_capacity_gap', bridges: bridges.map(bridge => ({
+        bridge_id: bridge.id, bridge_label: bridge.label ?? bridge.id,
+        gap_reason: { kind: 'permission_missing', permission: TARGET_A },
+        ...(bridge.message === undefined ? {} : { message: bridge.message }),
+      })) },
+      attempts: bridges.length,
+    }, SLUG, entry('screenshot', 'the page'));
+
+    it('one Bridge\'s words, as it said them', async () => {
+      const err = await expectIngredientCode(() => gap([{ id: 'token-a', label: 'Laptop', message: OFF }]), 'ROLE_RESTRICTION');
+      expect(err.message).toBe(OFF);
+    });
+
+    it('Bridges that say the same thing say it once', async () => {
+      const err = await expectIngredientCode(() => gap([{ id: 'token-a', label: 'Laptop', message: OFF },
+        { id: 'token-b', label: 'Desktop', message: OFF }]), 'ROLE_RESTRICTION');
+      expect(err.message).toBe(OFF);
+    });
+
+    it('Bridges that differ are named, and one with no label is not named by its token id', async () => {
+      const err = await expectIngredientCode(() => gap([{ id: 'token-a', label: 'Laptop', message: OFF },
+        { id: 'token-b', message: MINIMIZED }, { id: 'token-c', label: 'Desktop', message: 'bridge: no open tab matches the page' },
+        { id: 'token-d', label: 'Old one' }]), 'ROLE_RESTRICTION');
+      expect(err.message).toBe(`Browser Bridge “Laptop”: ${OFF} A Browser Bridge: ${MINIMIZED} `
+        + 'Browser Bridge “Desktop”: bridge: no open tab matches the page. Browser Bridge “Old one”: it could not take this step.');
+      expect(err.message).not.toContain('token-');
     });
   });
 });
@@ -746,6 +788,108 @@ describe('D-335 - core.dom.tabs and core.dom.open', () => {
       open.call({ target: TARGET_A, address: 'https://app.example.com/' })), 'ACTION_DELIVERY_UNCERTAIN');
     await expectIngredientCode(() => setupAdapter({ manifest: tabs.manifest, dispatch: timedOut }).adapter(
       tabs.call({ target: TARGET_A })), 'INGREDIENT_ADAPTER_ALL_FAILED');
+  });
+});
+
+// D-335 slice H — waiting, a table and a picture, each one command on a page
+// handle, each a read: a lost answer is a failed read, never an uncertain effect.
+describe('D-335 slice H - core.dom.wait, core.dom.table and core.dom.screenshot', () => {
+  const op = (slug: string) => ({ manifest: manifest({ slug, risk_tier: 'read', surface_kind: 'reading' }),
+    call: (input: Record<string, unknown>) => resolved({ slug, risk_tier: 'read', input, output: {} }) });
+  const wait = op('dom-wait');
+  const table = op('dom-table');
+  const shot = op('dom-screenshot');
+  const PAGE = '7:ABC123';
+
+  it('a wait sends what to wait for and for how long, with a command budget that outlasts it', async () => {
+    const answer = { page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', found: true, waited_ms: 640 };
+    const { adapter, dispatch } = setupAdapter({ manifest: wait.manifest, dispatch: async () => completed(okResult(answer)) });
+    await expect(adapter(wait.call({ target: TARGET_A, page: PAGE, selector: '#saved', until: '', text: 'Saved',
+      timeout_seconds: 12 }))).resolves.toEqual(answer);
+    expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'wait_for_element',
+      args: { page: PAGE, selector: '#saved', until: 'shown', text: 'Saved', timeout_ms: 12_000 },
+      expects_output_keys: ['page', 'url', 'title', 'found', 'waited_ms'], timeout_ms: 22_000 })]);
+  });
+
+  it('a wait is at most 30 seconds, and ten by default; its budget stays within the most a command may take', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: wait.manifest,
+      dispatch: async () => completed(okResult({ page: PAGE, url: 'u', title: 't', found: false, waited_ms: 1 })) });
+    await adapter(wait.call({ target: TARGET_A, page: PAGE, selector: '#x', timeout_seconds: 600 }));
+    await adapter(wait.call({ target: TARGET_A, page: PAGE, selector: '#x', until: 'gone', timeout_seconds: '' }));
+    expect(requests(dispatch).map(r => [r.args.timeout_ms, r.args.until, r.timeout_ms]))
+      .toEqual([[30_000, 'shown', 40_000], [10_000, 'gone', 20_000]]);
+  });
+
+  it.each([
+    [{ target: TARGET_A, selector: '#x' }, "requires a non-empty 'page' arg"],
+    [{ target: TARGET_A, page: PAGE }, "requires a non-empty 'selector' arg"],
+    [{ target: TARGET_A, page: PAGE, selector: '#x', until: 'soon' }, "'until' is shown or gone"],
+    [{ target: TARGET_A, page: PAGE, selector: '#x', timeout_seconds: 'later' }, "'timeout_seconds' is a number of seconds"],
+  ])('refuses the wait %j before any Bridge is asked', async (input, message) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: wait.manifest });
+    const err = await expectIngredientCode(() => adapter(wait.call(input)), 'DOM_SELECTOR_MISSING');
+    expect(err.message).toContain(message);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('a table is read by page handle, with the ref or selector given, and answers the Bridge\'s rows', async () => {
+    const answer = { page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', columns: ['Deal'], rows: [['Acme']],
+      truncated: false };
+    const { adapter, dispatch } = setupAdapter({ manifest: table.manifest, dispatch: async () => completed(okResult(answer)) });
+    await expect(adapter(table.call({ target: TARGET_A, page: PAGE, selector: '#deals', ref: '' }))).resolves.toEqual(answer);
+    expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'read_table', args: { page: PAGE, selector: '#deals' },
+      expects_output_keys: ['page', 'url', 'title', 'columns', 'rows', 'truncated'] })]);
+  });
+
+  it.each([
+    [table, 'core.dom.table: pass the page handle'], [shot, 'core.dom.screenshot: pass the page handle'],
+  ])('a table or a picture without a page handle is refused before any Bridge is asked (%#)', async (which, message) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: which.manifest });
+    const err = await expectIngredientCode(() => adapter(which.call({ target: TARGET_A, selector: '#x' })), 'DOM_SELECTOR_MISSING');
+    expect(err.message).toContain(message);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps a screenshot\'s picture on the server, and its output refers to it', async () => {
+    const images = createBrowserImageStore();
+    const picture = Buffer.from('a jpeg, honestly').toString('base64');
+    const { adapter, dispatch } = setupAdapter({ manifest: shot.manifest, images, dispatch: async () => completed(okResult({
+      page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', image: picture, mime_type: 'image/jpeg', width: 800, height: 600 })) });
+    const output = await adapter(shot.call({ target: TARGET_A, page: PAGE, ref: 'e4' })) as Record<string, unknown>;
+    expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'screenshot_page', args: { page: PAGE, ref: 'e4' },
+      expects_output_keys: ['page', 'url', 'title', 'image', 'mime_type', 'width', 'height'] })]);
+    expect(output).toEqual({ page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', width: 800, height: 600,
+      image: { type: 'image', image_id: expect.stringMatching(/^[\w-]{8,64}$/), mime_type: 'image/jpeg', width: 800, height: 600 } });
+    // The output holds no picture; the store does.
+    expect(JSON.stringify(output)).not.toContain(picture);
+    expect(images.get((output.image as { image_id: string }).image_id)).toEqual({ mime_type: 'image/jpeg', data: picture, width: 800, height: 600 });
+  });
+
+  it.each([
+    [{ image: '', mime_type: 'image/jpeg', width: 800, height: 600 }],
+    [{ image: 'not base64!', mime_type: 'image/jpeg', width: 800, height: 600 }],
+    [{ image: 'QUJD', mime_type: 'image/gif', width: 800, height: 600 }],
+    [{ image: 'QUJD', mime_type: 'image/jpeg', width: 0, height: 600 }],
+    [{ image: 'QUJD', mime_type: 'image/jpeg', width: 9000, height: 600 }],
+  ])('a picture the server cannot read is a failed step, not an empty one (%j)', async (picture) => {
+    const images = createBrowserImageStore();
+    const { adapter } = setupAdapter({ manifest: shot.manifest, images,
+      dispatch: async () => completed(okResult({ page: PAGE, url: 'u', title: 't', ...picture })) });
+    await expectIngredientCode(() => adapter(shot.call({ target: TARGET_A, page: PAGE })), 'INGREDIENT_ADAPTER_ALL_FAILED');
+  });
+
+  it.each([[wait, { page: PAGE, selector: '#x' }], [table, { page: PAGE }], [shot, { page: PAGE }]])(
+    'a lost answer is a failed read (%#)', async (which, input) => {
+      const { adapter } = setupAdapter({ manifest: which.manifest,
+        dispatch: async () => ({ kind: 'timeout', command_id: 'cmd-1', attempts: 1 }) });
+      await expectIngredientCode(() => adapter(which.call({ target: TARGET_A, ...input })), 'INGREDIENT_ADAPTER_ALL_FAILED');
+    });
+
+  it('tells the owner to update a Bridge that cannot take a screenshot by page', async () => {
+    const { adapter } = setupAdapter({ manifest: shot.manifest, dispatch: async () => ({ kind: 'capacity_gap',
+      capacity_gap: { kind: 'bridge_online' }, reason: 'bridge_update_required', attempts: 0 }) });
+    const err = await expectIngredientCode(() => adapter(shot.call({ target: TARGET_A, page: PAGE })), 'ROLE_RESTRICTION');
+    expect(err.message).toBe("Update the Browser Bridge: the connected one cannot run 'screenshot_page'.");
   });
 });
 

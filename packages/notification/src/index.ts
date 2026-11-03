@@ -107,6 +107,7 @@ export {
 } from './handler-registry.js';
 export {
   BRIDGE_INSTALL_URL,
+  channelApprovalEnabled,
   createNotificationSettings,
   createNotificationSettingsStore,
   DEFAULT_BRIDGE_MODE_SETTINGS,
@@ -156,6 +157,7 @@ export {
   type RemoteChannel,
   type RemoteChannelCredential,
   type RemoteChannelDeps,
+  type RemotePromptRecord,
 } from './channels/remote.js';
 export {
   createEmailChannel,
@@ -163,6 +165,7 @@ export {
   emailReplyText,
   parseEmailReply,
   type EmailChannelDeps,
+  type EmailPromptRecord,
   type EmailReplyInput,
   type EmailSender,
   type OutboundEmail,
@@ -1358,7 +1361,8 @@ export const createNotificationBlock = (
       // fan-out left the ask undelivered or partially delivered;
       // `Channel.deliverAsk` is idempotent per `ask_id`, so re-
       // delivering to an already-shown surface reconciles rather than
-      // double-renders. Re-delivery targets the ask's persisted
+      // double-renders: across a restart too on a channel given its
+      // prompt records (D-158 P3). Re-delivery targets the ask's persisted
       // `fanout_channels` (via `channelsForAsk`), NOT the live settings
       // record: a channel the user toggled off after `create` still
       // holds a live prompt to reconcile, and a channel toggled on

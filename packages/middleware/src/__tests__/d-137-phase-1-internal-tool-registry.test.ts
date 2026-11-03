@@ -447,3 +447,23 @@ describe('D-329 — askValueLabels', () => {
     expect(await registry.askValueLabels!('work.update', { id: 'a1' }, ctxInternal())).toBeUndefined();
   });
 });
+
+describe('D-336 slice G — askNotices', () => {
+  const MET = {
+    agent: 'It contradicts "Mia is Dana\'s daughter."',
+    memory_conflicts: [{ kind: 'contradicts' as const, memory_id: 'umem_1', summary: "Mia is Dana's daughter." }],
+  };
+  it('answers with what the tool says a held call meets, and nothing for a tool with none', async () => {
+    const registry = createInternalToolRegistry({ tier1AskNotices: { 'memory.write': async () => MET } });
+    expect(await registry.askNotices!('memory.write', { summary: 'x' }, ctxInternal())).toEqual(MET);
+    expect(await registry.askNotices!('work.update', { id: 'a1' }, ctxInternal())).toBeUndefined();
+    expect(await registry.askNotices!('recipe.nope', {}, ctxInternal())).toBeUndefined();
+  });
+
+  it('a lookup that fails tells nothing, rather than failing the hold', async () => {
+    const registry = createInternalToolRegistry({
+      tier1AskNotices: { 'memory.write': async () => { throw new Error('store went away'); } },
+    });
+    expect(await registry.askNotices!('memory.write', {}, ctxInternal())).toBeUndefined();
+  });
+});

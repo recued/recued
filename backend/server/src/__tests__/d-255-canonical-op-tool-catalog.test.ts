@@ -77,16 +77,19 @@ describe('buildCanonicalOpToolDescriptors — what is NOT offered', () => {
     expect(aliases.has('invoice')).toBe(false);
   });
 
-  it('offers the accounting family once its vendor IS bound — same builder', () => {
+  it('offers the accounting family once its vendor IS bound — its read verbs only', () => {
     // `KernelConnectionFamily` is generic over conventions, so acct rides the crm
-    // path with no branch. ⚠ Inert on the shipped registry (0 acct_alias entries);
-    // this is the only thing exercising it.
+    // path. ⚠ Inert on the shipped registry (0 acct_alias entries); this is the only
+    // thing exercising it.
+    // D-336 (spec §46) — this asserted `invoice.update` WAS offered: a tool the resolver
+    // always refuses (accounting writes keep their explicit, approved binding).
     const withAcct = buildCanonicalOpToolDescriptors({
       boundConnections: [{ name: 'books1', vendor: 'ledgerco' }],
       registry: ACCT_REGISTRY,
     });
-    expect(withAcct.map((d) => d.opId)).toContain('invoice.update');
-    expect(withAcct.find((d) => d.opId === 'invoice.update')?.connections).toEqual(['books1']);
+    const offered = withAcct.filter((d) => d.alias === 'invoice').map((d) => d.verb).sort();
+    expect(offered).toEqual(['read', 'search']);
+    expect(withAcct.find((d) => d.opId === 'invoice.read')?.connections).toEqual(['books1']);
   });
 
   it('⛔ omits an unregistered vendor entirely', () => {

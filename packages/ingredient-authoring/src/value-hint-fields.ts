@@ -3,8 +3,9 @@ import { VALUE_HINT_KEYS, RECIPE_PAGE_BINDING_KEYS, type RecipePageBinding, type
 type Key = (typeof VALUE_HINT_KEYS)[number];
 type FieldType<T> = unknown extends T ? 'any' : NonNullable<T> extends boolean ? 'boolean'
   : NonNullable<T> extends readonly unknown[] ? 'array' : NonNullable<T> extends object ? 'object' : 'string';
-type Declarations = { [K in Key]: { type: FieldType<ValueHint[K]>; required: {} extends Pick<ValueHint, K> ? false : true; description: string } };
-export interface ValueHintField { key: Key; type: 'any' | 'boolean' | 'array' | 'object' | 'string'; required: boolean; description: string }
+type Declarations = { [K in Key]: { type: FieldType<ValueHint[K]>; required: {} extends Pick<ValueHint, K> ? false : true; description: string; values?: readonly string[] } };
+export interface ValueHintField { key: Key; type: 'any' | 'boolean' | 'array' | 'object' | 'string'; required: boolean; description: string; values?: readonly string[] }
+const connectionKinds = { api: true, mcp: true, notification: true } satisfies Record<NonNullable<ValueHint['connection_kind']>, true>;
 
 /** Keys come from the contract; mapped types keep the editing hints aligned with its members. */
 const fields: Declarations = {
@@ -18,15 +19,16 @@ const fields: Declarations = {
   provider: { type: 'string', required: false, description: 'Provider name used to route an OAuth input through the broker.' },
   scopes: { type: 'array', required: false, description: 'Non-empty scope strings requested for an OAuth input.' },
   accept_mime_types: { type: 'array', required: false, description: 'Non-empty MIME type strings used to narrow file picker results. File operations still enforce access.' },
-  connection_kind: { type: 'string', required: false, description: 'The connection registry family used by a connection input. This does not choose a connection or grant access.' },
+  connection_kind: { type: 'string', required: false, values: Object.keys(connectionKinds), description: 'The connection registry family used by a connection input. This does not choose a connection or grant access.' },
   entity: { type: 'string', required: false, description: 'The local entity kind searched by a record_ref picker. Required for record_ref and meaningful only on that type.' },
   entity_filter: { type: 'object', required: false, description: 'Equality filters for a record_ref picker, with non-empty string field values. This narrows discovery and does not grant execution authority.' },
   starter: { type: 'object', required: false, description: 'An authored mail template definition for a mail_template input. Install creates its template; source cannot name the installed template ID.' },
   page_binding: { type: 'object', required: false, description: 'Seed an editable Run input from a selected page object using kind and field, with optional platform. Credentials and setup settings stay manual; record_ref must select its own entity ID.' },
 };
-export const valueHintFields = (): ValueHintField[] => VALUE_HINT_KEYS.map(key => ({ key, ...fields[key] }));
-export const valueHintField = (name: string): ValueHintField | undefined => {
-  const key = VALUE_HINT_KEYS.find(key => key === name); return key ? { key, ...fields[key] } : undefined;
+export const valueHintFields = (type?: string): ValueHintField[] => VALUE_HINT_KEYS.map(key => ({ key, ...fields[key],
+  required: fields[key].required || key === 'options' && type === 'enum' || key === 'entity' && type === 'record_ref' }));
+export const valueHintField = (name: string, type?: string): ValueHintField | undefined => {
+  return valueHintFields(type).find(field => field.key === name);
 };
 
 type BindingKey = (typeof RECIPE_PAGE_BINDING_KEYS)[number];

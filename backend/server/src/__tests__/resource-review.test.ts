@@ -142,13 +142,21 @@ describe('reviewed resource execution', () => {
     expect(f.table.get('meeting')!.event.end_at).toBe(review.resources[0]!.after!.end_at);
   });
 
-  it('refuses unsupported scopes and providers, and requires an ETag from the same synced version', async () => {
+  it('refuses unsupported scopes, and requires an ETag from the same synced version', async () => {
     const f = await fixture();
     expect(() => f.hooks().capture('calendar-update', { ...input, scope: 'this_and_future' })).toThrow(/one calendar occurrence/);
     const provider = f.stack.listLive()[0]!.provider;
+    // D-336 (spec §56) — Outlook is reviewed too, by its weak ETag (`W/"…"`), which Google's
+    // strong-ETag rule would refuse. Before, every Outlook review was refused, so a recipe
+    // could not change or delete an Outlook event at all.
     Object.defineProperty(provider, 'kind', { value: 'graph', configurable: true });
-    expect(() => f.hooks().capture('calendar-update', input)).toThrow(/Outlook/);
+    expect(() => f.hooks().capture('calendar-update', input)).toThrow(/Sync the calendar/);
+    f.table.upsert({ event, size_bytes: 0, etag: 'W/"outlook-v1"' });
+    expect(f.hooks().capture('calendar-delete', input)!.resources[0]!.precondition)
+      .toEqual({ kind: 'etag', value: 'W/"outlook-v1"' });
     Object.defineProperty(provider, 'kind', { value: 'gcal', configurable: true });
+    expect(() => f.hooks().capture('calendar-update', input)).toThrow(/Sync the calendar/);
+    f.table.upsert({ event, size_bytes: 0 });
     expect(() => f.hooks().capture('calendar-update', input)).toThrow(/Sync the calendar/);
     f.table.upsert({ event, size_bytes: 0, etag: '"synced-v1"' });
     const review = f.hooks().capture('calendar-update', input)!;

@@ -462,6 +462,7 @@ export const ensureChatSchema = (db: Database.Database): void => {
       hold_run_id                TEXT,
       hold_lapsed_at             INTEGER,
       value_labels_encrypted     TEXT,
+      memory_conflicts_encrypted TEXT,
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
       FOREIGN KEY (message_id) REFERENCES chat_messages (message_id) ON DELETE SET NULL
     );
@@ -511,6 +512,8 @@ export const ensureChatSchema = (db: Database.Database): void => {
   if (!planCols.has('hold_lapsed_at')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_lapsed_at INTEGER');
   // D-329 — the names of the records a proposal's args name (`value_labels`).
   if (!planCols.has('value_labels_encrypted')) db.exec('ALTER TABLE chat_plans ADD COLUMN value_labels_encrypted TEXT');
+  // D-336 slice G — the notes in memory a held save meets.
+  if (!planCols.has('memory_conflicts_encrypted')) db.exec('ALTER TABLE chat_plans ADD COLUMN memory_conflicts_encrypted TEXT');
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_chat_plans_retry_origin
       ON chat_plans (session_id, retry_of_plan_id, created_at);

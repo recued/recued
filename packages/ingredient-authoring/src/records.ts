@@ -15,11 +15,13 @@ import {
   type RecordsFieldSnapshot,
   type RecordsSchemaSnapshot,
   type RiskTier,
-  validateRecordsAggregateSelect,
+  type AuthoringReferenceSpan,
+  type RecordsContractIssue,
+  recordsAggregateSelectIssues,
   validateRecordsGroupBy,
-  validateRecordsBatchAllow,
-  validateRecordsRootProjection,
-  validateRecordsRootProjectionNames,
+  recordsBatchAllowIssues,
+  recordsRootProjectionIssues,
+  recordsRootProjectionNameIssues,
 } from '@recued/contracts';
 
 import { canonicalHash } from './canonical-hash.js';
@@ -34,6 +36,7 @@ export interface RecordsAuthoringIssue {
   code: string;
   path: string;
   message: string;
+  reference_span?: AuthoringReferenceSpan;
 }
 
 export interface RecordsHashes {
@@ -44,10 +47,13 @@ export interface RecordsHashes {
 
 const FRIENDLY_PATH_RE = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$/;
 const PROTOTYPE_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
+export const recordsFieldAliasSafe = (value: string): boolean =>
+  FRIENDLY_PATH_RE.test(value) && !value.split('.').some(segment => PROTOTYPE_SEGMENTS.has(segment));
 const normalizeEntityId = (value: string): string => {
   const normalized = value.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
   return /^[a-z]/.test(normalized) ? normalized : `entity_${normalized || 'unknown'}`;
 };
+export { normalizeEntityId as normalizeRecordsEntityId };
 /** Exported for the digest-coverage sweep: the copier's completeness is only
  *  derivable if the admissible-key list and the copier can be compared. */
 export const RECORDS_BIND_KEYS: Record<RecordsAction, ReadonlySet<string>> = {
@@ -118,6 +124,9 @@ const batchRiskFloor = (allow: unknown): RiskTier => {
   }
   return floor;
 };
+
+export const recordsActionRiskFloor = (action: RecordsAction, allow?: unknown): RiskTier =>
+  action === 'batch' ? batchRiskFloor(allow) : RISK_FLOOR[action];
 
 const ACTION_ARGS: Record<RecordsAction, readonly OperationArgSpec[]> = {
   create: [
@@ -217,8 +226,16 @@ const issue = (
   code: string,
   path: string,
   message: string,
+  reference_span?: AuthoringReferenceSpan,
 ): void => {
-  issues.push({ severity: 'error', code, path, message });
+  issues.push({ severity: 'error', code, path, message, ...(reference_span ? { reference_span } : {}) });
+};
+
+const contractIssue = (issues: RecordsAuthoringIssue[], code: string, path: string, finding: RecordsContractIssue): void => {
+  const suffix = finding.path.map(key => `[${typeof key === 'number' ? key : JSON.stringify(key)}]`).join('');
+  const key = finding.path.at(-1);
+  issue(issues, code, path + suffix, finding.message, finding.target === 'key' && typeof key === 'string' && key.length
+    ? { target: 'key', offset: 0, length: key.length } : undefined);
 };
 
 export const isRecordsComposition = (body: unknown): boolean => {
@@ -281,7 +298,28 @@ const validateArgEnvelope = (
 const fieldKind = (field: IngredientEntityField): 'id' | RecordsFieldKind | undefined =>
   field.field_path === 'pk' ? 'id' : recordsSlotKind(field.field_path);
 
-const expectedMetaType = (kind: 'id' | RecordsFieldKind): MetaFieldType => {
+/** The same per-field decisions drive canonical validation and source editing. */
+export type RecordsFieldList = 'filter_fields' | 'sort_fields' | 'natural_key';
+export const recordsFieldListIssues = (key: RecordsFieldList, alias: string, field?: IngredientEntityField): { code: string; message: string }[] => {
+  const kind = field === undefined ? undefined : fieldKind(field);
+  if (key === 'natural_key') return field === undefined || kind === 'id' || field.optional === true
+    ? [{ code: 'records_natural_key_field', message: `natural_key field '${alias}' must be declared, writable, and required` }] : [];
+  if (key === 'sort_fields' && (alias === '_record.created_at' || alias === '_record.updated_at')) return [];
+  if (field === undefined || kind === 'id') return [{ code: 'records_bind_field_unknown', message: `'${alias}' is not a declared writable field` }];
+  const issues: { code: string; message: string }[] = [];
+  if (kind === 'text') issues.push({ code: 'records_text_unindexed', message: `unindexed text field '${alias}' cannot be admitted by a pack query` });
+  // Dotted aliases are readable projections. Query filters use literal keys,
+  // and the kernel rejects dotted caller keys, so these cannot be queried.
+  if (alias.includes('.')) issues.push({ code: 'records_dotted_query_field', message: `dotted field '${alias}' cannot be admitted by a pack query — a dotted alias is readable but not filterable/sortable` });
+  if (key === 'sort_fields' && (kind === 'string' || kind === 'ref')) issues.push({ code: 'records_sort_unordered', message: `field '${alias}' is not in an ordered Records family` });
+  return issues;
+};
+
+/** Copies protect the canonical table; natural-key creates deliberately omit caller id. */
+export const recordsActionArguments = (action: RecordsAction, naturalKey = false): OperationArgSpec[] => ACTION_ARGS[action]
+  .filter(arg => !(naturalKey && action === 'create' && arg.key === 'id')).map(arg => ({ ...arg }));
+
+export const recordsMetaFieldType = (kind: 'id' | RecordsFieldKind): MetaFieldType => {
   if (kind === 'number') return 'number';
   if (kind === 'boolean') return 'boolean';
   if (kind === 'date' || kind === 'datetime') return 'datetime';
@@ -324,11 +362,7 @@ const validateEntityFields = (
         issue(issues, 'records_alias_duplicate', `${fPath}.maps_to`, `friendly path '${field.maps_to}' collides after normalization`);
       }
       aliases.add(foldedAlias);
-      const segments = field.maps_to.split('.');
-      if (
-        !FRIENDLY_PATH_RE.test(field.maps_to)
-        || segments.some((segment) => PROTOTYPE_SEGMENTS.has(segment))
-      ) {
+      if (!recordsFieldAliasSafe(field.maps_to)) {
         issue(issues, 'records_alias_invalid', `${fPath}.maps_to`, `friendly path '${field.maps_to}' is not safe`);
       }
       if (
@@ -343,8 +377,8 @@ const validateEntityFields = (
           issue(issues, 'records_id_mapping', fPath, "the protected pk slot must map exactly to required string 'id'");
         }
       } else {
-        if (field.type !== expectedMetaType(kind)) {
-          issue(issues, 'records_slot_type_mismatch', `${fPath}.type`, `slot '${field.field_path}' requires type '${expectedMetaType(kind)}'`);
+        if (field.type !== recordsMetaFieldType(kind)) {
+          issue(issues, 'records_slot_type_mismatch', `${fPath}.type`, `slot '${field.field_path}' requires type '${recordsMetaFieldType(kind)}'`);
         }
         if (kind === 'date' && field.date_granularity !== 'date') {
           issue(issues, 'records_date_granularity', `${fPath}.date_granularity`, `slot '${field.field_path}' requires date granularity`);
@@ -451,30 +485,8 @@ export const validateRecordsComposition = (
         issue(issues, 'records_bind_field_list', `${path}.bind.${key}`, `${key} must be a non-empty unique string array`);
         return;
       }
-      for (const alias of value) {
-        if (key === 'sort_fields' && (alias === '_record.created_at' || alias === '_record.updated_at')) continue;
-        const field = fieldByAlias.get(alias);
-        const kind = field === undefined ? undefined : fieldKind(field);
-        if (field === undefined || kind === 'id') {
-          issue(issues, 'records_bind_field_unknown', `${path}.bind.${key}`, `'${alias}' is not a declared writable field`);
-          continue;
-        }
-        if (kind === 'text') {
-          issue(issues, 'records_text_unindexed', `${path}.bind.${key}`, `unindexed text field '${alias}' cannot be admitted by a pack query`);
-        }
-        // A DOTTED alias is projectable (it nests in the read shape) but not
-        // queryable: `filterList` keys the filter map on the literal friendly
-        // name, and the kernel's own arg guard refuses any object key carrying a
-        // `.` before dispatch ever reaches it — so `filters: {"identity.customer":
-        // …}` cannot be expressed, and the nested form resolves to an
-        // undeclared parent. Admitting one here ships an operation with a
-        // declared query field no caller can use.
-        if (alias.includes('.')) {
-          issue(issues, 'records_dotted_query_field', `${path}.bind.${key}`, `dotted field '${alias}' cannot be admitted by a pack query — a dotted alias is readable but not filterable/sortable`);
-        }
-        if (key === 'sort_fields' && (kind === 'string' || kind === 'ref')) {
-          issue(issues, 'records_sort_unordered', `${path}.bind.${key}`, `field '${alias}' is not in an ordered Records family`);
-        }
+      for (const alias of value) for (const finding of recordsFieldListIssues(key, alias, fieldByAlias.get(alias))) {
+        issue(issues, finding.code, `${path}.bind.${key}`, finding.message);
       }
     };
     checkFieldList('filter_fields');
@@ -491,8 +503,8 @@ export const validateRecordsComposition = (
         const kind = fieldKind(field);
         if (kind !== undefined && kind !== 'id') kinds[field.maps_to] = kind;
       }
-      for (const problem of validateRecordsAggregateSelect(bind.select, kinds)) {
-        issue(issues, 'records_aggregate_select', `${path}.bind.select`, problem);
+      for (const finding of recordsAggregateSelectIssues(bind.select, kinds)) {
+        contractIssue(issues, 'records_aggregate_select', `${path}.bind.select`, finding);
       }
       // ⚠ OPTIONAL — its absence is the ungrouped op, which is the shape that
       // shipped first and must keep working untouched. Present, it changes what
@@ -520,8 +532,8 @@ export const validateRecordsComposition = (
       const entityNames = Object.keys(
         (ingredient.entities ?? {}) as Record<string, unknown>,
       ).map(normalizeEntityId);
-      for (const problem of validateRecordsBatchAllow(bind.allow, entityNames)) {
-        issue(issues, 'records_batch_allow', `${path}.bind.allow`, problem);
+      for (const finding of recordsBatchAllowIssues(bind.allow, entityNames)) {
+        contractIssue(issues, 'records_batch_allow', `${path}.bind.allow`, finding);
       }
     } else if (bind.allow !== undefined) {
       issue(issues, 'records_batch_allow', `${path}.bind.allow`, `Records ${action} does not admit an allow list`);
@@ -532,14 +544,13 @@ export const validateRecordsComposition = (
         issue(issues, 'records_natural_key_shape', `${path}.bind.natural_key`, 'natural_key is a non-empty unique array admitted only on create');
       } else {
         for (const alias of bind.natural_key) {
-          const field = fieldByAlias.get(alias);
-          if (field === undefined || fieldKind(field) === 'id' || field.optional === true) {
-            issue(issues, 'records_natural_key_field', `${path}.bind.natural_key`, `natural_key field '${alias}' must be declared, writable, and required`);
+          for (const finding of recordsFieldListIssues('natural_key', alias, fieldByAlias.get(alias))) {
+            issue(issues, finding.code, `${path}.bind.natural_key`, finding.message);
           }
         }
       }
     }
-    const floor = action === 'batch' ? batchRiskFloor(bind.allow) : RISK_FLOOR[action];
+    const floor = recordsActionRiskFloor(action, bind.allow);
     if (RISK_RANK[row.risk] < RISK_RANK[floor]) {
       issue(issues, 'records_risk_floor', `${path}.risk`, `Records ${action} requires risk '${floor}' or stricter`);
     }
@@ -586,17 +597,17 @@ export const validateRecordsComposition = (
     }
     for (const [index, projection] of roots.entries()) {
       everyProjection.push({ path: `${at}[${index}]`, projection });
-      for (const problem of validateRecordsRootProjection(
+      for (const finding of recordsRootProjectionIssues(
         projection, entityKind, schemaForProjections, `${at}[${index}]`,
       )) {
-        issue(issues, 'records_root_projection', at, problem);
+        contractIssue(issues, 'records_root_projection', `${at}[${index}]`, finding);
       }
     }
   }
   // Recipes read a pack's rollups by pack, so several need names to be told
   // apart — across entities, since they all sit under the one pack.
-  for (const problem of validateRecordsRootProjectionNames(everyProjection)) {
-    issue(issues, 'records_root_projection', 'ingredients[0].entities', problem);
+  for (const finding of recordsRootProjectionNameIssues(everyProjection)) {
+    contractIssue(issues, 'records_root_projection', everyProjection[finding.index]!.path, finding);
   }
   // D-221 §6.2 — `natural_key` is a property of the ENTITY, not of one bind.
   // It is admissible only on `create`, so a sibling bind on the same entity

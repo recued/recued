@@ -116,6 +116,22 @@ describe('D-128 P5 — entity-detail panel header', () => {
     expect(html).not.toContain('About this');
   });
 
+  it('D-336 slice I — names an entity by its label where its id means nothing; the id still marks the panel', () => {
+    const html = renderEntityDetailPanel({
+      scope: 'contact',
+      target_id: 'mention-only-ct-mia@_recued.invalid',
+      targetLabel: 'Mia <3',
+      vendorEntity: null,
+      metaSnapshot: null,
+      enrichments: [],
+      timelineEntries: [],
+      now: NOW,
+    });
+    expect(html).toContain('About Mia &lt;3</h2>');
+    expect(html).not.toContain('<code>mention-only-ct-mia@_recued.invalid</code>');
+    expect(html).toContain('data-target-id="mention-only-ct-mia@_recued.invalid"');
+  });
+
   it('moves every heading below a nested host section', () => {
     const html = renderEntityDetailPanel({
       scope: 'connection.api.hubspot.deal',

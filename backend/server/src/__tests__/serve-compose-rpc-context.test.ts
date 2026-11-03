@@ -7,6 +7,9 @@ import { createRuntimeConfigStore } from '@recued/config';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CircuitBreakerStore } from '../auto-run-scheduler.js';
+import { createCollectionRegistry } from '../collections/registry.js';
+import { createMailSourceWalker } from '../housekeeping/source-walkers.js';
+import { summaryProducer } from '../housekeeping/producers/summary.js';
 import { createBootTrace } from '../cli/boot-trace.js';
 import { composeAppContext } from '../serve/compose-app-context.js';
 import {
@@ -87,6 +90,11 @@ describe('composeRpcContext', () => {
         chatLateBound: lateBound,
       });
       const schedulerRegistry = makeSchedulerRegistry();
+      const collectionRegistry = createCollectionRegistry();
+      schedulerRegistry.producers().set('enrichment.summary', {
+        producer: summaryProducer,
+        walker: createMailSourceWalker(collectionRegistry),
+      });
       const setActiveContactMergeScanMode = vi.fn();
       const getApiConnectionLookup = vi.fn(() => undefined);
       const getRefreshAuth = vi.fn(() => undefined);
@@ -94,6 +102,7 @@ describe('composeRpcContext', () => {
 
       const context = composeRpcContext({
         storage: storageContext,
+        collectionRegistry,
         app,
         // D-163 Slice C — composeRpcContext reads
         // `execution.notificationBlock` to build the notifications rpc
@@ -149,6 +158,8 @@ describe('composeRpcContext', () => {
       expect(getRefreshAuth).not.toHaveBeenCalled();
       expect(getRegisterSalesforceCallEntity).not.toHaveBeenCalled();
       expect(setActiveContactMergeScanMode).not.toHaveBeenCalled();
+      await expect(context.housekeepingRpcDeps?.getEnrichmentInfo?.('enrichment.summary'))
+        .resolves.toMatchObject({ source_collection_count: 0 });
 
       expect(context.observabilityBundle.recipeListDeps).toEqual({
         store: storageContext.recipeStore,

@@ -7,6 +7,10 @@ import type { ChatDispatchContext, ChatDispatchResult, InternalToolRegistry, Too
 import { createChatOrchestrator } from '../chat-orchestrator.js';
 import { bindChatToolCallRun, observeResumedChatToolCall, withChatToolCallContext } from '../chat-tool-call-context.js';
 import { createChatRunSettledSink } from '../chat-run-settled-sink.js';
+import { expiredRunSettlement } from '../chat-held-writes.js';
+import type { HeldResultContinuation } from '../chat-held-results.js';
+import { buildAuditEntry } from '@recued/storage';
+import { isChatToolCallRecord } from '@recued/contracts';
 import {
   buildWaitedCallsContext, joinInFlightContexts, renderWaitedCallsContext, WAITED_CALLS_CONTEXT_LEAD,
 } from '../chat-waited-calls-context.js';
@@ -439,6 +443,33 @@ describe('a call that had to wait, and what the next turn is told about it', () 
     expect(store.toolCalls!.get('done-call')!.denied).toBeUndefined();
   });
 
+  it('D-337 slice R — settles an approval that expired as that, neither refused nor failed, and carries the chat on', async () => {
+    const { store } = storage();
+    const continueWith = vi.fn(async (_continuation: HeldResultContinuation) => true);
+    const sink = createChatRunSettledSink(store, signature, { emit: vi.fn() }, { continueWith });
+    await holdCall(store, 'expired-call', 'expired-run');
+    await holdCall(store, 'failed-call', 'failed-run');
+    // What retention hands the chat when it expires a held recipe run: its record, read as the
+    // composition reads it (`expiredRunSettlement`).
+    const retired = buildAuditEntry({
+      recipe_id: 'recipe.run', recipe_hash: 'hash', commit_status: 'failed', duration_ms: 1, errors: [],
+      config_snapshot: {}, trigger_url: null, trigger_source: 'manual', instance_id: 'server',
+      run_id: 'expired-run', now: 1, execution_source: source,
+    });
+    await sink(expiredRunSettlement(retired, Date.now())!);
+    await sink({ execution_source: source, run_id: 'failed-run', tool_name: 'recipe.run',
+      result: { success: false, error: 'provider said no' }, ts: Date.now() });
+    // Read back through the store, whose validator drops a record it refuses.
+    expect(store.toolCalls!.get('expired-call')).toMatchObject({ state: 'failed', expired: true });
+    expect(store.toolCalls!.get('expired-call')!.denied).toBeUndefined();
+    expect(store.toolCalls!.get('failed-call')!.expired).toBeUndefined();
+    expect(isChatToolCallRecord({ ...store.toolCalls!.get('expired-call')!, expired: 'yes' })).toBe(false);
+    // The conversation goes on knowing no one answered: no result, nothing ran.
+    expect(continueWith).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'expired-run', outcome: 'expired' }));
+    expect(continueWith.mock.calls.find(([c]) => c.run_id === 'expired-run')![0])
+      .not.toHaveProperty('result');
+  });
+
   it('lists only this chat\'s calls that waited, most recently changed first, within the bound', async () => {
     const { store } = storage();
     store.createSession({ id: 'other', now: 1_000 });
@@ -463,6 +494,8 @@ describe('a call that had to wait, and what the next turn is told about it', () 
       { ...base, message_id: 'a', run_id: 'r1', state: 'succeeded' },
       { ...base, message_id: 'b', run_id: 'r2', state: 'failed', denied: true },
       { ...base, message_id: 'c', run_id: 'r3', state: 'failed' },
+      // D-337 slice R — not "failed": it never ran, and no one said no.
+      { ...base, message_id: 'h', run_id: 'r8', state: 'failed', expired: true },
       { ...base, message_id: 'd', run_id: 'r4', state: 'held' },
       { ...base, message_id: 'e', run_id: 'r5', state: 'interrupted' },
       // Running again after its go-ahead: the live in-flight line says so.
@@ -475,6 +508,7 @@ describe('a call that had to wait, and what the next turn is told about it', () 
       'run=r1; recipe=recued-core/control-device; state=went ahead and finished; asked_at=10; settled_at=20',
       'run=r2; recipe=recued-core/control-device; state=did not run, the owner refused it; asked_at=10; settled_at=20',
       'run=r3; recipe=recued-core/control-device; state=went ahead but failed; asked_at=10; settled_at=20',
+      'run=r8; recipe=recued-core/control-device; state=did not run, no one answered its approval in time; asked_at=10; settled_at=20',
       'run=r4; recipe=recued-core/control-device; state=still waiting; asked_at=10',
       'run=r5; recipe=recued-core/control-device; state=stopped part-way, outcome unknown; asked_at=10; settled_at=20',
     ]);
@@ -495,6 +529,54 @@ describe('a call that had to wait, and what the next turn is told about it', () 
     expect(joinInFlightContexts(undefined, 'waited')).toBe('waited');
     expect(joinInFlightContexts('live work', 'waited')).toBe('live work\nwaited');
     expect(joinInFlightContexts(undefined, undefined)).toBeUndefined();
+  });
+
+  it('D-337 — not a call a continuation has told the model of; one whose continuation failed still is', async () => {
+    const { store } = storage();
+    const sink = createChatRunSettledSink(store, signature, { emit: vi.fn() });
+    for (const run of ['run-a', 'run-b', 'run-c']) {
+      await holdCall(store, `call-${run}`, run);
+      await sink({ execution_source: source, run_id: run, tool_name: 'recipe.run', result: { success: true }, ts: Date.now() });
+    }
+    const lines = (delivered?: () => ReadonlySet<string>) =>
+      (buildWaitedCallsContext(store.toolCalls, source, delivered) ?? '').split('\n').slice(1).map((line) => line.split(';')[0]);
+    expect(lines().sort()).toEqual(['run=run-a', 'run=run-b', 'run=run-c']);
+    // run-a's continuation answered it; run-b's failed, so the model was never told.
+    expect(lines(() => new Set(['run-a'])).sort()).toEqual(['run=run-b', 'run=run-c']);
+    // Every one told: nothing to say, so the turn carries no block at all.
+    expect(buildWaitedCallsContext(store.toolCalls, source, () => new Set(['run-a', 'run-b', 'run-c']))).toBeUndefined();
+    // A read that fails tells every call, as before.
+    expect(lines(() => { throw new Error('unreadable'); }).sort()).toEqual(['run=run-a', 'run=run-b', 'run=run-c']);
+  });
+
+  it('D-337 — calls told already do not crowd out older ones still untold, within the bound', async () => {
+    const { store } = storage();
+    for (let i = 0; i < 7; i += 1) await holdCall(store, `waited-${i}`, `run-${i}`);
+    // The five most recently changed were told: the two before them fill the lines.
+    const told = new Set(store.toolCalls!.listWaited('session', 5).map((call) => call.run_id!));
+    const text = buildWaitedCallsContext(store.toolCalls, source, () => told) ?? '';
+    const listed = text.split('\n').slice(1).map((line) => line.split(';')[0]!.slice('run='.length));
+    expect(listed).toHaveLength(2);
+    expect(listed.some((run) => told.has(run))).toBe(false);
+  });
+
+  it('D-337 ruling 3 — a scheduled conversation is told of its own calls that waited, as the app chat is', async () => {
+    // The owner: a scheduled conversation is "just a normal chat where the user prompt injected on
+    // schedule". Its turns run as the schedule, and were told nothing of the calls that waited.
+    const { store } = storage();
+    const scheduled = {
+      channel: 'schedule' as const, actor: 'system' as const, schedule_id: 'sch-1', cron: '0 9 * * *',
+      prompt_schedule: { schedule_id: 'sch-1', occurrence_id: 'occ-1', revision: 1, due_at: 1_000, cron: '0 9 * * *' },
+      chat_session_id: 'session', turn_id: 'turn',
+    };
+    await store.toolCalls!.start({ ...startInput('scheduled-call'), execution_source: scheduled });
+    store.toolCalls!.bind('scheduled-call', 'run-scheduled');
+    store.toolCalls!.hold('scheduled-call');
+    expect(buildWaitedCallsContext(store.toolCalls, scheduled))
+      .toContain('run=run-scheduled; recipe=recipe.run; state=still waiting');
+    // A scheduled RECIPE is no conversation: it is told nothing.
+    expect(buildWaitedCallsContext(store.toolCalls,
+      { channel: 'schedule', actor: 'system', cron: '0 9 * * *', source_recipe: 'nightly' })).toBeUndefined();
   });
 
   it('tidies the STORED running brief when it settles — the to-do written around the wait goes', async () => {

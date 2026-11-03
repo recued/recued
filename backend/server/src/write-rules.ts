@@ -20,6 +20,7 @@ import {
 } from '@recued/contracts';
 import type { PreflightNotifier } from '@recued/gateway';
 
+import { ownerEditsFor } from './chat-plan-edits.js';
 import type { WriteRuleStore } from './storage/write-rule-store.js';
 
 /** The owner, told once, when a key's suggestion opens. */
@@ -49,6 +50,9 @@ export const recordWriteRuleAnswer = (
   const raw = checkpoint.raw_op;
   const tool = raw?.tier1_tool;
   if (raw === undefined || tool === undefined || deps?.writeRules === undefined) return;
+  // D-336 slice E — an approval the owner had to change first says the proposal was not
+  // right, so it is no evidence for a standing rule (D-177 N.14's ruling).
+  if (outcome === 'approved' && ownerEditsFor(tool, checkpoint.arg_overrides) !== undefined) return;
   const now = (deps.now ?? Date.now)();
   const key = writeRuleKeyOf(raw.execution_source, tool, raw.op_args);
   if (key === undefined) return;

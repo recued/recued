@@ -660,6 +660,9 @@ describe('cli_invocation D-259 finite semantics', () => {
     )).rejects.toThrow(/no_progress stall/);
   });
 
+  // ⛔ The stall window is far past the deadline, not just past the progress interval. A worker
+  // starved on the tick after the spawn runs its expired poll before it reads the progress that
+  // came meanwhile: at 500 ms a 700 ms stall there read as a stall, not the deadline (probed).
   it('keeps the absolute deadline armed while semantic progress continues', async () => {
     const semanticProgress = [
       'let n=0;',
@@ -672,10 +675,12 @@ describe('cli_invocation D-259 finite semantics', () => {
       progress: {
         contract: 'heartbeat',
         adapter: 'codex-jsonl',
-        stall_ms: 500,
+        stall_ms: 10_000,
       },
     })).rejects.toThrow(/timed out after 600ms/);
-  });
+    // Progress keeps the stall from ever firing, so a deadline that progress disarmed is caught
+    // only by this test's own limit.
+  }, 10_000);
 
   it('publishes only adapter-validated heartbeat liveness to the owning run', async () => {
     const registry = new InFlightRegistry(new LaneSemaphore());
@@ -698,12 +703,14 @@ describe('cli_invocation D-259 finite semantics', () => {
       stallTuning: { pollMs: 10 },
     });
 
+    // ⛔ Windows the tool's one line and exit never come near: a worker starved before it reads
+    // them runs the expired stall first (500 ms stalled a 700 ms starvation, probed).
     await exec({
       slug: 'codex-pack',
       operation_key: 'codex.review',
       operation_id: 'recued-core/codex.review',
       args: {},
-      timeout_ms: 1_000,
+      timeout_ms: 60_000,
       stepMeta: {
         run_id: 'run-progress',
         step_id: 'review',
@@ -721,7 +728,7 @@ describe('cli_invocation D-259 finite semantics', () => {
         progress: {
           contract: 'heartbeat',
           adapter: 'codex-jsonl',
-          stall_ms: 500,
+          stall_ms: 10_000,
         },
       },
     });
@@ -855,23 +862,49 @@ describe('cli_invocation D-259 finite semantics', () => {
 // retrying a model host it cannot reach — prints NOTHING and never exits
 // (measured), which the 45-minute stall alone would let run for 45 minutes.
 describe('cli_invocation first-output window', () => {
+  type Executor = ReturnType<typeof createCliInvocationExecutor>;
+  const resumeCall = (argv: string[], progress: Record<string, unknown>, timeout_ms = 0): Parameters<Executor>[0] => ({
+    slug: 'opencode',
+    operation_key: 'opencode.resume_session',
+    operation_id: 'recued-core/opencode.resume_session',
+    args: {},
+    timeout_ms,
+    stepMeta: { step_id: 'resume', trigger_source: 'chat' },
+    binding: {
+      kind: 'cli_invocation',
+      argv_template: argv,
+      shape: 'text',
+      exit_code_handling: 'zero_is_success',
+      progress: { contract: 'heartbeat', adapter: 'opencode-json', stall_ms: 30_000, ...progress } as never,
+    },
+  });
   const run = (script: string, progress: Record<string, unknown>, timeout_ms = 0): Promise<unknown> =>
-    createCliInvocationExecutor({ stallTuning: { pollMs: 10 } })({
-      slug: 'opencode',
-      operation_key: 'opencode.resume_session',
-      operation_id: 'recued-core/opencode.resume_session',
-      args: {},
-      timeout_ms,
-      stepMeta: { step_id: 'resume', trigger_source: 'chat' },
-      binding: {
-        kind: 'cli_invocation',
-        argv_template: [process.execPath, '-e', script],
-        shape: 'text',
-        exit_code_handling: 'zero_is_success',
-        progress: { contract: 'heartbeat', adapter: 'opencode-json', stall_ms: 30_000, ...progress } as never,
-      },
-    });
+    createCliInvocationExecutor({ stallTuning: { pollMs: 10 } })(resumeCall([process.execPath, '-e', script], progress, timeout_ms));
   const SILENT = 'setTimeout(() => {}, 60000)';
+  /** A child the test scripts: `first` comes on the tick after the spawn, once the executor
+   *  listens and before any timer can run, and it ends when the test ends it or a kill does. */
+  const scriptedChild = (first: string) => {
+    const child = new EventEmitter() as ChildProcess;
+    const stdout = new EventEmitter();
+    // ⛔ `exitCode` and `signalCode` start null, as a live child's do: the window reads them, and
+    // an emitter without them reads as exited, so a window that fired would stop nothing.
+    Object.assign(child, { pid: 4343, stdout, stderr: new EventEmitter(), stdin: null, exitCode: null, signalCode: null });
+    const end = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      Object.assign(child, { exitCode: code, signalCode: signal });
+      child.emit('exit', code, signal);
+      child.emit('close', code, signal);
+    };
+    child.kill = ((signal: NodeJS.Signals = 'SIGTERM') => {
+      queueMicrotask(() => end(null, signal));
+      return true;
+    }) as ChildProcess['kill'];
+    const spawn = (() => {
+      process.nextTick(() => stdout.emit('data', Buffer.from(first)));
+      return child;
+    }) as NonNullable<Parameters<typeof createCliInvocationExecutor>[0]>['spawn'];
+    return { spawn, exit: (code: number) => end(code, null) };
+  };
 
   it('stops a tool that prints nothing in its first_output_ms, as a timeout naming why', async () => {
     const started = Date.now();
@@ -888,12 +921,23 @@ describe('cli_invocation first-output window', () => {
 
   // opencode prints `step_start` at once but a tool only once it is done, so
   // a long first command is output without progress — and must not be stopped.
+  //
+  // ⛔ The child is scripted, not a real `node`. The window runs from the spawn, and a worker
+  // starved past it runs the expired timer before it reads output already waiting: a full sweep
+  // (2026-11-02, at nice 19) stopped a `node` that printed at once, and a 300 ms stall on the tick
+  // after the spawn does so every time (probed). Here the line comes on that tick, before any
+  // timer can run, and the child stays alive three windows on: a window that line did not end
+  // stops it first.
   it('ends the window at the first output, even output that is not progress', async () => {
-    const script = [
-      'process.stdout.write(JSON.stringify({type:"step_start",sessionID:"ses_abcdefghijklmnopqrstuvwxyz",part:{id:"p1"}})+"\\n");',
-      'setTimeout(() => process.exit(0), 700);',
-    ].join('');
-    const result = await run(script, { first_output_ms: 200 }) as { exit_code: number; progress_signal_count: number };
+    const child = scriptedChild(`${JSON.stringify({ type: 'step_start', sessionID: 'ses_abcdefghijklmnopqrstuvwxyz', part: { id: 'p1' } })}\n`);
+    const outcome = createCliInvocationExecutor({ spawn: child.spawn, stallTuning: { pollMs: 10 } })(
+      resumeCall(['opencode', 'run'], { first_output_ms: 200 }),
+    ).then((result) => ({ result }), (error: unknown) => ({ error }));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    child.exit(0);
+    const settled = await outcome;
+    expect(settled).not.toHaveProperty('error');
+    const result = (settled as { result: { exit_code: number; progress_signal_count: number } }).result;
     expect(result.exit_code).toBe(0);
     expect(result.progress_signal_count).toBe(0);
   });

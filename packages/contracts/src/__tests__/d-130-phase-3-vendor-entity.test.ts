@@ -49,6 +49,13 @@ describe('D-130 P3 — salesforce.contact entity registration', () => {
       'mailing_address',
       // Portable role field — paired with hubspot.contact `job_title`.
       'job_title',
+      // D-336 (spec §55) — the vCard contact the AI can set: the address in its ADR parts and BDAY.
+      'mailing_street',
+      'mailing_city',
+      'mailing_region',
+      'mailing_postal_code',
+      'mailing_country',
+      'birthday',
     ]);
   });
 

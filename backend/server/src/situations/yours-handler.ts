@@ -11,10 +11,11 @@ const errors = async <T>(fn: () => Promise<T>): Promise<T> => {
   try { return await fn(); }
   catch (error) { if (error instanceof RpcError) throw error; throw new RpcError('bad_request', error instanceof Error ? error.message : String(error), 400); }
 };
-export const makeYoursHandlers = (service?: YoursService): HandlerSlice<ServerRpcRegistry, 'yours.read' | 'yours.context' | 'yours.change' | 'yours.today' | 'yours.delivery' | 'yours.learning' | 'yours.household_lists' | 'yours.sphere' | 'yours.spheres' | 'yours.writer.read' | 'yours.writer.preview' | 'yours.writer.change', WsClient> | undefined => service ? {
-  methods: ['yours.read', 'yours.context', 'yours.change', 'yours.today', 'yours.delivery', 'yours.learning', 'yours.household_lists', 'yours.sphere', 'yours.spheres', 'yours.writer.read', 'yours.writer.preview', 'yours.writer.change'],
+export const makeYoursHandlers = (service?: YoursService): HandlerSlice<ServerRpcRegistry, 'yours.read' | 'yours.context' | 'yours.change' | 'yours.today' | 'yours.delivery' | 'yours.agenda' | 'yours.learning' | 'yours.household_lists' | 'yours.sphere' | 'yours.spheres' | 'yours.writer.read' | 'yours.writer.preview' | 'yours.writer.change', WsClient> | undefined => service ? {
+  methods: ['yours.read', 'yours.context', 'yours.change', 'yours.today', 'yours.delivery', 'yours.agenda', 'yours.learning', 'yours.household_lists', 'yours.sphere', 'yours.spheres', 'yours.writer.read', 'yours.writer.preview', 'yours.writer.change'],
   handlers: {
     'yours.delivery': async (_args, client) => { owner(client); return errors(async () => service.deliveryStatus()); },
+    'yours.agenda': async (_args, client) => { owner(client); return errors(async () => service.agendaStatus()); },
     'yours.learning': async (_args, client) => { owner(client); return errors(() => service.learningStatus()); },
     'yours.household_lists': async (args, client) => { owner(client); return errors(() => service.householdLists(args)); },
     'yours.today': async (args, client) => { owner(client); return errors(() => service.today(args)); },

@@ -1,3 +1,4 @@
+import { getMailMessageAttachments } from './mail/message-attachments.js';
 /** Phase D (D-106) — `collection.*` rpc handlers.
  *
  *  Five methods — list / search / get / runRetention / listEndpoints —
@@ -13,12 +14,16 @@
 
 import { randomUUID } from 'node:crypto';
 import type { OwnerDocumentSearch } from '../owner-document-search.js';
-import { updateOwnerCalendarEvent } from './calendar/remote-event-handler.js';
+import {
+  checkOwnerCalendarEventDeletion, deleteOwnerCalendarEvent, updateOwnerCalendarEvent,
+} from './calendar/remote-event-handler.js';
 import { createOwnerCalendarEvent, listCalendarEventDestinations } from './calendar/event-create-handler.js';
 import type { CalendarEventCreationStore } from '../storage/calendar-event-creations.js';
 import { getOwnerCalendarEvent, respondToCalendarEvent } from './calendar/invitation-handler.js';
+import { readCalendarOverlaps } from './calendar/event-overlaps.js';
 import { getMailMessage } from './mail/message-read.js';
 import { getMailConversation } from './mail/conversation-read.js';
+import { updateMailMessageState } from './mail/message-state.js';
 
 import { absentFromAll, applySpellingCorrections, mergeSpellingChecks, type FtsWordCheck } from '@recued/fts';
 
@@ -137,6 +142,7 @@ export interface CollectionHandlerDeps {
    *  `collection.mail.enrollImap` / `collection.mail.list` /
    *  `collection.mail.delete` return `not_configured` when absent. */
   mailEnroll?: MailEnrollDeps;
+  mailAttachmentLinks?: Pick<import('../storage/annotation-store.js').AnnotationStore, 'outboundLinksSync'>;
   mailBodyBlobs?: import('../storage/blob-store.js').BlobStore;
   /** D-318 step 1 — the email chat door's settings: which mailbox is the chat
    *  mailbox. Absent ⇒ `collection.mail.chat_door.*` answers `not_configured`
@@ -1074,7 +1080,9 @@ export type CollectionMethods =
   | 'collection.mail.enrollSmtp'
   | 'collection.mail.updateCredentials'
   | 'collection.mail.list'
+  | 'collection.mail.message.attachments'
   | 'collection.mail.message.get'
+  | 'collection.mail.message.updateState'
   | 'collection.mail.conversation.get'
   | 'collection.mail.delete'
   | 'collection.mail.resync'
@@ -1100,10 +1108,13 @@ export type CollectionMethods =
   | 'collection.calendar.updateCredentials'
   | 'collection.calendar.list'
   | 'collection.calendar.event.get'
+  | 'collection.calendar.event.overlaps'
   | 'collection.calendar.event.destinations'
   | 'collection.calendar.event.create'
   | 'collection.calendar.event.update'
   | 'collection.calendar.event.respond'
+  | 'collection.calendar.event.delete'
+  | 'collection.calendar.event.checkDeletion'
   | 'collection.calendar.update'
   | 'collection.calendar.delete'
   | 'collection.calendar.resync'
@@ -1203,6 +1214,8 @@ export const makeCollectionHandlers = (
       'collection.mail.updateCredentials',
       'collection.mail.list',
       'collection.mail.message.get',
+      'collection.mail.message.attachments',
+      'collection.mail.message.updateState',
       'collection.mail.conversation.get',
       'collection.mail.delete',
       'collection.mail.resync',
@@ -1226,10 +1239,13 @@ export const makeCollectionHandlers = (
       'collection.calendar.updateCredentials',
       'collection.calendar.list',
       'collection.calendar.event.get',
+      'collection.calendar.event.overlaps',
       'collection.calendar.event.destinations',
       'collection.calendar.event.create',
       'collection.calendar.event.update',
       'collection.calendar.event.respond',
+      'collection.calendar.event.delete',
+      'collection.calendar.event.checkDeletion',
       'collection.calendar.update',
       'collection.calendar.delete',
       'collection.calendar.resync',
@@ -1290,6 +1306,22 @@ export const makeCollectionHandlers = (
           ...(deps.mailBodyBlobs ? { blobs: deps.mailBodyBlobs } : {}),
         }, args);
       },
+      'collection.mail.message.attachments': async (args, client) => {
+        if (!client.instance_id) throw new RpcError('unauthorized', 'Reading saved email attachments requires a paired client.', 401);
+        return getMailMessageAttachments({ registry: deps.registry, annotations: deps.mailAttachmentLinks, blobs: deps.mailBodyBlobs,
+          getIncarnation: slug => requireMailEnroll(deps).instances.getIncarnation?.('mail', slug) ?? null }, args);
+      },
+      'collection.mail.message.updateState': async (args, client) => {
+        if (!client.instance_id || client.client_kind !== 'webclient') {
+          throw new RpcError('unauthorized', 'Changing email status requires a paired webclient.', 401);
+        }
+        return updateMailMessageState({
+          registry: deps.registry,
+          getCollection: slug => deps.registry.get('mail', slug) as import('./mail/mail-collection.js').MailCollection | undefined,
+          getIncarnation: slug => requireMailEnroll(deps).instances.getIncarnation?.('mail', slug) ?? null,
+          deleteLocalRecord: async (slug, record_id) => { await handleCollectionDeleteRecord(deps, { platform: 'mail', slug, record_id }); },
+        }, args);
+      },
       'collection.mail.conversation.get': async (args, client) => {
         if (!client.instance_id) throw new RpcError('unauthorized', 'Reading a conversation requires a registered paired client.', 401);
         return getMailConversation({
@@ -1334,6 +1366,7 @@ export const makeCollectionHandlers = (
       'collection.calendar.list': async () =>
         handleCalendarEnrollList(requireCalendarEnroll(deps)),
       'collection.calendar.event.get': async (args, client) => getOwnerCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.overlaps': async (args, client) => readCalendarOverlaps(calendarEventDeps(client), args),
       'collection.calendar.event.destinations': async (_args, client) => listCalendarEventDestinations(calendarEventDeps(client)),
       'collection.calendar.event.create': async (args, client) => {
         const eventDeps = calendarEventDeps(client);
@@ -1342,6 +1375,8 @@ export const makeCollectionHandlers = (
       },
       'collection.calendar.event.update': async (args, client) => updateOwnerCalendarEvent(calendarEventDeps(client), args),
       'collection.calendar.event.respond': async (args, client) => respondToCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.delete': async (args, client) => deleteOwnerCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.checkDeletion': async (args, client) => checkOwnerCalendarEventDeletion(calendarEventDeps(client), args),
       'collection.calendar.update': async (args) =>
         handleCalendarEnrollUpdate(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollUpdate>[1]),
       'collection.calendar.delete': async (args) =>

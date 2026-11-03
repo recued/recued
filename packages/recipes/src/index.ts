@@ -180,6 +180,8 @@ export {
   connectionVariableNames,
   opStepConnectionSlots,
   CanonicalOpResolutionError,
+  // D-336 (spec §46) — the only verbs an accounting alias resolves; the tool catalog offers no other.
+  CANONICAL_ACCT_VERBS,
   // Poll-manager (G6) — the runtime canonical poll shares the resolver's
   // response-rows + projection-template pipeline (one semantics source).
   vendorEntityResponseRows,

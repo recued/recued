@@ -34,6 +34,7 @@ import {
   type ConnectionVendorEntity,
 } from '@recued/contracts';
 
+import { CANONICAL_ACCT_VERBS } from '@recued/recipes';
 import { ingredientRiskToGrantClassification } from './raw-op-tool-catalog.js';
 
 /** One canonical op tool, in the shape both door surfaces (the grant catalog and
@@ -57,6 +58,49 @@ export interface CanonicalOpToolDescriptor {
 
 const aliasOf = (entry: ConnectionVendorEntity): string | undefined =>
   entry.crm_alias ?? entry.acct_alias;
+
+/** D-336 (spec §55, the owner: "the standard vcf fields as variable") — the contact fields
+ *  the AI can set through Recued's own create and update, in vCard's terms: name, email,
+ *  phone, company and title, the address in its ADR parts, and the birthday; then the three
+ *  CRM fields Recued already writes (owner, linked account, stage). Each is a canonical field
+ *  HubSpot and Salesforce both map, but `company`: a Salesforce contact links its Account
+ *  (`account_id`) and has no company of its own (`d-336-contact-write-fields.test.ts`). A CRM
+ *  that does not map a field refuses it at the call, through the resolver, naming it.
+ *  ⚠ Model-facing, and on every turn with a CRM connected: the words are kept short. */
+const CONTACT_WRITE_FIELDS: ReadonlyArray<readonly [string, string?]> = [
+  ['first_name'], ['last_name'], ['email'], ['phone'],
+  ['company', "The company's name. On Salesforce, link its account with account_id instead."],
+  ['job_title'],
+  ['birthday', 'YYYY-MM-DD.'],
+  ['mailing_street', 'Street line.'], ['mailing_city'], ['mailing_region', 'State or region.'],
+  ['mailing_postal_code'], ['mailing_country'],
+  ['owner', "The CRM user who owns the contact, by that user's id in the CRM."],
+  ['account_id', 'The company or account it belongs to, by its id in the CRM.'],
+  ['lifecycle_stage', 'Its stage: HubSpot lifecycle stage, Salesforce lead source.'],
+];
+
+/** The `args` of `recued_canonical_contact.create` / `.update`: the fields above, and only
+ *  them (`additionalProperties: false`); an update names its contact by `id`. Before, `args`
+ *  was any object, and live the model sent an update with no id (`{email, phone}`) and with
+ *  the id under another name (`contact_id`), each refused only at dispatch. */
+export const contactWriteArgsSchema = (verb: 'create' | 'update'): Record<string, unknown> => ({
+  type: 'object',
+  description: verb === 'update'
+    ? "The contact to change, by id, and the fields to set: only those you pass change."
+    : 'The new contact\'s fields.',
+  properties: {
+    ...(verb === 'update'
+      ? { id: { type: 'string', description: "The contact's target_id from a contact search." } }
+      : {}),
+    ...Object.fromEntries(CONTACT_WRITE_FIELDS.map(([name, description]) =>
+      [name, { type: 'string', ...(description !== undefined ? { description } : {}) }])),
+  },
+  ...(verb === 'update' ? { required: ['id'] } : {}),
+  additionalProperties: false,
+});
+
+/** The canonical fields a contact create or update offers, for tests. */
+export const CONTACT_WRITE_FIELD_NAMES: readonly string[] = CONTACT_WRITE_FIELDS.map(([name]) => name);
 
 /** ⛔⛔ THE ALIASES A TIER-1 TOOL ALREADY SEARCHES — DERIVED, never listed.
  *
@@ -120,11 +164,14 @@ export const buildCanonicalOpToolDescriptors = (input: {
 
   // alias → [(connection, the vendor ENTITY it resolves that alias to)].
   const servingByAlias = new Map<string, { name: string; entity: string }[]>();
+  // D-336 (spec §46) — the accounting aliases, which resolve only their read verbs.
+  const accountingAliases = new Set<string>();
   for (const conn of input.boundConnections) {
     for (const entry of registry) {
       if (entry.vendor !== conn.vendor) continue;
       const alias = aliasOf(entry);
       if (alias === undefined) continue;
+      if (entry.crm_alias === undefined) accountingAliases.add(alias);
       const list = servingByAlias.get(alias) ?? [];
       if (!list.some((c) => c.name === conn.name)) {
         list.push({ name: conn.name, entity: entry.entity });
@@ -146,6 +193,10 @@ export const buildCanonicalOpToolDescriptors = (input: {
       // over MORE sources for the same entity. CRUD has no Tier-1 equivalent and
       // is exactly what the canonical layer is for.
       if (verb === 'search' && TIER1_SEARCHED_ALIASES.has(alias)) continue;
+      // ⛔ D-336 (spec §46) — an accounting alias offers its read verbs only. Its writes ride the
+      // explicit ingredient binding, which keeps their approval, and the resolver refuses a
+      // canonical one (`parseCanonicalAcctOp`): offered, `invoice.update` could only ever fail.
+      if (accountingAliases.has(alias) && !(CANONICAL_ACCT_VERBS as readonly string[]).includes(verb)) continue;
       const risk = kernelVerbRiskTier(verb);
       // ⛔ An unclassifiable verb is skipped, never defaulted. `kernelVerbRiskTier`
       // partitions the canonical verb set exactly, so this is unreachable today —
@@ -175,12 +226,14 @@ export const buildCanonicalOpToolDescriptors = (input: {
                 : 'The enrolled connection to resolve against. Its vendor decides '
                   + 'which operation actually runs.',
             },
-            args: {
-              type: 'object',
-              description:
-                `Canonical ${alias} fields — canonical names, not vendor property `
-                + 'names. The resolver reverse-maps them to the vendor write body.',
-            },
+            args: alias === 'contact' && (verb === 'create' || verb === 'update')
+              ? contactWriteArgsSchema(verb)
+              : {
+                type: 'object',
+                description:
+                  `Canonical ${alias} fields — canonical names, not vendor property `
+                  + 'names. The resolver reverse-maps them to the vendor write body.',
+              },
           },
           // ⛔⛔ FAN-OUT IS `search`-ONLY, AND THE OTHER VERBS STAY REQUIRED.
           //

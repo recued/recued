@@ -308,4 +308,16 @@ describe('D-137 P3 § A.11 — PlanApprovalStore lifecycle', () => {
     expect(resolved?.status).toBe('cancelled');
     expect(resolved?.resolved_at).toBe(700);
   });
+
+  it('D-336 — an owner\'s change keeps the notes the save meets while its claim stands, as the server\'s table does', () => {
+    const store = createPlanApprovalStore();
+    const args = { summary: "Mia is Dana's sister", claim: { subject: 'Mia', relation: 'sister of', object: 'Dana' } };
+    const memory_conflicts = [{ kind: 'contradicts' as const, memory_id: 'umem_1', summary: "Mia is Dana's daughter." }];
+    store.put(proposal({ tool: 'memory.write', args, hold: { run_id: 'r1' }, memory_conflicts }));
+    const worded = store.editHeld('p1', 'r1', { ...args, summary: 'Mia and Dana are sisters' });
+    expect(worded).toMatchObject({ args: { summary: 'Mia and Dana are sisters' }, memory_conflicts });
+    const related = store.editHeld('p1', 'r1', { ...args, claim: { subject: { text: 'Mia' }, relation: 'daughter of', object: { text: 'Dana' } } });
+    expect(related).not.toHaveProperty('memory_conflicts');
+    expect(store.editHeld('p1', 'r2', args)).toBeUndefined();
+  });
 });

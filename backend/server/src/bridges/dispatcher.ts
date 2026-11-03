@@ -752,11 +752,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         options.auditLog,
       );
 
-      const accumulated: Array<{
-        bridge_id: string;
-        bridge_label: string;
-        gap_reason: BridgeCapacityGap;
-      }> = [];
+      const accumulated: Array<AggregateCapacityGap['bridges'][number]> = [];
       let total_attempts = 0;
       for (const bridge of ordered) {
         const out = await dispatchToBridge(
@@ -787,10 +783,13 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         }
         // out.kind === 'completed'
         if (isCapacityGapResult(out.result)) {
+          // D-335 slice H — keep the Bridge's own words: they say how to fix it.
+          const message = out.result.error?.message?.trim();
           accumulated.push({
             bridge_id: bridge.client_token_id,
             bridge_label: bridge.client_label ?? bridge.client_token_id,
             gap_reason: mapToCapacityGap(out.result.error?.code, target_domain_pattern),
+            ...(message ? { message } : {}),
           });
           continue;
         }

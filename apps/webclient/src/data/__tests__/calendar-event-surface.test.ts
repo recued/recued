@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { CALENDAR_EVENT_EDIT_LIMITS, type CalendarEventSnapshot, type CalendarEventUpdateRequest } from '@recued/contracts';
+import { CALENDAR_EVENT_EDIT_LIMITS, type CalendarEventSnapshot, type CalendarEventUpdateRequest, type CalendarEventDeleteRequest } from '@recued/contracts';
 import { calendarEventDraft, calendarEventPatch, calendarWallClockCandidates, calendarWallClockValue,
   createCalendarEventSurface, CALENDAR_EVENT_FIELD } from '../calendar-event-surface.js';
 
@@ -14,10 +14,10 @@ const snapshot = (): CalendarEventSnapshot => ({
 });
 const input = (field: string, value: string): HTMLElement => ({ getAttribute: (key: string) => key === CALENDAR_EVENT_FIELD ? field : null, value }) as unknown as HTMLElement;
 const setup = (callers: Parameters<typeof createCalendarEventSurface>[0]['callers'] = {}) => {
-  const onSaved = vi.fn(); const render = vi.fn();
+  const onSaved = vi.fn(); const render = vi.fn(); const onRemoved = vi.fn();
   const surface = createCalendarEventSurface({ callers: { get: async () => snapshot(), ...callers },
-    actionAttr: 'data-action', render, onSaved });
-  return { surface, render, onSaved };
+    actionAttr: 'data-action', render, onSaved, onRemoved });
+  return { surface, render, onSaved, onRemoved };
 };
 const open = (surface: ReturnType<typeof createCalendarEventSurface>) => surface.open({ slug: 'local', source_id: 'event' }, 'cal:local:event');
 
@@ -214,4 +214,144 @@ it('keeps event details readable when the browser cannot interpret the event clo
   surface.handleAction('calendar-event-edit');
   expect(surface.isEditing()).toBe(false);
   expect(surface.render()).toContain('event time zone unavailable');
+});
+
+const localSnapshot = (): CalendarEventSnapshot => ({ ...snapshot(), deletable: true });
+const deleted = (request: CalendarEventDeleteRequest) => ({ slug: request.slug, source_id: request.source_id,
+  incarnation: request.expected_incarnation, deleted: true as const });
+const checked = (value: CalendarEventSnapshot | null) => ({ slug: 'local', source_id: 'event', incarnation: 'calendar-1', snapshot: value });
+
+it('requires a fresh review and sends one version-bound deletion while navigation waits', async () => {
+  let finish!: (value: ReturnType<typeof deleted>) => void;
+  const remove = vi.fn((_request: CalendarEventDeleteRequest) => new Promise<ReturnType<typeof deleted>>(resolve => { finish = resolve; }));
+  const { surface, onRemoved } = setup({ get: async () => localSnapshot(), delete: remove, checkDeletion: async () => checked(null) });
+  await open(surface);
+  surface.handleAction('calendar-event-delete-confirm'); expect(remove).not.toHaveBeenCalled();
+  surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-cancel');
+  surface.handleAction('calendar-event-delete-confirm'); expect(remove).not.toHaveBeenCalled();
+  surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+  surface.handleAction('calendar-event-delete-confirm');
+  expect(remove).toHaveBeenCalledExactlyOnceWith({ slug: 'local', source_id: 'event', expected_incarnation: 'calendar-1', expected_version: 'v1' });
+  expect(surface.hasInFlightWork()).toBe(true);
+  expect(surface.beforeLeave(vi.fn())).toBe(false);
+  finish(deleted(remove.mock.calls[0]![0]));
+  await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledExactlyOnceWith('cal:local:event', true));
+  expect(surface.hasInFlightWork()).toBe(false);
+});
+
+it('checks an interrupted deletion without sending it again, retaining a failed check', async () => {
+  const remove = vi.fn(async (_request: CalendarEventDeleteRequest) => { throw { code: 'timeout', message: 'Reply lost' }; });
+  const check = vi.fn().mockRejectedValueOnce(new Error('Calendar unavailable')).mockResolvedValueOnce(checked(null));
+  const { surface, onRemoved } = setup({ get: async () => localSnapshot(), delete: remove, checkDeletion: check });
+  await open(surface); surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+  await vi.waitFor(() => expect(surface.hasInFlightWork()).toBe(false));
+  surface.handleAction('calendar-event-delete-confirm');
+  expect(remove).toHaveBeenCalledTimes(1); expect(onRemoved).not.toHaveBeenCalled();
+  surface.handleAction('calendar-event-delete-check');
+  await vi.waitFor(() => expect(surface.render()).toContain('Calendar unavailable'));
+  surface.handleAction('calendar-event-delete-confirm'); expect(remove).toHaveBeenCalledTimes(1);
+  surface.handleAction('calendar-event-delete-check');
+  await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledExactlyOnceWith('cal:local:event', true));
+  expect(check.mock.calls).toEqual([[{ slug: 'local', source_id: 'event', expected_incarnation: 'calendar-1' }],
+    [{ slug: 'local', source_id: 'event', expected_incarnation: 'calendar-1' }]]);
+  expect(remove).toHaveBeenCalledTimes(1);
+});
+
+it('refreshes a changed event after a failed deletion and requires another review of its new version', async () => {
+  const current = localSnapshot(); current.resource_version = 'v2'; current.event.summary = 'Newer saved details';
+  const remove = vi.fn().mockRejectedValueOnce({ code: 'resource_changed', message: 'Event changed' })
+    .mockImplementationOnce(async (request: CalendarEventDeleteRequest) => deleted(request));
+  const { surface, onSaved, onRemoved } = setup({ get: async () => localSnapshot(), delete: remove, checkDeletion: async () => checked(current) });
+  await open(surface); surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+  await vi.waitFor(() => expect(surface.hasInFlightWork()).toBe(false));
+  surface.handleAction('calendar-event-delete-check');
+  await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith(current));
+  surface.handleAction('calendar-event-delete-confirm'); expect(remove).toHaveBeenCalledTimes(1);
+  expect(surface.render()).toContain('Newer saved details');
+  surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+  await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledTimes(1));
+  expect(remove.mock.calls[1]![0]).toMatchObject({ expected_version: 'v2', expected_incarnation: 'calendar-1' });
+});
+
+it('refuses an unbound deletion reply and never treats another calendar as proof of absence', async () => {
+  const remove = vi.fn(async (request: CalendarEventDeleteRequest) => ({ ...deleted(request), source_id: 'other-event' }));
+  const { surface, onRemoved } = setup({ get: async () => localSnapshot(), delete: remove,
+    checkDeletion: async () => ({ ...checked(null), incarnation: 'replacement-calendar' }) });
+  await open(surface); surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+  await vi.waitFor(() => expect(surface.hasInFlightWork()).toBe(false));
+  expect(onRemoved).not.toHaveBeenCalled();
+  surface.handleAction('calendar-event-delete-check');
+  await vi.waitFor(() => expect(surface.render()).toContain('could not confirm the event'));
+  surface.handleAction('calendar-event-delete-confirm');
+  expect(remove).toHaveBeenCalledTimes(1); expect(onRemoved).not.toHaveBeenCalled();
+});
+
+it('keeps old-server and recurring events out of deletion even if its action is invoked directly', async () => {
+  const remove = vi.fn(async (request: CalendarEventDeleteRequest) => deleted(request));
+  for (const value of [snapshot(), { ...localSnapshot(), event: { ...snapshot().event, is_recurring: true } }]) {
+    const { surface } = setup({ get: async () => value, delete: remove, checkDeletion: async () => checked(null) });
+    await open(surface); surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+    expect(surface.isDeleting()).toBe(false); surface.dispose();
+  }
+  expect(remove).not.toHaveBeenCalled();
+});
+
+// D-336 (spec §58) — a connected calendar's event is deleted here too. The server says so with
+// `provider_delete`, never `deletable`, and words what the delete does; an older client, which
+// reads only `deletable`, keeps offering no delete for it.
+it('offers a connected event\'s delete in the server\'s words, and none without them', async () => {
+  const remote = (): CalendarEventSnapshot => ({ ...snapshot(), event: { ...snapshot().event, calendar_id: 'team', calendar_name: 'Team' },
+    provider_verified: true,
+    provider_delete: { notice: 'This deletes the event from your Outlook calendar. Outlook sends its guests a cancellation.' } });
+  const remove = vi.fn(async (request: CalendarEventDeleteRequest) => deleted(request));
+  const { surface, onRemoved } = setup({ get: async () => remote(), delete: remove, checkDeletion: async () => checked(null) });
+  await open(surface);
+  expect(surface.render()).toContain('calendar-event-delete-open');
+  surface.handleAction('calendar-event-delete-open');
+  const review = surface.render();
+  expect(review).toContain('This deletes the event from your Outlook calendar. Outlook sends its guests a cancellation.');
+  expect(review).not.toContain('Guests will not be notified');
+  surface.handleAction('calendar-event-delete-confirm');
+  expect(remove).toHaveBeenCalledExactlyOnceWith({ slug: 'local', source_id: 'event', expected_incarnation: 'calendar-1', expected_version: 'v1' });
+  await vi.waitFor(() => expect(onRemoved).toHaveBeenCalledExactlyOnceWith('cal:local:event', true));
+  surface.dispose();
+  const plain = setup({ get: async () => ({ ...remote(), provider_delete: undefined }), delete: remove, checkDeletion: async () => checked(null) });
+  await open(plain.surface);
+  expect(plain.surface.render()).not.toContain('calendar-event-delete-open');
+  plain.surface.handleAction('calendar-event-delete-open'); plain.surface.handleAction('calendar-event-delete-confirm');
+  expect(remove).toHaveBeenCalledTimes(1);
+});
+
+it('ignores a deletion response after disposal', async () => {
+  let finish!: (value: ReturnType<typeof deleted>) => void;
+  const remove = vi.fn((_request: CalendarEventDeleteRequest) => new Promise<ReturnType<typeof deleted>>(resolve => { finish = resolve; }));
+  const { surface, onRemoved } = setup({ get: async () => localSnapshot(), delete: remove, checkDeletion: async () => checked(null) });
+  await open(surface); surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+  surface.dispose(); finish(deleted(remove.mock.calls[0]![0]));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(onRemoved).not.toHaveBeenCalled(); expect(surface.render()).toBe('');
+});
+
+it('retires an older deletion check when another event opens', async () => {
+  let finish!: (value: ReturnType<typeof checked>) => void;
+  const { surface, onRemoved } = setup({
+    get: async ref => {
+      const value = localSnapshot();
+      if (ref.source_id === 'event-2') {
+        value.event = { ...value.event, source_id: 'event-2', record_id: 'cal:local:event-2', summary: 'Another event' };
+        value.record = { ...value.record, source_id: 'event-2', record_id: 'cal:local:event-2' };
+      }
+      return value;
+    },
+    delete: async () => { throw { code: 'timeout', message: 'Reply lost' }; },
+    checkDeletion: () => new Promise<ReturnType<typeof checked>>(resolve => { finish = resolve; }),
+  });
+  await open(surface); surface.handleAction('calendar-event-delete-open'); surface.handleAction('calendar-event-delete-confirm');
+  await vi.waitFor(() => expect(surface.hasInFlightWork()).toBe(false));
+  surface.handleAction('calendar-event-delete-check');
+  expect(surface.beforeLeave(vi.fn())).toBe(true);
+  await surface.open({ slug: 'local', source_id: 'event-2' }, 'cal:local:event-2');
+  finish(checked(null)); await new Promise(resolve => setTimeout(resolve, 0));
+  expect(onRemoved).not.toHaveBeenCalled(); expect(surface.render()).toContain('Another event');
+  expect(surface.isDeleting()).toBe(false);
 });

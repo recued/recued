@@ -47,6 +47,7 @@ import {
   mailChatAnswerBody,
   mailChatAnswerReferences,
   mailChatAnswerSubject,
+  sendAfterContinuation,
   type MailChatAnswers,
 } from '../mail-chat-door/answers.js';
 import { MAIL_CHAT_ANSWER_RECONCILIATION_PREFIX } from '../mail-chat-door/conversation-mail.js';
@@ -69,6 +70,8 @@ import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { PUSH_GRACE_MS, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { recipeToolTitle } from '../recipe-tool-name.js';
+import { createHeldResultContinuations, createWatchedRunSettlement, watchHeldRunsIn } from '../chat-held-results.js';
+import { createHeldResultTurnStore, createHeldRunWatchStore } from '../storage/chat-held-result-store.js';
 
 const CHAT = 'recued-chat';
 const CHAT_ADDRESS = 'recued@chat.example';
@@ -126,6 +129,13 @@ const harness = (options: {
   /** The follow-up's title lookup, as the server composes it over its recipe
    *  store (`recipeToolTitle`); `null` composes none. */
   toolTitle?: ((tool_name: string) => string | undefined) | null;
+  /** D-337 — the conversation carries on after an approval, composed as the server composes it:
+   *  the held run watched, the continuation queued, the chat settling before the door hears.
+   *  `'refused'`: the queue refuses the continuation, so the door's follow-up stands. */
+  continuation?: true | 'refused';
+  /** D-337 §7.17 — where a continuation's try again waits. None by default: a test that runs
+   *  them takes them. */
+  later?: (run: () => Promise<void>, ms: number) => void;
 } = {}) => {
   const chatAddress = options.oneMailbox ? OWNER_ADDRESS : CHAT_ADDRESS;
   const dir = mkdtempSync(join(tmpdir(), 'd318-answers-'));
@@ -135,9 +145,11 @@ const harness = (options: {
   const store = createChatStore(db, key);
 
   let answerText = 'Booked for 7.';
+  const heldRunWatches = createHeldRunWatchStore(db);
   const raw = createChatOrchestrator({
     chatStore: store,
     selfSignature: signature,
+    ...(options.continuation !== undefined ? { heldRunWatches: watchHeldRunsIn(heldRunWatches) } : {}),
     middlewareRegistry: (() => { const r = createMiddlewareRegistry(); registerFirstPartyMiddlewares(r); return r; })(),
     registry: options.registry ?? {
       list: () => [], listByTier: () => [], getByName: () => null,
@@ -147,6 +159,24 @@ const harness = (options: {
   });
   const orchestrator = withQueuedChatTurns(raw, { db, store, getKey: key, pollMs: 5 });
   cleanup.push(() => orchestrator.turnQueue!.close());
+  const continuations = options.continuation !== undefined
+    ? createHeldResultContinuations({
+        queue: orchestrator.turnQueue!,
+        runTurn: (input) => raw.runTurn(input),
+        turns: createHeldResultTurnStore(db),
+        // As the server composes it (`compose-listeners.ts`): an email chat's continuation sends
+        // its answer as its turn ends.
+        ...(options.held ? {} : { afterTurn: sendAfterContinuation({ kick: () => answers?.kick() }) }),
+        later: options.later ?? (() => undefined),
+      })
+    : undefined;
+  const settleWatched = continuations !== undefined
+    ? createWatchedRunSettlement({
+        watches: heldRunWatches,
+        continueWith: options.continuation === 'refused' ? async () => false : continuations.continueWith,
+        toolTitle: sendEmailTitle,
+      })
+    : undefined;
 
   // The chat mailbox's provider: the sends it was given, and its Sent record.
   const outcomes: SendOutcome[] = [];
@@ -309,10 +339,15 @@ const harness = (options: {
     return message.id;
   };
 
+  /** A held run settles as the server tells it (`runSettledSink`): the chat first, the door after. */
+  const settleRun = async (settled: PreflightRunSettled): Promise<void> => {
+    try { await settleWatched?.(settled); } finally { answers!.onRunSettled(settled); }
+  };
+
   return {
     db, store, door, conversations, proof, chatMailbox, outcomes, sends, sentRecord, lookups, askOwner, notices,
     closeOwnerQuestion, historyRows, send, sessionOf, answerRows, answerOf, now: () => Date.now() + skew,
-    answers: answers!,
+    answers: answers!, settleRun,
     setAnswer: (text: string) => { answerText = text; },
     hideSentRecord: (hidden: boolean) => { showSentRecord = !hidden; },
     /** Hold the Sent record's lookups; the returned function lets them answer. */
@@ -416,6 +451,67 @@ describe('D-318 step 5 — the answer goes back by email', () => {
     expect(h.conversations.conversationOf(CHAT, 'CAgmail1@mail.gmail.com'))
       .toBe(h.conversations.conversationOf(CHAT, 'req-1@owner.example'));
     expect(h.lookups).toEqual([]);
+  });
+
+  it('a look for a sent answer’s Sent copy never holds the next answer: it goes while the look is out', async () => {
+    // Live, 2026-11-01: one look on Gmail took 10.2 s, and it starts as soon as an answer is sent.
+    // An approval's answer due during it waited for it (8 s, the slice G run).
+    const h = harness();
+    const release = h.holdLookups();
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.' });
+    const first = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.lookups).toHaveLength(1));
+    expect(h.answers.get(first)?.state).toBe('sent');
+
+    await h.send({ id: 'req-2@owner.example', subject: 'ask: dinner?', body: 'Book a table for 9.' });
+    const second = await h.answerOf('req-2@owner.example');
+    await eventually(() => expect(h.answers.get(second)?.state).toBe('sent'));
+    // The first look is still out, and its answer not yet recorded.
+    expect(h.lookups).toHaveLength(1);
+    expect(h.answers.get(first)?.message_id).toBeNull();
+
+    // The loop sleeps meanwhile: the look's answer, still due, wakes no round.
+    const timeouts = vi.spyOn(globalThis, 'setTimeout');
+    await new Promise<void>((resolve) => { setTimeout(resolve, 200); });
+    const set = timeouts.mock.calls.length;
+    timeouts.mockRestore();
+    expect(set).toBeLessThanOrEqual(5);
+
+    release();
+    await eventually(() => expect(h.answers.get(first)?.message_id).toBe('CAgmail1@mail.gmail.com'));
+    await eventually(() => expect(h.answers.get(second)?.message_id).toBe('CAgmail2@mail.gmail.com'));
+    expect(h.sends).toHaveLength(2);
+  });
+
+  it('a round’s promise settles once the look going beside it is done', async () => {
+    const h = harness();
+    const release = h.holdLookups();
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.lookups).toHaveLength(1));
+    let settled = false;
+    const round = h.answers.tick().then(() => { settled = true; });
+    await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+    expect(settled).toBe(false);
+    release();
+    await round;
+    expect(h.answers.get(answer)?.message_id).toBe('CAgmail1@mail.gmail.com');
+  });
+
+  it('a dispose waits for a look still out, as for a round', async () => {
+    const h = harness();
+    const release = h.holdLookups();
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.lookups).toHaveLength(1));
+    let disposed = false;
+    const disposing = h.answers.dispose().then(() => { disposed = true; });
+    await new Promise<void>((resolve) => { setTimeout(resolve, 50); });
+    expect(disposed).toBe(false);
+    release();
+    await disposing;
+    // The look's answer came before the stop: recorded.
+    expect(h.answers.get(answer)?.message_id).toBe('CAgmail1@mail.gmail.com');
   });
 
   it('an empty answer sends nothing', async () => {
@@ -997,6 +1093,228 @@ describe('D-318 step 5, part 2 — the result after an approval follows in the t
     await eventually(() => expect(h.sends).toHaveLength(2));
     expect(h.sends[1]!.body_text)
       .toBe('The action that waited for your approval, "Send an email", did not complete: Bob’s address bounced.');
+  });
+});
+
+describe('D-337 — an email chat carries on after an approval, as every chat does', () => {
+  const sendTool: ToolEntry = {
+    name: 'recued-core/send-email', tier: 2, description: 'Send an email', arg_schema: { type: 'object' },
+    topic_tags: ['mail'], classification: 'read', concurrency_safe: false,
+  };
+  /** The model asks for the tool, answers that it waits; then, carrying on, reads the result.
+   *  `failCarryOn`: no model answers the continuation. */
+  const continuingTurn = (run_id: string, options: { failCarryOn?: boolean } = {}) => {
+    const packets: Array<{ user_message: string; prior_tool_calls?: Array<Record<string, unknown>> }> = [];
+    const registry: InternalToolRegistry = {
+      list: () => [sendTool], listByTier: (tier) => (tier === 2 ? [sendTool] : []),
+      getByName: (name) => (name === sendTool.name ? sendTool : null),
+      dispatch: async (): Promise<ChatDispatchResult> => ({
+        ok: true, result: { awaiting_approval: true }, run_held: { kind: 'approval' }, run_id,
+      }),
+      subscribeRefresh: () => () => undefined,
+    };
+    // A turn also makes calls of its own (its brief, say): only the main turn's packet, which
+    // carries the owner's message, is scripted; the rest get a plain line.
+    const executeAiCall: ExecuteChatAiCall = async (_manifest, aiInput) => {
+      let packet: (typeof packets)[number] | undefined;
+      try { packet = JSON.parse(aiInput['llm.prompt'] as string) as (typeof packets)[number]; } catch { packet = undefined; }
+      if (typeof packet?.user_message !== 'string') return { body: { response: 'ok', events: [], tool_calls: [] } };
+      packets.push(packet);
+      const asked = packet.prior_tool_calls?.find((call) => call.tool_name === sendTool.name);
+      if (options.failCarryOn && packet.user_message.startsWith('[The owner answered the approval')) {
+        throw new Error('No model is reachable.');
+      }
+      const body: AIOutput = packet.user_message.startsWith('[The owner answered the approval')
+        ? { response: `Sent. Bob has it (${String((asked?.result as { output?: { message_id?: unknown } } | undefined)?.output?.message_id)}).`, events: [], tool_calls: [] }
+        : asked === undefined
+          ? { response: '', events: [], tool_calls: [{ tool: sendTool.name, args: {} }] }
+          : { response: 'The email to Bob is waiting for your approval in Recued.', events: [], tool_calls: [] };
+      return { body };
+    };
+    return { registry, executeAiCall, packets };
+  };
+  const settled = (run_id: string, over: Partial<PreflightRunSettled> = {}): PreflightRunSettled => ({
+    execution_source: { channel: 'messenger', actor: 'user_self', vendor: 'email', from: OWNER_ADDRESS },
+    run_id, tool_name: sendTool.name, state: 'succeeded', ts: Date.now(),
+    result: { success: true, output: { message_id: '<bob-1@mail.example>' } }, ...over,
+  });
+
+  it('the run\'s result reaches the model, and its answer goes by email as a reply to the request, with no fixed line', async () => {
+    const turn = continuingTurn('run-c1');
+    const h = harness({ registry: turn.registry, executeAiCall: turn.executeAiCall, continuation: true });
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob', body: 'Tell Bob I am late.', thread: 'thread-3' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+
+    await h.settleRun(settled('run-c1'));
+    // ⛔ No round is asked for here. The continuation is no turn of the door's, and its answer
+    // used to wait for the loop's idle look (every 15 s); its turn's end now sends it, as one of
+    // the door's own turns' does.
+    const session = h.sessionOf('req-1@owner.example');
+    await eventually(async () => {
+      const roles = (await h.store.listMessages(session)).map((m) => m.role);
+      expect(roles.slice(roles.lastIndexOf('system'))).toEqual(['system', 'assistant']);
+    });
+    await eventually(() => expect(h.sends).toHaveLength(2));
+    const carried = h.sends[1]!;
+    // What only the run's result held: the model read it.
+    expect(carried.body_text).toBe('Sent. Bob has it (<bob-1@mail.example>).');
+    expect(carried.to).toEqual([OWNER_ADDRESS]);
+    expect(carried.subject).toBe('Re: ask: email Bob');
+    expect(carried.in_reply_to).toBe('<req-1@owner.example>');
+    expect(carried.thread_id).toBe('thread-3');
+    const packet = turn.packets.at(-1)!;
+    expect(packet.user_message).toMatch(/^\[The owner answered the approval[^\n]*\nApproved: Send an email\.$/);
+    // In the conversation: Recued's record of the answer, then the model's.
+    const messages = await h.store.listMessages(h.sessionOf('req-1@owner.example'));
+    expect(messages.map((m) => [m.role, m.content]).slice(-2)).toEqual([
+      ['system', 'Approved: Send an email.'],
+      ['assistant', 'Sent. Bob has it (<bob-1@mail.example>).'],
+    ]);
+    // ⛔ And no fixed follow-up beside it, now or on a later round.
+    await h.answers.tick();
+    expect(h.sends).toHaveLength(2);
+    expect(messages.some((m) => m.id === mailChatFollowUpId('run-c1'))).toBe(false);
+  });
+
+  it('when the conversation cannot carry on, the door\'s follow-up still goes, as before', async () => {
+    const turn = continuingTurn('run-c2');
+    const h = harness({ registry: turn.registry, executeAiCall: turn.executeAiCall, continuation: 'refused' });
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob', body: 'Tell Bob I am late.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+    await h.settleRun(settled('run-c2'));
+    await eventually(() => expect(h.sends).toHaveLength(2));
+    expect(h.sends[1]!.body_text).toBe('The action that waited for your approval, "Send an email", is done.');
+    // The asking turn's two calls, and no continuation.
+    expect(turn.packets.map((p) => p.user_message.startsWith('[The owner answered'))).toEqual([false, false]);
+  });
+
+  it('a continuation that asks again: the answer after that approval goes by email too, in the request\'s thread', async () => {
+    // ⛔ The second continuation's record named the first as the turn that made its call, and the
+    // first, no email's turn, has no receipt: that answer was owed to no email and never sent,
+    // and the door's follow-up was skipped for it as continued.
+    const runs = ['run-c4', 'run-c5'];
+    let held = 0;
+    const registry: InternalToolRegistry = {
+      list: () => [sendTool], listByTier: (tier) => (tier === 2 ? [sendTool] : []),
+      getByName: (name) => (name === sendTool.name ? sendTool : null),
+      dispatch: async (): Promise<ChatDispatchResult> => ({
+        ok: true, result: { awaiting_approval: true }, run_held: { kind: 'approval' }, run_id: runs[held++]!,
+      }),
+      subscribeRefresh: () => () => undefined,
+    };
+    let carried = 0;
+    const executeAiCall: ExecuteChatAiCall = async (_manifest, aiInput) => {
+      let packet: { user_message?: unknown; prior_tool_calls?: Array<Record<string, unknown>> } | undefined;
+      try { packet = JSON.parse(aiInput['llm.prompt'] as string) as typeof packet; } catch { packet = undefined; }
+      if (typeof packet?.user_message !== 'string') return { body: { response: 'ok', events: [], tool_calls: [] } };
+      const call = { response: '', events: [], tool_calls: [{ tool: sendTool.name, args: {} }] };
+      if (!packet.user_message.startsWith('[The owner answered the approval')) {
+        const asked = packet.prior_tool_calls?.some((c) => c.tool_name === sendTool.name) ?? false;
+        return { body: asked ? { response: 'Both emails wait for your approval, one at a time.', events: [], tool_calls: [] } : call };
+      }
+      carried += 1;
+      // The first continuation sends the second email, which waits too; the second says so.
+      if (carried === 1) return { body: call };
+      return { body: { response: carried === 2 ? 'Bob has the first. The second waits for your approval.' : 'Bob has both now.', events: [], tool_calls: [] } };
+    };
+    const h = harness({ registry, executeAiCall, continuation: true });
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob twice', body: 'Tell Bob twice.', thread: 'thread-4' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+    await h.settleRun(settled('run-c4'));
+    await eventually(() => expect(h.sends).toHaveLength(2));
+    expect(h.sends[1]!.body_text).toBe('Bob has the first. The second waits for your approval.');
+    await h.settleRun(settled('run-c5'));
+    await eventually(() => expect(h.sends).toHaveLength(3));
+    const last = h.sends[2]!;
+    expect(last.body_text).toBe('Bob has both now.');
+    expect(last.in_reply_to).toBe('<req-1@owner.example>');
+    expect(last.thread_id).toBe('thread-4');
+    expect(last.subject).toBe('Re: ask: email Bob twice');
+    // No fixed follow-up for either run.
+    const messages = await h.store.listMessages(h.sessionOf('req-1@owner.example'));
+    expect(messages.some((m) => m.id === mailChatFollowUpId('run-c4') || m.id === mailChatFollowUpId('run-c5'))).toBe(false);
+  });
+
+  it('§7.3 — a continuation no model answers: its email still says what became of the run', async () => {
+    // ⛔ The email held the provider's failure and nothing else: Recued's record of the answer is
+    // never emailed, and the door's follow-up was skipped for a run that continued.
+    const turn = continuingTurn('run-c6', { failCarryOn: true });
+    const h = harness({ registry: turn.registry, executeAiCall: turn.executeAiCall, continuation: true });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob', body: 'Tell Bob I am late.', thread: 'thread-6' });
+      const answer = await h.answerOf('req-1@owner.example');
+      await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+      await h.settleRun(settled('run-c6'));
+      await eventually(() => expect(h.sends).toHaveLength(2));
+      const carried = h.sends[1]!;
+      expect(carried.body_text).toBe('The AI provider failed before answering.\n\n'
+        + 'The action that waited for your approval, "Send an email", is done.');
+      expect(carried.in_reply_to).toBe('<req-1@owner.example>');
+      expect(carried.thread_id).toBe('thread-6');
+      // One message for the run: no fixed follow-up beside it.
+      await h.answers.tick();
+      expect(h.sends).toHaveLength(2);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('§7.17 — tried again once a model is back: its answer goes by email as a reply; a try that fails again sends nothing', async () => {
+    const failing = { failCarryOn: true };
+    const turn = continuingTurn('run-c7', failing);
+    const tries: Array<() => Promise<void>> = [];
+    const h = harness({
+      registry: turn.registry, executeAiCall: turn.executeAiCall, continuation: true, later: (run) => { tries.push(run); },
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob', body: 'Tell Bob I am late.', thread: 'thread-7' });
+      const answer = await h.answerOf('req-1@owner.example');
+      await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+      await h.settleRun(settled('run-c7'));
+      // The first time: the provider's failure, and what became of the run.
+      await eventually(() => expect(h.sends).toHaveLength(2));
+      await eventually(() => expect(tries).toHaveLength(1));
+      // Tried again, and its model fails again: nothing is written, so nothing is owed or sent.
+      const session = h.sessionOf('req-1@owner.example');
+      const before = (await h.store.listMessages(session)).length;
+      await tries.shift()!();
+      await eventually(() => expect(tries).toHaveLength(1));
+      await h.answers.tick();
+      expect(h.sends).toHaveLength(2);
+      expect(await h.store.listMessages(session)).toHaveLength(before);
+      // A model is back: the next try answers, by email, as a reply to the request.
+      failing.failCarryOn = false;
+      await tries.shift()!();
+      await eventually(() => expect(h.sends).toHaveLength(3));
+      const carried = h.sends[2]!;
+      expect(carried.body_text).toBe('Sent. Bob has it (<bob-1@mail.example>).');
+      expect(carried.in_reply_to).toBe('<req-1@owner.example>');
+      expect(carried.thread_id).toBe('thread-7');
+      expect(tries).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('owes only a continuation it recorded: another turn in the conversation is not emailed', async () => {
+    const turn = continuingTurn('run-c3');
+    const h = harness({ registry: turn.registry, executeAiCall: turn.executeAiCall, continuation: true });
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob', body: 'Tell Bob I am late.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+    // An answer of a turn no email started and no continuation recorded.
+    await h.store.appendMessage({
+      id: 'web-answer', session_id: h.sessionOf('req-1@owner.example'), role: 'assistant', content: 'From the web app.',
+      target_server: 'self', picker_at_send: { display_name: 'self', signature },
+      model_used: { provider: 'test', model_id: 't' }, turn_id: 'turn-from-the-web-app', ts: Date.now(),
+    });
+    await h.answers.tick();
+    expect(h.answerRows().map((row) => row.answer_id)).toEqual([answer]);
   });
 });
 

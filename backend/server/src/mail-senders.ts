@@ -23,9 +23,27 @@
  *  2026-10-18): the refusal listed names alone, and a name is whatever the
  *  mailbox was connected under. So it lists each with its address and provider,
  *  and an address given for "Send from" is taken as the mailbox that sends as
- *  it. */
+ *  it.
+ *
+ *  ⛔ A DOOR'S CALLER HAD THE SAME DEAD END, AND THE OWNER PAID FOR IT (live,
+ *  2026-11-03). Claude Code, over an MCP door, called "Send a composed email"
+ *  with no mailbox: it had no way to learn one. The gate held the send, the
+ *  owner approved it, and only then did it fail ("sender_mail_instance is
+ *  required"). The owner: "do the mailbox fix you found". So a door's run is
+ *  settled too, the same way, except that its refusal lists no mailbox: a door
+ *  can be a customer's, and the owner's mailboxes and addresses are not theirs
+ *  to read. It tells the caller to ask the owner, whose answer (a name or an
+ *  address) then settles it.
+ *
+ *  ⚠ A DOOR'S SEND ASKS BY DEFAULT, NOT ALWAYS. The outbound-send lift that
+ *  makes every send ask is the owner's alone (`liftOutboundSend`); a door's
+ *  send asks because its contract's trust ceiling holds a write, and the owner
+ *  can raise that ceiling. By default the approval names the filled mailbox. A
+ *  door whose ceiling was raised sends from the only mailbox without asking, as
+ *  the owner's own run would, and is refused, never guessed, once a second
+ *  mailbox can send. */
 
-import { RpcError, type ApprovalValueLabels, type RecipeDefinition } from '@recued/contracts';
+import { RpcError, type ApprovalValueLabels, type ExecutionSource, type RecipeDefinition } from '@recued/contracts';
 
 import type { MailProviderKind } from './collections/mail/provider.js';
 import type { CollectionRegistry } from './collections/registry.js';
@@ -107,19 +125,67 @@ const declared = (recipe: RecipeDefinition, variable: string): { label?: unknown
 const isEmpty = (value: unknown): boolean =>
   value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
 
-/** The refusal: what is wrong, and the mailboxes that can send. The owner reads
- *  it on a run by hand, and Chat reads it to ask the owner, so it names the
- *  setting both ways and each mailbox by the name a run takes and by what the
- *  owner knows it by. */
-const refuse = (
+/** Whose run is settled. The owner's refusal lists the mailboxes that can send;
+ *  a door's lists none (see the header). */
+export type MailSenderAudience = 'owner' | 'door';
+
+/** Whose run a "Send from" is settled for, by who started it: the owner, or a
+ *  caller through a door (an AI app over MCP, someone in a chat door). Undefined
+ *  for every other run, which is left as it was: an automation's (its sender
+ *  would move unseen when a second mailbox connects), a reception visitor's, a
+ *  webhook's. */
+export const mailSenderAudienceOf = (source: ExecutionSource | undefined): MailSenderAudience | undefined => {
+  if (source?.actor === 'user_self') return 'owner';
+  if (source?.actor === 'contracted_user'
+    && (source.channel === 'mcp' || source.channel === 'chat' || source.channel === 'messenger')) return 'door';
+  return undefined;
+};
+
+/** A door's refusal: what is wrong, and that the owner is the one to ask. It
+ *  names no mailbox and gives no count, and its details carry no candidates. */
+const refuseDoor = (
   recipe: RecipeDefinition,
+  setting: string,
   variable: string,
   senders: readonly SendCapableMailbox[],
   named?: string,
 ): RpcError => {
+  const ask = ' Ask the owner which mailbox to send from, then pass its name or address.';
+  const connect = ' The owner can connect one under Connections → Mail.';
+  const problem = named === undefined
+    ? senders.length === 0
+      ? `${setting} is empty, and no mailbox on this server can send.${connect}`
+      : `${setting} is empty, and more than one mailbox on this server can send.${ask}`
+    : senders.length === 0
+      ? `${setting} is '${named}', but no mailbox on this server can send.${connect}`
+      : senders.filter((s) => sendsAs(s, named)).length > 1
+        ? `${setting} is '${named}', the address of more than one mailbox on this server that can send. `
+          + 'Ask the owner which one, then pass its name.'
+        : `${setting} is '${named}', which is not a mailbox on this server that can send.${ask}`;
+  return new RpcError(
+    'mail_sender_required',
+    `Recipe '${recipe.recipe_id}' cannot send: ${problem}`,
+    400,
+    undefined,
+    { variable, ...(named !== undefined ? { named } : {}) },
+  );
+};
+
+/** The refusal: what is wrong, and the mailboxes that can send. The owner reads
+ *  it on a run by hand, and Chat reads it to ask the owner, so it names the
+ *  setting both ways and each mailbox by the name a run takes and by what the
+ *  owner knows it by. A door's caller reads {@link refuseDoor} instead. */
+const refuse = (
+  recipe: RecipeDefinition,
+  variable: string,
+  senders: readonly SendCapableMailbox[],
+  named: string | undefined,
+  audience: MailSenderAudience,
+): RpcError => {
   const { label } = declared(recipe, variable);
   const setting = typeof label === 'string' && label !== '' && label !== variable
     ? `"${label}" (${variable})` : `"${variable}"`;
+  if (audience === 'door') return refuseDoor(recipe, setting, variable, senders, named);
   const problem = named === undefined
     ? `${setting} is empty, and ${senders.length === 0 ? 'no mailbox' : `${senders.length} mailboxes`} on this server can send${senders.length === 0 ? '.' : `: ${listed(senders)}.`}`
     : senders.filter((s) => sendsAs(s, named)).length > 1
@@ -152,6 +218,7 @@ export const settleMailSenders = (
   config: Record<string, unknown>,
   settings: ReadonlySet<string>,
   senders: readonly SendCapableMailbox[],
+  audience: MailSenderAudience = 'owner',
 ): Record<string, unknown> => {
   let out = config;
   for (const variable of settings) {
@@ -163,12 +230,12 @@ export const settleMailSenders = (
       // An address, as the refusal lists it or the owner types it: the one
       // mailbox that sends as it, by the name the send takes.
       const sending = senders.filter((s) => sendsAs(s, value));
-      if (sending.length !== 1) throw refuse(recipe, variable, senders, value);
+      if (sending.length !== 1) throw refuse(recipe, variable, senders, value, audience);
       out = { ...out, [variable]: sending[0]!.name };
       continue;
     }
     if (!isEmpty(declared(recipe, variable).default)) continue;
-    if (senders.length !== 1) throw refuse(recipe, variable, senders);
+    if (senders.length !== 1) throw refuse(recipe, variable, senders, undefined, audience);
     out = { ...out, [variable]: senders[0]!.name };
   }
   return out;

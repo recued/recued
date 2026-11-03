@@ -191,7 +191,9 @@ describe('D-148 P1 — Argon2id bearer token hash + verify', () => {
     const bearer = generateBearerToken(); const salt = randomBytes(16);
     const short = await argon2idAsync(bearer, salt, { ...FAST_ARGON2, dkLen: 16 });
     expect(await verifyBearerToken(bearer, { hash_b64: bytesToBase64(short), salt_b64: bytesToBase64(salt), params: FAST_ARGON2 })).toBe(true);
-  }, 30_000);
+  // Multiple portable JS derivations at the shipped cost can exceed 30s on a
+  // busy host. This checks interoperability, with every parameter set retained.
+  }, 120_000);
 
   it.skipIf(!nodeArgon2)('a verify at the shipped cost leaves the event loop free', async () => {
     // The pure-JS one held every connection, request and timer for about a second.

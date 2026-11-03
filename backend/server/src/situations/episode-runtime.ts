@@ -75,12 +75,13 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
     const sphere = context.referenceSphere?.(ref) ?? knownSphere ?? deps.sphere?.(ref);
     return sphere !== undefined && context.spheres?.includes(sphere) === true;
   };
+  // D-336 slice R — an address a contact was re-keyed off still names it (`getByAnyEmail`).
   const excluded = (people: readonly string[]) => people.some(id => {
-    const contact = deps.contacts?.getByContactIdResolved(id) ?? deps.contacts?.get(id); return !!contact && contactExcludedFromProactive(contact);
+    const contact = deps.contacts?.getByContactIdResolved(id) ?? deps.contacts?.getByAnyEmail(id); return !!contact && contactExcludedFromProactive(contact);
   });
   const people = (raw: unknown): string[] => (Array.isArray(raw) ? raw : []).flatMap(value => {
     if (typeof value !== 'string' || !value.trim() || value.length > 2000) return [];
-    const contact = deps.contacts?.getByContactIdResolved(value) ?? deps.contacts?.get(value);
+    const contact = deps.contacts?.getByContactIdResolved(value) ?? deps.contacts?.getByAnyEmail(value);
     return contact?.contact_id ? [contact.contact_id] : /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value) ? [value] : [];
   });
   const safe = (episode: EpisodeInput): boolean => !episode.sensitive.length && !PRIVATE.test(`${episode.title} ${episode.notes ?? ''}`)

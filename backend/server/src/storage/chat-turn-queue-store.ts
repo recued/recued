@@ -356,6 +356,38 @@ export const createChatTurnQueueStore = (db: Database.Database, getKey?: ChatKey
     changed(next.session_id);
     return get(next.turn_id);
   }).immediate();
+  /** D-337 — the turns of `family` queued right behind a running turn, in order: the leading run
+   *  of them, up to the first queued turn of another family. */
+  const following = (turn: string, family: string): QueueRow[] => {
+    const row = get(turn);
+    if (!row) return [];
+    const rows = db.prepare(`SELECT * FROM chat_turn_queue WHERE session_id = ? AND position > ?
+      AND status = 'queued' ORDER BY position LIMIT 64`).all(row.session_id, row.position) as QueueRow[];
+    const run: QueueRow[] = [];
+    for (const next of rows) {
+      if (next.family !== family) break;
+      run.push(next);
+    }
+    return run;
+  };
+  /** Settle those of `rows` still queued, unchanged, as `completed`: their work is done in `turn`,
+   *  which `worker` is running. `inTransaction` records them in the same transaction. */
+  const fold = (turn: string, worker: string, rows: readonly QueueRow[],
+    inTransaction?: (taken: readonly string[]) => undefined): string[] => db.transaction((): string[] => {
+    const running = get(turn);
+    if (!running || running.worker_id !== worker || running.status !== 'running') return [];
+    const taken: string[] = [];
+    for (const row of rows) {
+      const result = db.prepare(`UPDATE chat_turn_queue SET status = 'completed', worker_id = ?
+        WHERE turn_id = ? AND session_id = ? AND status = 'queued' AND payload = ?`)
+        .run(worker, row.turn_id, running.session_id, row.payload);
+      if (result.changes === 1) taken.push(row.turn_id);
+    }
+    if (taken.length === 0) return taken;
+    if (inTransaction?.(taken) !== undefined) throw new Error('Queue fold records must finish synchronously.');
+    changed(running.session_id);
+    return taken;
+  }).immediate();
   const settle = (turn: string, worker: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted'): void => db.transaction(() => {
     const row = get(turn);
     if (!row || row.worker_id !== worker || terminal(row.status)) return;
@@ -402,7 +434,7 @@ export const createChatTurnQueueStore = (db: Database.Database, getKey?: ChatKey
   };
   const needsAttachmentIndexing = (): boolean => files.configured()
     && !!db.prepare('SELECT 1 FROM chat_turn_queue WHERE attachments_indexed=0 LIMIT 1').get();
-  return { admit, get, read, snapshot, claim, settle, cancel, withdraw, recover, nativeSession, generation, indexLegacyAttachments, needsAttachmentIndexing };
+  return { admit, get, read, snapshot, claim, following, fold, settle, cancel, withdraw, recover, nativeSession, generation, indexLegacyAttachments, needsAttachmentIndexing };
 };
 
 export type ChatTurnQueueStore = ReturnType<typeof createChatTurnQueueStore>;

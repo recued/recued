@@ -58,6 +58,7 @@ import type {
 } from '../saved-data-views.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
 import type { Dish, DishGroup, DishLastRun, DishRunRow, DishWebhookDoorChange } from '../dish.js';
+import type { CalendarEventDeleteRequest, CalendarEventDeleteResult, CalendarEventDeletionCheckRequest, CalendarEventDeletionState } from '../calendar-event-rpc.js';
 import type { CalendarEventRef, CalendarEventSnapshot, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarEventDestinations, CalendarEventCreateRequest, CalendarEventCreateResult } from '../calendar-event-rpc.js';
 import type { CacheEntry } from '../cache.js';
 import type {
@@ -368,6 +369,9 @@ import type {
   MemoryRevokeResult,
   MemorySavesRequest,
   MemorySavesResult,
+  MemoryClaimsRequest,
+  MemoryClaimsResult,
+  MemoryClaimCountsResult,
 } from './memory.js';
 import type {
   ExposurePreset,
@@ -1100,6 +1104,12 @@ export interface ServerPendingAsk {
    *  `/ask/<ask_id>` landing renders that same message. Same ask, two
    *  audiences — the question goes everywhere, the document does not. */
   body?: string;
+  /** D-336 slice N — the card in Chat of a held chat write (D-329), while it waits: its
+   *  conversation and plan. The web app links to it ("Change it in Chat" where that card can
+   *  change the call before the yes, `changeable`; else "Review in Chat"), since this card
+   *  stays read-only (D-270: the link owns editing). Absent for any other ask, and from a
+   *  server before slice N. */
+  chat_plan?: { session_id: string; plan_id: string; changeable?: boolean };
 }
 
 /** One row from `pair.list`. Mirrors `PairedInstance` from the server
@@ -3243,6 +3253,45 @@ export type ServerRpcRegistry = {
     { contact: ContactRecord }
   >;
 
+  /** D-336 slice H — the owner adds a contact from a name alone, where a relationship's
+   *  "Link to a contact" found nobody (the Memory form, a held save's card). It is a
+   *  mention-only contact, keyed on a placeholder until it has an address
+   *  (`isMentionOnlyEmail`), and the owner's own: its name at their rank (`manual`), its
+   *  row through their paired client. Never merged with another by name. `name` is
+   *  trimmed, and refused when empty or longer than a relationship's part
+   *  (`MEMORY_CLAIM_PART_MAX`). A method of its own, so an older server refuses it
+   *  (`unknown_method`) and the picker says to update the server. */
+  'contact.create_by_name': RpcMethodSpec<{ name: string }, { contact: ContactRecord }>;
+
+  /** D-336 slice I — the owner gives a contact with no address its email, from the
+   *  contact's Edit form. The store's promotion re-keys the contact
+   *  (`promoteMentionOnlyToVerified`, the step a contact import and a contact book's sync
+   *  take): it keeps its `contact_id`, so its notes, relationships and fields stay, and the
+   *  placeholder it was keyed on stays its alias, so a reference that holds it still
+   *  reaches the contact. The address is the owner's (`manual`). Refused: an address that
+   *  is already another contact's, naming them (a merge, never a second contact for one
+   *  address), and a contact that already has one, which cannot be changed this way. The
+   *  same address again returns the contact as it is. A method of its own, so an older
+   *  server refuses it (`unknown_method`) and the form says to update the server.
+   *  D-336 slice P: the refusal of an address another contact has carries
+   *  `details: { reason: 'address_taken', contact_email?, contact_name? }`, naming that
+   *  contact, so the form can offer to merge the two (`contact.merge.pair`). */
+  'contact.add_email': RpcMethodSpec<{ contact_id: string; email: string }, { contact: ContactRecord }>;
+
+  /** D-336 slice R — the owner changes a contact's saved email, from the contact's Edit form.
+   *  The new address becomes the one Recued uses: the contact is re-keyed onto it in place,
+   *  keeping its `contact_id`, so its notes, relationships and fields stay. The old address
+   *  stays its second address (an `email_alias`), so mail from it and every reference that
+   *  holds it still find the contact (the owner: "Keep as second address"). Owner only (the
+   *  owner: "You only"): no AI tool reaches it, and `contact.write` refuses to change a saved
+   *  address. Refused: an address that is another contact's, with `contact.add_email`'s
+   *  `details` (slice P's merge offer); a contact with no address, which `contact.add_email`
+   *  gives one; a contact gone or merged away; anything but one address alone. The address it
+   *  has, sent again, returns the contact as it is; one of its second addresses becomes its
+   *  first. A method of its own, so an older server refuses it (`unknown_method`) and the form
+   *  says to update the server. */
+  'contact.change_email': RpcMethodSpec<{ contact_id: string; email: string }, { contact: ContactRecord }>;
+
   /** Paired-owner literal search across saved contact identifiers. */
   'contact.search.local': RpcMethodSpec<
     import('../contact-search.js').ContactSearchLocalRequest,
@@ -3488,6 +3537,28 @@ export type ServerRpcRegistry = {
    *  losers from the candidate-graph edges. */
   'contact.merge.confirm': RpcMethodSpec<
     { candidate_ids: string[]; survivor_email: string },
+    { survivor: ContactRecord; losers: ContactRecord[] }
+  >;
+
+  /** D-336 slice P — merge two contacts the owner names: `other_email` into
+   *  `survivor_email`, as a confirmed merge does. Used where an address the
+   *  owner gives one contact is already the other's. The merge is recorded as
+   *  an owner candidate (`detected_by: 'owner'`), so the merge history lists it
+   *  and it can be separated again. A contact with no address cannot keep
+   *  itself over one that has one: the merged contact keeps a real address.
+   *  `name` — the name the merged contact keeps, the owner's pick where the two
+   *  names differ (the owner, 2026-11-01: "ask which name"). A merge projects
+   *  each field's strongest value, so a contact added from a name, at the
+   *  owner's rank and newer, would rename the one kept; the pick is written as
+   *  the owner's own (`manual`) when the merge would project another. Slice P's open item
+   *  (the owner: "Every field that differs"): `phone`, `company`, `birthday` and
+   *  `anniversary` likewise, each one of the two contacts' values (refused otherwise, before
+   *  anything merges). */
+  'contact.merge.pair': RpcMethodSpec<
+    {
+      survivor_email: string; other_email: string; name?: string;
+      phone?: string; company?: string; birthday?: string; anniversary?: string;
+    },
     { survivor: ContactRecord; losers: ContactRecord[] }
   >;
 
@@ -6276,6 +6347,7 @@ export type ServerRpcRegistry = {
     import('../file-content-read.js').FileContentReadResponse
   >;
   'data.file.attachments.preview': RpcMethodSpec<import('../file-lifecycle.js').FilePreviewRequest, import('../file-lifecycle.js').FilePreviewResult>;
+  'data.file.attachments.convert': RpcMethodSpec<import('../file-lifecycle.js').FilePreviewConversionRequest, import('../file-lifecycle.js').FilePreviewConversionResult>;
   'data.file.attachments.sources': RpcMethodSpec<undefined, { sources: import('../file-lifecycle.js').CloudFileSource[] }>;
   'data.file.attachments.remote.list': RpcMethodSpec<import('../file-lifecycle.js').CloudFileListRequest, import('../file-lifecycle.js').CloudFileListResult>;
   'data.file.attachments.remote.get': RpcMethodSpec<{ record_id: string }, import('../file-lifecycle.js').CloudFileSelection>;
@@ -6284,6 +6356,7 @@ export type ServerRpcRegistry = {
   'data.file.attachments.list': RpcMethodSpec<import('../file-lifecycle.js').FileAttachmentListRequest, import('../file-lifecycle.js').FileAttachmentListResult>;
   'data.file.attachments.get': RpcMethodSpec<{ record_id: string }, import('../file-lifecycle.js').FileAttachmentSelection>;
   'data.file.usage': RpcMethodSpec<{ record_id: string }, import('../file-lifecycle.js').FileLifecyclePreview>;
+  'data.file.rename': RpcMethodSpec<import('../file-lifecycle.js').FileRenameRequest, import('../file-lifecycle.js').FileLifecyclePreview>;
   'data.file.mutate': RpcMethodSpec<import('../file-lifecycle.js').FileLifecycleMutation, import('../file-lifecycle.js').FileLifecyclePreview>;
 
   // ── data.mirror.search read pair-RPC (D-174 #22 — feeds the mirror
@@ -6670,7 +6743,10 @@ export type ServerRpcRegistry = {
    *  associated credentials. Compose root closes the live provider
    *  via `onDeleted`. */
   /** Owner's bounded message reader and send-capable reply handoff. */
+  'collection.mail.message.attachments': RpcMethodSpec<import('../mail-compose/message.js').MailMessageAttachmentsRequest, import('../mail-compose/message.js').MailMessageAttachmentsSnapshot>;
   'collection.mail.message.get': RpcMethodSpec<import('../mail-compose/message.js').MailMessageRef, import('../mail-compose/message.js').MailMessageSnapshot>;
+  /** Paired owner's explicit read/star action, verified by the mailbox before reflection. */
+  'collection.mail.message.updateState': RpcMethodSpec<import('../mail-compose/message.js').MailMessageStateChange, import('../mail-compose/message.js').MailMessageStateResult>;
   'collection.mail.conversation.get': RpcMethodSpec<import('../mail-compose/message.js').MailConversationRequest, import('../mail-compose/message.js').MailConversationSnapshot>;
   'collection.mail.delete': RpcMethodSpec<{ slug: string }, { ok: true }>;
 
@@ -6778,6 +6854,12 @@ export type ServerRpcRegistry = {
   // D-198 §13 — how many times an agent saved a note's claim, asked by the Delete confirm
   // before it offers Revoke. Its own method, so an older server refuses it.
   'memory.saves': RpcMethodSpec<MemorySavesRequest, MemorySavesResult>;
+  // D-336 slice D — the notes whose claim names a contact or a thing, for its page's
+  // Relationships section. Its own method, so an older server refuses it.
+  'memory.claims': RpcMethodSpec<MemoryClaimsRequest, MemoryClaimsResult>;
+  // D-336 slice K — what the relation list misses, for the Memory view: notes an AI saved
+  // without a relationship, and the relations the owner wrote in their own words.
+  'memory.claim_counts': RpcMethodSpec<void, MemoryClaimCountsResult>;
 
   // ── triggers.* — event-driven recipe dispatch (§Recipe triggers) ─
   'triggers.list': RpcMethodSpec<void, { triggers: EventTrigger[] }>;
@@ -7017,10 +7099,13 @@ export type ServerRpcRegistry = {
   >;
   /** Paired owner details and version-bound edits of single local events. */
   'collection.calendar.event.get': RpcMethodSpec<CalendarEventRef, CalendarEventSnapshot>;
+  'collection.calendar.event.overlaps': RpcMethodSpec<import('../calendar-event-rpc.js').CalendarOverlapRequest, import('../calendar-event-rpc.js').CalendarOverlapResult>;
   'collection.calendar.event.destinations': RpcMethodSpec<void, CalendarEventDestinations>;
   'collection.calendar.event.create': RpcMethodSpec<CalendarEventCreateRequest, CalendarEventCreateResult>;
   'collection.calendar.event.update': RpcMethodSpec<CalendarEventUpdateRequest, CalendarEventSnapshot>;
   'collection.calendar.event.respond': RpcMethodSpec<CalendarEventRespondRequest, CalendarEventRespondResult>;
+  'collection.calendar.event.delete': RpcMethodSpec<CalendarEventDeleteRequest, CalendarEventDeleteResult>;
+  'collection.calendar.event.checkDeletion': RpcMethodSpec<CalendarEventDeletionCheckRequest, CalendarEventDeletionState>;
   /** Patch retention / quota / expansion / poll cadence. `reprobe:
    *  true` re-runs the cap probe + refreshes the cached caps. Does
    *  NOT re-auth (use `reauth` for that). */
@@ -7346,10 +7431,12 @@ export type ServerRpcRegistry = {
   // flipped to `'approved'` / `'cancelled'` + `resolved_at` stamped)
   // so the caller can render the post-resolution card without waiting
   // for the `chat.plan_resolved` broadcast round-trip. `edited_args`
-  // on approve is reserved for the per-arg edit flow (the renderer
-  // surfaces an editable form per § A.11 "Mary confirms / edits /
-  // cancels"); P3 ships the substrate slot without consuming the
-  // field — edits land in P4 polish.
+  // on approve is the owner's change, made while approving (§ A.11
+  // "Mary confirms / edits / cancels"): only the plan's own
+  // `editable_args` (D-336 slice E: a held `memory.write`'s `claim`,
+  // a claim as the owner's memory forms write it, or `null` for
+  // none, checked like a new save; and its `summary`, never empty,
+  // since the 2026-10-31 audit). Anything else is refused.
   'chat.plan.approve': RpcMethodSpec<
     { plan_id: string; edited_args?: Record<string, unknown> },
     { plan: ChatPlanProposal }
@@ -8452,6 +8539,9 @@ export type ServerRpcRegistry = {
    *  answers as the `core.reminder.*` ops. Owner-only: `reminder.` is an MCP
    *  reserved prefix. */
   'yours.delivery': RpcMethodSpec<void, import('../situation.js').SituationDeliveryStatus>;
+  /** D-325 §15.7 amendment (2026-11-02, later) — the Agenda's settings and receipts, read apart
+   *  from the Digest's. An older server answers `unknown_method`, and the Agenda card leaves. */
+  'yours.agenda': RpcMethodSpec<void, import('../situation.js').SituationAgendaStatus>;
   /** D-325 §15.7 — "last time" for Settings → Privacy → Learning, without a snapshot's refreshes. */
   'yours.learning': RpcMethodSpec<void, import('../yours.js').YoursLearningStatus>;
   /** D-325 §15.7 amendment — the to-do lists a Home Assistant connection offers, read
@@ -8474,6 +8564,10 @@ export type ServerRpcRegistry = {
   'reminder.list': RpcMethodSpec<
     import('../reminder.js').ReminderListRequest,
     import('../reminder.js').ReminderListResult
+  >;
+  'reminder.get': RpcMethodSpec<
+    { reminder_id: string },
+    import('../reminder.js').ReminderGetResult
   >;
   'reminder.update': RpcMethodSpec<
     { reminder_id: string; text?: string; at?: number },
@@ -8750,6 +8844,9 @@ export const SERVER_RPC_METHODS = [
   'link.forRecord',
   // D-121 Phase 1 — contact warehouse rpc.
   'contact.upsert',
+  'contact.create_by_name',
+  'contact.add_email',
+  'contact.change_email',
   'contact.list',
   'contact.search.local',
   'contact.get',
@@ -8790,6 +8887,7 @@ export const SERVER_RPC_METHODS = [
   // `packages/contracts/src/mcp-tool-catalog.ts`).
   'contact.merge.list',
   'contact.merge.confirm',
+  'contact.merge.pair',
   'contact.merge.reject',
   'contact.merge.split',
   'contact.merge.split_preview',
@@ -9148,6 +9246,7 @@ export const SERVER_RPC_METHODS = [
   'data.timeline',
   'data.file.read',
   'data.file.attachments.preview',
+  'data.file.attachments.convert',
   'data.file.attachments.sources',
   'data.file.attachments.remote.list',
   'data.file.attachments.remote.get',
@@ -9156,6 +9255,7 @@ export const SERVER_RPC_METHODS = [
   'data.file.attachments.list',
   'data.file.attachments.get',
   'data.file.usage',
+  'data.file.rename',
   'data.file.mutate',
   'data.mirror.search',
   'data.contact.engagements.list',
@@ -9202,6 +9302,8 @@ export const SERVER_RPC_METHODS = [
   'collection.mail.updateCredentials',
   'collection.mail.list',
   'collection.mail.message.get',
+  'collection.mail.message.attachments',
+  'collection.mail.message.updateState',
   'collection.mail.conversation.get',
   'collection.mail.delete',
   'collection.mail.resync',
@@ -9229,6 +9331,8 @@ export const SERVER_RPC_METHODS = [
   'memory.revoke',
   'memory.unrevoke',
   'memory.saves',
+  'memory.claims',
+  'memory.claim_counts',
   'triggers.list',
   'triggers.create',
   'triggers.update',
@@ -9257,10 +9361,13 @@ export const SERVER_RPC_METHODS = [
   'collection.calendar.updateCredentials',
   'collection.calendar.list',
   'collection.calendar.event.get',
+  'collection.calendar.event.overlaps',
   'collection.calendar.event.destinations',
   'collection.calendar.event.create',
   'collection.calendar.event.update',
   'collection.calendar.event.respond',
+  'collection.calendar.event.delete',
+  'collection.calendar.event.checkDeletion',
   'collection.calendar.update',
   'collection.calendar.delete',
   'collection.calendar.resync',
@@ -9568,6 +9675,7 @@ export const SERVER_RPC_METHODS = [
   'notification.quiet_hours.set',
   // D-324 — the owner's reminders, for the Data → Reminders list.
   'yours.delivery',
+  'yours.agenda',
   'yours.learning',
   'yours.household_lists',
   'yours.today',
@@ -9581,6 +9689,7 @@ export const SERVER_RPC_METHODS = [
   'yours.change',
   'reminder.create',
   'reminder.list',
+  'reminder.get',
   'reminder.update',
   'reminder.cancel',
 ] as const satisfies readonly (keyof ServerRpcRegistry)[];

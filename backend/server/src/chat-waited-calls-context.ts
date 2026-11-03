@@ -22,6 +22,7 @@
 
 import type { ChatToolCallRecord, ExecutionSource } from '@recued/contracts';
 import type { ChatToolCallTracker } from './storage/chat-tool-call-store.js';
+import { isOwnAppChatSource, isOwnScheduledConversationSource } from './chat-carries-on.js';
 
 /** Bounded: a long chat with many approvals must not grow every turn's tail. */
 export const WAITED_CALLS_CONTEXT_MAX = 5;
@@ -41,7 +42,10 @@ const stateText = (call: ChatToolCallRecord): string | null => {
   switch (call.state) {
     case 'held': return 'still waiting';
     case 'succeeded': return 'went ahead and finished';
-    case 'failed': return call.denied === true ? 'did not run, the owner refused it' : 'went ahead but failed';
+    case 'failed': return call.denied === true ? 'did not run, the owner refused it'
+      // D-337 slice R — not "failed": it never ran, and no one said no.
+      : call.expired === true ? 'did not run, no one answered its approval in time'
+      : 'went ahead but failed';
     case 'interrupted': return 'stopped part-way, outcome unknown';
     // Running again after its go-ahead: the in-flight lines already carry it.
     case 'running': return null;
@@ -70,18 +74,40 @@ export const renderWaitedCallsContext = (
   return [WAITED_CALLS_CONTEXT_LEAD, ...lines].join('\n');
 };
 
-/** The owner's own chat only — the same boundary as the durable call record
- *  itself (`chat-orchestrator.ts` writes one for no other source). */
+/** The conversations that keep a durable call record: the owner's own app chat, and a scheduled
+ *  conversation (`chat-orchestrator.ts` writes one for no other source). A scheduled
+ *  conversation is "just a normal chat where the user prompt injected on schedule" (the owner,
+ *  D-337 ruling 3): its turns were told nothing of its calls that waited until 2026-11-01. */
+const ownChatSessionOf = (source: ExecutionSource): string | undefined => {
+  if (!isOwnAppChatSource(source) && !isOwnScheduledConversationSource(source)) return undefined;
+  const session = (source as { chat_session_id?: unknown }).chat_session_id;
+  return typeof session === 'string' && session.length > 0 ? session : undefined;
+};
+
+/** The owner's own conversations only — the same boundary as the durable call record itself.
+ *
+ *  D-337 — not a call this chat has carried on from (`delivered`): its continuation put the call
+ *  and its outcome in front of the model, so the model said what became of it after the wait,
+ *  and it is in front of it now if that turn is this one. Listing it again only repeats its
+ *  state. A continuation that failed delivered nothing, and its call stays listed. */
 export const buildWaitedCallsContext = (
   tracker: Pick<ChatToolCallTracker, 'listWaited'> | undefined,
   source: ExecutionSource,
+  delivered?: (session_id: string) => ReadonlySet<string>,
 ): string | undefined => {
-  if (tracker === undefined || source.channel !== 'chat' || source.actor !== 'user_self'
-    || source.contract_id !== undefined) return undefined;
-  if (source.chat_session_id.length === 0) return undefined;
-  return renderWaitedCallsContext(
-    tracker.listWaited(source.chat_session_id, WAITED_CALLS_CONTEXT_MAX),
-  );
+  if (tracker === undefined) return undefined;
+  const session = ownChatSessionOf(source);
+  if (session === undefined) return undefined;
+  let skip: ReadonlySet<string> = new Set();
+  try {
+    skip = delivered?.(session) ?? skip;
+  } catch { /* every call stays listed */ }
+  // Read past the ones skipped, so the newest calls still listed fill the lines.
+  const calls = tracker.listWaited(session,
+    skip.size === 0 ? WAITED_CALLS_CONTEXT_MAX : WAITED_CALLS_CONTEXT_MAX * 4)
+    .filter((call) => call.run_id === undefined || !skip.has(call.run_id))
+    .slice(0, WAITED_CALLS_CONTEXT_MAX);
+  return renderWaitedCallsContext(calls);
 };
 
 /** The live-work block and this one share the field; either may be absent. */

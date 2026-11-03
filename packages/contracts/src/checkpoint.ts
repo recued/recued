@@ -137,6 +137,23 @@ export interface PreflightCheckpointContext {
    *  below does not check it (`approvalValueLabel` reads it defensively), so a
    *  malformed one names nothing instead of losing the hold. */
   value_labels?: ApprovalValueLabels;
+  /** D-336 (spec §52) — what a single held call changes, as its approval card shows it: the
+   *  operation's declared fields, each by its label and its value, named records named
+   *  ("Contact ID: Mia Whitfield (HubSpot Contact)"), a secret-named field's value hidden.
+   *  Recorded when the run was held, so the ask every channel receives (Telegram, Slack, email,
+   *  the top-bar tray) says it too, where a single hold's text named only the action. Display
+   *  only, like `value_labels`: not checked by the guard below, and read defensively. */
+  held_details?: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+  /** D-336 slice G — the notes already in memory a held `memory.write` meets, found when it
+   *  was held, so every channel's ask says what it contradicts. Display only, like
+   *  `value_labels`: not checked by the guard below, and read defensively
+   *  (`tier1CallDetails`). */
+  memory_conflicts?: readonly import('./memory-relations.js').MemorySaveConflict[];
+  /** D-336 slice N's open item — the title of the chat whose card can change the held call
+   *  before it is approved (a held save), so an ask read in Telegram, Slack or email says where:
+   *  "To change it first, open the chat “…” in Recued." (the owner: "Name the chat, no link").
+   *  Display only, like `value_labels`. */
+  change_in_chat?: string;
   /** D-335 slice B — the element a held browser write or click acts on, as the
    *  paired Bridge read it (`describe`) while the run was held, so every
    *  channel's ask names it the way the page shows it, never the way a model
@@ -188,6 +205,11 @@ export interface RawOpCheckpoint {
    *  the chat ran it (a memory records its conversation; a created thing its origin). A
    *  messenger's source names no session, so it is carried here. Tier-1 holds only. */
   tier1_session_id?: string;
+  /** D-336 slice Q's last open item — the turn a held chat write was asked in, for a source
+   *  that names none (a messenger's), so the resumed call runs in it as the chat ran it: the
+   *  claim linker pairs a save with the contact its turn added. A chat's source carries its own
+   *  turn. Tier-1 holds only. */
+  tier1_turn_id?: string;
   /** The full Tier-P wire op id (`<publisher>.<pack>.<operation>`) — display
    *  + agent-facing message + audit continuity. */
   op_id: string;
@@ -518,6 +540,7 @@ const isRawOpCheckpoint = (value: unknown): boolean => {
       || v.op_id !== v.tier1_tool || v.operation !== v.tier1_tool || v.connection_name !== '') return false;
   } else if (v.catalog_slug === TIER1_HOLD_CATALOG_SLUG) return false;
   if (v.tier1_session_id !== undefined && (v.tier1_tool === undefined || !nonEmpty(v.tier1_session_id))) return false;
+  if (v.tier1_turn_id !== undefined && (v.tier1_tool === undefined || !nonEmpty(v.tier1_turn_id))) return false;
   return true;
 };
 

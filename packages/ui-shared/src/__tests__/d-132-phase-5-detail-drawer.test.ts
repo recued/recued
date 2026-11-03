@@ -236,6 +236,7 @@ describe('D-132 P5 — drawer scope-read + history sections', () => {
         {
           collection: 'data.mail',
           sample_field_paths: ['subject', 'body_preview', 'from'],
+          record_count: 50,
         },
       ],
       trustRow: null,
@@ -250,8 +251,23 @@ describe('D-132 P5 — drawer scope-read + history sections', () => {
     expect(html).toContain('subject');
     expect(html).toContain('body_preview');
     expect(html).toContain('from');
-    // Source-collection count threads through from `task.enrichment`.
+    // Counts belong to each read scope, not to the producer's primary scope.
     expect(html).toContain('50 records');
+  });
+
+  it('keeps empty and unavailable read scopes distinct without borrowing the primary source total', () => {
+    const html = renderHousekeepingDetailDrawer({
+      task: aiTask(),
+      scopeRead: [
+        { collection: 'data.calendar', sample_field_paths: ['summary'], record_count: 0 },
+        { collection: 'data.contact', sample_field_paths: ['email'] },
+      ],
+      trustRow: null, recentRuns: [], errorHistory: [], hasConfidenceField: false,
+      writing: false, writeError: null, now: NOW,
+    });
+    expect(html).toContain('0 records');
+    expect(html).toContain('Record count unavailable');
+    expect(html).not.toContain('50 records');
   });
 
   it('renders the empty hint when scope-read is absent', () => {

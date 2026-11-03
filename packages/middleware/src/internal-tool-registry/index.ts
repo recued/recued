@@ -36,6 +36,7 @@ import {
   TIER1_TOOL_NAME_SET,
   TIER1_TOOL_NAMES,
   type ApprovalValueLabels,
+  type HeldCallNotices,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type ConnectionMcpAnnotationState,
@@ -174,6 +175,9 @@ export interface CreateInternalToolRegistryOptions {
   /** D-329 — per Tier-1 write, how the owner knows the records a held call names, by their
    *  names (`askValueLabels`). A tool without one is asked about with its ids. */
   tier1AskLabels?: Partial<Record<Tier1ToolName, (args: unknown, ctx: ChatDispatchContext) => Promise<ApprovalValueLabels | undefined>>>;
+  /** D-336 slice G — per Tier-1 write, what a held call meets (`askNotices`): a line for the
+   *  AI and what the owner's card and ask show. A tool without one is held with nothing told. */
+  tier1AskNotices?: Partial<Record<Tier1ToolName, (args: unknown, ctx: ChatDispatchContext) => Promise<HeldCallNotices | undefined>>>;
   /** ⛔⛔ D-228 slice 5 — THE CONTRACT GATE for Tier-1 primitives, injected
    *  because `packages/` may never import `backend/` (the public boundary) and
    *  the op-admission gate is server-side. The host passes a closure over
@@ -458,6 +462,16 @@ export const createInternalToolRegistry = (
     return labels ? labels(args, ctx).catch(() => undefined) : undefined;
   };
 
+  // Told, never a gate: a lookup that fails tells nothing.
+  const askNotices = async (
+    name: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ): Promise<HeldCallNotices | undefined> => {
+    const notices = tier1Index.has(name) ? options.tier1AskNotices?.[name as Tier1ToolName] : undefined;
+    return notices ? notices(args, ctx).catch(() => undefined) : undefined;
+  };
+
   const dispatch = async (
     name: string,
     args: unknown,
@@ -520,6 +534,7 @@ export const createInternalToolRegistry = (
     dispatch,
     checkBeforeAsking,
     askValueLabels,
+    askNotices,
     subscribeRefresh,
   };
 };

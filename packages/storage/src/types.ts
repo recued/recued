@@ -96,6 +96,20 @@ export const isOrderedWindowQueryable = <V>(
 ): collection is OrderedWindowCollection<V> =>
   typeof (collection as Partial<OrderedWindowCollection<V>>).listWindowDesc === 'function';
 
+/** D-336 slice K — a few top-level fields of every value, and nothing else. A count over the
+ *  whole collection (the Memory view's tally of relationships) needs a handful of small fields
+ *  per row, where `list()` would parse every body too: the whole-store read the feed above was
+ *  rid of. Field names are top-level identifiers, as a `FieldQuery`'s are. A value lacking a
+ *  field comes back without it. */
+export interface FieldProjectableCollection<V> extends Collection<V> {
+  projectFields<K extends keyof V & string>(fields: readonly K[]): Promise<Array<Partial<Pick<V, K>>>>;
+}
+
+export const isFieldProjectable = <V>(
+  collection: Collection<V>,
+): collection is FieldProjectableCollection<V> =>
+  typeof (collection as Partial<FieldProjectableCollection<V>>).projectFields === 'function';
+
 export const isFieldQueryable = <V>(
   collection: Collection<V>,
 ): collection is FieldQueryableCollection<V> =>

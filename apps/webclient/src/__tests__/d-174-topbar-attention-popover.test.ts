@@ -18,6 +18,7 @@ import {
   ATTENTION_CONNECTIONS_LINK_ATTR,
   ATTENTION_DIALOG_ATTR,
   ATTENTION_ERROR_ANNOUNCER_ATTR,
+  ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR,
   ATTENTION_GATEWAY_ASK_DETAILS_ATTR,
   ATTENTION_GATEWAY_ASK_ROW_ATTR,
   ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR,
@@ -2742,6 +2743,46 @@ describe('D-174 - approval attention top-bar adapter', () => {
     handle.dispose();
   });
 
+  it("D-336 §52 — a single held call's rows show once in the open, from the server's rows", async () => {
+    // Its text lists them for Telegram, Slack and email; the row above shows them already.
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-held-rows', {
+          title: 'Approve: Update a deal',
+          text: [
+            'An AI agent wants to run recued-core.hubspot.deal.update on main-crm.',
+            'Write actions change data outside Recued, so Recued held it for you.',
+            '',
+            '- Deal ID: Harbor Line renewal (HubSpot Deal)',
+            '- Deal stage: closedwon',
+            '',
+            'Approve?',
+          ].join('\n'),
+          details: [
+            { label: 'Deal ID', value: 'Harbor Line renewal (HubSpot Deal)' },
+            { label: 'Deal stage', value: 'closedwon' },
+          ],
+        }),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const html = topbar.innerHTML;
+    const detailsAt = html.indexOf('attention-row-payload');
+    expect(detailsAt).toBeGreaterThan(-1);
+    // In the open: the server's rows, once each, and the question.
+    const open = html.slice(0, detailsAt);
+    expect(open.split('Harbor Line renewal (HubSpot Deal)').length - 1).toBe(1);
+    expect(open).toContain('<dt>Deal ID</dt>');
+    expect(open).not.toContain('- Deal ID:');
+    expect(open).toContain('An AI agent wants to run');
+    expect(html.indexOf('Approve?')).toBeLessThan(detailsAt);
+    expect(html).toContain('<summary>Details (2)</summary>');
+    handle.dispose();
+  });
+
   it('collapses the argument payload behind a counted disclosure', async () => {
     // A real intake hold pushed the Approve button below a dozen lines of
     // identifiers. The question stays in the open; the payload is one
@@ -2861,6 +2902,41 @@ describe('D-174 - approval attention top-bar adapter', () => {
     const detailsAt = html.indexOf(ATTENTION_GATEWAY_ASK_DETAILS_ATTR);
     expect(rowAt).toBeLessThan(detailsAt);
     expect(detailsAt).toBeLessThan(html.indexOf('wants to run home-assistant.lock.unlock'));
+    handle.dispose();
+  });
+
+  it('D-336 slice N — leads a held chat write to its card in Chat, and closes as it goes', async () => {
+    // The row stays read-only (D-270: the link owns editing). A held save's card in Chat
+    // can change it before the yes; another held write's card is there to review.
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-save', { title: 'Save to memory', chat_plan: { session_id: 'sess-1', plan_id: 'plan-1', changeable: true } }),
+        ask('gw-event', { title: 'Add a calendar event', chat_plan: { session_id: 'sess-1', plan_id: 'plan-2' } }),
+        ask('gw-other'),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const html = topbar.innerHTML;
+    const rowOf = (id: string) => {
+      const at = html.indexOf(`${ATTENTION_GATEWAY_ASK_ROW_ATTR}="${id}"`);
+      return html.slice(at, html.indexOf('</li>', at));
+    };
+    expect(rowOf('gw-save')).toContain('href="#chat/session/sess-1/plan/plan-1"');
+    expect(rowOf('gw-save')).toContain('aria-label="Change it in Chat: Save to memory"');
+    expect(rowOf('gw-save')).toContain(`${ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR}="gw-save"`);
+    expect(rowOf('gw-event')).toContain('href="#chat/session/sess-1/plan/plan-2"');
+    expect(rowOf('gw-event')).toContain('aria-label="Review in Chat: Add a calendar event"');
+    expect(rowOf('gw-other')).not.toContain(ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR);
+    // Its answers are still there to press, after the link.
+    expect(rowOf('gw-save').indexOf(ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR))
+      .toBeLessThan(rowOf('gw-save').indexOf('data-action="gateway-ask-answer"'));
+    // Following it closes the tray, as a chat plan's "Review in Chat" does.
+    topbar.fireAction({ 'data-action': 'open-chat-plan' });
+    await tick();
+    expect(topbar.innerHTML).not.toContain('role="dialog"');
     handle.dispose();
   });
 

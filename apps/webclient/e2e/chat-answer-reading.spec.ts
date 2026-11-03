@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 declare global { interface Window {
   __answerReading: { event(event: Record<string, unknown>): void; refresh(): Promise<void>; dispose(): void };
-  __answerClipboard: { texts: string[]; mode: 'success' | 'pending' | 'denied'; release(ok?: boolean): void };
+  __answerClipboard: { texts: string[]; htmls: string[]; unsupportedRich: boolean; mode: 'success' | 'pending' | 'denied'; release(ok?: boolean): void };
 } }
 
 let bundle: string;
@@ -39,8 +39,15 @@ const message = (id: string, content: string, ts: number, session = 'a') => ({ i
 const input = (page: Page) => page.locator('[data-recued-chat-route-input]');
 const codeBox = (page: Page) => page.locator('[data-chat-answer-code-block]');
 const publish = (page: Page, event: Record<string, unknown>) => page.evaluate(event => window.__answerReading.event(event), event);
+const pastedText = (page: Page, html: string) => page.evaluate(html => {
+  const frame = document.createElement('iframe'); frame.style.cssText = 'position:fixed;left:-10000px;width:2000px';
+  document.body.appendChild(frame);
+  const target = frame.contentDocument!.createElement('div'); target.contentEditable = 'true';
+  target.innerHTML = html; frame.contentDocument!.body.appendChild(target);
+  const text = target.innerText; frame.remove(); return text;
+}, html);
 
-const setup = async (page: Page, older = 0, sharedTurn = false) => {
+const setup = async (page: Page, older = 0, sharedTurn = false, richClipboard = false) => {
   const session = (id: string) => ({ id, title: id === 'a' ? 'Reading answers' : 'Another conversation', archived: false,
     created_at: 1, last_active_at: 3, picker_state: { current: 'self' },
     model_routing: { current: 'byok', provider: 'local', model_id: 'fixture', overridden: false } });
@@ -51,24 +58,33 @@ const setup = async (page: Page, older = 0, sharedTurn = false) => {
     : [example];
   const messages = () => [
     ...Array.from({ length: older }, (_, i) => message(`old-${i}`, `Retained answer ${i}. ${'Earlier useful details. '.repeat(6)}`, i + 1)),
-    { ...message('prose', `## Plan\n\n**Check** the \`item_count\`.\n\n4. First\n6. Second\n\n- Parent\n  - Child\n\n[Saved hose](#source/${sourceId})\n[Unknown](#source/src_${'e'.repeat(24)})`, older + 1),
+    { ...message('prose', `## Plan\n\n**Check** the \`item_count\`.\n\n4. First\n6. Second\n\n- Parent\n  - Child\n\n[Saved hose](#source/${sourceId})\n[Unknown](#source/src_${'e'.repeat(24)})${richClipboard ? '\n\nInline: `\nretained\n` end.' : ''}`, older + 1),
       source_citations: [{ kind: 'asset', id: sourceId, asset_id: 'asset:reading', label: 'Saved hose', read_at: 1000, read_version: 'b'.repeat(64) }] },
     ...codeMessages,
+    ...(richClipboard ? [message('plain', 'To:  Ada Lovelace\n12 King Street\nLondon', older + 4)] : []),
     ...(finalMessage ? [finalMessage] : []),
   ];
   const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
-  await page.addInitScript(() => {
+  await page.addInitScript(rich => {
     const waits: Array<{ resolve(): void; reject(error: Error): void }> = [];
-    const fixture: Window['__answerClipboard'] = { texts: [], mode: 'success', release: (ok = true) => {
+    const fixture: Window['__answerClipboard'] = { texts: [], htmls: [], unsupportedRich: false, mode: 'success', release: (ok = true) => {
       for (const wait of waits.splice(0)) if (ok) wait.resolve(); else wait.reject(new Error('Clipboard refused'));
     } };
     window.__answerClipboard = fixture;
+    const settle = async () => {
+      if (fixture.mode === 'pending') await new Promise<void>((resolve, reject) => waits.push({ resolve, reject }));
+      if (fixture.mode === 'denied') throw new DOMException('Clipboard refused', 'NotAllowedError');
+    };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => {
       fixture.texts.push(text);
-      if (fixture.mode === 'pending') await new Promise<void>((resolve, reject) => waits.push({ resolve, reject }));
-      if (fixture.mode === 'denied') throw new Error('Clipboard refused');
-    } } });
-  });
+      await settle();
+    }, ...(rich ? { write: async (items: ClipboardItem[]) => {
+      if (fixture.unsupportedRich) throw new DOMException('Rich clipboard unavailable', 'NotSupportedError');
+      fixture.texts.push(await (await items[0]!.getType('text/plain')).text());
+      fixture.htmls.push(await (await items[0]!.getType('text/html')).text());
+      await settle();
+    } } : {}) } });
+  }, richClipboard);
   await page.route('**/answer-rpc', async route => {
     const { method, args = {} } = route.request().postDataJSON(); calls.push({ method, args });
     let result: unknown = {};
@@ -117,6 +133,83 @@ for (const width of [390, 1280]) {
     await page.screenshot({ path: info.outputPath(`answers-${width}.png`) });
   });
 }
+
+test('Copy answer preserves formatted content and portable sources without copying controls', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const f = await setup(page, 0, false, true);
+  await page.evaluate(() => { const url = new URL(location.href); url.search = '?token=private'; history.replaceState(null, '', url.href); });
+  const prose = page.locator('[data-recued-chat-route-message="prose"]');
+  const copy = prose.getByRole('button', { name: 'Copy answer', exact: true });
+  await copy.click(); await expect(copy).toHaveText('Copied');
+  const copied = await page.evaluate(() => ({ text: window.__answerClipboard.texts[0]!, html: window.__answerClipboard.htmls[0]! }));
+  expect(copied.text).toContain('4. First\n6. Second');
+  expect(copied.text).toContain('- Parent\n  - Child');
+  expect(copied.text).toContain('Inline: \nretained\n end.');
+  expect(copied.text).toContain('/answer-reading.html#yours/asset/asset%3Areading');
+  expect(copied.text).toContain('Read ');
+  expect(copied.text).not.toContain('token=private');
+  const rich = await page.evaluate(html => {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return { bold: doc.querySelector('strong')?.textContent, start: doc.querySelector('ol')?.getAttribute('start'),
+      values: [...doc.querySelectorAll('ol > li')].map(li => li.getAttribute('value')),
+      links: [...doc.querySelectorAll('a')].map(link => link.getAttribute('href')),
+      controls: doc.querySelectorAll('button,details,script,img').length };
+  }, copied.html);
+  expect(rich).toMatchObject({ bold: 'Check', start: '4', values: ['4', '6'], controls: 0 });
+  const sourceHref = new URL('/answer-reading.html#yours/asset/asset%3Areading', page.url()).href;
+  expect(rich.links).toEqual([sourceHref, sourceHref]);
+  expect(await pastedText(page, copied.html)).toContain('Saved hose\n[Unknown]');
+  expect(await pastedText(page, copied.html)).toContain('Inline: \nretained\n end.');
+  await copy.focus(); await f.refresh(); await expect(copy).toHaveText('Copied'); await expect(copy).toBeFocused();
+  await page.screenshot({ path: info.outputPath('copy-answer-phone.png'), fullPage: true });
+  const code = page.locator('[data-recued-chat-route-message="code"]');
+  const codeCopy = code.getByRole('button', { name: 'Copy answer', exact: true });
+  await codeCopy.click(); await expect(codeCopy).toHaveText('Copied');
+  const literal = await page.evaluate(() => ({ text: window.__answerClipboard.texts.at(-1)!, html: window.__answerClipboard.htmls.at(-1)! }));
+  expect(literal.text).toContain(rawCode);
+  expect(literal.text).not.toContain('Copy code');
+  expect(await page.evaluate(html => new DOMParser().parseFromString(html, 'text/html').querySelectorAll('script,img,button,a').length, literal.html)).toBe(0);
+  await page.evaluate(() => { window.__answerClipboard.unsupportedRich = true; });
+  await codeCopy.click(); await expect(codeCopy).toHaveText('Copied');
+  await expect(code.locator('[data-chat-answer-actions] [role="status"]')).toHaveText('Answer copied as text.');
+  expect(await page.evaluate(() => window.__answerClipboard.texts.at(-1))).toBe(literal.text);
+  await page.evaluate(() => { window.__answerClipboard.unsupportedRich = false; });
+  const plainCopy = page.locator('[data-recued-chat-route-message="plain"]').getByRole('button', { name: 'Copy answer', exact: true });
+  await plainCopy.click(); await expect(plainCopy).toHaveText('Copied');
+  const plain = await page.evaluate(() => ({ text: window.__answerClipboard.texts.at(-1)!, html: window.__answerClipboard.htmls.at(-1)! }));
+  expect(plain.text).toBe('To:  Ada Lovelace\n12 King Street\nLondon');
+  expect(await pastedText(page, plain.html)).toBe(plain.text);
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await page.screenshot({ path: info.outputPath('copy-answer-desktop.png'), fullPage: true });
+});
+
+test('whole-answer clipboard replies retain message ownership and never replace a newer draft or report a denied copy', async ({ page }) => {
+  const f = await setup(page, 0, true);
+  const answer = page.locator('[data-recued-chat-route-message="code"]');
+  const copy = answer.getByRole('button', { name: 'Copy answer', exact: true });
+  const other = page.locator('[data-recued-chat-route-message="second-code"]').getByRole('button', { name: 'Copy answer', exact: true });
+  await page.evaluate(() => { window.__answerClipboard.mode = 'pending'; });
+  await copy.focus(); await copy.press('Enter'); await expect(copy).toBeDisabled();
+  await copy.dispatchEvent('click'); await f.refresh();
+  await expect(copy).toBeDisabled(); await expect(copy).toBeFocused();
+  expect(await page.evaluate(() => window.__answerClipboard.texts.length)).toBe(1);
+  await expect(other).toBeEnabled(); await expect(other).toHaveText('Copy answer');
+  await input(page).fill('Keep my next question.');
+  await input(page).evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(5, 9));
+  await page.evaluate(() => window.__answerClipboard.release());
+  await expect(copy).toHaveText('Copied'); await expect(input(page)).toBeFocused();
+  await expect(input(page)).toHaveValue('Keep my next question.');
+  expect(await input(page).evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([5, 9]);
+  await expect(other).toHaveText('Copy answer');
+  await copy.click(); await expect(copy).toBeDisabled(); await input(page).focus();
+  await page.evaluate(() => window.__answerClipboard.release(false));
+  await expect(copy).toHaveText('Copy answer'); await expect(input(page)).toBeFocused();
+  await expect(answer.locator('[data-chat-answer-actions] [role="status"]')).toContainText('Could not copy');
+  await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }); });
+  await copy.click(); await expect(copy).toHaveText('Copy answer');
+  await expect(answer.locator('[data-chat-answer-actions] [role="status"]')).toContainText('Could not copy');
+  expect(f.calls.filter(call => call.method === 'chat.send')).toEqual([]);
+});
 
 test('Copy uses exact code text and keeps feedback, focus and horizontal position through a refresh', async ({ page }) => {
   const f = await setup(page);

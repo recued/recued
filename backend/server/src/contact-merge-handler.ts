@@ -25,8 +25,10 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  MEMORY_CLAIM_PART_MAX,
   RpcError,
   canonicalizeEmail,
+  isMentionOnlyEmail,
   type ContactMergeCandidate,
   type ContactMergeSplitRequest,
   type ContactMergeScanMode,
@@ -311,6 +313,83 @@ export const handleContactMergeConfirm = async (
   return { survivor: survivorAfter, losers: losersAfter };
 };
 
+/** D-336 slice P — `contact.merge.pair`: the owner merges two contacts they name, where an
+ *  address they give one is the other's already. The pair is enqueued as the owner's own
+ *  candidate (`detected_by: 'owner'`) and confirmed at once through the merge above, so the
+ *  merge history lists it and a split undoes it; a candidate the scan raised for the pair is
+ *  the one confirmed. Both must be contacts, not merged away, and two. ⛔ A contact with no
+ *  address never keeps itself over one that has one: the merged contact would be keyed on a
+ *  placeholder no one can reach. */
+/** D-336 slice P's open item — the fields besides the name the owner picks between, where the
+ *  two contacts hold them differently (the owner: "Every field that differs"). */
+export const MERGE_PICK_FIELDS = ['phone', 'company', 'birthday', 'anniversary'] as const;
+type MergePickField = (typeof MERGE_PICK_FIELDS)[number];
+
+export const handleContactMergePair = async (
+  deps: ContactMergeRpcDeps,
+  args: { survivor_email: string; other_email: string; name?: string } & Partial<Record<MergePickField, string>>,
+): Promise<{ survivor: ContactRecord; losers: ContactRecord[] }> => {
+  // The name the merged contact keeps, the owner's pick where the two differ: checked first,
+  // so a name refused merges nothing.
+  const name = args?.name === undefined ? undefined
+    : typeof args.name === 'string' ? args.name.trim().replace(/\s+/gu, ' ') : '';
+  if (name !== undefined && (name === '' || name.length > MEMORY_CLAIM_PART_MAX)) {
+    throw new RpcError('bad_request', `contact.merge.pair: \`name\` must be the name to keep, at most ${MEMORY_CLAIM_PART_MAX} characters`, 400);
+  }
+  const live = (raw: unknown, arg: string): ContactRecord => {
+    const email = typeof raw === 'string' ? canonicalizeEmail(raw) : '';
+    if (!email) throw new RpcError('bad_request', `contact.merge.pair: ${arg} must be a contact's email`, 400);
+    const row = deps.contactStore.get(email);
+    if (!row) throw new RpcError('not_found', 'This contact is no longer there.', 404);
+    if (row.merged_into !== undefined) throw new RpcError('conflict', 'This contact was merged into another already.', 409);
+    return row;
+  };
+  const survivor = live(args?.survivor_email, 'survivor_email');
+  const other = live(args?.other_email, 'other_email');
+  if (survivor.email === other.email) {
+    throw new RpcError('bad_request', 'contact.merge.pair: these are the same contact', 400);
+  }
+  if (isMentionOnlyEmail(survivor.email) && !isMentionOnlyEmail(other.email)) {
+    throw new RpcError('bad_request', 'Keep the contact that has the email address, and merge this one into it.', 400);
+  }
+  // Slice P's open item — each other field picked is one of the two values the contacts hold,
+  // checked before anything merges.
+  const picks: Partial<Record<MergePickField, string>> = {};
+  for (const field of MERGE_PICK_FIELDS) {
+    const picked = args?.[field];
+    if (picked === undefined) continue;
+    const held = [survivor[field], other[field]].filter((value): value is string => typeof value === 'string' && value !== '');
+    if (typeof picked !== 'string' || !held.includes(picked)) {
+      throw new RpcError('bad_request', `contact.merge.pair: \`${field}\` must be one of the two contacts' values`, 400);
+    }
+    picks[field] = picked;
+  }
+  const candidate = deps.contactStore.enqueueMergeCandidate({
+    id: (deps.newId ?? randomUUID)(),
+    email_a: survivor.email,
+    email_b: other.email,
+    matched_fields: [],
+    detected_at: (deps.now ?? Date.now)(),
+    detected_by: 'owner',
+  });
+  const merged = await handleContactMergeConfirm(deps, { candidate_ids: [candidate.id], survivor_email: survivor.email });
+  // Where the merge projected the other value (the stronger or newer of the two), the owner's
+  // pick is written as their own typing, which then wins: the name, and each other field.
+  const kept: Partial<Record<'name' | MergePickField, string>> = {
+    ...(name !== undefined && merged.survivor.name !== name ? { name } : {}),
+  };
+  for (const field of MERGE_PICK_FIELDS) {
+    if (picks[field] !== undefined && merged.survivor[field] !== picks[field]) kept[field] = picks[field];
+  }
+  if (Object.keys(kept).length === 0) return merged;
+  const written = deps.contactStore.upsertManual(
+    { email: merged.survivor.email, ...kept, last_interaction: merged.survivor.last_interaction },
+    (deps.now ?? Date.now)(),
+    { origin_actor: 'user_self', origin_surface: 'client_rpc' },
+  );
+  return { survivor: written, losers: merged.losers };
+};
+
 export const handleContactMergeReject = async (
   deps: ContactMergeRpcDeps,
   args: { candidate_ids: string[]; rejected_by?: string },
@@ -417,12 +496,16 @@ export const handleContactMergeResolveRemergePrompt = async (
   const now = (deps.now ?? Date.now)();
   deps.promptStore.resolve(args.prompt_id, args.resolution, now);
   if (args.resolution === 'remerge') {
-    deps.contactStore.removeRejection(prompt.affected_email, prompt.partner_email);
+    // D-336 slice R — the two as they are now: a contact whose address changed since the prompt
+    // fired is found by the one it had (its second address), and the candidate names its own.
+    const affected = deps.contactStore.getByAnyEmail(prompt.affected_email)?.email ?? prompt.affected_email;
+    const partner = deps.contactStore.getByAnyEmail(prompt.partner_email)?.email ?? prompt.partner_email;
+    deps.contactStore.removeRejection(affected, partner);
     const id = (deps.newId ?? randomUUID)();
     deps.contactStore.enqueueMergeCandidate({
       id,
-      email_a: prompt.affected_email,
-      email_b: prompt.partner_email,
+      email_a: affected,
+      email_b: partner,
       // Surface the prompt's vendor as the source of the candidate
       // so the review UI can show "matched via upstream re-merge"
       // hint. Predicate-match metadata is empty since the candidate
@@ -464,6 +547,7 @@ export const handleContactMergeScanNow = async (
 type ContactMergeMethods =
   | 'contact.merge.list'
   | 'contact.merge.confirm'
+  | 'contact.merge.pair'
   | 'contact.merge.reject'
   | 'contact.merge.split'
   | 'contact.merge.split_preview'
@@ -479,6 +563,7 @@ export const makeContactMergeHandlers = (
     methods: [
       'contact.merge.list',
       'contact.merge.confirm',
+      'contact.merge.pair',
       'contact.merge.reject',
       'contact.merge.split',
       'contact.merge.split_preview',
@@ -491,6 +576,8 @@ export const makeContactMergeHandlers = (
         handleContactMergeList(deps, args as Parameters<typeof handleContactMergeList>[1]),
       'contact.merge.confirm': async (args) =>
         handleContactMergeConfirm(deps, args as Parameters<typeof handleContactMergeConfirm>[1]),
+      'contact.merge.pair': async (args) =>
+        handleContactMergePair(deps, args as Parameters<typeof handleContactMergePair>[1]),
       'contact.merge.reject': async (args) =>
         handleContactMergeReject(deps, args as Parameters<typeof handleContactMergeReject>[1]),
       'contact.merge.split_preview': async (args) => deps.contactStore.inspectMergeSplit(args),

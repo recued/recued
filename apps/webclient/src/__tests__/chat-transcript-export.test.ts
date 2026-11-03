@@ -66,6 +66,16 @@ describe('readable conversation export', () => {
     expect(result).not.toContain('not-in-the-transcript');
   });
 
+  it('D-337 slice R — records a call whose approval expired as not answered in time, beside one not approved', () => {
+    const call = (id: string, extra: Record<string, unknown>) => message(id, 'The action did not run.', {
+      role: 'tool', tool_call: { message_id: id, session_id: 'chat-1', turn_id: 'turn-1', tool_name: 'send-mail',
+        state: 'failed', started_at: at, updated_at: at, ...extra },
+    });
+    const result = formatChatMarkdownExport(bundle([call('tool-1', { expired: true }), call('tool-2', { denied: true })]), options);
+    expect(result).toContain('Recorded tool status: send-mail · not answered in time');
+    expect(result).toContain('Recorded tool status: send-mail · not approved');
+  });
+
   it('refuses malformed or mixed-session snapshots instead of returning a partial transcript', () => {
     const valid = message('a', 'Valid message');
     for (const invalid of [

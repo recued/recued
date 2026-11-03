@@ -14,6 +14,7 @@ import { listCollectionReferencedBlobHashes } from '../storage/collection-blob-r
 import { createCollectionRegistry } from '../collections/registry.js';
 import { makeFileReadRpcHandlers } from '../file-read-rpc-handler.js';
 import { handleCollectionDeleteRecord } from '../collections/collection-handler.js';
+import { registerPreapprovalInvalidator } from '../storage/preapproval-lifecycle.js';
 import { createMessengerAttachmentSource } from '../chat-messenger-attachments.js';
 import type { WsClient } from '../ws-server.js';
 
@@ -28,7 +29,8 @@ const fixture = (path?: string, directory?: string) => {
   cleanups.push(() => { if (db.open) db.close(); });
   const key = () => new Uint8Array(32).fill(31);
   const blobs = createEncryptedBlobStore(join(dir, 'cas'), key);
-  const files = createInboundFileCollection({ db, blobs, slug: 'received', bus: createWarehouseEventBus(),
+  const bus = createWarehouseEventBus(); cleanups.push(() => bus.dispose());
+  const files = createInboundFileCollection({ db, blobs, slug: 'received', bus,
     gate: createStorageGate({ quota: 100_000_000, reservePct: 10, surface: 'collection:file:received' }) });
   const store = createChatStore(db, key); if (!store.getSession('s')) store.createSession({ id: 's', title: 'A conversation' });
   const queue = createChatTurnQueueStore(db, key);
@@ -44,7 +46,7 @@ const fixture = (path?: string, directory?: string) => {
     picker_at_send: { display_name: 'Self', signature }, model_used: { provider: 'fixture', model_id: 'fixture' },
     ...(turn_id ? { turn_id } : {}), ...(ts !== undefined ? { ts } : {}) });
   const mutate = (id: string, action: FileLifecycleMutation['action']) => files.mutateLifecycle!({ record_id: id, action, revision: lifecycle.preview(id).revision });
-  return { db, dir, key, store, blobs, files, lifecycle, queue, handlers, registry, ingest, command, append, mutate };
+  return { db, dir, key, store, blobs, files, bus, lifecycle, queue, handlers, registry, ingest, command, append, mutate };
 };
 const client = { instance_id: 'paired' } as WsClient;
 
@@ -494,4 +496,110 @@ it('retains an output by its verified hash and preserves its metadata on reload'
   expect(reloaded.attachments).toEqual(message.attachments);
   const read = await f.handlers['data.file.read']({ record_id: attached.file_id }, client);
   expect(Buffer.from(read.bytes_b64, 'base64').toString()).toBe('a,b\n1,2\n');
+});
+
+
+describe('rename a saved file', () => {
+  it('changes only library metadata; historical and queued names, bytes and cloud provenance stay frozen', async () => {
+    const f = fixture(); const original = await f.ingest();
+    const cloud_capture = { remote_record_id: 'file:remote:captured', source_id: 'drive.work', provider: 'google', source_label: 'Work drive',
+      remote_id: 'one', filename: 'Cloud original.txt', path: '/Clients/Cloud original.txt', observed_revision: 'v1',
+      captured_at: 1, content_hash: original.hot_fields.content_hash };
+    f.files.upsert({ ...original, hot_fields: { ...original.hot_fields, cloud_capture } });
+    const before = f.files.get(original.record_id)!;
+    const message = await f.append('past', [{ file_id: original.record_id, media_class: 'document' }]);
+    const ack = await f.queue.admit(f.command(original.record_id), 'queued');
+    const queued = await f.queue.read(f.queue.get(ack.turn_id)!);
+    const selection = f.lifecycle.selection(original.record_id);
+    const result = await f.handlers['data.file.rename']({ record_id: original.record_id, filename: 'Client notes.txt',
+      revision: f.lifecycle.preview(original.record_id).revision }, client);
+    expect(result).toMatchObject({ record_id: original.record_id, filename: 'Client notes.txt', can_rename: true, queued_count: 1, message_count: 1 });
+    const after = f.files.get(original.record_id)!;
+    expect(after).toEqual({ ...before, modified_at: expect.any(Number), hot_fields: { ...before.hot_fields, filename: 'Client notes.txt' } });
+    expect(after.modified_at).toBeGreaterThan(before.modified_at);
+    expect(result.modified_at).toBe(after.modified_at);
+    expect(f.lifecycle.listSelections({ query: 'client notes' }).files).toEqual([expect.objectContaining({ filename: 'Client notes.txt', file_id: original.record_id })]);
+    expect(f.lifecycle.listSelections({ query: 'Original' }).files).toEqual([]);
+    expect(f.lifecycle.selection(original.record_id).selection_revision).not.toBe(selection.selection_revision);
+    await expect(f.handlers['data.file.read']({ record_id: original.record_id }, client)).resolves.toMatchObject({ filename: 'Client notes.txt', bytes_b64: Buffer.from('original bytes').toString('base64') });
+    await expect(f.handlers['data.file.read']({ record_id: message.attachments![0]!.file_id }, client)).resolves.toMatchObject({ filename: 'Original.txt', bytes_b64: Buffer.from('original bytes').toString('base64') });
+    expect(await f.queue.read(f.queue.get(ack.turn_id)!)).toEqual(queued);
+    expect((await f.store.listMessages('s')).find(row => row.id === 'past')!.attachments).toEqual(message.attachments);
+    const future = await f.append('future', [{ file_id: original.record_id, media_class: 'document' }]);
+    expect(future.attachments![0]).toMatchObject({ filename: 'Client notes.txt' });
+    expect(future.attachments![0]!.file_id).not.toBe(message.attachments![0]!.file_id);
+    expect(f.files.get(future.attachments![0]!.file_id)!.hot_fields.cloud_capture).toEqual(cloud_capture);
+    const stale = f.command(original.record_id); stale.input.attachments = [selection];
+    await expect(f.queue.admit(stale, 'stale-selection')).rejects.toThrow('changed');
+  });
+
+  it('requires a paired owner, rejects stale reviews and immutable or removed records, and keeps archive/restore usable', async () => {
+    const f = fixture(); const file = await f.ingest();
+    const message = await f.append('old', [{ file_id: file.record_id, media_class: 'document' }]);
+    const args = { record_id: file.record_id, filename: 'Renamed.txt', revision: f.lifecycle.preview(file.record_id).revision };
+    await expect(f.handlers['data.file.rename'](args, { ...client, instance_id: null })).rejects.toThrow('registered paired client');
+    f.mutate(file.record_id, 'archive');
+    await expect(f.handlers['data.file.rename'](args, client)).rejects.toThrow('changed');
+    const archived = await f.handlers['data.file.rename']({ ...args, revision: f.lifecycle.preview(file.record_id).revision }, client);
+    expect(archived).toMatchObject({ filename: 'Renamed.txt', archived: true, can_restore: true });
+    expect(f.mutate(file.record_id, 'restore')).toMatchObject({ filename: 'Renamed.txt', archived: false });
+    const version = message.attachments![0]!.file_id;
+    expect(f.lifecycle.preview(version).can_rename).toBe(false);
+    await expect(f.handlers['data.file.rename']({ ...args, record_id: version, revision: f.lifecycle.preview(version).revision }, client)).rejects.toThrow('Only a saved library');
+    f.mutate(file.record_id, 'delete');
+    await expect(f.handlers['data.file.rename']({ ...args, revision: f.lifecycle.preview(file.record_id).revision }, client)).rejects.toThrow('Only a saved library');
+  });
+
+  it('binds retries to the requested name and returns fresh state without rewriting a later name', async () => {
+    const f = fixture(); const file = await f.ingest();
+    const identity = () => f.db.prepare("SELECT revision FROM preapproval_resource_identity WHERE kind='file_source' AND key=?").get(`received:${file.record_id}`) as { revision: number };
+    const start = identity().revision;
+    const args = { record_id: file.record_id, filename: 'First.txt', revision: f.lifecycle.preview(file.record_id).revision };
+    const first = await f.handlers['data.file.rename'](args, client);
+    await expect(f.handlers['data.file.rename']({ ...args, filename: 'Different.txt' }, client)).rejects.toThrow('changed');
+    await f.handlers['data.file.rename']({ ...args, filename: 'Original.txt', revision: first.revision }, client);
+    const final = f.files.get(file.record_id);
+    const replay = await f.handlers['data.file.rename'](args, client);
+    expect(replay).toMatchObject({ filename: 'Original.txt', revision: f.lifecycle.preview(file.record_id).revision });
+    expect(f.files.get(file.record_id)).toEqual(final);
+    expect(identity().revision).toBe(start + 2); // Renaming back cannot resurrect an older approval identity.
+    expect(f.db.prepare('SELECT count(*) AS n FROM file_lifecycle_receipts').get()).toEqual({ n: 2 });
+  });
+
+  it('rejects unsafe or oversized names without changing the record, and accepts a normalized Unicode name', async () => {
+    const f = fixture(); const file = await f.ingest();
+    const args = { record_id: file.record_id, revision: f.lifecycle.preview(file.record_id).revision };
+    for (const filename of ['', '  ', '.', '..', '../secret', 'one/two', 'one\\two', '\nname', 'bad\u0000name', 'a'.repeat(256), '😀'.repeat(64)]) {
+      await expect(f.handlers['data.file.rename']({ ...args, filename }, client)).rejects.toThrow('filename');
+      expect(f.files.get(file.record_id)).toEqual(file);
+    }
+    const result = await f.handlers['data.file.rename']({ ...args, filename: '  Cafe\u0301.txt  ' }, client);
+    expect(result.filename).toBe('Café.txt');
+  });
+  it('rolls back metadata and receipts when approval invalidation fails, then emits the committed change only once', async () => {
+    const f = fixture(); const file = await f.ingest(); const before = f.lifecycle.preview(file.record_id);
+    const events = vi.fn(); f.bus.subscribe('data.file.**', events);
+    const identity = () => f.db.prepare("SELECT * FROM preapproval_resource_identity WHERE kind='file_source' AND key=?").get(`received:${file.record_id}`);
+    const priorIdentity = identity();
+    const invalidate = vi.fn(() => { throw new Error('Approval invalidation failed.'); });
+    registerPreapprovalInvalidator(f.db, invalidate);
+    const args = { record_id: file.record_id, filename: 'After review.txt', revision: before.revision };
+    await expect(f.handlers['data.file.rename'](args, client)).rejects.toThrow('Approval invalidation failed');
+    expect(f.files.get(file.record_id)).toEqual(file); expect(identity()).toEqual(priorIdentity);
+    expect(f.lifecycle.preview(file.record_id)).toEqual(before);
+    expect(f.db.prepare('SELECT count(*) AS n FROM file_lifecycle_receipts').get()).toEqual({ n: 0 });
+    expect(events).not.toHaveBeenCalled();
+    const accept = vi.fn(() => 1); registerPreapprovalInvalidator(f.db, accept);
+    const result = await f.handlers['data.file.rename'](args, client);
+    const renamed = f.files.get(file.record_id);
+    expect(result.filename).toBe('After review.txt');
+    expect(accept).toHaveBeenCalledWith('file_source', `received:${file.record_id}`, expect.any(String));
+    expect(events).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ event_kind: 'updated', record_id: file.record_id,
+      prev: expect.objectContaining({ filename: 'Original.txt' }), changed_fields: ['filename'],
+      record: expect.objectContaining({ filename: 'After review.txt' }) }));
+    await f.handlers['data.file.rename'](args, client);
+    await f.handlers['data.file.rename']({ ...args, revision: result.revision }, client); // An explicit no-op is quiet too.
+    expect(f.files.get(file.record_id)).toEqual(renamed); expect(events).toHaveBeenCalledTimes(1); expect(accept).toHaveBeenCalledTimes(1);
+  });
+
 });

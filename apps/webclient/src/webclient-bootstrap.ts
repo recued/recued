@@ -430,6 +430,11 @@ import {
 } from './discover/catalog-client.js';
 import {
   type DataContactDeleteCaller,
+  type DataContactCreateByNameCaller,
+  type DataContactAddEmailCaller,
+  type DataContactChangeEmailCaller,
+  type DataContactResolveCaller,
+  type DataContactMergePairCaller,
   type DataContactContributionsCaller,
   type DataContactGetCaller,
   type DataContactListCaller,
@@ -478,6 +483,7 @@ import {
   type DataMemoryRevokeCaller,
   type DataMemorySavesCaller,
   type DataMemoryUnrevokeCaller,
+  type DataMemoryClaimCountsCaller,
   type DataMemoryListCaller,
   type DataMemoryUpdateCaller,
   type DataManageRescheduleLinkCaller,
@@ -7626,6 +7632,30 @@ export const bootstrapWebclient = async (
     switchWorkTracker.track(
       (input: typeof args) => rpcConn.call('contact.delete', input),
     )(args);
+  // D-336 slice H — a relationship's picker adds a contact from a name. An older server
+  // refuses the method (`unknown_method`); the picker says to update it.
+  const dataContactCreateByNameCaller: DataContactCreateByNameCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.create_by_name', input),
+    )(args);
+  // D-336 slice I — a contact's Edit form gives a contact with no address its email. An
+  // older server refuses the method (`unknown_method`); the form says to update it.
+  const dataContactAddEmailCaller: DataContactAddEmailCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.add_email', input),
+    )(args);
+  // D-336 slice R — and changes a contact's saved email, the old one kept as a second address.
+  const dataContactChangeEmailCaller: DataContactChangeEmailCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.change_email', input),
+    )(args);
+  // D-336 slice R — a page at an address a contact was changed from goes to that contact.
+  const dataContactResolveCaller: DataContactResolveCaller = (args) => rpcConn.call('contact.resolve', args);
+  // D-336 slice P — the Edit form merges a contact into the one that has the address it was given.
+  const dataContactMergePairCaller: DataContactMergePairCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.merge.pair', input),
+    )(args);
   // D-205 #2b — `#data/contact/scan`. These four rpcs shipped with D-138 and
   // have had NO caller until now; `contact.merge.*` is in the MCP reserved-prefix
   // set, so a merge decision is user-authoritative by construction and this is
@@ -7732,6 +7762,7 @@ export const bootstrapWebclient = async (
   // D-324 — Data → Owned → Reminders. A move and a cancel are tracked so a
   // server switch waits for them.
   const dataReminderCallers: ReminderCallers = {
+    get: (args) => rpcConn.call('reminder.get', args),
     list: (args) => rpcConn.call('reminder.list', args),
     create: (args) =>
       switchWorkTracker.track((input: typeof args) => rpcConn.call('reminder.create', input))(args),
@@ -7809,6 +7840,9 @@ export const bootstrapWebclient = async (
   // D-198 Slice 1b — the Memory lens feed read (owner-trusted whole-feed `memory.list`).
   const dataMemoryListCaller: DataMemoryListCaller = (args) =>
     rpcConn.call('memory.list', args);
+  // D-336 slice K — the Memory lens's count of relationships.
+  const dataMemoryClaimCountsCaller: DataMemoryClaimCountsCaller = () =>
+    rpcConn.call('memory.claim_counts', undefined);
   // D-198 Slice 2 — owner memory CRUD (`memory.get/create/update/delete`).
   const dataMemoryGetCaller: DataMemoryGetCaller = (args) =>
     rpcConn.call('memory.get', args);
@@ -11416,6 +11450,7 @@ export const bootstrapWebclient = async (
           // second implementation that could disagree about caps or integrity.
           filePreviewCallers: {
             preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+            convert: args => rpcConn.call('data.file.attachments.convert', args, { timeout: 150_000 }),
             read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
           },
           // D-195 optional workflow install: these lightweight public
@@ -11542,10 +11577,17 @@ export const bootstrapWebclient = async (
         contactListCaller: dataContactListCaller,
         contactGetCaller: dataContactGetCaller,
         contactHistoryCaller: id => rpcConn.call('yours.read', { contact_id: id }),
+        // D-336 slice D — the notes whose claim names this contact (a read).
+        contactClaimsCaller: contact => rpcConn.call('memory.claims', { contact }),
         contactEpisodeHideCaller: switchWorkTracker.track(id => rpcConn.call('yours.change', { action: 'episode.hide', id })),
         contactContributionsCaller: dataContactContributionsCaller,
         contactUpsertCaller: dataContactUpsertCaller,
         contactDeleteCaller: dataContactDeleteCaller,
+        contactCreateByNameCaller: dataContactCreateByNameCaller,
+        contactAddEmailCaller: dataContactAddEmailCaller,
+        contactChangeEmailCaller: dataContactChangeEmailCaller,
+        contactResolveCaller: dataContactResolveCaller,
+        contactMergePairCaller: dataContactMergePairCaller,
         contactMergeListCaller: dataContactMergeListCaller,
         contactMergeSplitPreviewCaller: args => rpcConn.call('contact.merge.split_preview', args),
         contactMergeSplitCaller: switchWorkTracker.track((input: import('@recued/contracts').ContactMergeSplitRequest) => rpcConn.call('contact.merge.split', input)),
@@ -11578,6 +11620,9 @@ export const bootstrapWebclient = async (
         timelineCaller: dataTimelineCaller,
         mirrorSearchCaller: dataMirrorSearchCaller,
         memoryListCaller: dataMemoryListCaller,
+        memoryClaimCountsCaller: dataMemoryClaimCountsCaller,
+        // D-336 slice L — the Memory form adds a thing from a name, as Yours does.
+        assetAddCaller: (args) => rpcConn.call('yours.change', { action: 'asset.create', input: { name: args.name, idempotency_key: args.idempotency_key } }),
         memoryGetCaller: dataMemoryGetCaller,
         memoryCreateCaller: dataMemoryCreateCaller,
         memoryUpdateCaller: dataMemoryUpdateCaller,
@@ -11592,17 +11637,23 @@ export const bootstrapWebclient = async (
         collectionListCaller: dataCollectionListCaller,
         collectionGetCaller: dataCollectionGetCaller,
         calendarEventCallers: {
+          overlaps: args => rpcConn.call('collection.calendar.event.overlaps', args),
           get: args => rpcConn.call('collection.calendar.event.get', args),
           update: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.update', args)),
           respond: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.respond', args)),
+          delete: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.delete', args)),
+          checkDeletion: args => rpcConn.call('collection.calendar.event.checkDeletion', args),
         },
         calendarCreateCallers: {
+          overlaps: args => rpcConn.call('collection.calendar.event.overlaps', args),
           destinations: () => rpcConn.call('collection.calendar.event.destinations', undefined),
           create: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.create', args)),
         },
         mailMessageCallers: {
+          attachments: args => rpcConn.call('collection.mail.message.attachments', args),
           get: args => rpcConn.call('collection.mail.message.get', args),
           conversation: args => rpcConn.call('collection.mail.conversation.get', args),
+          updateState: switchWorkTracker.track(args => rpcConn.call('collection.mail.message.updateState', args)),
         },
         mailCompose: {
           serverTimeZone: getServerTimeZone,
@@ -11649,11 +11700,13 @@ export const bootstrapWebclient = async (
         fileListCaller: args => rpcConn.call('data.file.attachments.list', args),
         filePreviewCallers: {
           preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+          convert: args => rpcConn.call('data.file.attachments.convert', args, { timeout: 150_000 }),
           read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
         },
         fileChatCallers: {
           preview: {
             preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+            convert: args => rpcConn.call('data.file.attachments.convert', args, { timeout: 150_000 }),
             read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
           },
           get: args => rpcConn.call('data.file.attachments.get', args),
@@ -11670,6 +11723,7 @@ export const bootstrapWebclient = async (
           pendingChatFile = { hash, file }; navigateHash(hash);
         },
         fileUsageCaller: args => rpcConn.call('data.file.usage', args),
+        fileRenameCaller: args => switchWorkTracker.track((input: typeof args) => rpcConn.call('data.file.rename', input))(args),
         fileMutateCaller: args => switchWorkTracker.track((input: typeof args) => rpcConn.call('data.file.mutate', input))(args),
         // D-267 — Today's zero-state capture button. The SAME shared opener the
         // drawer seat and the chat composer chip use, so a capture made from
@@ -11883,9 +11937,18 @@ export const bootstrapWebclient = async (
         closeCommitment: dataCommitmentCloseCaller,
         contacts: async () => (await dataContactListCaller({ limit: 200 })).contacts,
         links: async id => (await rpcConn.call('link.forRecord', { collection: 'asset', id, direction: 'outbound' })).links,
+        // D-336 slice D — the notes whose claim names this thing (a read).
+        claims: asset => rpcConn.call('memory.claims', { asset }),
+        // D-336 (spec §45) — a "matched by name" line's link to this thing.
+        memory: {
+          get: (args) => rpcConn.call('memory.get', args),
+          update: (args) => rpcConn.call('memory.update', args),
+          replace: (args) => rpcConn.call('memory.replace', args),
+        },
         files: { get: args => rpcConn.call('data.file.attachments.get', args),
           list: args => rpcConn.call('data.file.attachments.list', args),
           preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+          convert: args => rpcConn.call('data.file.attachments.convert', args, { timeout: 150_000 }),
           read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }) },
         timeline: dataTimelineCaller,
         subscribe: subscriber.on,
@@ -12084,6 +12147,7 @@ export const bootstrapWebclient = async (
         },
         filePreviewCallers: {
           preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+          convert: args => rpcConn.call('data.file.attachments.convert', args, { timeout: 150_000 }),
           read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
         },
         fileListCaller: args => rpcConn.call('data.file.attachments.list', args),
@@ -12511,6 +12575,11 @@ export const bootstrapWebclient = async (
         situationDelivery: { read: () => rpcConn.call('yours.delivery', undefined),
           save: switchWorkTracker.track(settings => rpcConn.call('yours.change', { action: 'delivery.update', settings })),
           sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'delivery.send_now' })) },
+        // §15.7 amendment (2026-11-02, later) — the Agenda reads its own status; its card leaves
+        // by itself when an older server has no `yours.agenda`.
+        agendaDelivery: { read: () => rpcConn.call('yours.agenda', undefined),
+          save: switchWorkTracker.track(settings => rpcConn.call('yours.change', { action: 'agenda.update', settings })),
+          sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'agenda.send_now' })) },
         lastTime: { read: () => rpcConn.call('yours.learning', undefined),
           save: switchWorkTracker.track(last_time => rpcConn.call('yours.change', { action: 'settings.update', last_time })) },
         householdDelivery: { read: async () => {

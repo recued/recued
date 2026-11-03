@@ -71,15 +71,15 @@ describe('D-325 day-one production paths', () => {
     const db = new Database(':memory:');
     try {
       const store = createReminderStore(db);
-      store.create({ text: 'Call Ana', at: 1000, time_zone: 'UTC', origin: {} }, 1000);
+      const reminder = store.create({ text: 'Call Ana', at: 1000, time_zone: 'UTC', origin: {} }, 1000);
       const delivered: NotificationPayload[] = [];
       const take = async (message: NotificationPayload) => { delivered.push(message); return { ok: true }; };
       const delivery = createReminderDelivery({ store, now: () => 1000, isQuiet: () => false, publicBaseUrl: () => publicBaseUrl,
         send: message => handleNotificationSend({ dispatchers: { in_app: take, telegram: take, email: take } }, message) });
       expect(await delivery.tick()).toMatchObject({ delivered: 1 });
-      expect(delivered.find(message => message.channel === 'in_app')?.link_url).toBe('#data/reminder');
+      expect(delivered.find(message => message.channel === 'in_app')?.link_url).toBe(`#data/reminder/${reminder.reminder_id}`);
       for (const channel of ['telegram', 'email']) {
-        expect(delivered.find(message => message.channel === channel)?.link_url).toBe(publicBaseUrl ? `${publicBaseUrl}/#data/reminder` : undefined);
+        expect(delivered.find(message => message.channel === channel)?.link_url).toBe(publicBaseUrl ? `${publicBaseUrl}/#data/reminder/${reminder.reminder_id}` : undefined);
       }
     } finally { db.close(); }
   });

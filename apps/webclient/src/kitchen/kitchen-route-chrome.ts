@@ -78,6 +78,7 @@ const KITCHEN_ROUTE_STYLES = `
   display: inline-flex;
   align-items: center;
   align-self: stretch;
+  min-height: 44px;
   margin-right: 8px;
   padding-right: 16px;
   border-right: 1px solid var(--border);

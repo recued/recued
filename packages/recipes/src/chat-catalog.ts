@@ -484,12 +484,20 @@ const SENDER_FILL_HINT =
   + 'if several can, the reply lists them with their addresses: pass the one the owner meant, '
   + 'or ask the owner which if you cannot tell.';
 
-const withSenderFill = (schema: Record<string, unknown>): Record<string, unknown> => {
+/** What a door's caller is told about the same setting (owner, 2026-11-03).
+ *  Its run fills it the same way, but its refusal lists no mailbox: a door can
+ *  be a customer's, and the owner's mailboxes and addresses are not theirs to
+ *  read (`mail-senders.ts`). So it is told who to ask. */
+const DOOR_SENDER_FILL_HINT =
+  'Leave it out to send from the only mailbox on this server that can send; '
+  + 'if several can, the call is refused: ask the owner which one, then pass its name or address.';
+
+const withSenderFill = (schema: Record<string, unknown>, hint: string): Record<string, unknown> => {
   const said = typeof schema.description === 'string' ? schema.description.trim() : '';
   return {
     ...schema,
-    description: said === '' ? SENDER_FILL_HINT
-      : `${said}${/[.!?]$/.test(said) ? '' : '.'} ${SENDER_FILL_HINT}`,
+    description: said === '' ? hint
+      : `${said}${/[.!?]$/.test(said) ? '' : '.'} ${hint}`,
   };
 };
 
@@ -665,8 +673,8 @@ export const deriveTier2ArgSchema = (
   recipe: RecipeDefinition,
   /** D-320 §3.5 — the slots where the owner has a choice of connection. */
   connectionSlots: ReadonlyArray<Tier2ConnectionSlot> = [],
-  /** The owner's own catalog: it names each slot's connections, and a "Send
-   *  from" setting is optional, since the owner's run fills it. */
+  /** The owner's own catalog: it names each slot's connections, and tells the
+   *  model that a "Send from" left out is refused with the mailboxes named. */
   ownerCatalog = false,
 ): Record<string, unknown> => {
   const properties: Record<string, Record<string, unknown>> = {};
@@ -684,14 +692,14 @@ export const deriveTier2ArgSchema = (
   // and eight of the nine Chat-exposed mail recipes required it (a guard, or no
   // default). An owner's run now fills an empty "Send from" itself, or refuses
   // it naming the mailboxes that can send (`execute-handler.ts`), so the
-  // owner's catalog says so. A door's run fills nothing, so its catalog is
-  // unchanged.
-  const filledByRun = ownerCatalog ? mailSenderSettings(recipe) : new Set<string>();
+  // owner's catalog says so. A door's run fills it too since 2026-11-03, its
+  // refusal naming no mailbox, so a door's catalog says that.
+  const filledByRun = mailSenderSettings(recipe);
   for (const key of Object.keys(vars).sort()) {
     const prop = variableToArgProp(vars[key]);
     if (!prop) continue; // credential → not an AI-settable arg
     if (filledByRun.has(key)) {
-      properties[key] = withSenderFill(prop.schema);
+      properties[key] = withSenderFill(prop.schema, ownerCatalog ? SENDER_FILL_HINT : DOOR_SENDER_FILL_HINT);
       continue;
     }
     properties[key] = prop.schema;
@@ -765,10 +773,10 @@ export const buildTier2ToolEntry = (
    *  narrow it. */
   includeHidden = false,
   /** The owner's own catalog. D-320 ruling 12: the `connections` argument names
-   *  each slot's connections and aliases. And a "Send from" setting is optional,
-   *  because only an owner's run fills it (`mailSenderSettings`). Every other
-   *  caller must leave it false: connection names are owner-surface
-   *  information, and a door's run fills no mailbox. */
+   *  each slot's connections and aliases. And a "Send from" setting's hint says
+   *  the refusal lists the mailboxes. Every other caller must leave it false:
+   *  connection names are owner-surface information, and a door's refusal names
+   *  no mailbox (the setting is optional in both, since both runs fill it). */
   ownerCatalog = false,
 ): ToolEntry | null => {
   if (

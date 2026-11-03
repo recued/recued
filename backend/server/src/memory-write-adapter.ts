@@ -18,7 +18,7 @@
  *
  *  Spec: D-198 §5 / §6 + D-198 §B Slice 4. */
 
-import type { Actor } from '@recued/contracts';
+import type { Actor, MemoryClaim } from '@recued/contracts';
 import type { MemoryWriteAdapter } from '@recued/middleware/primitives/index.js';
 import type { UserMemorySession, UserMemoryStore } from './user-memory-store.js';
 
@@ -36,6 +36,9 @@ export interface StoreBackedMemoryWriteAdapterOptions {
   /** D-198 §10 — the earlier entry this write replaces, already checked to be
    *  the same author's current version. Absent for an ordinary write. */
   replaces?: string;
+  /** D-336 — the entry's claim, already checked and its linked ends resolved
+   *  (`memory-claim.ts`). Bound here because the D-145 request carries none. */
+  claim?: MemoryClaim;
 }
 
 /** Coerce the primitive's opaque `payload` into a stored text body (mirrors the
@@ -72,6 +75,7 @@ export const createStoreBackedMemoryWriteAdapter = (
         ? { author_contract_id: options.author_contract_id }
         : {}),
       ...(options.replaces !== undefined ? { replaces: options.replaces } : {}),
+      ...(options.claim !== undefined ? { claim: options.claim } : {}),
     });
     return {
       memory_id: row.memory_id,

@@ -322,14 +322,18 @@ export interface ContactMergeCandidate {
   /** `${email_a}|${email_b}` — UNIQUE for queue dedup. */
   pair_key: string;
   /** Names of the predicate fields that matched (closed enum from
-   *  `CONTACT_MATCH_FIELDS`). Length always >= `CONTACT_MATCH_MIN_FIELDS`. */
+   *  `CONTACT_MATCH_FIELDS`). Length always >= `CONTACT_MATCH_MIN_FIELDS`,
+   *  but for the owner's own merge of two contacts they named (`'owner'`),
+   *  which nothing matched: it names none. */
   matched_fields: ContactMatchField[];
   /** Unix-ms UTC of detection. */
   detected_at: number;
   /** Detection-path provenance — `'inline'` for write-time hooks,
    *  `'housekeeping'` for the daily scan, `'enrollment:<connection>'`
-   *  for the enrollment-time review. */
-  detected_by: 'inline' | 'housekeeping' | `enrollment:${string}`;
+   *  for the enrollment-time review. D-336 slice P: `'owner'` for two
+   *  contacts the owner merged by name (`contact.merge.pair`), found by
+   *  nothing; kept so the merge history lists it, and it can be undone. */
+  detected_by: 'inline' | 'housekeeping' | `enrollment:${string}` | 'owner';
   /** Pending → resolved on user action via `contact.merge.{confirm,reject}`. */
   status: 'pending' | 'merged' | 'rejected';
   /** Unix-ms UTC; set when `status` flips off `'pending'`. */
@@ -432,6 +436,7 @@ export const CONTACT_REDIRECT_CHAIN_LIMIT = 32;
 export const CONTACT_MERGE_RPC_METHODS = [
   'contact.merge.list',
   'contact.merge.confirm',
+  'contact.merge.pair',
   'contact.merge.reject',
   'contact.merge.split',
   'contact.merge.split_preview',

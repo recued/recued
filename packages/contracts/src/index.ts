@@ -897,6 +897,7 @@ export {
   grantSwitchText,
   tier1CallDetails,
   tier1CallTitle,
+  memorySaveConflictRows,
   toolsNeedingSwitch,
 } from './grant-switch-guide.js';
 export type { GrantSwitchText, Tier1ToolGuide, Tier1ToolNeed } from './grant-switch-guide.js';
@@ -1682,9 +1683,12 @@ export {
 } from './batched-approval.js';
 // D-270 — how an approval's detail rows name a field, shared by the server and the cards.
 export {
-  approvalFieldLabel, approvalValueLabel, askDetailLabel, humanizeAskField, KNOWN_FIELD_NAMES,
+  ANY_ARGUMENT, approvalFieldLabel, approvalValueLabel, askDetailLabel, humanizeAskField, KNOWN_FIELD_NAMES,
+  mergeValueLabels, nameValuesIn,
 } from './ask-detail-label.js';
 export type { ApprovalValueLabels } from './ask-detail-label.js';
+// D-336 (spec §42) — an email passed encoded, read by its headers on an approval.
+export { describeEncodedEmail, readEncodedEmailHeaders, type EncodedEmailHeaders } from './encoded-email.js';
 // D-166 override-write path — rpc DTOs + pure wire normalizer for the
 // `collection.contract.*` family that authors `contract.override.*` rows (the
 // editable tightening layer the Slice 4d.4 catalog gateway reads).
@@ -1933,6 +1937,33 @@ export {
   isTimelineAxis,
 } from './memory.js';
 export type { RunMode, TimelineAxis } from './memory.js';
+// D-336 — the relations a saved fact names, and the claim a note carries.
+export {
+  MEMORY_RELATION_GROUPS,
+  MEMORY_RELATIONS,
+  MEMORY_RELATION_INDEX,
+  MEMORY_CLAIM_PART_MAX,
+  listedMemoryRelation,
+  memoryRelationsExclude,
+  normalizeClaimText,
+  memoryClaimKey,
+  memoryClaimEndKey,
+  claimEndNamingInWords,
+  memoryClaimEndWords,
+  memoryClaimLine,
+  memoryClaimSentence,
+  readMemoryClaim,
+  readMemoryClaimEnd,
+} from './memory-relations.js';
+export type {
+  MemoryRelationGroup,
+  MemoryRelationEnd,
+  MemoryRelationRow,
+  MemoryRelationEntry,
+  MemoryClaim,
+  MemoryClaimEnd,
+  MemorySaveConflict,
+} from './memory-relations.js';
 // D-153 P1 — Commit substrate (audit rows graduate into commits).
 export {
   COMMIT_KINDS,
@@ -2468,6 +2499,10 @@ export {
   CONTACT_IDENTITY_STATUS_SET,
   isContactIdentityStatus,
   DEFAULT_CONTACT_IDENTITY_STATUS,
+  MENTION_ONLY_EMAIL_DOMAIN,
+  MENTION_ONLY_EMAIL_PREFIX,
+  isMentionOnlyEmail,
+  isMailboxAddress,
   NETWORK_DOMAINS,
   NETWORK_DOMAIN_SET,
   isNetworkDomain,
@@ -2756,6 +2791,7 @@ export {
   ENGAGEMENT_CAPABILITY_VALUES,
   ENGAGEMENT_SYNC_KINDS,
   assertEngagementFacetShape,
+  engagementFacetFindings,
   assertEngagementRegistryInvariants,
   isDeclaredEngagementEntity,
   vendorHasEngagement,
@@ -2778,6 +2814,7 @@ export type {
   AcctAlias,
   // D-192 engagement facet
   EngagementEntityFacet,
+  EngagementFacetFinding,
   EngagementCapability,
   EngagementSyncKind,
   DateGranularity,
@@ -3315,6 +3352,8 @@ export {
   REMINDER_LATE_MS,
   REMINDER_PAST_GRACE_MS,
   REMINDER_LIST_LINK,
+  reminderDetailLink,
+  parseReminderLink,
   isReminderState,
   formatReminderTime,
   formatReminderWhen,
@@ -3329,6 +3368,7 @@ export type {
   ReminderView,
   ReminderChangeReason,
   ReminderListResult,
+  ReminderGetResult,
   ReminderListRequest,
   ReminderListPageInput,
   ReminderListCursor,
@@ -3446,9 +3486,11 @@ export {
   CALENDAR_QUOTA_BYTES_DEFAULT,
   CalendarAdapterError,
 } from './calendar.js';
-export { CALENDAR_EVENT_EDIT_LIMITS } from './calendar-event-rpc.js';
+export { CALENDAR_EVENT_EDIT_LIMITS, CALENDAR_EVENT_GUEST_LIMITS, normalizeCalendarEventGuests } from './calendar-event-rpc.js';
+export type { CalendarEventGuest } from './calendar-event-rpc.js';
+export type { CalendarEventDeleteRequest, CalendarEventDeleteResult, CalendarEventDeletionCheckRequest, CalendarEventDeletionState } from './calendar-event-rpc.js';
 export type { DocumentContentMatch, DocumentContentCoverage, DocumentContentSearchResult, OwnerDocumentSearchRequest, OwnerDocumentSearchReply } from './document-content-search.js';
-export type { CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarInvitationResponse, CalendarEventDestination, CalendarEventDestinations, CalendarEventCreateRequest, CalendarEventCreateResult } from './calendar-event-rpc.js';
+export type { CalendarOverlapRequest, CalendarOverlapResult, CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarInvitationResponse, CalendarEventDestination, CalendarEventDestinations, CalendarEventCreateRequest, CalendarEventCreateResult } from './calendar-event-rpc.js';
 export type {
   CanonicalEvent,
   CalendarRecordHotFields,
@@ -4824,6 +4866,7 @@ export type {
   ChatDispatchResult,
   ChatRunHeld,
   InternalToolRegistry,
+  HeldCallNotices,
   ChatModelRoutingLayer,
   ChatModelSourceId,
   ChatCatalogDeliveryMode,
@@ -4909,6 +4952,7 @@ export type {
   ChatPlanStatus,
   ChatPlanProposal,
   ChatPlanExecutionReceipt,
+  ChatPlanMade,
   ChatPlanRecord,
 } from './chat.js';
 
@@ -4986,12 +5030,23 @@ export {
   BRIDGE_TABS_OUTPUT_KEYS,
   BRIDGE_TABS_MAX,
   BRIDGE_OPEN_OUTPUT_KEYS,
+  BRIDGE_WAIT_DEFAULT_MS,
+  BRIDGE_WAIT_MAX_MS,
+  BRIDGE_WAIT_OUTPUT_KEYS,
+  BRIDGE_TABLE_MAX_ROWS,
+  BRIDGE_TABLE_OUTPUT_KEYS,
+  BRIDGE_SCREENSHOT_MAX_EDGE,
+  BRIDGE_SCREENSHOT_MAX_BASE64,
+  BRIDGE_SCREENSHOT_OUTPUT_KEYS,
+  BROWSER_IMAGE_TTL_MS,
+  isBrowserImageRef,
 } from './bridge.js';
 export type {
   BridgeAction,
   BridgeSurfaceKind,
   BridgeIngredientRef,
   BridgeIngredientGrant,
+  BrowserImageRef,
   BridgeCommand,
   BridgeDocumentIdentity,
   BridgeErrorCode,
@@ -5362,6 +5417,7 @@ export type {
   AuditExportEntry,
   MemoryListRequest,
   MemoryListEntry,
+  MemoryContradiction,
   MemoryListResponse,
   MemoryGetRequest,
   MemoryGetResponse,
@@ -5381,6 +5437,10 @@ export type {
   MemoryRevokeResult,
   MemorySavesRequest,
   MemorySavesResult,
+  MemoryClaimsRequest,
+  MemoryClaimsEntry,
+  MemoryClaimsResult,
+  MemoryClaimCountsResult,
   CollectListPagesOptions,
   ListPage,
   ListPageFields,
@@ -5980,6 +6040,12 @@ export type {
   ComposeRewriteRecipeInput,
   MailMessageRef,
   MailMessageSnapshot,
+  MailMessageAttachment,
+  MailMessageAttachmentsRequest,
+  MailMessageAttachmentsSnapshot,
+  MailMessageState,
+  MailMessageStateChange,
+  MailMessageStateResult,
   MailConversationScope,
   MailConversationCursor,
   MailConversationRequest,
@@ -6801,12 +6867,14 @@ export {
   isMetaFieldType,
   assertEntitySchemaIngredientShape,
   assertEntitySchemaIngredientValid,
+  entitySchemaIngredientFindings,
 } from './entity-schema.js';
 export type {
   ProjectionMode,
   EntitySchemaMode,
   MetaFieldType,
   MetaField,
+  EntitySchemaIngredientFinding,
   EntitySchemaTargetId,
   EntitySchemaSourceOperation,
   EntitySchemaSourceOperations,
@@ -7157,7 +7225,8 @@ export type {
   SituationBasis, SituationVerdict, SituationReason, SituationRef, SituationPlace,
   SituationDimension, SituationWindow, TripDetails, SituationAssetDetails, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
   SituationCluster, SituationResult, SituationState, SituationDismissal,
-  SituationSnapshot, SituationRevision, SituationDeliverySettings, SituationDeliveryStatus, ProactiveToday,
+  SituationSnapshot, SituationRevision, SituationDigestLookAhead, SituationDeliverySettings, SituationDeliveryStatus, ProactiveToday,
+  SituationAgendaSettings, SituationAgendaStatus,
 } from './situation.js';
 export { SITUATION_QUERY_SCHEMA, SITUATION_CONTEXT_MAX_BYTES, SITUATION_TOOL_MAX_ITEMS, parseSituationQueryInput } from './situation.js';
 

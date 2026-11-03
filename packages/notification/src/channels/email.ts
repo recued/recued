@@ -57,10 +57,16 @@
  *  text-only, exactly as before. The landing page itself is
  *  `channels/ask-landing.ts`.
  *
- *  `closeAsk` is a genuine no-op: email cannot recall or edit a sent
+ *  `closeAsk` sends nothing: email cannot recall or edit a sent
  *  message. A stale reply-request email is harmless — a late reply
  *  re-correlates to the same `ask_id`, and the block's first-answer-
  *  wins dedup (I-6) makes the second answer a no-op.
+ *
+ *  Which asks went out outlives the process when the server gives the
+ *  channel a store (`promptRecords`, D-158 P3, 2026-11-02): a later
+ *  process's re-delivery sweep emails an open ask no second time. Before,
+ *  the record was the process's alone, so a new process's sweep emailed
+ *  every open ask again. Without a store the channel still works that way.
  *
  *  Self-loop note (for the wiring author): D-127's `MailCollection.send`
  *  rejects a `to` equal to the sender account's own address
@@ -73,6 +79,7 @@
  *  Spec: D-158 § P2 / A.4 / N.4 / I-9.
  */
 
+import type { Collection } from '@recued/storage';
 import { htmlEscape, safeHttpUrl } from '../html.js';
 import { ASK_ID_SOURCE } from '../correlation.js';
 import { normalizeEmailAnswerToken as normalizeToken } from '../ask-text-answer.js';
@@ -126,6 +133,17 @@ export interface EmailChannelDeps {
    *  leaf and cannot know the server's public base URL or the landing
    *  route; `backend/server` injects this builder. */
   answerLink?: (ask_id: string) => string | undefined;
+  /** D-158 P3 — where the asks this channel emailed outlive the process,
+   *  keyed `email:<ask_id>`: read once when the channel is built, kept once
+   *  an ask's email is sent, removed when the ask closes. Absent ⇒ this
+   *  process's alone, as before. */
+  promptRecords?: Collection<EmailPromptRecord>;
+}
+
+/** What a later process needs of an ask this channel emailed (D-158 P3):
+ *  only that it went, and when. A sent email cannot be edited or recalled. */
+export interface EmailPromptRecord {
+  readonly sent_at: number;
 }
 
 /** The minimal inbound shape `parseEmailReply` needs — the subject (it
@@ -327,13 +345,25 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
    *  delivery sweep, a double call, or a concurrent call must not send
    *  a second email this process. An id is reserved here BEFORE the
    *  send and released only if the send fails (so the boot sweep can
-   *  still retry). In-memory and process-scoped: across a restart the
-   *  set is empty, so the boot sweep may re-email an open ask once —
-   *  harmless, since a reply to either copy carries the same tag and
-   *  the block's first-answer-wins dedup (I-6) makes a duplicate a
-   *  no-op. Persisting it is D-158 P3, as for P2a's slack/telegram
-   *  delivered-map. */
+   *  still retry). Kept in `promptRecords` too once sent, when the server
+   *  gives the channel one (D-158 P3), so a restart starts from it;
+   *  else this process's alone, and a new process's sweep emails an open
+   *  ask again (harmless — a reply to either copy carries the
+   *  same tag, and the block's first-answer-wins dedup (I-6) makes a
+   *  duplicate a no-op — but a second email the owner did not need). */
   const delivered = new Set<string>();
+
+  const recordKey = (ask_id: string): string => `${EMAIL_CHANNEL_NAME}:${ask_id}`;
+  /** D-158 P3 — the asks an earlier process emailed, read once. `deliverAsk`
+   *  and `closeAsk` wait for it only while it loads, so the boot sweep's
+   *  re-delivery finds an ask already sent, and otherwise `deliverAsk` still
+   *  reserves its id before its first await. A store that cannot be read
+   *  costs what it did before: a second email. */
+  let loading: Promise<void> | undefined = deps.promptRecords?.listByPrefix(`${EMAIL_CHANNEL_NAME}:`)
+    .then((rows) => {
+      for (const { key } of rows) delivered.add(key.slice(EMAIL_CHANNEL_NAME.length + 1));
+    }, () => undefined)
+    .finally(() => { loading = undefined; });
 
   const deliveryEmail = (envelope: AskDeliveryEnvelope): OutboundEmail => {
     const first = envelope.asks[0]!;
@@ -372,6 +402,7 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
     },
 
     async deliverAsk(ask_id, message, options) {
+      if (loading !== undefined) await loading;
       if (delivered.has(ask_id)) return;
       // Reserve the id BEFORE the await — a concurrent second
       // deliverAsk for the same ask_id then observes it and does not
@@ -390,13 +421,26 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
         delivered.delete(ask_id);
         throw error;
       }
+      // D-158 P3 — kept only once sent: an ask whose email failed leaves no
+      // record, so the boot sweep still sends it after a restart.
+      try {
+        await deps.promptRecords?.set(recordKey(ask_id), { sent_at: Date.now() });
+      } catch {
+        // A record that cannot be kept costs what it did before: a second email after a restart.
+      }
     },
 
-    closeAsk(): Promise<void> {
+    async closeAsk(ask_id): Promise<void> {
       // Email cannot recall or edit a sent message — there is nothing
-      // to close. A no-op satisfies the idempotent `Channel.closeAsk`
-      // contract; a stale reply-request email is harmless (see header).
-      return Promise.resolve();
+      // to strip; a stale reply-request email is harmless (see header).
+      // D-158 P3 — its record goes, so the store holds open asks only. The
+      // id stays in `delivered`: this process sends it no second time.
+      if (loading !== undefined) await loading;
+      try {
+        await deps.promptRecords?.delete(recordKey(ask_id));
+      } catch {
+        // Left behind, it costs nothing: the boot sweep re-delivers open asks only.
+      }
     },
 
     async deliverAskDelivery(envelope) {

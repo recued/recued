@@ -13,7 +13,8 @@ import { makeCollectionHandlers } from '../../collection-handler.js';
 import type { WsClient } from '../../../ws-server.js';
 import { createCalendarCollection, type CalendarCollection } from '../calendar-collection.js';
 import { createLocalCalendarProvider, LOCAL_CALENDAR_CAPS } from '../local-provider.js';
-import { getCalendarEvent, updateCalendarEvent } from '../local-event-handler.js';
+import { getCalendarEvent, updateCalendarEvent, deleteCalendarEvent, checkCalendarEventDeletion } from '../local-event-handler.js';
+import { checkOwnerCalendarEventDeletion, deleteOwnerCalendarEvent } from '../remote-event-handler.js';
 import { createOwnerCalendarEvent, listCalendarEventDestinations } from '../event-create-handler.js';
 import { createCalendarEventCreationStore } from '../../../storage/calendar-event-creations.js';
 
@@ -37,6 +38,10 @@ const seed = async (patch: Partial<CanonicalEvent> = {}) => collection.applyVeri
 const request = (patch: CalendarEventUpdateRequest['patch']): CalendarEventUpdateRequest => {
   const view = getCalendarEvent(deps(), ref);
   return { ...ref, patch, expected_version: view.resource_version, expected_incarnation: view.incarnation! };
+};
+const deletion = () => {
+  const view = getCalendarEvent(deps(), ref);
+  return { ...ref, expected_version: view.resource_version, expected_incarnation: view.incarnation! };
 };
 
 beforeEach(async () => {
@@ -154,10 +159,123 @@ it('requires a paired owner for calendar event RPCs before reading or writing an
   const slice = makeCollectionHandlers({ registry })!;
   const client = { instance_id: null } as WsClient;
   await expect(slice.handlers['collection.calendar.event.get'](ref, client)).rejects.toMatchObject({ code: 'unauthorized' });
+  await expect(slice.handlers['collection.calendar.event.overlaps']({ start_at: NOW, end_at: NOW + 1000, is_all_day: false, timezone: 'UTC' }, client)).rejects.toMatchObject({ code: 'unauthorized' });
   await expect(slice.handlers['collection.calendar.event.destinations'](undefined, client)).rejects.toMatchObject({ code: 'unauthorized' });
   await expect(slice.handlers['collection.calendar.event.create']({} as CalendarEventCreateRequest, client)).rejects.toMatchObject({ code: 'unauthorized' });
   await expect(slice.handlers['collection.calendar.event.update'](request({ summary: 'No' }), client)).rejects.toMatchObject({ code: 'unauthorized' });
   await expect(slice.handlers['collection.calendar.event.respond']({ ...ref, response: 'accepted', expected_version: 'v1', expected_incarnation: 'i1' }, client)).rejects.toMatchObject({ code: 'unauthorized' });
+  await expect(slice.handlers['collection.calendar.event.delete'](deletion(), client)).rejects.toMatchObject({ code: 'unauthorized' });
+  await expect(slice.handlers['collection.calendar.event.checkDeletion'](deletion(), client)).rejects.toMatchObject({ code: 'unauthorized' });
+});
+
+it('deletes only the reviewed local event and publishes its removal after commit', async () => {
+  await seed({ source_id: 'other-event', summary: 'Keep this event' }); events.length = 0;
+  const input = deletion(), remove = vi.spyOn(collection.provider, 'deleteEvent');
+  const result = await deleteCalendarEvent(deps(), input);
+  expect(result).toEqual({ ...ref, incarnation: input.expected_incarnation, deleted: true });
+  expect(remove).toHaveBeenCalledExactlyOnceWith({ calendar_id: 'local', source_id: ref.source_id, scope: 'this_instance' });
+  expect(collection.table.get(ref.source_id)).toBeNull();
+  expect(collection.table.get('other-event')?.event.summary).toBe('Keep this event');
+  expect(events).toHaveLength(1);
+  expect(checkCalendarEventDeletion(deps(), input)).toEqual({ ...ref, incarnation: input.expected_incarnation, snapshot: null });
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'not_found' });
+  expect(remove).toHaveBeenCalledTimes(1);
+});
+
+// D-336 (spec §58) — the rpcs now enter through the owner delete that also serves a connected
+// calendar; a local calendar's event still goes the local way.
+it('takes a local event the local way through the owner delete and its check', async () => {
+  const input = deletion(), remove = vi.spyOn(collection.provider, 'deleteEvent');
+  expect(getCalendarEvent(deps(), ref)).toMatchObject({ deletable: true });
+  expect(getCalendarEvent(deps(), ref).provider_delete).toBeUndefined();
+  expect(await deleteOwnerCalendarEvent(deps(), input)).toEqual({ ...ref, incarnation: input.expected_incarnation, deleted: true });
+  expect(remove).toHaveBeenCalledExactlyOnceWith({ calendar_id: 'local', source_id: ref.source_id, scope: 'this_instance' });
+  expect(await checkOwnerCalendarEventDeletion(deps(), input)).toEqual({ ...ref, incarnation: input.expected_incarnation, snapshot: null });
+  await expect(checkOwnerCalendarEventDeletion({ ...deps(), getCollection: () => undefined }, input)).rejects.toThrow('unavailable');
+});
+
+it('rejects stale deletion reviews and replacement calendars before calling the provider', async () => {
+  const input = deletion(), remove = vi.spyOn(collection.provider, 'deleteEvent');
+  await seed({ summary: 'Newer details' });
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'resource_changed' });
+  const current = deletion(), prior = instances.get('calendar', 'local')!;
+  instances.delete('calendar', 'local'); instances.upsert(prior);
+  await expect(deleteCalendarEvent(deps(), current)).rejects.toMatchObject({ code: 'resource_changed' });
+  expect(remove).not.toHaveBeenCalled();
+  expect(collection.table.get(ref.source_id)?.event.summary).toBe('Newer details');
+});
+
+it('rechecks event version after an asynchronous deletion preparation', async () => {
+  const input = deletion();
+  vi.spyOn(collection.provider, 'deleteEvent').mockImplementationOnce(async () => { await seed({ summary: 'Changed during review' }); });
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'resource_conflict' });
+  expect(collection.table.get(ref.source_id)?.event.summary).toBe('Changed during review');
+});
+
+it('rechecks the calendar binding and native-write permission at deletion commit', async () => {
+  const input = deletion();
+  vi.spyOn(collection.provider, 'deleteEvent').mockImplementationOnce(async () => {
+    const current = instances.get('calendar', 'local')!;
+    instances.upsert({ ...current, config: { ...current.config, native_write_enabled: false } });
+  });
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(collection.table.get(ref.source_id)).not.toBeNull(); expect(events).toHaveLength(0);
+});
+
+it('does not delete into a replacement calendar while preparation is pending', async () => {
+  const input = deletion();
+  vi.spyOn(collection.provider, 'deleteEvent').mockImplementationOnce(async () => {
+    const prior = instances.get('calendar', 'local')!;
+    instances.delete('calendar', 'local'); instances.upsert(prior);
+  });
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'resource_changed' });
+  expect(collection.table.get(ref.source_id)).not.toBeNull(); expect(events).toHaveLength(0);
+});
+
+it('rolls back deletion and withholds its warehouse event when the local commit fails', async () => {
+  const input = deletion(), prepare = collection.prepareVerifiedDelete!.bind(collection);
+  vi.spyOn(collection, 'prepareVerifiedDelete').mockImplementationOnce((...args) => {
+    const prepared = prepare(...args);
+    return { db: prepared.db, apply: () => { prepared.apply(); throw new Error('Commit interrupted'); } };
+  });
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toThrow('Commit interrupted');
+  expect(collection.table.get(ref.source_id)).not.toBeNull(); expect(events).toHaveLength(0);
+  expect(checkCalendarEventDeletion(deps(), input).snapshot?.resource_version).toBe(input.expected_version);
+});
+
+it('offers deletion independently of text-edit limits but excludes recurring and remote events', async () => {
+  const remove = vi.spyOn(collection.provider, 'deleteEvent');
+  await seed({ timezone: 'Unknown/Zone', description: 'x'.repeat(300_000), status: 'cancelled' });
+  expect(getCalendarEvent(deps(), ref)).toMatchObject({ editable: false, deletable: true });
+  for (const patch of [{ recurrence_rule: 'FREQ=DAILY' }, { recurring_event_id: 'series-1' }]) {
+    await seed(patch);
+    expect(getCalendarEvent(deps(), ref).deletable).toBeUndefined();
+    await expect(deleteCalendarEvent(deps(), deletion())).rejects.toMatchObject({ code: 'forbidden' });
+  }
+  await seed();
+  Object.defineProperty(collection.provider, 'kind', { value: 'gcal' });
+  expect(getCalendarEvent(deps(), ref).deletable).toBeUndefined();
+  await expect(deleteCalendarEvent(deps(), deletion())).rejects.toMatchObject({ code: 'forbidden' });
+  expect(remove).not.toHaveBeenCalled();
+});
+
+it('never treats a missing, stopped or replaced calendar as proof of deletion', async () => {
+  const input = deletion();
+  expect(checkCalendarEventDeletion(deps(), input).snapshot?.event.source_id).toBe(ref.source_id);
+  expect(() => checkCalendarEventDeletion({ ...deps(), getCollection: () => undefined }, input)).toThrow('unavailable');
+  instances.delete('calendar', 'local');
+  expect(() => checkCalendarEventDeletion(deps(), input)).toThrow('removed or replaced');
+});
+
+it('requires current deletion permission and nonempty version arguments', async () => {
+  const input = deletion(), remove = vi.spyOn(collection.provider, 'deleteEvent');
+  await expect(deleteCalendarEvent(deps(), { ...input, expected_version: '' })).rejects.toMatchObject({ code: 'invalid_args' });
+  expect(() => checkCalendarEventDeletion(deps(), { ...input, expected_incarnation: '' })).toThrow('identity is required');
+  const prior = instances.get('calendar', 'local')!;
+  instances.upsert({ ...prior, caps: { ...LOCAL_CALENDAR_CAPS, delete_event: 'no' } });
+  expect(getCalendarEvent(deps(), ref).deletable).toBeUndefined();
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(remove).not.toHaveBeenCalled();
 });
 
 const newEvent = (): CalendarEventCreateRequest => ({ slug: 'local', calendar_id: 'local',
@@ -201,10 +319,13 @@ it('refuses unwritable destinations, changed connections and invalid dates befor
   const store = createCalendarEventCreationStore(db), input = newEvent();
   const write = vi.spyOn(collection.provider, 'createEvent');
   for (const patch of [{ summary: ' ' }, { end_at: NOW }, { start_at: NaN }, { is_all_day: true },
-    { timezone: 'Invalid/Zone' }, { description: '💡'.repeat(70_000) }]) {
+    { timezone: 'Invalid/Zone' }, { description: '💡'.repeat(70_000) }, { send_invitations: true as const },
+    { guests: [{ email: 'guest@example.com' }] }]) {
     await expect(createOwnerCalendarEvent(deps(), store, { ...input, ...patch })).rejects.toMatchObject({ code: 'invalid_args' });
   }
   await expect(createOwnerCalendarEvent(deps(), store, { ...input, calendar_id: 'not-this-calendar' })).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(createOwnerCalendarEvent(deps(), store, { ...input, guests: [{ email: 'guest@example.com' }], send_invitations: true }))
+    .rejects.toMatchObject({ code: 'forbidden' });
   await expect(createOwnerCalendarEvent(deps(), store, { ...input, expected_incarnation: 'old' })).rejects.toMatchObject({ code: 'resource_changed' });
   instances.updateAuthState('calendar', 'local', { auth_state: 'expired' });
   await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'forbidden' });
@@ -266,4 +387,18 @@ it('rechecks the calendar binding at provider handoff and leaves a replacement w
   });
   await expect(createOwnerCalendarEvent(deps(), store, input)).rejects.toMatchObject({ code: 'outcome_unknown' });
   expect(sent).toBe(false); expect(events).toHaveLength(0);
+});
+
+it('refuses deletion when the local calendar stops during preparation', async () => {
+  const input = deletion();
+  vi.spyOn(collection.provider, 'deleteEvent').mockImplementationOnce(async () => { await collection.close(); });
+  await expect(deleteCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'unavailable' });
+  expect(collection.table.get(ref.source_id)).not.toBeNull(); expect(events).toHaveLength(0);
+  expect(getCalendarEvent(deps(), ref).deletable).toBeUndefined();
+});
+
+it('does not accept absence from a stopped local calendar as deletion proof', async () => {
+  const input = deletion();
+  await deleteCalendarEvent(deps(), input); await collection.close();
+  expect(() => checkCalendarEventDeletion(deps(), input)).toThrow('unavailable');
 });

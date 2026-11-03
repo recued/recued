@@ -931,6 +931,35 @@ const buildFakeTransport = (
   const chatSessionTitle =
     searchParams.get('chat_title') ?? 'Planning chat';
   const webhooksDemo = searchParams.get('connection') === 'webhooks';
+  // D-336 slice I — a contact added from a name, keyed on a placeholder until the owner
+  // gives it an address on its Edit form (`contact.add_email`).
+  const contactNoAddressDemo = searchParams.get('data') === 'contact-no-address';
+  const noAddressPlaceholder = 'mention-only-ct-mia@_recued.invalid';
+  let noAddressContact: Record<string, unknown> = {
+    _id: noAddressPlaceholder, _collection: 'contact', email: noAddressPlaceholder, name: 'Mia', contact_id: 'ct-mia',
+    identity_status: 'mention_only', first_seen: FIXED_NOW, last_interaction: FIXED_NOW, interaction_count: 0,
+    source: 'manual', created_at: FIXED_NOW, updated_at: FIXED_NOW,
+  };
+  // D-336 slice P — and Mia Whitfield, who has the address the owner gives Mia: the refusal
+  // names her, and the Edit form merges Mia into her (`contact.merge.pair`).
+  const contactAddressTakenDemo = contactNoAddressDemo && searchParams.get('taken') === '1';
+  const takenContact: Record<string, unknown> = {
+    _id: 'mia@example.test', _collection: 'contact', email: 'mia@example.test', name: 'Mia Whitfield', contact_id: 'ct-whit',
+    identity_status: 'verified', first_seen: FIXED_NOW, last_interaction: FIXED_NOW, interaction_count: 1,
+    source: 'manual', created_at: FIXED_NOW, updated_at: FIXED_NOW, phone: '+15550001111',
+  };
+  // Slice P's open item — their phones differ, so the merge asks which to keep.
+  if (contactAddressTakenDemo) noAddressContact = { ...noAddressContact, phone: '+15550002222' };
+  let noAddressMerged = false;
+  // D-336 slice R — a contact with an address, which the owner changes on its Edit form
+  // (`contact.change_email`); the address she had stays her second one.
+  const contactSavedAddressDemo = searchParams.get('data') === 'contact-saved-address';
+  const savedAddressOld = 'dana@work.example.test';
+  let savedAddressContact: Record<string, unknown> = {
+    _id: savedAddressOld, _collection: 'contact', email: savedAddressOld, name: 'Dana Whitfield', contact_id: 'ct-dana',
+    identity_status: 'verified', first_seen: FIXED_NOW, last_interaction: FIXED_NOW, interaction_count: 3,
+    source: 'manual', created_at: FIXED_NOW, updated_at: FIXED_NOW,
+  };
   // What recued.com did when the server disconnected (`account.unbind`).
   const accountUnbindCloud = searchParams.get('account_unbind_cloud') === 'not_told'
     ? 'not_told'
@@ -2128,6 +2157,14 @@ const buildFakeTransport = (
       text: 'Recipe review-bulk wants to run fixture.note.batch (step bulk).\nThis changes saved data, so Recued held it for you.\n\nApprove?',
       resource_review: RECORDS_REVIEW_FIXTURE,
     } : {}),
+    // D-336 slice N — a held chat write's ask, with its card in Chat (`changeable` for a save).
+    ...(searchParams.get('ask_chat_plan') !== null ? {
+      chat_plan: {
+        session_id: 'chat-attention-1',
+        plan_id: 'plan-attention-1',
+        ...(searchParams.get('ask_chat_plan') === 'save' ? { changeable: true } : {}),
+      },
+    } : {}),
   };
   let attentionAskPending = true;
   const attentionPlan = {
@@ -2261,6 +2298,11 @@ const buildFakeTransport = (
           rpc.method,
           (rpcCallCounts.get(rpc.method) ?? 0) + 1,
         );
+        // D-336 slice H — a Memory save whose relationship links the contact the picker added.
+        if (rpc.method === 'memory.create'
+          && JSON.stringify((rpc.args as { claim?: unknown } | undefined)?.claim ?? null).includes('"contact_id":"ct-added"')) {
+          rpcCallCounts.set('memory.create.linked_added_contact', (rpcCallCounts.get('memory.create.linked_added_contact') ?? 0) + 1);
+        }
         if (
           rpc.method === 'collection.contract.listContracts'
           && (rpc.args as { cursor?: unknown } | undefined)?.cursor !== undefined
@@ -3559,6 +3601,14 @@ const buildFakeTransport = (
         if (formResponsesPagedDemo && rpc.method === 'execute') {
           result = demoRecipeExecuteResult(rpc.args, false);
         }
+        // D-336 slice K — what the relation list misses, for the Memory view's line.
+        if (memoryRowsDemo && rpc.method === 'memory.claim_counts') {
+          result = {
+            agent_notes: 2,
+            agent_notes_without_claim: 1,
+            own_relations: [{ relation: 'taught piano to', notes: 2 }],
+          };
+        }
         if (memoryRowsDemo && rpc.method === 'memory.list') {
           if (
             memoryListFailuresRemaining > 0
@@ -3587,6 +3637,7 @@ const buildFakeTransport = (
                       size_bytes: memoryDemoOwnSize,
                       has_body: true,
                       ts: FIXED_NOW - 60_000,
+                      ...(memoryClaimDemo ? { claim: MEMORY_DEMO_CLAIM } : {}),
                     }]
                   : []),
                 ...(includesActor('system')
@@ -3635,6 +3686,7 @@ const buildFakeTransport = (
                   body: memoryDemoOwnBody,
                   size_bytes: memoryDemoOwnSize,
                   ts: FIXED_NOW - 60_000,
+                  ...(memoryClaimDemo ? { claim: MEMORY_DEMO_CLAIM } : {}),
                 }
               : memoryId === memoryDemoSystemId
                 ? {
@@ -5351,6 +5403,74 @@ const buildFakeTransport = (
             ? undefined
             : { ...grant, lifecycle_state: 'revoked' };
         }
+        // D-336 slice H — a relationship's picker adds a contact from a name alone: a
+        // mention-only contact, keyed on a placeholder the webclient must never show.
+        if (rpc.method === 'contact.create_by_name') {
+          const name = String((rpc.args as { name?: unknown }).name ?? '').trim();
+          const email = 'mention-only-ct-added@_recued.invalid';
+          result = { contact: {
+            _id: email, _collection: 'contact', email, name, contact_id: 'ct-added', identity_status: 'mention_only',
+            first_seen: FIXED_NOW, last_interaction: FIXED_NOW, interaction_count: 0, source: 'manual',
+            created_at: FIXED_NOW, updated_at: FIXED_NOW,
+          } };
+        }
+        if (contactNoAddressDemo && rpc.method === 'contact.list') result = { contacts: [noAddressContact], total: 1 };
+        if (contactNoAddressDemo && rpc.method === 'contact.get') {
+          // As the server does, the placeholder she had still reads her.
+          const email = (rpc.args as { email?: unknown }).email;
+          result = { contact: email === noAddressPlaceholder || email === noAddressContact.email ? noAddressContact : null };
+        }
+        const addressTaken = contactAddressTakenDemo && rpc.method === 'contact.add_email'
+          && String((rpc.args as { email?: unknown }).email ?? '').trim().toLowerCase() === takenContact.email;
+        if (contactNoAddressDemo && rpc.method === 'contact.add_email' && !addressTaken) {
+          const email = String((rpc.args as { email?: unknown }).email ?? '').trim().toLowerCase();
+          noAddressContact = { ...noAddressContact, _id: email, email, identity_status: 'verified' };
+          result = { contact: noAddressContact };
+        }
+        if (contactAddressTakenDemo && rpc.method === 'contact.list') {
+          result = { contacts: noAddressMerged ? [takenContact] : [noAddressContact, takenContact], total: noAddressMerged ? 1 : 2 };
+        }
+        if (contactAddressTakenDemo && rpc.method === 'contact.get') {
+          const email = (rpc.args as { email?: unknown }).email;
+          if (email === takenContact.email) result = { contact: takenContact };
+          else if (noAddressMerged && email === noAddressPlaceholder) result = { contact: { ...noAddressContact, merged_into: takenContact.email } };
+        }
+        if (addressTaken) {
+          error = {
+            code: 'conflict',
+            message: '“mia@example.test” is already Mia Whitfield\'s address.',
+            details: { reason: 'address_taken', contact_email: takenContact.email as string, contact_name: 'Mia Whitfield' },
+          };
+        }
+        if (contactAddressTakenDemo && rpc.method === 'contact.merge.pair') {
+          noAddressMerged = true;
+          // As the server does, the merged contact keeps each value the owner picked.
+          for (const field of ['name', 'phone', 'company', 'birthday', 'anniversary']) {
+            const picked = (rpc.args as Record<string, unknown>)[field];
+            if (typeof picked === 'string') takenContact[field] = picked;
+          }
+          result = { survivor: takenContact, losers: [{ ...noAddressContact, merged_into: takenContact.email }] };
+        }
+        if (contactSavedAddressDemo && rpc.method === 'contact.list') result = { contacts: [savedAddressContact], total: 1 };
+        if (contactSavedAddressDemo && rpc.method === 'contact.get') {
+          // As the server does: found by the address she has, the old one listed as her second.
+          const email = (rpc.args as { email?: unknown }).email;
+          result = email !== savedAddressContact.email ? { contact: null } : {
+            contact: savedAddressContact,
+            ...(savedAddressContact.email !== savedAddressOld ? { identifiers: { emails: [savedAddressOld], phones: [] } } : {}),
+          };
+        }
+        if (contactSavedAddressDemo && rpc.method === 'contact.change_email') {
+          const email = String((rpc.args as { email?: unknown }).email ?? '').trim().toLowerCase();
+          savedAddressContact = { ...savedAddressContact, _id: email, email };
+          result = { contact: savedAddressContact };
+        }
+        if (contactSavedAddressDemo && rpc.method === 'contact.contributions') result = { contributions: [] };
+        if (contactSavedAddressDemo && rpc.method === 'contact.source.list') result = { sources: [] };
+        if (contactSavedAddressDemo && rpc.method === 'data.timeline') result = { entries: [] };
+        if (contactNoAddressDemo && rpc.method === 'contact.contributions') result = { contributions: [] };
+        if (contactNoAddressDemo && rpc.method === 'contact.source.list') result = { sources: [] };
+        if (contactNoAddressDemo && rpc.method === 'data.timeline') result = { entries: [] };
         if (rpc.method === 'contact.search.local') {
           const args = rpc.args as { query: string; offset?: number; limit?: number };
           const query = args.query.trim().toLowerCase();
@@ -8690,6 +8810,12 @@ const delayContactMergeDecision =
   searchParams.get('contact_merge_response') === 'slow';
 const memoryRowsDemo = searchParams.get('data') === 'memory-rows';
 const memoryProvenanceDemo = searchParams.get('memory_provenance') === '1';
+/** D-336 slice T — the owner's note says its fact as a relationship: Mia in words, and Dana
+ *  Whitfield linked to her contact. */
+const memoryClaimDemo = searchParams.get('memory_claims') === '1';
+const MEMORY_DEMO_CLAIM = {
+  subject: { text: 'Mia' }, relation: 'daughter of', object: { contact_id: 'ct-dana', name: 'Dana Whitfield' },
+};
 const referenceProvenanceDemo =
   searchParams.get('reference_provenance') === '1';
 const memoryDeleteResponse = searchParams.get('memory_delete_response');

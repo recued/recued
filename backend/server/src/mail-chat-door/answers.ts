@@ -48,6 +48,7 @@
 import { createHash } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
+import { MAIL_CHAT_DOOR_VENDOR, type ExecutionSource } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
 import type { NotificationMessage } from '@recued/notification';
 import type { AuditLogStore } from '@recued/storage';
@@ -58,6 +59,7 @@ import { messengerInstallOfferLines } from '../install-offers/messenger-lines.js
 import { PUSH_GRACE_MS, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
 import type { ChatStore } from '../storage/chat-store.js';
+import { ensureHeldResultSchema } from '../storage/chat-held-result-store.js';
 import type { MailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import type { MailChatDoorStore } from '../storage/mail-chat-door-store.js';
 import { mailChatAnswerReconciliationId } from './conversation-mail.js';
@@ -156,7 +158,7 @@ export interface ComposeMailChatAnswersDeps {
 }
 
 export interface MailChatAnswers {
-  /** Send what is due. */
+  /** Send what is due. Settles once the Sent copies it began looking for are looked for too. */
   tick(): Promise<void>;
   /** A turn ended: an answer may be owed. */
   kick(): void;
@@ -166,7 +168,7 @@ export interface MailChatAnswers {
   /** How the owner is told of an answer given up. Until bound, a notice waits. */
   bindNotify(fn: MailChatProofNotify): void;
   start(): void;
-  /** Stop, and wait for the round in progress at most `STOP_GRACE_MS` —
+  /** Stop, and wait for the round and the Sent-copy looks in progress at most `STOP_GRACE_MS` —
    *  `PUSH_GRACE_MS` while a notice push is in flight. Idempotent. */
   dispose(): Promise<void>;
   /** One answer, for the tests and diagnostics. */
@@ -336,8 +338,37 @@ const ensureSchema = (db: Database.Database): boolean => {
           LIMIT 1;
       END;
   `);
+  // D-337 — an answer of a continuation (the conversation carrying on after an approval) is owed
+  // as the turn it continues would be: a reply to that turn's request. The continuation's own
+  // turn has no receipt; its record of the turn it continues names the one that does. A second
+  // trigger beside the first, never a change to it: an installed server keeps its trigger.
+  ensureHeldResultSchema(db);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS mail_chat_held_result_answer_owed AFTER INSERT ON chat_messages
+      WHEN NEW.role = 'assistant' AND NEW.turn_id IS NOT NULL AND NEW.session_id LIKE 'mail:%'
+      BEGIN
+        INSERT OR IGNORE INTO mail_chat_answers
+          (answer_id, session_id, turn_id, chat_slug, request_message_id, created_at, state)
+          SELECT NEW.message_id, NEW.session_id, NEW.turn_id, r.recipient, r.message_id, NEW.ts, 'pending'
+          FROM chat_held_result_turns h
+          JOIN chat_native_receipts r ON r.session_id = h.session_id AND r.turn_id = h.origin_turn_id
+            AND r.vendor = 'email'
+          WHERE h.session_id = NEW.session_id AND h.turn_id = NEW.turn_id
+          LIMIT 1;
+      END;
+  `);
   return true;
 };
+
+/** D-337 — a continuation's turn ended (an email chat carrying on after an approval): its answer
+ *  is owed from its commit (`mail_chat_held_result_answer_owed`), and goes now, as one of the
+ *  door's own turns' does (`afterTurn`). Without this the continuation, which is no turn of the
+ *  door's, waited for the loop's idle look (`IDLE_POLL_MS`): up to 15 s. Another chat's ending is
+ *  not the door's. */
+export const sendAfterContinuation = (answers: Pick<MailChatAnswers, 'kick'>) =>
+  (ended: { readonly source?: ExecutionSource }): void => {
+    if (ended.source?.channel === 'messenger' && ended.source.vendor === MAIL_CHAT_DOOR_VENDOR) answers.kick();
+  };
 
 /** Compose the answers over the chat's database. `undefined` when the chat's
  *  tables are not there. */
@@ -359,6 +390,8 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
   const selectNextDue = db.prepare(`SELECT MIN(at) AS at FROM (
     SELECT next_attempt_at AS at FROM mail_chat_answers WHERE state IN ('pending', 'unknown')
     UNION ALL SELECT record_next_at AS at FROM mail_chat_answers WHERE record_state = 'waiting')`);
+  const selectNextSendDue = db.prepare(`SELECT MIN(next_attempt_at) AS at FROM mail_chat_answers
+    WHERE state IN ('pending', 'unknown')`);
   const selectNoticesDue = db.prepare("SELECT * FROM mail_chat_answers WHERE notice_state = 'due' ORDER BY notice_at");
   const selectLastNotice = db.prepare(`SELECT MAX(notice_at) AS at FROM mail_chat_answers
     WHERE notice_state IN ('due', 'sent')`);
@@ -379,6 +412,8 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
   let started = false;
   let disposed = false;
   let running: Promise<void> | undefined;
+  /** The looks for sent answers' Sent copies, beside the rounds (`lookUpSentCopies`). */
+  let recording: Promise<void> | undefined;
   /** A notice push in flight, after its mark (`dispose`). */
   let pushing: Promise<void> | undefined;
   let again = false;
@@ -708,6 +743,45 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
     }
   };
 
+  /** Look for each sent answer's Sent copy that is due, beside the rounds, one look at a time.
+   *  ⛔ NEVER IN A ROUND'S WAY. A look can take seconds (Gmail's lists the Sent mail since the
+   *  answer, then reads each one's headers in turn), and one is due as soon as a Gmail answer is
+   *  sent, then 5, 15 and 30 s on: when an approval's answer follows the turn's first answer by
+   *  half a minute, a round looking would have held its send until the look was done (live,
+   *  2026-11-01: one took 10.2 s). A look touches only a sent answer (its record fields, its send
+   *  claim, its Message-ID in the conversation), and no attempt takes a sent one. */
+  const lookUpSentCopies = (): void => {
+    if (recording !== undefined || disposed) return;
+    recording = (async () => {
+      for (const row of selectRecordDue.all(now()) as AnswerRow[]) {
+        if (disposed) return;
+        try {
+          await record(row);
+        } catch (error) {
+          log?.('warn', 'chat mailbox answer: its Sent copy could not be looked up', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          update(row.answer_id, { record_next_at: now() + MAX_SLEEP_MS });
+        }
+      }
+    })()
+      .catch((error: unknown) => {
+        log?.('warn', 'chat mailbox answers: the Sent copies could not be looked up', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        recording = undefined;
+        try {
+          schedule();
+        } catch (error) {
+          log?.('warn', 'chat mailbox answers could not be scheduled', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+  };
+
   const runRound = async (): Promise<void> => {
     do {
       again = false;
@@ -732,17 +806,7 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
           }
         }
       }
-      for (const row of selectRecordDue.all(now()) as AnswerRow[]) {
-        if (disposed) return;
-        try {
-          await record(row);
-        } catch (error) {
-          log?.('warn', 'chat mailbox answer: its Sent copy could not be looked up', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-          update(row.answer_id, { record_next_at: now() + MAX_SLEEP_MS });
-        }
-      }
+      lookUpSentCopies();
       if (disposed) return;
       // Part 2 — each follow-up whose run has settled and is watched (an
       // answer read above may have just watched it): an answer owed, sent in
@@ -755,11 +819,13 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
     } while (again && !disposed);
   };
 
+  /** Run a round, or have the one running go again. Its promise settles once that round and the
+   *  looks it started are done; nothing in the server waits on it (each caller drops it). */
   const tick = (): Promise<void> => {
     if (disposed) return Promise.resolve();
     if (running !== undefined) {
       again = true;
-      return running;
+      return running.then(() => recording);
     }
     // ⛔ A ROUND NEVER REJECTS: every caller leaves its promise unhandled, and
     // the server treats an unhandled rejection as fatal (the audit).
@@ -779,7 +845,7 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
           });
         }
       });
-    return running;
+    return running.then(() => recording);
   };
 
   /** Sleep until the next answer is due; with none, look again soon. Locked,
@@ -788,7 +854,9 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
   function schedule(): void {
     if (!started || disposed) return;
     if (timer !== undefined) clearTimeout(timer);
-    const next = (selectNextDue.get() as { at: number | null }).at;
+    // Looks still going: theirs are left out, so a round does not wake at once for them; their
+    // end schedules again.
+    const next = ((recording !== undefined ? selectNextSendDue : selectNextDue).get() as { at: number | null }).at;
     const wait = locked || next === null ? IDLE_POLL_MS : Math.max(0, Math.min(next - now(), MAX_SLEEP_MS));
     timer = setTimeout(() => {
       timer = undefined;
@@ -827,7 +895,8 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
       void tick();
     },
     /** ⛔ A drain step awaits this, with 5 s, and the process exits right after
-     *  the drain anyway, so a round is waited for at most `STOP_GRACE_MS`. One
+     *  the drain anyway, so a round, and the Sent-copy looks going beside it,
+     *  are waited for at most `STOP_GRACE_MS`. One
      *  email send can take far longer, and so can a Sent-record lookup over
      *  IMAP (the library's 90 s to connect). Nothing a round leaves unfinished
      *  is lost: `disposed` starts no further attempt or notice; an answer is
@@ -845,7 +914,10 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
       disposed = true;
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
-      if (running !== undefined) await settleWithin(running, pushing !== undefined ? PUSH_GRACE_MS : STOP_GRACE_MS);
+      const inFlight = [running, recording].filter((work): work is Promise<void> => work !== undefined);
+      if (inFlight.length > 0) {
+        await settleWithin(Promise.all(inFlight), pushing !== undefined ? PUSH_GRACE_MS : STOP_GRACE_MS);
+      }
     },
     get(answer_id): MailChatAnswer | null {
       const row = read(answer_id);

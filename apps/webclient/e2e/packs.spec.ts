@@ -397,7 +397,8 @@ test('Packs contains long installed identity throughout its narrow detail', asyn
   const route = page.locator('[data-recued-packs-route]');
   const surface = route.locator('[data-recued-packs-surface]');
   const panel = surface.locator('[data-recued-packs-panel]');
-  const facts = panel.locator('.packs-detail-facts');
+  // The identity line; the recipe-reference line below it shares the class.
+  const facts = panel.locator('.packs-detail-facts:not([data-recued-packs-detail-recipe-reference])');
   await expect(facts).toContainText(slug);
   const owners = panel.locator(
     ':scope, [data-recued-packs-detail-section="identity"], '

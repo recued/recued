@@ -5,7 +5,8 @@ import { createAssetSearch, type AssetSearchCaller } from './asset-search.js';
 import { createDocumentContentSearch, DOCUMENT_SEARCH_ACTION, DOCUMENT_SEARCH_FILE, DOCUMENT_SEARCH_FOCUS, DOCUMENT_SEARCH_STYLES, type DocumentSearchCallers } from './document-content-search.js';
 import { readSearchAssetReturn, saveSearchAssetReturn } from '../shell/search-asset-return.js';
 import { mountSpherePlacement, type SpherePlacementCallers } from '../yours/sphere-placement.js';
-import { isContactAnnualDate, isDateOnlyDue } from '@recued/contracts';
+import { canonicalizeEmail, isContactAnnualDate, isDateOnlyDue, isMailboxAddress, isMentionOnlyEmail } from '@recued/contracts';
+import { claimEndNamingInWords, memoryClaimSentence, type MemoryClaim, type MemoryClaimEnd, type MemoryClaimsEntry, type MemoryClaimsResult } from '@recued/contracts';
 import { recordsRecordAddress,type RecordsRecordAddress } from './records-navigation.js';
 import { createRecordsImport, RECORDS_IMPORT_OPEN, RECORDS_IMPORT_RETRY, RECORDS_IMPORT_RECIPE_ATTR } from './records-import.js';
 import type { SheetImportUploader, WireSheetImportOptions } from '../recipes/spreadsheet-import/index.js';
@@ -26,9 +27,11 @@ import type { CloudFileSource } from '@recued/contracts';
  */
 
 import { renderFileLifecyclePanel, type FileLifecyclePanelState } from './file-lifecycle-panel.js';
+import { createFileBatchActions, FILE_BATCH_ACTION, FILE_BATCH_FOCUS, FILE_BATCH_STYLES } from './file-batch-actions.js';
 import type {
   FileLifecycleMutation,
   FileLifecyclePreview,
+  FileRenameRequest,
   RecordsChangeFeed,
   RecordsChangeQuery,
   SavedDataView,
@@ -86,6 +89,7 @@ import type {
   MemorySavesResult,
   MemoryUnrevokeRequest,
   MemoryListResponse,
+  MemoryClaimCountsResult,
   MemoryMutationResult,
   MemoryUpdateRequest,
   MirrorSearchRequest,
@@ -182,7 +186,7 @@ import {
   setDialogValuesTransition,
   validateForm,
 } from '@recued/contracts';
-import { renderProjectOverview, PROJECT_OVERVIEW_STYLES, type ProjectOverviewProps } from '@recued/ui-shared/work-entity-page';
+import { renderProjectOverview, PROJECT_OVERVIEW_STYLES, renderProjectLinkReview, type ProjectOverviewProps, type ProjectLinkReviewProps } from '@recued/ui-shared/work-entity-page';
 import { createProjectWork, type ProjectWork, type ProjectItemsCaller } from './project-work.js';
 import {
   ENTITY_DETAIL_PANEL_STYLES,
@@ -264,7 +268,7 @@ import {
   REMINDERS_STYLES,
   type ReminderCallers,
 } from './reminders-surface.js';
-import { REMINDER_LIST_LINK } from '@recued/contracts';
+import { parseReminderLink } from '@recued/contracts';
 import type { MailFactEmailStatus } from '@recued/contracts';
 import { mailWorkFollowHref } from '../mail/mail-work-route.js';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
@@ -288,6 +292,23 @@ import {
   MEMORY_EXPORT_ACTION,
   MEMORY_MORE_ACTION,
   MEMORY_FIELD_ATTR,
+  MEMORY_CLAIM_ADD_ACTION,
+  MEMORY_CLAIM_REMOVE_ACTION,
+  MEMORY_CLAIM_LINK_ACTION,
+  MEMORY_CLAIM_LINK_CANCEL_ACTION,
+  MEMORY_CLAIM_PICK_ACTION,
+  MEMORY_CLAIM_YOU_ACTION,
+  MEMORY_CLAIM_UNLINK_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_ACTION,
+  MEMORY_CLAIM_ADD_CONTACT_UPDATE,
+  MEMORY_CLAIM_ADD_THING_ACTION,
+  dropMemoryClaimMatches,
+  showMemoryClaimTakes,
+  MEMORY_CLAIM_END_ATTR,
+  MEMORY_CLAIM_LINK_ATTR,
+  MEMORY_CLAIM_PICK_ID_ATTR,
+  MEMORY_CLAIM_PICK_NAME_ATTR,
+  type MemoryComposeClaim,
   MEMORY_FILTER_ACTION,
   MEMORY_FILTER_VALUE_ATTR,
   MEMORY_IMPORT_ACTION,
@@ -302,6 +323,7 @@ import {
   MEMORY_OPEN_ACTION,
   MEMORY_OPEN_RUN_ACTION,
   MEMORY_ROW_ID_ATTR,
+  isOwnMemoryEntry,
   isReplaceableEntry,
   isRevocableEntry,
   memoryFilterActors,
@@ -738,6 +760,43 @@ export type DataContactUpsertCaller = (
 export type DataContactDeleteCaller = (
   args: { email: string },
 ) => Promise<{ ok: true; deleted: boolean }>;
+/** D-336 slice H — `contact.create_by_name`: a contact from a name alone, the owner's. */
+export type DataContactCreateByNameCaller = (args: { name: string }) => Promise<{ contact: ContactRecord }>;
+/** D-336 slice L — add a thing the owner owns from its name alone, as Yours does (`yours.change`,
+ *  `asset.create`): the picker links a claim's end to it. Answers the new thing's id. */
+export type DataAssetAddCaller = (args: { name: string; idempotency_key: string }) => Promise<{ id?: string }>;
+/** D-336 slice I — `contact.add_email`: a contact with no address gets its email. */
+export type DataContactAddEmailCaller = (args: { contact_id: string; email: string }) => Promise<{ contact: ContactRecord }>;
+/** D-336 slice I — what the Edit form says when the server is older than `contact.add_email`. */
+export const CONTACT_ADD_EMAIL_UPDATE = 'Update your Recued server to add an email address here.';
+/** D-336 slice R — `contact.change_email`: the owner changes a contact's saved email; the old
+ *  one stays the contact's second address. */
+export type DataContactChangeEmailCaller = (args: { contact_id: string; email: string }) => Promise<{ contact: ContactRecord }>;
+/** D-336 slice R — what the Edit form says when the server is older than `contact.change_email`. */
+export const CONTACT_CHANGE_EMAIL_UPDATE = 'Update your Recued server to change an email address here.';
+/** D-336 slice R — `contact.resolve` by email: the contact an address names, its own row or the
+ *  contact it is a second address of. */
+export type DataContactResolveCaller = (args: { email: string }) => Promise<{ contact_id: string | null; contact?: ContactRecord }>;
+/** D-336 slice P — `contact.merge.pair`: two contacts the owner names merge, `other_email`
+ *  into `survivor_email`. */
+export type DataContactMergePairCaller = (
+  args: {
+    survivor_email: string; other_email: string; name?: string;
+    phone?: string; company?: string; birthday?: string; anniversary?: string;
+  },
+) => Promise<{ survivor: ContactRecord; losers: ContactRecord[] }>;
+/** D-336 slice P — the Edit form's offer to merge a contact into the one that has the address
+ *  the owner gave it. */
+export const DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR = 'data-recued-data-contact-merge-offer';
+export const DATA_ROUTE_CONTACT_MERGE_ACTION = 'merge-contact-dialog';
+/** D-336 slice P — which of the two names the merged contact keeps, where they differ (the
+ *  owner, 2026-11-01: "ask which name"); the value is the name. */
+export const DATA_ROUTE_CONTACT_MERGE_NAME_ACTION = 'contact-merge-name';
+export const DATA_ROUTE_CONTACT_MERGE_NAME_ATTR = 'data-recued-data-contact-merge-name';
+/** D-336 slice P's open item — a value to keep for a field the two contacts hold differently. */
+export const DATA_ROUTE_CONTACT_MERGE_FIELD_ACTION = 'contact-merge-field';
+export const DATA_ROUTE_CONTACT_MERGE_FIELD_ATTR = 'data-recued-data-contact-merge-field';
+export const DATA_ROUTE_CONTACT_MERGE_VALUE_ATTR = 'data-recued-data-contact-merge-value';
 
 // ── D-205 #2b — the merge scan surface (`#data/contact/scan`) ──────────────
 //
@@ -839,6 +898,10 @@ export type DataRecipeListCaller = () => Promise<{
 export type DataMemoryListCaller = (
   args: MemoryListRequest,
 ) => Promise<MemoryListResponse>;
+
+/** D-336 slice K — what the relation list misses (`memory.claim_counts`), for a line in the
+ *  Memory lens. Absent, or refused by an older server, → no line. */
+export type DataMemoryClaimCountsCaller = () => Promise<MemoryClaimCountsResult>;
 
 /** D-198 Slice 2 — owner memory CRUD callers (`memory.get/create/update/delete`).
  *  Absent → the Memory lens stays read-only (no Add / Edit / Delete / detail). */
@@ -993,6 +1056,8 @@ export interface BootstrapDataRouteOptions {
   contactListCaller?: DataContactListCaller;
   contactGetCaller?: DataContactGetCaller;
   contactHistoryCaller?: (id: string) => Promise<Pick<import('@recued/contracts').YoursSnapshot, 'episodes' | 'occasions'>>;
+  /** D-336 slice D — the notes whose claim names this contact (`memory.claims`). */
+  contactClaimsCaller?: (contact: string) => Promise<MemoryClaimsResult & { more?: true }>;
   /** D-325 P44 — hide an episode cited on a contact's page (`yours.change` episode.hide). */
   contactEpisodeHideCaller?: (id: string) => Promise<unknown>;
   /** D-205 item 3 — the per-source value view on the contact detail page. Absent →
@@ -1002,6 +1067,20 @@ export interface BootstrapDataRouteOptions {
   contactContributionsCaller?: DataContactContributionsCaller;
   contactUpsertCaller?: DataContactUpsertCaller;
   contactDeleteCaller?: DataContactDeleteCaller;
+  /** D-336 slice H — a relationship's picker adds a contact from a name when none matched. */
+  contactCreateByNameCaller?: DataContactCreateByNameCaller;
+  /** D-336 slice L — the Memory form's "Add “Rex” as a thing you own". Absent → not offered. */
+  assetAddCaller?: DataAssetAddCaller;
+  /** D-336 slice I — the Edit form gives a contact with no address its email. */
+  contactAddEmailCaller?: DataContactAddEmailCaller;
+  /** D-336 slice R — the Edit form changes a contact's saved email. Absent → it cannot. */
+  contactChangeEmailCaller?: DataContactChangeEmailCaller;
+  /** D-336 slice R — a page opened at an address with no contact of its own goes to the contact
+   *  it is a second address of (one it was changed from). Absent → the page stays. */
+  contactResolveCaller?: DataContactResolveCaller;
+  /** D-336 slice P — the Edit form merges a contact into the one that has the address it was
+   *  given. Absent → no merge is offered. */
+  contactMergePairCaller?: DataContactMergePairCaller;
   /** D-205 #2b — `#data/contact/scan`. `contactMergeListCaller` +
    *  `contactGetCaller` are the FLOOR (the review cards cannot be hydrated
    *  without both); confirm / reject / scan_now each gate their own affordance.
@@ -1058,6 +1137,8 @@ export interface BootstrapDataRouteOptions {
   /** D-198 Slice 1b — the Memory lens feed read (`memory.list`). Absent → the
    *  Memory lens renders a not-wired notice. */
   memoryListCaller?: DataMemoryListCaller;
+  /** D-336 slice K — the Memory lens's count of relationships (`memory.claim_counts`). */
+  memoryClaimCountsCaller?: DataMemoryClaimCountsCaller;
   /** D-198 Slice 2 — owner memory CRUD (`memory.get/create/update/delete`).
    *  All present → the Memory lens shows Add / Edit / Delete / detail; absent →
    *  read-only feed. */
@@ -1144,6 +1225,7 @@ export interface BootstrapDataRouteOptions {
   fileChatCallers?: FileChatCallers;
   onUseFileInChat?: (target: { file: import('@recued/contracts').FileAttachmentSelection; sessionId: string | null }) => void;
   fileUsageCaller?: (args: { record_id: string }) => Promise<FileLifecyclePreview>;
+  fileRenameCaller?: (args: FileRenameRequest) => Promise<FileLifecyclePreview>;
   fileMutateCaller?: (args: FileLifecycleMutation) => Promise<FileLifecyclePreview>;
   subscribe?: BroadcastSubscriber['on'];
   /** Keep the shell router's cached hash aligned with successful in-page
@@ -1245,6 +1327,20 @@ interface ContactDialogState {
   /** The record an edit was filled from. An emptied field clears only what this
    *  record had; the list row or the open detail may not carry the field. */
   original?: ContactRecord;
+  /** D-336 slice I — an edit of a contact with no address takes its email. */
+  email_addable?: boolean;
+  /** D-336 slice R — an edit of a contact with an address may change it; the old one stays
+   *  its second address. */
+  email_changeable?: boolean;
+  /** D-336 slice P — the contact that has the address the owner gave this one, as the server's
+   *  refusal named it: the two can be merged into it. */
+  merge_offer?: { email: string; name?: string; contact?: ContactRecord };
+  /** Where the two names differ, the one the merged contact keeps: the kept contact's first. */
+  merge_name?: string;
+  /** D-336 slice P's open item — the same for each other field the two hold differently. */
+  merge_picks?: Partial<Record<MergePickField, string>>;
+  /** The merge is under way. */
+  merging?: boolean;
 }
 
 interface TimelineSnapshot {
@@ -1267,6 +1363,7 @@ interface TimelineSnapshot {
 interface ContactDetailState {
   from_search?: boolean;
   identifiers?: ContactAdditionalIdentifiers;
+  mail?: { opening: boolean; error?: string; notice?: string };
   email: string;
   contact: ContactRecord | null;
   response: TimelineResponse | null;
@@ -1295,6 +1392,14 @@ interface ContactDetailState {
   history_failed?: boolean;
   /** D-325 P44 — the server can hide an episode cited here. */
   history_can_hide?: boolean;
+  /** D-336 slice D — the notes whose claim names this contact; `null` while loading. */
+  relationships?: { claims: readonly MemoryClaimsEntry[]; more?: boolean } | null;
+  relationships_failed?: boolean;
+  /** D-336 — which notes a "matched by name" line can link to this contact: the owner's own
+   *  (`memory.update`), an agent's (`memory.replace`, as the Memory lens's Replace does). */
+  relationships_can_link?: { own: boolean; agent: boolean };
+  /** The line being linked, and why it could not be; `linked` says it was. */
+  relationship_link?: { memory_id: string; busy: boolean; error?: string } | { linked: 'own' | 'agent' };
 }
 
 /** D-205 #2b — live progress of a running `contact.merge.scan_now`, assembled
@@ -1624,6 +1729,16 @@ const DATA_ROUTE_STYLES = `
   gap: 8px;
   margin: 10px 0;
 }
+/* D-336 — on a phone the phrase moves down whole, never "matched" on one line and "by name" on the next. */
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-relationship-match {
+  white-space: nowrap;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-mail-error {
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 [${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasion { flex: 1; min-inline-size: 0; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
 [${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasions { list-style: none; padding: 0; }
 [${DATA_ROUTE_HOST_ATTR}] .data-file-import-occasion legend { font-weight: 600; overflow-wrap: anywhere; }
@@ -1639,6 +1754,8 @@ const DATA_ROUTE_STYLES = `
 [${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] ul { margin: 0 0 10px; overflow-wrap: anywhere; }
 [${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] button { margin: 0 6px 6px 0; }
 [${DATA_ROUTE_HOST_ATTR}] [data-file-lifecycle] [role="alert"] { color: var(--danger); }
+[${DATA_ROUTE_HOST_ATTR}] [data-file-rename] label { display: grid; gap: 6px; max-width: 32rem; margin-bottom: 10px; }
+[${DATA_ROUTE_HOST_ATTR}] [data-file-rename] input { min-width: 0; width: 100%; box-sizing: border-box; }
 [${DATA_ROUTE_HOST_ATTR}] .data-input {
   min-width: min(280px, 100%);
   border: 1px solid var(--border);
@@ -2050,6 +2167,18 @@ const DATA_ROUTE_STYLES = `
   border-radius: 8px;
   background: var(--surface-sunk);
   font-size: 13px;
+}
+/* D-336 slice P — the Edit form's offer to merge, under the refusal it answers. */
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-merge-offer {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  margin: 0 0 12px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-merge-offer p {
+  margin: 0;
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-fields {
   display: grid;
@@ -2881,7 +3010,8 @@ const projectWorkEntityUpsert = (
 };
 
 const contactValuesFromRecord = (contact: ContactRecord): ContactDialogValues => ({
-  email: contact.email,
+  // A contact with no address is keyed on a placeholder, which is no address to show.
+  email: isMentionOnlyEmail(contact.email) ? '' : contact.email,
   name: contact.name ?? '',
   phone: contact.phone ?? '',
   company: contact.company ?? '',
@@ -2901,13 +3031,22 @@ const contactDialogFingerprint = (values: ContactDialogValues): string =>
 
 const validateContactDialog = (
   values: ContactDialogValues,
+  /** The address this save gives the contact: a `new` contact's (or, D-336 slice R, a saved
+   *  one changed), one a contact with no address may be given (`optional`, slice I), or the
+   *  one it has (`kept`), unchanged. */
+  address: 'new' | 'optional' | 'kept' = 'new',
 ): Partial<Record<keyof ContactDialogValues, string>> => {
   const errors: Partial<Record<keyof ContactDialogValues, string>> = {};
   const email = values.email.trim();
-  if (email.length === 0) {
-    errors.email = 'Email is required.';
+  if (address === 'kept') {
+    // An edit keeps the address the contact is keyed on, whatever it holds.
+  } else if (email.length === 0) {
+    if (address === 'new') errors.email = 'Email is required.';
   } else if (!email.includes('@')) {
     errors.email = 'An email address needs an @ in it.';
+  } else if (!isMailboxAddress(canonicalizeEmail(email))) {
+    // D-336 audits 2026-11-01 — the address a contact gets is checked whole: it cannot be changed.
+    errors.email = 'Write the email address alone, like dana@example.com.';
   }
   for (const key of ['birthday', 'anniversary'] as const) if (values[key].trim() && !isContactAnnualDate(values[key].trim())) errors[key] = 'Use YYYY-MM-DD or --MM-DD for an unknown year.';
   return errors;
@@ -3129,8 +3268,14 @@ const renderContactDialog = (
               'email',
               'Email',
               dialog.values.email,
-              dialog.mode === 'edit' || dialog.submitting,
-              error('email'),
+              (dialog.mode === 'edit' && dialog.email_addable !== true && dialog.email_changeable !== true) || dialog.submitting,
+              // D-336 slices I and R — a contact with no address can be given one, and one with
+              // an address can change it, keeping the old one as its second address.
+              `${error('email')}${dialog.email_addable === true
+                ? '<p class="data-row-subtle" data-contact-email-hint>No email address yet.</p>'
+                : dialog.email_changeable === true
+                  ? '<p class="data-row-subtle" data-contact-email-hint>If you change it, the old address stays with this contact as a second one.</p>'
+                  : ''}`,
             )}
             ${renderContactField(
               'name',
@@ -3166,20 +3311,112 @@ const renderContactDialog = (
             <p>Hidden, deceased and former-partner contacts are excluded from automatic birthday, occasion and memory suggestions. These marks are set by you.</p>
           </div>
           ${submitError}
+          ${renderContactMergeOffer(dialog)}
           <footer class="data-dialog-actions">
             <button type="button" class="data-button data-dialog-cancel"
-              ${DATA_ROUTE_ACTION_ATTR}="close-contact-dialog"${dialog.submitting
+              ${DATA_ROUTE_ACTION_ATTR}="close-contact-dialog"${dialog.submitting || dialog.merging === true
                 ? ' aria-disabled="true"'
                 : ''}>Cancel</button>
             <button type="button" class="data-button data-button--primary"
               ${DATA_ROUTE_ACTION_ATTR}="submit-contact-dialog"
-              ${dialog.submitting ? 'aria-disabled="true" aria-busy="true"' : ''}>${dialog.submitting ? 'Saving…' : 'Save'}</button>
+              ${dialog.submitting ? 'aria-disabled="true" aria-busy="true"' : dialog.merging === true ? 'aria-disabled="true"' : ''}>${dialog.submitting ? 'Saving…' : 'Save'}</button>
           </footer>
         </div>
         ${discardGuard}
       </section>
     </div>
   `;
+};
+
+/** D-336 slice P — the contact a refusal of an address names, when the server says which
+ *  (`details.reason: 'address_taken'`). An older server's refusal names none. */
+const mergeOfferOf = (err: unknown): { email: string; name?: string } | undefined => {
+  const details = (err as { details?: unknown } | null)?.details;
+  if (details === null || typeof details !== 'object') return undefined;
+  const { reason, contact_email, contact_name } = details as Record<string, unknown>;
+  if (reason !== 'address_taken' || typeof contact_email !== 'string' || contact_email.trim() === '') return undefined;
+  return {
+    email: contact_email.trim(),
+    ...(typeof contact_name === 'string' && contact_name.trim() !== '' ? { name: contact_name.trim() } : {}),
+  };
+};
+
+/** D-336 slice P — the two names a merge could keep, the kept contact's first; none where they
+ *  are the same, or one of the two has none. */
+const mergeNameChoices = (dialog: ContactDialogState): string[] => {
+  const kept = dialog.merge_offer?.name?.trim();
+  const other = dialog.original?.name?.trim();
+  return kept === undefined || kept === '' || other === undefined || other === '' || kept === other ? [] : [kept, other];
+};
+
+/** D-336 slice P's open item — the fields besides the name a merge asks about, each with what
+ *  its fieldset is called (the owner: "Every field that differs"). */
+const MERGE_PICK_FIELDS = [
+  ['phone', 'Phone'], ['company', 'Company'], ['birthday', 'Birthday'], ['anniversary', 'Anniversary'],
+] as const;
+type MergePickField = (typeof MERGE_PICK_FIELDS)[number][0];
+
+/** The two values a merge could keep for a field, the kept contact's first; none where they are
+ *  the same, one of the two has none, or the kept contact was not read. */
+const mergeFieldChoices = (dialog: ContactDialogState, field: MergePickField): string[] => {
+  const kept = dialog.merge_offer?.contact?.[field]?.trim();
+  const other = dialog.original?.[field]?.trim();
+  return kept === undefined || kept === '' || other === undefined || other === '' || kept === other ? [] : [kept, other];
+};
+
+/** The value the owner keeps for each field asked about: their pick, else the kept contact's. */
+const mergeFieldPicks = (dialog: ContactDialogState): Partial<Record<MergePickField, string>> => {
+  const picks: Partial<Record<MergePickField, string>> = {};
+  for (const [field] of MERGE_PICK_FIELDS) {
+    const choices = mergeFieldChoices(dialog, field);
+    if (choices.length > 0) picks[field] = dialog.merge_picks?.[field] ?? choices[0]!;
+  }
+  return picks;
+};
+
+/** D-336 slice P — under the refusal of an address another contact has: merge this contact
+ *  into that one. Merging moves this one's notes and details there, and the merge history can
+ *  separate them again. */
+const renderContactMergeOffer = (dialog: ContactDialogState): string => {
+  const offer = dialog.merge_offer;
+  if (offer === undefined) return '';
+  const name = offer.name ?? offer.email;
+  const busy = dialog.merging === true || dialog.submitting;
+  // A merge projects each field's strongest value, so the newer name would win: where the two
+  // differ, the owner says which to keep.
+  const names = mergeNameChoices(dialog);
+  const choice = names.length === 0 ? '' : `
+            <fieldset class="data-contact-merge-names">
+              <legend>Name to keep</legend>
+              ${names.map((option) => `<label><input type="radio" name="data-contact-merge-name"
+                ${DATA_ROUTE_ACTION_ATTR}="${DATA_ROUTE_CONTACT_MERGE_NAME_ACTION}"
+                ${DATA_ROUTE_CONTACT_MERGE_NAME_ATTR}="${e(option)}"
+                ${(dialog.merge_name ?? names[0]) === option ? 'checked' : ''}${busy ? ' disabled' : ''}>${e(option)}</label>`).join('')}
+            </fieldset>`;
+  // Slice P's open item — and each other field the two hold differently.
+  const kept = mergeFieldPicks(dialog);
+  const fields = MERGE_PICK_FIELDS.map(([field, label]) => {
+    const choices = mergeFieldChoices(dialog, field);
+    if (choices.length === 0) return '';
+    return `
+            <fieldset class="data-contact-merge-names">
+              <legend>${e(label)} to keep</legend>
+              ${choices.map((option) => `<label><input type="radio" name="data-contact-merge-${field}"
+                ${DATA_ROUTE_ACTION_ATTR}="${DATA_ROUTE_CONTACT_MERGE_FIELD_ACTION}"
+                ${DATA_ROUTE_CONTACT_MERGE_FIELD_ATTR}="${field}"
+                ${DATA_ROUTE_CONTACT_MERGE_VALUE_ATTR}="${e(option)}"
+                ${kept[field] === option ? 'checked' : ''}${busy ? ' disabled' : ''}>${e(option)}</label>`).join('')}
+            </fieldset>`;
+  }).join('');
+  return `
+          <div class="data-contact-merge-offer" ${DATA_ROUTE_CONTACT_MERGE_OFFER_ATTR}>
+            <p>If they are one person, merge them. This contact's notes and details join ${e(name)}'s.
+              You can separate them again from Find duplicates, under Merged history.</p>${choice}${fields}
+            <button type="button" class="data-button"
+              ${DATA_ROUTE_ACTION_ATTR}="${DATA_ROUTE_CONTACT_MERGE_ACTION}"
+              ${busy ? 'aria-disabled="true"' : ''}${dialog.merging === true ? ' aria-busy="true"' : ''}>${
+                dialog.merging === true ? 'Merging…' : `Merge into ${e(name)}`}</button>
+          </div>`;
 };
 
 const renderContactField = (
@@ -3356,6 +3593,18 @@ interface ContactDetailField {
  *  exactly those two, so a field that HAS provenance would render as if it had
  *  none — the silent-miss failure, on the one page whose whole job is provenance.
  *  The pairing is therefore a table, not an assumption. */
+/** D-336 slice H — a contact's address as the owner reads it. A contact with none is keyed
+ *  on a placeholder (`isMentionOnlyEmail`), which is never shown as one. */
+const contactAddress = (email: string): string => (isMentionOnlyEmail(email) ? 'No email address' : email);
+
+/** A contact as a reference field's picker offers it: its address under its name, none for
+ *  a contact keyed on a placeholder. The id stays the key a reference stores. */
+export const contactRefOption = (c: Pick<ContactRecord, 'email' | 'name'>): RefPicker.RefPickerOption => ({
+  id: c.email,
+  label: c.name ?? c.email,
+  ...(isMentionOnlyEmail(c.email) ? {} : { sublabel: c.email }),
+});
+
 const contactDetailFields = (contact: ContactRecord): ContactDetailField[] => {
   const rows: ContactDetailField[] = [];
   const push = (key: string, label: string, value: string | undefined): void => {
@@ -3519,6 +3768,46 @@ const renderContactLinks = (links: readonly PlatformIdEntry[]): string => {
 
 /** D-205 #2 — the contact detail (`#data/contact/<email>`): identity, the
  *  per-field provenance block, the platform links, then the activity timeline. */
+/** D-336 slice D — what memory says this contact is to others, one sentence a note
+ *  ("Mia is Dana Whitfield's daughter."), each opening its note. A note that names the
+ *  contact only in words may mean someone else of that name, so it says so. Nothing
+ *  shows while it loads or when no note names them; a failed read says it failed. */
+const renderContactRelationships = (state: ContactDetailState): string => {
+  const link = state.relationship_link;
+  const linked = link !== undefined && 'linked' in link ? `<p role="status">${link.linked === 'own' ? 'Linked.'
+    : 'Linked. The note is now yours, in place of the AI’s.'}</p>` : '';
+  if (state.relationships_failed === true) {
+    return `<section data-contact-relationships><h3 class="data-subsection-title" tabindex="-1">Relationships</h3>
+      ${linked}<p role="status">Relationships could not be read. Reopen the contact to retry.</p></section>`;
+  }
+  const found = state.relationships;
+  if (found === undefined || found === null || found.claims.length === 0) return linked === '' ? ''
+    : `<section data-contact-relationships><h3 class="data-subsection-title" tabindex="-1">Relationships</h3>${linked}</section>`;
+  const linkButton = (row: MemoryClaimsEntry): string => {
+    const can = state.relationships_can_link;
+    if (row.by !== 'name' || state.contact === null || relationshipEndToLink(row.claim, state.contact) === undefined
+      || !(row.origin_actor === 'user_self' ? can?.own : row.origin_actor === 'contracted_user' ? can?.agent : false)) return '';
+    const mine = link !== undefined && 'memory_id' in link && link.memory_id === row.memory_id ? link : undefined;
+    return ` <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="link-contact-relationship" data-relationship-id="${e(row.memory_id)}"`
+      + ` aria-label="${e(`Link to this contact: ${memoryClaimSentence(row.claim)}`)}"${mine?.busy ? ' aria-disabled="true" aria-busy="true"' : ''}>`
+      + `${mine?.busy ? 'Linking…' : 'Link to this contact'}</button>`
+      + `${mine?.error !== undefined ? `<span class="data-contact-mail-error" role="alert"> ${e(mine.error)}</span>` : ''}`;
+  };
+  return `<section data-contact-relationships><h3 class="data-subsection-title" tabindex="-1">Relationships</h3>
+    <ul class="data-contact-relationships">${found.claims.map((row) => `<li data-contact-relationship="${e(row.memory_id)}">
+      <a href="${e(serializeShellRoute('data', 'memory', row.memory_id))}">${e(memoryClaimSentence(row.claim))}</a>${row.by === 'name'
+        ? ' <span class="data-row-subtle data-contact-relationship-match">matched by name</span>' : ''}${linkButton(row)}</li>`).join('')}</ul>
+    ${linked}
+    ${found.more === true ? '<p class="data-row-subtle">The newest 50 are shown.</p>' : ''}</section>`;
+};
+
+/** D-336 — the end of a "matched by name" relationship that names this contact in words, and
+ *  that its relation lets be a person. None when both ends name them, which says nothing of
+ *  which one is them. */
+const relationshipEndToLink = (claim: MemoryClaim, contact: ContactRecord): 'subject' | 'object' | undefined =>
+  contact.contact_id === undefined || contact.name === undefined ? undefined
+    : claimEndNamingInWords(claim, contact.name, 'person');
+
 const renderContactDetailView = (
   state: ContactDetailState,
   loading: boolean,
@@ -3549,6 +3838,8 @@ const renderContactDetailView = (
       ? `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>No timeline available for this contact yet.</p>`
       : renderEntityDetailPanel({
           ...deriveEntityDetailProps(state.response, 'contact', state.email, now),
+          // D-336 slice I — a contact with no address goes by its name, never its placeholder.
+          ...(isMentionOnlyEmail(state.email) ? { targetLabel: contact?.name?.trim() || 'this contact' } : {}),
           // The contact title is h2 and the visible Activity section is h3.
           // Keep the shared panel below both instead of promoting its title
           // back to h2 (and its child sections back to h3).
@@ -3564,14 +3855,19 @@ const renderContactDetailView = (
           ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(state.email)}"${openingEditor
             ? ' aria-disabled="true" aria-busy="true"'
             : ''}>${openingEditor ? 'Opening editor…' : 'Edit'}</button>
+        ${state.mail && !loading ? `<button type="button" class="data-button data-button--primary"
+          ${DATA_ROUTE_ACTION_ATTR}="contact-email" ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(state.email)}"${state.mail.opening
+            ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.mail.opening ? 'Opening…' : 'Email'}</button>` : ''}
       </div>
+      ${state.mail?.error ? `<p class="data-contact-mail-error" role="alert">${e(state.mail.error)}</p>` : ''}
+      ${state.mail?.notice ? `<p role="status">${e(state.mail.notice)}</p>` : ''}
       <header class="data-contact-detail-header">
         <span class="data-contact-avatar data-contact-avatar--lg" aria-hidden="true">${e(
           contact !== null ? contactInitial(contact) : '@',
         )}</span>
         <span class="data-contact-detail-heading">
           <h2 class="data-section-title" ${DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR} tabindex="-1">${e(heading)}</h2>
-          <span class="data-row-meta">${e(state.email)}</span>
+          <span class="data-row-meta">${e(contactAddress(state.email))}</span>
           ${contact !== null
             ? `<span class="data-row-subtle">${e(contactSourceLabel(contact.source))} · ${e(String(contact.interaction_count))} interactions</span>`
             : ''}
@@ -3582,6 +3878,7 @@ const renderContactDetailView = (
         ${state.identifiers.emails.length ? `<div class="data-contact-field"><dt class="data-label">Other email addresses</dt><dd>${state.identifiers.emails.map(value => e(value)).join('<br />')}</dd></div>` : ''}
         ${state.identifiers.phones.length ? `<div class="data-contact-field"><dt class="data-label">Other phone numbers</dt><dd>${state.identifiers.phones.map(value => e(value)).join('<br />')}</dd></div>` : ''}
       </dl></section>` : ''}
+      ${renderContactRelationships(state)}
       <h3 class="data-subsection-title">Activity</h3>
       ${timeline}
       ${state.history !== undefined ? `<section data-contact-proactive-history><h3 class="data-subsection-title">Occasions and recorded episodes</h3>
@@ -4448,7 +4745,7 @@ const renderContactSurface = (
                 <span class="data-contact-avatar" aria-hidden="true">${e(contactInitial(contact))}</span>
                 <span class="data-contact-text">
                   <span class="data-row-title">${e(contactLabel(contact))}</span>
-                  <span class="data-row-meta">${e(contact.email)}${contact.company ? ` - ${e(contact.company)}` : ''}</span>
+                  <span class="data-row-meta">${e(contactAddress(contact.email))}${contact.company ? ` - ${e(contact.company)}` : ''}</span>
                   <span class="data-row-subtle">${e(contactSourceLabel(contact.source))} - ${e(String(contact.interaction_count))} interactions</span>
                   ${contactRollupChips(contactRollups?.[contact.email]).map((chip) => `
                     <span class="data-contact-rollup${chip.complete ? '' : ' data-contact-rollup--partial'}"
@@ -5145,6 +5442,7 @@ const renderWorkEntitySurface = (
   closeLabel?: string,
   projectView?: ProjectOverviewProps,
   taskBulk?: { html: string; selection: ReturnType<TaskBulkActions['selection']> },
+  projectLinkReview?: ProjectLinkReviewProps,
 ): string => {
   const options = [...sourceOptionsForKind(sources, state.kind)];
   if (state.selected_source_id !== null && !options.some((option) => option.id === state.selected_source_id)) {
@@ -5234,7 +5532,7 @@ const renderWorkEntitySurface = (
     loadingMore,
   });
   return renderWorkEntityPage({
-    state,
+    state: projectLinkReview ? { ...state, dialog: null } : state,
     source_options: options,
     rows,
     form_definition: definition,
@@ -5261,7 +5559,7 @@ const renderWorkEntitySurface = (
     ...(commitmentLifecycle !== undefined ? { commitment_lifecycle: commitmentLifecycle } : {}),
     ...(workEntityHistoryHtml !== '' ? { history_html: workEntityHistoryHtml } : {}),
     ...(footerHtml !== '' ? { footer_html: footerHtml } : {}),
-  });
+  }) + (projectLinkReview ? renderProjectLinkReview(projectLinkReview) : '');
 };
 
 const stableWorkEntityDialogValue = (value: unknown): unknown => {
@@ -5323,7 +5621,26 @@ const memoryComposeFingerprint = (compose: MemoryComposeState): string =>
     compose.kind,
     compose.summary,
     compose.body,
+    // D-336 slice E — a relationship added, changed or removed is a change too.
+    compose.claim ?? null,
   ]);
+
+/** D-336 slice E — the compose form's relationship as a claim to save: `empty` when all
+ *  three parts are blank (no relationship), or what is still missing. */
+const composeClaimToSave = (
+  claim: MemoryComposeClaim,
+): { claim: MemoryClaim } | { empty: true } | { error: string } => {
+  const end = (value: MemoryClaimEnd): MemoryClaimEnd | undefined =>
+    'text' in value ? (value.text.trim() === '' ? undefined : { text: value.text.trim() }) : value;
+  const subject = end(claim.subject);
+  const object = end(claim.object);
+  const relation = claim.relation.trim().replace(/\s+/g, ' ');
+  if (subject === undefined && object === undefined && relation === '') return { empty: true };
+  if (subject === undefined || object === undefined || relation === '') {
+    return { error: 'A relationship needs a first part, a relation and a second part. Fill in all three, or remove the relationship.' };
+  }
+  return { claim: { subject, relation, object } };
+};
 
 const targetWithAttr = (ev: Event, attr: string): HTMLElement | null => {
   const rawTarget = ev.target as (Element & {
@@ -5354,6 +5671,7 @@ export const bootstrapDataRoute = (
       MAIL_MESSAGE_STYLES,
       WORK_ENTITY_PAGE_STYLES,
       TASK_BULK_STYLES,
+      FILE_BATCH_STYLES,
       PROJECT_OVERVIEW_STYLES,
       // The mirror drill-down renders the ui-shared entity-detail panel;
       // bundle its CSS so the `.memory-*` classes paint (mirrors the
@@ -5403,7 +5721,7 @@ export const bootstrapDataRoute = (
   let disposed = false;
   let filePreviewAbort: AbortController | null = null;
   let fileDownloadAbort: AbortController | null = null;
-  let filePreviewRecord: { id: string; slug: string | null } | null = null;
+  let filePreviewRecord: { id: string; slug: string | null; fromList?: boolean } | null = null;
   let fileChatAbort: AbortController | null = null;
   let fileChatRecord: { id: string; slug: string | null } | null = null;
   // R18 — hydrate the initial tab from the `#data/<tab>` deep link (validated;
@@ -5415,6 +5733,8 @@ export const bootstrapDataRoute = (
   let activeLens: 'data' | 'memory' = opts.initialTab === 'memory' ? 'memory' : 'data';
   // Memory lens feed state — orthogonal to the Data tabs.
   let memoryEntries: MemoryListEntry[] = [];
+  /** D-336 slice K — what the relation list misses, read with the feed; absent → no line. */
+  let memoryClaimCounts: MemoryClaimCountsResult | undefined;
   let memoryOriginFilter: MemoryOriginFilter = opts.savedView?.definition.tab === 'memory'
     ? opts.savedView.definition.origin : 'all';
   let memoryFilteringOrigin: MemoryOriginFilter | null = null;
@@ -5431,6 +5751,8 @@ export const bootstrapDataRoute = (
     body: '',
     submitting: false,
   };
+  /** Numbers each relationship lookup and add on the Memory form, so only the newest one's answer lands. */
+  let composeLinkSeq = 0;
   let memoryComposeBaseline: string | null = null;
   let memoryComposeDiscardGuardOpen = false;
   let memoryComposeReturnFocus:
@@ -5499,6 +5821,8 @@ export const bootstrapDataRoute = (
   // D-324 — Data → Owned → Reminders keeps its own state, as Mail facts does.
   const remindersSurface = createRemindersSurface({
     callers: opts.reminderCallers ?? {},
+    ...(activeTab === 'reminder' && opts.initialEntityId ? { initialId: opts.initialEntityId } : {}),
+    onAddressChange: () => syncDataHash(),
     ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     actionAttr: DATA_ROUTE_ACTION_ATTR,
@@ -5506,6 +5830,10 @@ export const bootstrapDataRoute = (
   });
   const calendarCreateSurface = createCalendarCreateSurface({
     callers: opts.calendarCreateCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
+    ...(opts.contactListCaller ? { searchContacts: async (query: string) => {
+      const result = await opts.contactListCaller!({ query, limit: 8 });
+      return result.contacts.map(contact => ({ email: contact.email, ...(contact.name ? { display_name: contact.name } : {}) }));
+    } } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     context: () => ({ day: calendarAgenda.snapshot().window.day, zone: calendarAgenda.snapshot().zone,
       preferredSlug: calendarAgenda.selectedSource() }),
@@ -5519,6 +5847,7 @@ export const bootstrapDataRoute = (
       void openExplorerRecord(snapshot.record.record_id);
     },
   });
+  let calendarDeletionNotice = '';
   const calendarAgenda = createCalendarAgenda({
     ...(opts.collectionListInstancesCaller ? { listInstances: opts.collectionListInstancesCaller } : {}),
     ...(opts.collectionListCaller ? { list: opts.collectionListCaller } : {}),
@@ -5528,7 +5857,7 @@ export const bootstrapDataRoute = (
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => { if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null) render(); },
     onSources: (sources) => { explorerInstances = sources; },
-    onViewChange: () => { syncDataHash(); opts.onViewChange?.(currentView()); },
+    onViewChange: () => { calendarDeletionNotice = ''; syncDataHash(); opts.onViewChange?.(currentView()); },
     newEventButton: () => calendarCreateSurface.available() && !calendarCreateSurface.isOpen()
       ? `<button type="button" class="data-button data-button--primary" ${DATA_ROUTE_ACTION_ATTR}="calendar-create-new" data-calendar-create-focus="new">New event</button>` : '',
     createForm: () => calendarCreateSurface.render(),
@@ -5539,10 +5868,14 @@ export const bootstrapDataRoute = (
   const calendarEventSurface = createCalendarEventSurface({
     callers: opts.calendarEventCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
-    onRemoved: (recordId) => {
+    onRemoved: (recordId, returnToAgenda) => {
       explorerRecords = explorerRecords.filter(record => record.record_id !== recordId);
       if (explorerSelectedSlug) calendarAgenda.remove(explorerSelectedSlug, recordId);
       explorerLiveRefreshPending = true;
+      if (returnToAgenda) {
+        calendarDeletionNotice = 'Event is no longer in this calendar.';
+        closeExplorerDetail();
+      }
     },
     onSaved: (snapshot) => {
       const event = snapshot.event;
@@ -5553,11 +5886,32 @@ export const bootstrapDataRoute = (
     },
   });
   const mailMessageSurface = createMailMessageSurface({
-    document: doc, callers: opts.mailMessageCallers ?? {},
+    document: doc, callers: opts.mailMessageCallers ?? {}, files: opts.filePreviewCallers,
     ...(opts.mailCompose ? { compose: opts.mailCompose } : {}),
+    onStateChecked: (ref, state) => {
+      if (activeTab !== 'mail' || explorerSelectedSlug !== ref.slug) return;
+      const update = (record: CollectionRecord): CollectionRecord => {
+        if (record.record_id !== ref.record_id) return record;
+        if (record.hot_fields.is_read !== state.is_read || record.hot_fields.is_flagged !== state.is_flagged) explorerLiveRefreshPending = true;
+        return { ...record, hot_fields: { ...record.hot_fields, is_read: state.is_read, is_flagged: state.is_flagged } };
+      };
+      explorerRecords = explorerRecords.map(update);
+      if (explorerDetail?.record) explorerDetail = { ...explorerDetail, record: update(explorerDetail.record) };
+    },
+    onStateChanged: (slug, record) => {
+      if (activeTab !== 'mail' || explorerSelectedSlug !== slug) return;
+      explorerRecords = explorerRecords.map(row => row.record_id === record.record_id ? record : row);
+      if (explorerDetail?.record?.record_id === record.record_id) explorerDetail = { ...explorerDetail, record };
+      explorerLiveRefreshPending = true;
+    },
     onSelectedRecord: (slug, record) => {
       if (activeTab === 'mail' && explorerSelectedSlug === slug && explorerDetail) {
         explorerDetail = { ...explorerDetail, record_id: record.record_id, record };
+        explorerRecords = explorerRecords.map(row => {
+          if (row.record_id !== record.record_id) return row;
+          if (row.hot_fields.is_read !== record.hot_fields.is_read || row.hot_fields.is_flagged !== record.hot_fields.is_flagged) explorerLiveRefreshPending = true;
+          return { ...row, ...record, hot_fields: { ...row.hot_fields, ...record.hot_fields } };
+        });
       }
     },
     actionAttr: DATA_ROUTE_ACTION_ATTR, render: () => render(),
@@ -5673,6 +6027,7 @@ export const bootstrapDataRoute = (
   let noteCopying = false;
   let noteCopySequence = 0;
   let noteNotice: WorkEntityNoteView['notice'];
+  let projectLinkParentLabel: { id: string; title: string } | undefined;
   let noteDiscardToReader = false;
   let taskCompletionNotice: string | null = null;
   let taskCompletionPending: { id: string; sequence: number } | null = null;
@@ -5817,6 +6172,16 @@ export const bootstrapDataRoute = (
   let contactEditOpenSeq = 0;
   let openingContactEditEmail: string | null = null;
   let pendingContactEditFocusEmail: string | null = null;
+  let contactEmailOpenSeq = 0;
+  const retireContactEmailOpen = (): void => {
+    contactEmailOpenSeq++;
+    mailMessageSurface.cancelCreateOpen();
+    if (contactDetail?.mail) contactDetail.mail.opening = false;
+  };
+  const focusContactEmail = (email: string): void => {
+    Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="contact-email"]`))
+      .find(button => button.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR) === email)?.focus({ preventScroll: true });
+  };
   // D-205 #2b — the merge scan page. Null when closed.
   let contactScan: ContactScanState | null = null;
   const contactRecovery = createContactMergeRecovery(
@@ -5894,11 +6259,7 @@ export const bootstrapDataRoute = (
       query,
       limit: 20,
     });
-    return results.map((c) => ({
-      id: c.email,
-      label: c.name ?? c.email,
-      sublabel: c.email,
-    }));
+    return results.map(contactRefOption);
   };
 
   /** Best-effort display label for a stored contact id (an email).
@@ -5955,8 +6316,8 @@ export const bootstrapDataRoute = (
   let cloudFilePage = 1;
   let cloudLoadingMore = false; let cloudBrowseError = '';
   let savedFileQueryInput = '';
-  let savedFileReturn: { recordId: string; scrollTop: number } | null = null;
-  let pendingSavedFileRestore: { recordId: string | null; scrollTop: number } | null = null;
+  let savedFileReturn: { recordId: string; scrollTop: number; details?: boolean } | null = null;
+  let pendingSavedFileRestore: { recordId: string | null; scrollTop: number; details?: boolean } | null = null;
   let explorerSelectedSlug: string | null = null;
   // Keep intended source identity separately from the latest available roster.
   // A disconnected selection must survive repeated refreshes and tab returns.
@@ -6090,6 +6451,21 @@ export const bootstrapDataRoute = (
     render();
   });
   let explorerDetail: CollectionExplorerDetailState | null = null;
+  const fileBatch = createFileBatchActions({
+    files: () => savedFiles.snapshot().files,
+    archived: () => savedFiles.snapshot().archived,
+    active: () => activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && explorerDetail === null,
+    ready: () => {
+      const state = savedFiles.snapshot();
+      return activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && explorerDetail === null
+        && state.pages > 0 && !state.unsupported && !state.loading && !explorerLoading
+        && state.query === savedFileQueryInput.trim() && state.archived === showArchivedFiles;
+    },
+    usage: opts.fileUsageCaller, mutate: opts.fileMutateCaller,
+    changed: () => render(),
+    confirmed: id => { savedFiles.remove(new Set([id])); explorerRecords = explorerRecords.filter(row => row.record_id !== id); },
+  });
+  const focusFileBatch = (): void => { routeRoot.querySelector<HTMLElement>(`[${FILE_BATCH_FOCUS}="heading"]`)?.focus(); };
   let explorerLiveRefreshPending = false;
   // D-210 step 3 — the open calendar record's timeline (its move history:
   // D-120 write links + the D-119 `scheduled-from` origin edge). Fetched
@@ -6593,7 +6969,7 @@ export const bootstrapDataRoute = (
   // detail view).
   const renderExplorerTab = (tab: DataTabId): string => {
     if (tab === 'calendar' && explorerDetail === null
-      && (explorerError === undefined || pendingExplorerVerificationRecordId === null)) return calendarAgenda.render();
+      && (explorerError === undefined || pendingExplorerVerificationRecordId === null)) return `${calendarDeletionNotice ? `<p role="status" data-calendar-deletion-notice>${e(calendarDeletionNotice)}</p>` : ''}${calendarAgenda.render()}`;
     const downloadControl =
       tab === 'files' && opts.fileReadCaller !== undefined
         ? `<button type="button" class="data-button" ${DATA_ROUTE_DOWNLOAD_FILE_ATTR}
@@ -6649,14 +7025,14 @@ export const bootstrapDataRoute = (
       && detail?.record != null
       && readDisplayField(detail.record as unknown as Record<string, unknown>, 'status') !== 'cancelled'
       && opts.recipeExecuteCaller !== undefined
-      && !calendarEventSurface.isLoading() && !calendarEventSurface.isEditable() && !calendarEventSurface.isEditing()
+      && !calendarEventSurface.isLoading() && !calendarEventSurface.isEditable() && !calendarEventSurface.isEditing() && !calendarEventSurface.isDeleting()
         ? renderRescheduleControl(rescheduleForm)
         : '';
     const lifecycleControl = tab === 'files' && detail && /^file:[0-9a-f]{32}$/.test(detail.record_id)
       && opts.fileUsageCaller && opts.fileMutateCaller
       ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-usage">Manage file</button>` : '';
     const lifecyclePanel = lifecycleControl !== '' && fileLifecycle && detail && fileLifecycle.fileId === detail.record_id
-      ? renderFileLifecyclePanel(fileLifecycle, DATA_ROUTE_ACTION_ATTR) : '';
+      ? renderFileLifecyclePanel(fileLifecycle, DATA_ROUTE_ACTION_ATTR, !!opts.fileRenameCaller) : '';
     // A connected source's file, or one in a folder Recued watches, goes into
     // Chat as a copy: it is imported first.
     const importChatFile = (detail?.record_id.startsWith('file:remote:') || detail?.record_id.startsWith('file:local:'))
@@ -6687,6 +7063,10 @@ export const bootstrapDataRoute = (
     const savedFileState = { ...savedFileSnapshot, loading: savedFileSnapshot.loading || explorerLoading };
     const explorer = renderCollectionExplorer({
       collection: collectionName,
+      ...(tab === 'files' && opts.filePreviewCallers ? { rowOpenAction: 'file-open-preview',
+        rowSecondaryHtml: (record: CollectionRecord) => `<button type="button" class="col-explorer-file-details" ${DATA_ROUTE_ACTION_ATTR}="file-open-details" data-file-details-id="${e(record.record_id)}" aria-label="Details for ${e(String(record.hot_fields.filename ?? 'file'))}" title="File details"${fileBatch.busy() ? ' disabled' : ''}>Details</button>` } : {}),
+      ...(browsingSavedFiles && !savedFileState.unsupported && fileBatch.enabled()
+        ? { rowControlHtml: (record: CollectionRecord) => fileBatch.checkbox(record.record_id), disabled: fileBatch.busy() } : {}),
       instances: explorerInstances,
       ...(tab === 'files' ? { instanceLabels: new Map([
         ['received', 'Saved files'], ...cloudSources.map(source => [cloudFileSourceSlug(source.source_id), source.label] as const),
@@ -6743,14 +7123,15 @@ export const bootstrapDataRoute = (
         <a class="data-button" href="#yours/asset/${e(encodeURIComponent(opts.fileAttachmentReturn.assetId))}/view/files">Return to ${e(opts.fileAttachmentReturn.assetName)}</a></aside>` : ''}
       ${cloudSourcesError ? `<p role="alert">${e(cloudSourcesError)}
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-refresh">Reload file sources</button></p>` : ''}
-      ${opts.fileUsageCaller && explorerSelectedSlug === 'received' ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-toggle-archived" aria-pressed="${showArchivedFiles}">${showArchivedFiles ? 'Show current files' : 'Show archived files'}</button>` : ''}
+      ${opts.fileUsageCaller && explorerSelectedSlug === 'received' ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-toggle-archived" aria-pressed="${showArchivedFiles}"${fileBatch.busy() ? ' disabled' : ''}>${showArchivedFiles ? 'Show current files' : 'Show archived files'}</button>` : ''}
       ${fileLifecycleNotice ? `<p role="status" data-file-lifecycle-notice tabindex="-1">${e(fileLifecycleNotice)}</p>` : ''}
       ${uploadShell}
       ${renderFileSourceCta()}
       ${cloudBrowse}
-      ${browsingSavedFiles && !detail ? renderSavedFileSearch(savedFileState, savedFileQueryInput, DATA_ROUTE_ACTION_ATTR) : ''}
+      ${browsingSavedFiles && !detail ? renderSavedFileSearch(savedFileState, savedFileQueryInput, DATA_ROUTE_ACTION_ATTR, fileBatch.busy()) : ''}
+      ${browsingSavedFiles && !detail && !savedFileState.unsupported ? fileBatch.render() : ''}
       ${documentSearchReturn ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="${DOCUMENT_SEARCH_ACTION}back">← Back to search</button></p>` : ''}${explorer}
-      ${browsingSavedFiles && !detail ? renderSavedFileFooter(savedFileState, DATA_ROUTE_ACTION_ATTR, savedFileState.pages > 0 || explorerRecords.length > 0) : ''}
+      ${browsingSavedFiles && !detail ? renderSavedFileFooter(savedFileState, DATA_ROUTE_ACTION_ATTR, savedFileState.pages > 0 || explorerRecords.length > 0, fileBatch.busy()) : ''}
       ${cloudBrowseError ? `<p role="alert">${e(cloudBrowseError)}</p>` : ''}
       ${cloudSource && !detail && cloudFileCursor ? `<button type="button" class="data-button"
         ${DATA_ROUTE_ACTION_ATTR}="file-cloud-more"${cloudLoadingMore || explorerLoading ? ' disabled' : ''}>${cloudLoadingMore ? 'Loading…' : 'Load more files'}</button>` : ''}
@@ -6880,6 +7261,7 @@ export const bootstrapDataRoute = (
   };
 
   const render = (): void => {
+    if (activeLens !== 'data' || activeTab !== 'files' || explorerSelectedSlug !== SAVED_FILES_SLUG || explorerDetail !== null) fileBatch.reset();
     if (activeLens !== 'data' || activeTab !== 'contact' || !contactScan) contactRecovery.close();
     const focusedRecovery = (doc.activeElement as HTMLElement | null)?.getAttribute?.('data-merge-recovery-focus');
     documentSearch.setQuery(universalSearchQuery);
@@ -6908,6 +7290,9 @@ export const bootstrapDataRoute = (
       ?? doc.activeElement?.closest?.('[data-project-focus]')?.getAttribute('data-project-focus') : undefined;
     const projectScroll = projectRead ? pendingProjectRestore?.scrollTop
       ?? (routeRoot.querySelector?.('.project-overview') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
+    const oldProjectLinkReview = routeRoot.querySelector?.<HTMLElement>('[data-project-link-review]');
+    const oldProjectLinkFocus = oldProjectLinkReview?.contains(doc.activeElement) ? doc.activeElement : null;
+    const projectLinkFocus = oldProjectLinkFocus?.getAttribute('data-action');
     const revealAssetSearchFocus = pendingAssetSearchRestore?.reveal === true;
     const searchScrollTop = activeTab === 'search' ? pendingDocumentSearchRestore?.scrollTop ?? pendingAssetSearchRestore?.scrollTop ?? pendingContactSearchRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
       ?? (renderedActiveTab === 'search' && routeRoot.querySelector?.('.rq-search') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
@@ -6942,7 +7327,7 @@ export const bootstrapDataRoute = (
           .finally(() => { if (!disposed && generation === facetGeneration) { facetsLoading = false; if (dataSphere !== 'all' || facetError || spheresUnsupported) render(); } });
       }
     }
-    if (filePreviewRecord && (activeLens !== 'data' || activeTab !== 'files' || explorerDetail?.record_id !== filePreviewRecord.id
+    if (filePreviewRecord && (activeLens !== 'data' || activeTab !== 'files' || (filePreviewRecord.fromList ? explorerDetail !== null : explorerDetail?.record_id !== filePreviewRecord.id)
       || explorerSelectedSlug !== filePreviewRecord.slug)) { filePreviewAbort?.abort(); filePreviewRecord = null; }
     if (fileChatRecord && (activeLens !== 'data' || activeTab !== 'files' || explorerDetail?.record_id !== fileChatRecord.id
       || explorerSelectedSlug !== fileChatRecord.slug)) {
@@ -6970,6 +7355,7 @@ export const bootstrapDataRoute = (
     const focusedMailMessage = renderedActiveTab === 'mail' ? mailMessageSurface.captureFocus(activeElement) : null;
     // D-324 — so does the Reminders tab.
     const focusedTaskBulk = renderedActiveTab === 'task' ? activeElement?.getAttribute?.(TASK_BULK_FOCUS) ?? null : null;
+    const focusedFileBatch = renderedActiveTab === 'files' ? activeElement?.getAttribute?.(FILE_BATCH_FOCUS) ?? null : null;
     const focusedRemindersKey = renderedActiveTab === 'reminder'
       ? remindersSurface.captureFocus(activeElement)
       : null;
@@ -6977,8 +7363,10 @@ export const bootstrapDataRoute = (
     const focusedFileLifecycleKey = renderedActiveTab !== 'files' ? null
       : activeElement?.getAttribute?.('data-file-lifecycle') === '' ? 'panel'
       : activeElement?.getAttribute?.('data-file-lifecycle-notice') === '' ? 'notice'
-      : fileAction && ['file-usage', 'file-archive', 'file-restore', 'file-delete', 'file-delete-confirm', 'file-delete-cancel', 'file-toggle-archived'].includes(fileAction)
+      : fileAction && ['file-usage', 'file-archive', 'file-restore', 'file-delete', 'file-delete-confirm', 'file-delete-cancel', 'file-toggle-archived', 'file-rename', 'file-rename-input', 'file-rename-save', 'file-rename-cancel'].includes(fileAction)
         ? fileAction : null;
+    const filenameSelection = focusedFileLifecycleKey === 'file-rename-input'
+      ? { start: (activeElement as HTMLInputElement).selectionStart, end: (activeElement as HTMLInputElement).selectionEnd } : null;
     const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
       ? null
       : activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan'
@@ -7275,6 +7663,9 @@ export const bootstrapDataRoute = (
         pendingLoadedContactEmail = null;
       }
     }
+    const focusedContactEmail = activeLens === 'data' && renderedActiveTab === activeTab && activeTab === 'contact'
+      && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'contact-email'
+      ? activeElement.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR) : null;
     const focusedContactDetailEmail =
       activeLens === 'data'
       && renderedActiveTab === activeTab
@@ -7454,7 +7845,7 @@ export const bootstrapDataRoute = (
     if (pendingExplorerRecordFocus !== null) {
       const stillOwnedByRow =
         renderedActiveTab === pendingExplorerRecordFocus.tab
-        && activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR)
+        && (activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) ?? activeElement?.getAttribute?.('data-file-details-id'))
           === pendingExplorerRecordFocus.recordId;
       const liveOwnerMovedElsewhere =
         activeElement !== null
@@ -7600,10 +7991,11 @@ export const bootstrapDataRoute = (
                   title: projectWork.project.title, linked: entity.blocks_project_ids.includes(projectWork.project.id),
                 } } : {}) };
             })(),
-            projectChildReturn?.linking ? 'Back to commitments' : projectChildReturn ? 'Back to project' : workSearchReturn ? 'Back to search' : undefined,
+            projectChildReturn?.linking ? `Back to ${projectChildReturn.kind === 'task' ? 'tasks' : projectChildReturn.kind === 'note' ? 'notes' : 'commitments'}` : projectChildReturn ? 'Back to project' : workSearchReturn ? 'Back to search' : undefined,
             projectOverviewProps(),
             activeTab === 'task' && !workEntityState.dialog && taskBulk.enabled()
               ? { selection: taskBulk.selection(), html: taskBulk.render() } : undefined,
+            projectLinkReviewProps(),
           )
         : activeTab === 'search'
           ? renderUniversalSearch({
@@ -7682,6 +8074,7 @@ export const bootstrapDataRoute = (
     const lensBody = activeLens === 'memory'
       ? renderMemoryLens({
           entries: memoryEntries,
+          ...(memoryClaimCounts !== undefined ? { claimCounts: memoryClaimCounts } : {}),
           originFilter: memoryOriginFilter,
           loading: memoryLoading,
           ...(memoryError !== undefined ? { error: memoryError } : {}),
@@ -7800,7 +8193,7 @@ export const bootstrapDataRoute = (
       ${routeReturn}
       ${projectChildReturn && workEntityState.dialog === null
         ? `<aside class="project-link-context"><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-project-overview">Back to project</button>
-          ${projectChildReturn.linking && projectWork ? `<p>Choose a saved commitment to link to <strong>${e(projectWork.project.title)}</strong>. Open it and choose Link to project.</p>` : ''}</aside>` : ''}
+          ${projectChildReturn.linking && projectWork ? `<p>Choose a saved ${projectChildReturn.kind} to link to <strong>${e(projectWork.project.title)}</strong>. ${projectChildReturn.kind === 'commitment' ? 'Open it and choose Link to project.' : 'Open it to review the project link before saving.'}</p>` : ''}</aside>` : ''}
       ${!projectChildReturn && workSearchReturn && workEntityState.dialog === null
         ? `<p><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-work-search">Back to search</button></p>` : ''}
       ${renderLensSwitcher(
@@ -7809,7 +8202,7 @@ export const bootstrapDataRoute = (
         memoryExporting
           || memoryFilteringOrigin !== null
           || hasRecordsInFlightWork()
-          || contactRecovery.busy(),
+          || contactRecovery.busy() || fileBatch.busy(),
       )}
       ${activeLens === 'memory'
         ? ''
@@ -7818,7 +8211,7 @@ export const bootstrapDataRoute = (
             savingFormResponse
               || formResponseDiscardGuardOpen
               || hasRecordsInFlightWork()
-              || contactRecovery.busy(),
+              || contactRecovery.busy() || fileBatch.busy(),
           )}
       ${loading && activeLens !== 'memory' && activeTab !== 'calendar' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(errors)}
@@ -7856,7 +8249,7 @@ export const bootstrapDataRoute = (
       routeRoot.innerHTML = markup;
     }
     sphereControl?.dispose(); sphereControl = undefined;
-    if (opts.spheres && activeLens === 'data') {
+    if (opts.spheres && activeLens === 'data' && !projectLinkReviewProps()) {
       const workId = isWorkEntityTab(activeTab) && workEntityState.dialog?.mode === 'edit' ? workEntityState.dialog.entity_id : activeTab === 'booking' ? bookingDetailId : null;
       const ref = activeTab === 'contact' && contactDetail?.contact
         ? { collection: 'contact', id: contactDetail.contact.contact_id ?? contactDetail.email }
@@ -7892,6 +8285,12 @@ export const bootstrapDataRoute = (
           : focusedSummary;
         focusTarget?.focus({ preventScroll: true });
       }
+    }
+    if (oldProjectLinkFocus) {
+      const review = routeRoot.querySelector<HTMLElement>('[data-project-link-review]');
+      const target = projectLinkFocus ? review?.querySelector<HTMLElement>(`[data-action="${projectLinkFocus}"]`)
+        : review?.querySelector<HTMLElement>(oldProjectLinkFocus.hasAttribute('role') ? '[role="alert"]' : '.work-entity-dialog-title');
+      target?.focus({ preventScroll: true });
     }
     renderedActiveTab = activeTab;
     if (recordsFocus) focusRecordsIdentity(recordsFocus);
@@ -8096,6 +8495,8 @@ export const bootstrapDataRoute = (
           focusedDraftField.selectionDirection ?? undefined);
       }
     }
+    if (focusedContactEmail !== null && activeLens === 'data' && activeTab === 'contact'
+      && contactDetail?.email === focusedContactEmail) focusContactEmail(focusedContactEmail);
     if (
       focusedContactDetailEmail !== null
       && activeLens === 'data'
@@ -8513,6 +8914,7 @@ export const bootstrapDataRoute = (
       }
     }
     if (activeLens === 'data' && activeTab === 'task') taskBulk.restoreFocus(routeRoot, focusedTaskBulk);
+    if (activeLens === 'data' && activeTab === 'files') fileBatch.restoreFocus(routeRoot, focusedFileBatch);
     if (activeLens === 'data' && activeTab === 'mail_fact') {
       mailFacts.restoreFocus(routeRoot, focusedMailFactsKey);
     }
@@ -8531,6 +8933,9 @@ export const bootstrapDataRoute = (
       const target = focusedFileLifecycleKey === 'panel' || focusedFileLifecycleKey === 'file-usage' ? panel ?? notice
         : focusedFileLifecycleKey === 'notice' ? notice
         : routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${focusedFileLifecycleKey}"]:not(:disabled)`) ?? panel ?? notice;
+      if (filenameSelection && target?.tagName === 'INPUT' && filenameSelection.start !== null && filenameSelection.end !== null) {
+        (target as HTMLInputElement).setSelectionRange(filenameSelection.start, filenameSelection.end);
+      }
       target?.focus({ preventScroll: focusedFileLifecycleKey !== 'file-usage' && !(target === notice && focusedFileLifecycleKey !== 'notice') });
     }
     // Attach live pickers to any `data.contact` ref shells the work-entity
@@ -8591,8 +8996,9 @@ export const bootstrapDataRoute = (
     if (savedFileListVisible) {
       const origin = pendingSavedFileRestore;
       if (origin) {
-        const row = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${COLLECTION_RECORD_ID_ATTR}]`))
-          .find(node => node.getAttribute(COLLECTION_RECORD_ID_ATTR) === origin.recordId);
+        const attribute = origin.details ? 'data-file-details-id' : COLLECTION_RECORD_ID_ATTR;
+        const row = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${attribute}]`))
+          .find(node => node.getAttribute(attribute) === origin.recordId);
         (row ?? routeRoot.querySelector<HTMLElement>(`input[${DATA_ROUTE_ACTION_ATTR}="file-saved-query"]`))?.focus({ preventScroll: true });
         pendingSavedFileRestore = null;
       } else if (focusedSavedFileAction && ['file-saved-search', 'file-saved-more', 'file-saved-retry', 'file-saved-check'].includes(focusedSavedFileAction)) {
@@ -8979,6 +9385,9 @@ export const bootstrapDataRoute = (
       memoryError = 'Recued cannot list memories here.';
       return;
     }
+    // D-336 slice K — read beside the feed, and never its failure: a server without the
+    // count, or one that cannot give it, leaves the lens without the line.
+    const counts = opts.memoryClaimCountsCaller?.().catch(() => undefined);
     try {
       const actors = memoryFilterActors(memoryOriginFilter);
       const response = await opts.memoryListCaller({
@@ -8986,12 +9395,16 @@ export const bootstrapDataRoute = (
         limit: DEFAULT_LIMIT,
       });
       if (disposed || generation !== loadGeneration) return;
+      const counted = await counts;
+      if (disposed || generation !== loadGeneration) return;
+      memoryClaimCounts = counted;
       memoryEntries = [...response.entries];
       memoryCursor = response.next_cursor ?? null;
       memoryError = undefined;
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
       memoryEntries = [];
+      memoryClaimCounts = undefined;
       // ⚠ Cleared with the entries. A stale cursor beside an empty list offers
       // a "Load more" that pages from a feed the user is no longer looking at.
       memoryCursor = null;
@@ -9085,10 +9498,12 @@ export const bootstrapDataRoute = (
   };
 
   const browseSavedFiles = async (action: 'search' | 'more' | 'retry'): Promise<void> => {
+    if (fileBatch.busy()) { focusFileBatch(); return; }
     if (activeLens !== 'data' || activeTab !== 'files' || explorerSelectedSlug !== SAVED_FILES_SLUG
       || explorerDetail !== null || !opts.fileListCaller) return;
     const state = savedFiles.snapshot();
     if (action === 'more' && (!state.canLoadMore || explorerLoading) || action === 'retry' && (state.loading || explorerLoading)) return;
+    if (action !== 'more') fileBatch.reset();
     const seq = ++explorerSeq;
     explorerLoading = false; savedFileReturn = null;
     pendingSavedFileRestore = action === 'search' ? { recordId: null, scrollTop: 0 } : null;
@@ -9402,6 +9817,7 @@ export const bootstrapDataRoute = (
   const selectExplorerInstance = async (slug: string): Promise<void> => {
     const platform = EXPLORER_TAB_PLATFORM[activeTab];
     if (platform === undefined || slug === explorerSelectedSlug) return;
+    if (!beforeLeaveFileRename()) return;
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
     if (!calendarCreateSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
@@ -9555,13 +9971,18 @@ export const bootstrapDataRoute = (
   };
 
   const openExplorerRecord = async (record_id: string): Promise<void> => {
+    if (!beforeLeaveFileRename()) return;
+    if (fileBatch.busy()) { focusFileBatch(); return; }
+    fileBatch.reset();
     if (!calendarCreateSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
+    calendarDeletionNotice = '';
     calendarEventSurface.reset();
     mailMessageSurface.reset();
     if (activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller) {
-      if (explorerDetail === null) savedFileReturn = { recordId: record_id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+      if (explorerDetail === null) savedFileReturn = { recordId: record_id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+        details: (doc.activeElement as HTMLElement | null)?.getAttribute('data-file-details-id') === record_id };
       savedFiles.cancel(); explorerLoading = false;
     }
     fileLifecycle = undefined; fileLifecycleGeneration++; fileLifecycleNotice = '';
@@ -9573,7 +9994,7 @@ export const bootstrapDataRoute = (
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     pendingExplorerRecordFocus =
       renderedActiveTab === activeTab
-      && activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) === record_id
+      && (activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) ?? activeElement?.getAttribute?.('data-file-details-id')) === record_id
         ? { tab: activeTab, recordId: record_id }
         : null;
     if (isSingleCollectionTab(activeTab)) {
@@ -9647,6 +10068,7 @@ export const bootstrapDataRoute = (
   };
 
   const closeExplorerDetail = (alreadyNavigated = false): void => {
+    if (!beforeLeaveFileRename()) return;
     if (activeTab === 'files' && documentSearchReturn) { returnToDocumentSearch(alreadyNavigated); return; }
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => closeExplorerDetail(alreadyNavigated))) return;
@@ -9687,13 +10109,14 @@ export const bootstrapDataRoute = (
     }
     render();
     if (returnRecordId !== null) {
+      const attribute = activeTab === 'files' && opts.filePreviewCallers ? 'data-file-details-id' : COLLECTION_RECORD_ID_ATTR;
       const row = Array.from(
         routeRoot.querySelectorAll<HTMLElement>(
-          `[${COLLECTION_RECORD_ID_ATTR}]`,
+          `[${attribute}]`,
         ),
       ).find(
         (candidate) =>
-          candidate.getAttribute(COLLECTION_RECORD_ID_ATTR) === returnRecordId,
+          candidate.getAttribute(attribute) === returnRecordId,
       );
       const source = explorerSelectedSlug === null
         ? null
@@ -10679,10 +11102,14 @@ export const bootstrapDataRoute = (
   };
 
   const startRefresh = (): void => {
+    if (!beforeLeaveFileRename()) return;
+    if (fileBatch.busy()) { focusFileBatch(); return; }
+    fileBatch.reset();
     if (taskBulk.busy()) { focusTaskBatch(); return; }
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(startRefresh)) return;
     calendarEventSurface.reset();
+    retireContactEmailOpen();
     mailMessageSurface.reset();
     pendingLoadPromise = refreshActive();
   };
@@ -11136,6 +11563,7 @@ export const bootstrapDataRoute = (
   // replace, and neither remounts the shell. Reads state so the URL always
   // matches what's rendered; history failures remain best-effort.
   const currentDeepLinkEntity = (): string | undefined => {
+    if (activeTab === 'reminder') return remindersSurface.detailId();
     // D-205 #2b — the scan page is the reserved `scan` literal; otherwise the
     // open contact's email. Only one of the two can be open at a time.
     if (activeTab === 'contact') {
@@ -11320,7 +11748,10 @@ export const bootstrapDataRoute = (
     preserveWorkSearch = false,
   ): Promise<void> => {
     if (contactRecovery.busy()) return;
+    if (projectLinkReviewProps()?.busy) { focusWorkEntityDialog(); return; }
+    if (fileBatch.busy()) { focusFileBatch(); return; }
     if (activeTab === tab && sourceSlug === undefined) return;
+    if (!beforeLeaveFileRename()) return;
     if (taskBulk.busy()) { focusTaskBatch(); return; }
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch); })) return;
@@ -11429,6 +11860,8 @@ export const bootstrapDataRoute = (
   const returnToContactSearch = (alreadyNavigated = false): void => {
     const origin = contactSearchReturn;
     if (!origin || disposed) return;
+    if (!mailMessageSurface.beforeLeave()) return;
+    mailMessageSurface.reset();
     contactSearchReturn = null; contactDetail = null; loadingContactDetail = false;
     cancelContactEditOpen(); pendingContactDetailFocusEmail = null;
     loadGeneration += 1; navigationGeneration += 1; universalSearchNavigation = navigationGeneration;
@@ -11513,6 +11946,7 @@ export const bootstrapDataRoute = (
   };
 
   const returnToDocumentSearch = (alreadyNavigated = false): void => {
+    if (!beforeLeaveFileRename()) return;
     const origin = documentSearchReturn;
     if (!origin || disposed) return;
     documentSearchReturn = null; documentSearchOpening = null;
@@ -11530,6 +11964,15 @@ export const bootstrapDataRoute = (
     filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
     filePreviewRecord = { id: fileId, slug: explorerSelectedSlug };
     void openFilePreview(doc, { record_id: fileId }, opts.filePreviewCallers, abort.signal).finally(() => {
+      if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
+    });
+  };
+  const previewListedFile = (fileId: string): void => {
+    const record = explorerRecords.find(row => row.record_id === fileId);
+    if (!record || activeTab !== 'files' || explorerDetail !== null || !opts.filePreviewCallers || fileBatch.busy()) return;
+    filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
+    filePreviewRecord = { id: fileId, slug: explorerSelectedSlug, fromList: true };
+    void openFilePreview(doc, { record_id: fileId, filename: String(record.hot_fields.filename ?? 'File preview') }, opts.filePreviewCallers, abort.signal).finally(() => {
       if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
     });
   };
@@ -11557,6 +12000,9 @@ export const bootstrapDataRoute = (
   // D-198 Slice 1b — switch the Data | Memory lens. Orthogonal to the tab; the
   // Data lens preserves its active tab + open detail when you come back.
   const selectLens = async (lens: 'data' | 'memory'): Promise<void> => {
+    if (lens !== activeLens && !beforeLeaveFileRename()) return;
+    if (projectLinkReviewProps()?.busy) { focusWorkEntityDialog(); return; }
+    if (fileBatch.busy()) { focusFileBatch(); return; }
     if (taskBulk.busy()) { focusTaskBatch(); return; }
     if (lens !== activeLens && !mailMessageSurface.beforeLeave()) return;
     if (lens !== activeLens && !calendarEventSurface.beforeLeave(() => { void selectLens(lens); })) return;
@@ -11617,6 +12063,7 @@ export const bootstrapDataRoute = (
     cancelContactEditOpen();
     if (lens === 'memory') closeFormResponseRunModal();
     taskBulk.reset();
+    retireContactEmailOpen();
     activeLens = lens;
     syncDataHash();
     pendingLoadPromise = refreshActive();
@@ -11678,6 +12125,165 @@ export const bootstrapDataRoute = (
       ...(summary !== undefined ? { summary } : {}),
       ...(body !== undefined ? { body } : {}),
     };
+    // D-336 slice E — an end written as words has its own input; a linked one has none.
+    const claim = memoryCompose.claim;
+    if (claim !== undefined) {
+      const subject = read('claim-subject');
+      const relation = read('claim-relation');
+      const object = read('claim-object');
+      memoryCompose = {
+        ...memoryCompose,
+        claim: {
+          subject: subject !== undefined && 'text' in claim.subject ? { text: subject } : claim.subject,
+          relation: relation ?? claim.relation,
+          object: object !== undefined && 'text' in claim.object ? { text: object } : claim.object,
+        },
+      };
+    }
+  };
+
+  /** D-336 slice E — set the relationship being written. A new note's summary follows
+   *  it until the owner writes their own (§3.5): while typing (`paint` false) the
+   *  summary's input is updated in place, so the caret stays where it is. */
+  const setComposeClaim = (claim: MemoryComposeClaim | undefined, paint: boolean): void => {
+    const { claim: _previous, linking: _linking, ...rest } = memoryCompose;
+    memoryCompose = claim === undefined ? rest : { ...rest, claim };
+    if (memoryCompose.summaryFollows === true && claim !== undefined) {
+      const built = composeClaimToSave(claim);
+      const summary = 'claim' in built ? memoryClaimSentence(built.claim) : '';
+      memoryCompose = { ...memoryCompose, summary };
+      if (!paint) {
+        const input = routeRoot.querySelector?.(`[${MEMORY_FIELD_ATTR}="summary"]`) as HTMLInputElement | null;
+        if (input) input.value = summary;
+      }
+    }
+    if (paint) render();
+  };
+
+  const focusComposeClaimField = (field: string): void => {
+    (routeRoot.querySelector?.(`[${MEMORY_FIELD_ATTR}="${field}"]`) as HTMLElement | null)?.focus?.({ preventScroll: true });
+  };
+
+  /** D-336 slice E — offer the records one end's words could mean: contacts, or the
+   *  things the owner keeps. Linking is an offer, never a step (§3.6). */
+  const linkComposeClaimEnd = async (end: 'subject' | 'object', kind: 'contact' | 'asset'): Promise<void> => {
+    syncMemoryComposeFromDom();
+    const claim = memoryCompose.claim;
+    if (claim === undefined) return;
+    const value = claim[end];
+    const words = 'text' in value ? value.text.trim() : '';
+    if (words === '') {
+      memoryCompose = { ...memoryCompose, linking: { end, kind, loading: false, options: [], error: 'Write the name first, then link it.' } };
+      render();
+      return;
+    }
+    const request = (composeLinkSeq += 1);
+    const linking = { end, kind, loading: true, options: [], request };
+    memoryCompose = { ...memoryCompose, linking };
+    render();
+    // The answer to this lookup only: a newer one replaces it (audit 2026-11-01).
+    const still = (): boolean => !disposed && memoryCompose.open && memoryCompose.linking?.request === request;
+    try {
+      let options: Array<{ id: string; name: string; detail?: string }> = [];
+      if (kind === 'contact' && opts.contactListCaller !== undefined) {
+        // A contact with no address is keyed on a placeholder: it shows its name alone.
+        options = (await opts.contactListCaller({ query: words, limit: 8 })).contacts
+          .map((c) => ({ id: c.contact_id ?? c.email, name: c.name ?? c.email, ...(isMentionOnlyEmail(c.email) ? {} : { detail: c.email }) }));
+      } else if (kind === 'asset' && opts.workEntityListCaller !== undefined) {
+        // The work search has no things; the list does, matched here by name.
+        const needle = words.toLowerCase();
+        options = (await opts.workEntityListCaller({ kind: 'asset', limit: 200 })).entities
+          .flatMap((row) => (row._kind === 'asset' && row.name.toLowerCase().includes(needle) ? [{ id: row.id, name: row.name }] : []))
+          .slice(0, 8);
+      }
+      if (!still()) return;
+      memoryCompose = {
+        ...memoryCompose,
+        linking: options.length > 0
+          ? { end, kind, loading: false, options, request }
+          : {
+              end, kind, loading: false, options, request,
+              error: kind === 'contact' ? `No contact matches “${words}”.` : `Nothing you own matches “${words}”.`,
+              // D-336 slice H — nobody by that name: the picker can make the contact (§3.6).
+              // Slice L: or the thing, with one key for the offer, so a retry adds it once.
+              ...(kind === 'contact' && opts.contactCreateByNameCaller !== undefined ? { addable: words } : {}),
+              ...(kind === 'asset' && opts.assetAddCaller !== undefined
+                ? { addable: words, addKey: globalThis.crypto.randomUUID() } : {}),
+            },
+      };
+    } catch (err) {
+      if (!still()) return;
+      memoryCompose = { ...memoryCompose, linking: { end, kind, loading: false, options: [], error: errMessage(err), request } };
+    }
+    render();
+  };
+
+  /** D-336 slice H — add the words the picker found nobody for as a contact of the owner's,
+   *  and link the end to it. The contact is theirs once added, whether or not the note is
+   *  saved. */
+  const addComposeClaimContact = async (end: 'subject' | 'object'): Promise<void> => {
+    syncMemoryComposeFromDom();
+    const linking = memoryCompose.linking;
+    const name = linking?.addable;
+    if (linking === undefined || linking.end !== end || name === undefined || linking.adding === true
+      || opts.contactCreateByNameCaller === undefined) return;
+    const { error: _error, ...adding } = linking;
+    const request = (composeLinkSeq += 1);
+    memoryCompose = { ...memoryCompose, linking: { ...adding, adding: true, request } };
+    render();
+    // The answer to this add only: one for an older add, back after this began, is dropped.
+    const still = (): boolean => !disposed && memoryCompose.open && memoryCompose.linking?.request === request;
+    try {
+      const { contact } = await opts.contactCreateByNameCaller({ name });
+      const claim = memoryCompose.claim;
+      if (!still() || claim === undefined) return;
+      if (contact.contact_id === undefined) throw new Error('The contact was added, but it cannot be linked from here. Link it with Link to a contact.');
+      setComposeClaim({ ...claim, [end]: { contact_id: contact.contact_id, name: contact.name?.trim() || name } }, true);
+      (routeRoot.querySelector?.(`[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_CLAIM_UNLINK_ACTION}"][${MEMORY_CLAIM_END_ATTR}="${end}"]`) as HTMLElement | null)
+        ?.focus?.({ preventScroll: true });
+    } catch (err) {
+      if (!still()) return;
+      const older = (err as { code?: unknown } | null)?.code === 'unknown_method';
+      const { addable: _addable, ...kept } = linking;
+      memoryCompose = {
+        ...memoryCompose,
+        linking: older
+          ? { ...kept, adding: false, error: MEMORY_CLAIM_ADD_CONTACT_UPDATE }
+          : { ...linking, adding: false, error: errMessage(err) },
+      };
+      render();
+    }
+  };
+
+  /** D-336 slice L — add the words the picker found nothing for as a thing the owner owns, and
+   *  link the end to it. The thing is theirs once added, whether or not the note is saved. */
+  const addComposeClaimThing = async (end: 'subject' | 'object'): Promise<void> => {
+    syncMemoryComposeFromDom();
+    const linking = memoryCompose.linking;
+    const name = linking?.addable;
+    const key = linking?.addKey;
+    if (linking === undefined || linking.end !== end || linking.kind !== 'asset' || name === undefined || key === undefined
+      || linking.adding === true || opts.assetAddCaller === undefined) return;
+    const { error: _error, ...adding } = linking;
+    const request = (composeLinkSeq += 1);
+    memoryCompose = { ...memoryCompose, linking: { ...adding, adding: true, request } };
+    render();
+    // The answer to this add only: one for an older add, back after this began, is dropped.
+    const still = (): boolean => !disposed && memoryCompose.open && memoryCompose.linking?.request === request;
+    try {
+      const { id } = await opts.assetAddCaller({ name, idempotency_key: key });
+      const claim = memoryCompose.claim;
+      if (!still() || claim === undefined) return;
+      if (id === undefined) throw new Error('The thing was added, but it cannot be linked from here. Link it with Link to a thing you own.');
+      setComposeClaim({ ...claim, [end]: { asset_id: id, name } }, true);
+      (routeRoot.querySelector?.(`[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_CLAIM_UNLINK_ACTION}"][${MEMORY_CLAIM_END_ATTR}="${end}"]`) as HTMLElement | null)
+        ?.focus?.({ preventScroll: true });
+    } catch (err) {
+      if (!still()) return;
+      // The key stays with the offer, so trying again cannot add the thing twice.
+      memoryCompose = { ...memoryCompose, linking: { ...linking, adding: false, error: errMessage(err) } };
+      render();
+    }
   };
 
   const focusMemoryComposeField = (field: 'kind' | 'summary' | 'body'): void => {
@@ -11875,6 +12481,11 @@ export const bootstrapDataRoute = (
         summary: entry.summary ?? '',
         body: entry.body ?? '',
         submitting: false,
+        // D-336 slice E — the note's relationship, to edit beside its summary. A Replace
+        // starts from the agent's, so the owner can link a name in their version.
+        ...(entry.claim !== undefined
+          ? { claim: { subject: entry.claim.subject, relation: entry.claim.relation, object: entry.claim.object } }
+          : {}),
       };
       memoryEditOpeningId = null;
       memoryEditError = null;
@@ -11920,6 +12531,21 @@ export const bootstrapDataRoute = (
       render();
       return;
     }
+    // D-336 slice E — the relationship: all three parts, or none. On an edit, a
+    // relationship removed (or left blank) is dropped from the note.
+    let claimArg: { claim: MemoryClaim } | { claim: null } | Record<string, never> = {};
+    if (memoryCompose.claim !== undefined) {
+      const built = composeClaimToSave(memoryCompose.claim);
+      if ('error' in built) {
+        memoryCompose = { ...memoryCompose, error: built.error };
+        render();
+        return;
+      }
+      if ('claim' in built) claimArg = { claim: built.claim };
+      else if (isEdit) claimArg = { claim: null };
+    } else if (isEdit) {
+      claimArg = { claim: null };
+    }
     const draft = { kind: memoryCompose.kind, summary: memoryCompose.summary, body: memoryCompose.body };
     const editId = memoryCompose.editId;
     memoryCompose = { ...memoryCompose, submitting: true, error: undefined };
@@ -11933,14 +12559,16 @@ export const bootstrapDataRoute = (
           kind: draft.kind,
           ...(draft.summary.length > 0 ? { summary: draft.summary } : {}),
           body: draft.body,
+          ...('claim' in claimArg && claimArg.claim !== null ? { claim: claimArg.claim } : {}),
         })).memory_id;
       } else if (isEdit && editId !== undefined && updateCaller !== undefined) {
-        await updateCaller({ memory_id: editId, kind: draft.kind, summary: draft.summary, body: draft.body });
+        await updateCaller({ memory_id: editId, kind: draft.kind, summary: draft.summary, body: draft.body, ...claimArg });
       } else if (createCaller !== undefined) {
         await createCaller({
           kind: draft.kind,
           ...(draft.summary.length > 0 ? { summary: draft.summary } : {}),
           body: draft.body,
+          ...('claim' in claimArg && claimArg.claim !== null ? { claim: claimArg.claim } : {}),
         });
       }
       if (disposed) return;
@@ -12536,6 +13164,8 @@ export const bootstrapDataRoute = (
         if (row.links !== undefined && row.links.length > 0) {
           entry.provenance_entity_ids = row.links.map((l) => l.entity_id);
         }
+        // D-336 §3.8 — a note's claim goes with it, a linked end as its name and id.
+        if (row.claim !== undefined) entry.claim = row.claim;
         if (row.has_body === true && getCaller !== undefined) {
           try {
             const full = await getCaller({ memory_id: row.memory_id });
@@ -12742,6 +13372,7 @@ export const bootstrapDataRoute = (
 
   const hasUnsavedWorkEntityDialog = (): boolean => {
     if (activeTab === 'project' && projectWork && !projectEditing) return false;
+    if (projectLinkReviewProps()) return false;
     syncWorkEntityDialogFromDom();
     return workEntityState.dialog !== null
       && workEntityDialogBaseline !== null
@@ -12793,7 +13424,7 @@ export const bootstrapDataRoute = (
     }
     workEntityState = closeDialogTransition(workEntityState);
     retireWorkEntityDialogDraft();
-    if (projectChildReturn?.linking && activeTab === 'commitment') {
+    if (projectChildReturn?.linking && activeTab === projectChildReturn.kind) {
       syncDataHash(); render(); focusWorkEntityDialogReturnTarget(); return;
     }
     if (projectChildReturn) { returnToProjectOverview(); return; }
@@ -12880,7 +13511,8 @@ export const bootstrapDataRoute = (
       source_incomplete: projectWork.freshness?.list_complete === false,
       can_edit: canEditProject(projectWork.project), can_create_task: projectCreateSource('task') !== null,
       can_create_note: projectCreateSource('note') !== null, can_create_commitment: projectCreateSource('commitment') !== null,
-      can_link_commitment: canLinkProjectCommitment(), commitment_status: projectWork.commitmentStatus,
+      can_link_task: canLinkProjectWork('task'), can_link_note: canLinkProjectWork('note'),
+      can_link_commitment: canLinkProjectWork('commitment'), commitment_status: projectWork.commitmentStatus,
       close_label: workSearchReturn ? 'Back to search' : 'Back to projects' };
   };
 
@@ -12902,24 +13534,24 @@ export const bootstrapDataRoute = (
     else await openEditWorkEntityDialog(kind, id);
   };
 
-  const canLinkProjectCommitment = (): boolean => !!(opts.workEntityListCaller && opts.workEntityUpsertCaller && opts.workEntityGetCaller
-    && sources.some(source => source.top_tier_kind === 'commitment' && source.write_capable && source.sync_posture !== 'read_through'));
+  const canLinkProjectWork = (kind: 'task' | 'note' | 'commitment'): boolean => !!(opts.workEntityListCaller && opts.workEntityUpsertCaller && opts.workEntityGetCaller
+    && sources.some(source => source.top_tier_kind === kind && source.write_capable && source.sync_posture !== 'read_through'));
 
-  const openProjectCommitmentList = async (): Promise<void> => {
+  const openProjectWorkList = async (kind: 'task' | 'note' | 'commitment'): Promise<void> => {
     const overview = projectWork, tabAtStart = activeTab;
-    if (!overview || tabAtStart !== 'project' || projectEditing || pendingWorkEntityDialogOpen || !canLinkProjectCommitment()) return;
-    projectChildReturn = { kind: 'commitment', linking: true, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+    if (!overview || tabAtStart !== 'project' || projectEditing || pendingWorkEntityDialogOpen || !canLinkProjectWork(kind)) return;
+    projectChildReturn = { kind, linking: true, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
       page: workEntityState, entities: [...workEntities], total: workEntityTotal };
     const origin = projectChildReturn;
     const before = navigationGeneration;
-    const opening = selectTab('commitment', false, undefined, true);
+    const opening = selectTab(kind, false, undefined, true);
     const navigation = navigationGeneration;
     if (navigation === before) { projectChildReturn = null; return; }
     await opening;
     if (disposed || navigation !== navigationGeneration || projectWork !== overview || projectChildReturn !== origin
-      || activeTab !== 'commitment' || workEntityState.dialog !== null) return;
-    const search = routeRoot.querySelector<HTMLInputElement>(`input[${SHARED_ACTION_ATTR}="search-work-entities"][data-kind="commitment"]`);
-    const target = search ?? collectionNavigationTarget('commitment');
+      || activeTab !== kind || workEntityState.dialog !== null) return;
+    const search = routeRoot.querySelector<HTMLInputElement>(`input[${SHARED_ACTION_ATTR}="search-work-entities"][data-kind="${kind}"]`);
+    const target = search ?? collectionNavigationTarget(kind);
     target?.focus?.({ preventScroll: true }); target?.scrollIntoView?.({ block: 'nearest' });
   };
 
@@ -12948,7 +13580,7 @@ export const bootstrapDataRoute = (
   const returnToProjectOverview = (): void => {
     const origin = projectChildReturn;
     const overview = projectWork;
-    if (!origin || !overview || disposed) return;
+    if (!origin || !overview || disposed || workEntityState.dialog?.submitting) return;
     projectChildReturn = null;
     loadGeneration += 1; navigationGeneration += 1; universalSearchNavigation = navigationGeneration;
     workEntityDialogOpenSeq += 1; pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
@@ -12960,7 +13592,7 @@ export const bootstrapDataRoute = (
     workEntityDialogOriginal = { ...workEntityState.dialog!.values };
     workEntityDialogReturnFocus = { mode: 'edit', kind: 'project', id: overview.project.id };
     projectEditing = false;
-    pendingProjectRestore = { key: origin.linking ? 'link-commitment' : origin.id ? `${origin.kind}:${origin.id}` : `new-${origin.kind}`, scrollTop: origin.scrollTop };
+    pendingProjectRestore = { key: origin.linking ? `link-${origin.kind}` : origin.id ? `${origin.kind}:${origin.id}` : `new-${origin.kind}`, scrollTop: origin.scrollTop };
     syncDataHash(); render(); captureWorkEntityDialogBaseline();
     void openEditWorkEntityDialog('project', overview.project.id, 'read', true);
   };
@@ -12981,6 +13613,120 @@ export const bootstrapDataRoute = (
     && entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write
     && sources.some(source => source.id === entity.source_id && source.top_tier_kind === 'note'
       && source.write_capable && source.sync_posture !== 'read_through');
+
+  const canLinkSelectedProjectWork = (entity: WorkEntity): boolean =>
+    (entity._kind === 'task' || entity._kind === 'note')
+    && opts.workEntityGetCaller !== undefined && opts.workEntityUpsertCaller !== undefined
+    && entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write
+    && sources.some(source => source.id === entity.source_id && source.top_tier_kind === entity._kind
+      && source.write_capable && source.sync_posture !== 'read_through');
+
+  const projectLinkUnavailableReason = (entity: WorkEntity): string | undefined => {
+    if (canLinkSelectedProjectWork(entity)) return undefined;
+    if (entity.pending_write) return `A change to this ${entity._kind} is waiting for source confirmation. Reopen it after the change completes.`;
+    if (entity.deleted_at != null || entity.sync_state === 'tombstoned') return `This ${entity._kind} was deleted at its source.`;
+    if (entity.sync_state === 'stale_unreachable') return `This ${entity._kind}’s source cannot be reached. Refresh it before linking.`;
+    if (entity.sync_state === 'orphaned') return `This ${entity._kind}’s source was removed.`;
+    return `This ${entity._kind} is read-only here.`;
+  };
+
+  const projectLinkReviewProps = (): ProjectLinkReviewProps | undefined => {
+    const entity = workEntityDialogEntity, origin = projectChildReturn, project = projectWork?.project;
+    const dialog = workEntityState.dialog;
+    if (!origin?.linking || !project || !dialog || dialog.mode !== 'edit' || !entity
+      || (entity._kind !== 'task' && entity._kind !== 'note') || activeTab !== origin.kind
+      || entity._kind !== origin.kind || entity.id !== dialog.entity_id) return undefined;
+    const linked = entity._kind === 'task' ? entity.parent_project_id === project.id : entity.related_project_ids.includes(project.id);
+    const parentId = entity._kind === 'task' ? entity.parent_project_id : undefined;
+    const parent = origin.entities.find(row => row._kind === 'project' && row.id === parentId);
+    const parentTitle = projectLinkParentLabel?.id === parentId ? projectLinkParentLabel?.title
+      : parent?._kind === 'project' ? parent.title : undefined;
+    return { kind: entity._kind, title: entity.title?.trim() || (entity._kind === 'task' ? 'Task' : 'Note'),
+      project_title: project.title, source_label: sources.find(source => source.id === entity.source_id)?.source_label ?? 'Source unavailable',
+      linked, pending: entity.pending_write !== undefined, can_link: canLinkSelectedProjectWork(entity),
+      unavailable_reason: projectLinkUnavailableReason(entity), busy: dialog.submitting === true,
+      ...(parentId ? { current_project_title: parentTitle ?? 'Another project (name unavailable)' } : {}),
+      other_projects: entity._kind === 'note' ? entity.related_project_ids.filter(id => id !== project.id).length : 0,
+      ...(dialog.submit_error ? { error: dialog.submit_error } : {}) };
+  };
+
+  const loadProjectLinkParentLabel = (entity: WorkEntity, sequence: number): void => {
+    if (!projectChildReturn?.linking || entity._kind !== 'task' || !entity.parent_project_id || !opts.workEntityGetCaller) return;
+    const id = entity.parent_project_id;
+    void opts.workEntityGetCaller({ kind: 'project', id }).then(({ entity: parent }) => {
+      if (disposed || sequence !== workEntityDialogOpenSeq || workEntityDialogEntity?.id !== entity.id
+        || parent?._kind !== 'project' || parent.id !== id) return;
+      projectLinkParentLabel = { id, title: parent.title }; render();
+    }).catch(() => { /* The review still explains the move when a project name is unavailable. */ });
+  };
+
+  const confirmProjectWorkLink = async (): Promise<void> => {
+    const selected = workEntityDialogEntity, origin = projectChildReturn, overview = projectWork;
+    if (!projectLinkReviewProps() || !selected || (selected._kind !== 'task' && selected._kind !== 'note')
+      || !origin || !overview || !canLinkSelectedProjectWork(selected) || workEntityState.dialog?.submitting
+      || !opts.workEntityGetCaller || !opts.workEntityUpsertCaller) return;
+    const sequence = workEntityDialogOpenSeq;
+    const stillHere = () => !disposed && sequence === workEntityDialogOpenSeq && origin === projectChildReturn && overview === projectWork;
+    workEntityState = setDialogSubmittingTransition(setDialogSubmitErrorTransition(workEntityState, null), true);
+    opaqueMutationsInFlight += 1;
+    render(); focusWorkEntityDialog();
+    try {
+      const [response, target, registered] = await Promise.all([
+        opts.workEntityGetCaller({ kind: selected._kind, id: selected.id }),
+        opts.workEntityGetCaller({ kind: 'project', id: overview.project.id }),
+        opts.workEntitySourceListCaller?.(),
+      ]);
+      if (!stillHere()) return;
+      if (registered) sources = [...registered.sources];
+      const current = response.entity, project = target.entity;
+      if (!current || current._kind !== selected._kind || current.id !== selected.id || current.source_id !== selected.source_id
+        || current.source_record_id !== selected.source_record_id || current.created_at !== selected.created_at) {
+        throw new Error('This item changed or is no longer available. Reopen it before linking.');
+      }
+      workEntityDialogEntity = current;
+      if (!canLinkSelectedProjectWork(current)) throw new Error('This item can no longer be changed here. Check its source before trying again.');
+      if (project?._kind !== 'project' || project.id !== overview.project.id || project.source_id !== overview.project.source_id
+        || project.created_at !== overview.project.created_at || project.sync_state !== 'live' || project.deleted_at != null || project.pending_write) {
+        throw new Error('The project is no longer available for linking. Return to the project and refresh it.');
+      }
+      overview.project = project;
+      if (current._kind === 'task' && selected._kind === 'task' && current.parent_project_id !== selected.parent_project_id
+        && current.parent_project_id !== project.id) {
+        loadProjectLinkParentLabel(current, sequence);
+        throw new Error('This task’s project changed. Review the updated project before confirming.');
+      }
+      const linked = current._kind === 'task' ? current.parent_project_id === project.id : current.related_project_ids.includes(project.id);
+      if (!linked) {
+        const request: WorkEntityUpsertRpcRequest = current._kind === 'task'
+          ? { kind: 'task', id: current.id, parent_project_id: project.id }
+          : { kind: 'note', id: current.id, related_project_ids: [...current.related_project_ids, project.id] };
+        const { entity: saved } = await opts.workEntityUpsertCaller(request);
+        if (!stillHere()) return;
+        if (saved._kind !== current._kind || saved.id !== current.id || saved.source_id !== current.source_id
+          || saved.source_record_id !== current.source_record_id || saved.created_at !== current.created_at) {
+          throw new Error('The source did not confirm this item. Reopen it to check the project link.');
+        }
+        workEntityDialogEntity = saved;
+        if (saved.pending_write) {
+          workEntityState = setDialogSubmittingTransition(workEntityState, false);
+          render(); routeRoot.querySelector<HTMLElement>('#project-link-description')?.focus({ preventScroll: true });
+          return;
+        }
+        if (saved.sync_state !== 'live' || saved.deleted_at != null
+          || saved._kind === 'task' && saved.parent_project_id !== project.id
+          || saved._kind === 'note' && current._kind === 'note'
+            && [...current.related_project_ids, project.id].some(id => !saved.related_project_ids.includes(id))) {
+          throw new Error('The source did not confirm the project link. Reopen the item to check before trying again.');
+        }
+      }
+      workEntityState = setDialogSubmittingTransition(workEntityState, false);
+      returnToProjectOverview();
+    } catch (error) {
+      if (!stillHere()) return;
+      workEntityState = setDialogSubmittingTransition(setDialogSubmitErrorTransition(workEntityState, errMessage(error)), false);
+      render(); routeRoot.querySelector<HTMLElement>('.work-entity-dialog-submit-error')?.focus({ preventScroll: true });
+    } finally { opaqueMutationsInFlight -= 1; }
+  };
 
   const loadWorkEntityTimeline = (kind: WorkEntityKind, id: string, sequence: number): void => {
     workEntityTimeline = null;
@@ -13156,6 +13902,7 @@ export const bootstrapDataRoute = (
     else if (!preserveFocus) focusWorkEntityDialog();
     if (kind === 'booking') opts.onOwnerRecordOpened?.({ collection: kind, id });
     loadWorkEntityTimeline(kind, id, seq);
+    loadProjectLinkParentLabel(entity, seq);
     if (entity._kind === 'project' && projectWork && !projectEditing) {
       void projectWork.load('task', true); void projectWork.load('note', true); void projectWork.load('commitment', true);
     }
@@ -13931,7 +14678,7 @@ export const bootstrapDataRoute = (
   };
 
   const closeContactDialog = (discardChanges = false): void => {
-    if (contactDialog === null || contactDialog.submitting) return;
+    if (contactDialog === null || contactDialog.submitting || contactDialog.merging === true) return;
     if (contactDiscardGuardOpen && !discardChanges) {
       closeContactDiscardGuard();
       return;
@@ -13947,6 +14694,8 @@ export const bootstrapDataRoute = (
   };
 
   const openCreateContactDialog = (): void => {
+    if (!mailMessageSurface.beforeLeave()) return;
+    retireContactEmailOpen();
     contactDialogReturnFocus = { kind: 'create' };
     contactDialog = {
       mode: 'create',
@@ -13969,6 +14718,8 @@ export const bootstrapDataRoute = (
     ) {
       return;
     }
+    if (!mailMessageSurface.beforeLeave()) return;
+    retireContactEmailOpen();
     const originDetailEmail = contactDetail?.email === trimmed ? trimmed : null;
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     pendingContactEditFocusEmail =
@@ -14029,6 +14780,13 @@ export const bootstrapDataRoute = (
       errors: {},
       submitting: false,
       submit_error: null,
+      // D-336 slice I — a contact with no address can be given one here; slice R — and one
+      // with an address can change it.
+      ...(isMentionOnlyEmail(contact.email) && contact.contact_id && opts.contactAddEmailCaller !== undefined
+        ? { email_addable: true } : {}),
+      ...(!isMentionOnlyEmail(contact.email) && contact.contact_id && contact.merged_into === undefined
+        && opts.contactChangeEmailCaller !== undefined
+        ? { email_changeable: true } : {}),
     };
     render();
     captureContactDialogBaseline();
@@ -14038,9 +14796,11 @@ export const bootstrapDataRoute = (
   const setContactDialogValues = (
     values: Partial<ContactDialogValues>,
   ): void => {
-    if (contactDialog === null || contactDialog.submitting) return;
+    if (contactDialog === null || contactDialog.submitting || contactDialog.merging === true) return;
+    // D-336 slice P — a merge offered for the address goes with the refusal.
+    const { merge_offer: _offer, ...dialog } = contactDialog;
     contactDialog = {
-      ...contactDialog,
+      ...dialog,
       values: { ...contactDialog.values, ...values },
       errors: {},
       submit_error: null,
@@ -14049,7 +14809,7 @@ export const bootstrapDataRoute = (
   };
 
   const syncContactDialogFromDom = (): void => {
-    if (contactDialog === null || contactDialog.submitting) return;
+    if (contactDialog === null || contactDialog.submitting || contactDialog.merging === true) return;
     // String-only test/host DOMs cannot be decoded; their route state is the
     // canonical draft because no uncontrolled browser inputs exist there.
     if (typeof routeRoot.querySelector !== 'function') return;
@@ -14067,7 +14827,7 @@ export const bootstrapDataRoute = (
   };
 
   const confirmContactDialog = async (): Promise<void> => {
-    if (contactDialog === null || contactDialog.submitting) return;
+    if (contactDialog === null || contactDialog.submitting || contactDialog.merging === true) return;
     if (opts.contactUpsertCaller === undefined) {
       contactDialog = {
         ...contactDialog,
@@ -14076,7 +14836,17 @@ export const bootstrapDataRoute = (
       render();
       return;
     }
-    const dialogErrors = validateContactDialog(contactDialog.values);
+    // D-336 slice I — a contact with no address is saved under its placeholder, and may
+    // keep none.
+    const original = contactDialog.original;
+    const placeholder = contactDialog.mode === 'edit' && original !== undefined && isMentionOnlyEmail(original.email)
+      ? original.email : undefined;
+    // D-336 slice R — a contact's saved address changed: checked as a new contact's is.
+    const changesAddress = contactDialog.mode === 'edit' && contactDialog.email_changeable === true
+      && original !== undefined && placeholder === undefined
+      && canonicalizeEmail(contactDialog.values.email.trim()) !== original.email;
+    const dialogErrors = validateContactDialog(contactDialog.values,
+      contactDialog.mode === 'create' || changesAddress ? 'new' : placeholder !== undefined ? 'optional' : 'kept');
     if (hasContactErrors(dialogErrors)) {
       contactDialog = { ...contactDialog, errors: dialogErrors };
       render();
@@ -14090,14 +14860,70 @@ export const bootstrapDataRoute = (
     }
     const submittedValues = { ...contactDialog.values };
     const previous = contactDialog.original ?? contactDetail?.contact ?? contacts.find(row => row.email === submittedValues.email);
-    contactDialog = { ...contactDialog, submitting: true, submit_error: null };
+    const { merge_offer: _offer, ...unoffered } = contactDialog;
+    contactDialog = { ...unoffered, submitting: true, submit_error: null };
     render();
     const editedEmail = submittedValues.email.trim();
+    // D-336 slice I — the address first, so a refused one saves nothing: a first one given to
+    // a contact with none, or (slice R) a saved one changed.
+    let promoted: ContactRecord | undefined;
+    const giveAddress = original?.contact_id === undefined ? undefined
+      : placeholder !== undefined && editedEmail !== '' ? opts.contactAddEmailCaller
+        : changesAddress ? opts.contactChangeEmailCaller : undefined;
+    if (giveAddress !== undefined && original?.contact_id !== undefined) {
+      try {
+        promoted = (await giveAddress({ contact_id: original.contact_id, email: editedEmail })).contact;
+      } catch (err) {
+        if (disposed || contactDialog === null) return;
+        const older = (err as { code?: unknown } | null)?.code === 'unknown_method';
+        // D-336 slice P — an address another contact has: the two may be one person.
+        const taken = opts.contactMergePairCaller === undefined ? undefined : mergeOfferOf(err);
+        contactDialog = {
+          ...contactDialog,
+          submitting: false,
+          submit_error: older ? (placeholder !== undefined ? CONTACT_ADD_EMAIL_UPDATE : CONTACT_CHANGE_EMAIL_UPDATE) : errMessage(err),
+          // An older server takes no address: the field goes back to what the contact has and
+          // locks, and Save keeps the rest.
+          ...(older
+            ? placeholder !== undefined
+              ? { email_addable: false, values: { ...contactDialog.values, email: '' } }
+              : { email_changeable: false, values: { ...contactDialog.values, email: original.email } }
+            : {}),
+          ...(taken !== undefined ? { merge_offer: taken } : {}),
+        };
+        render();
+        // D-336 slice P's open item — the kept contact's own details, so the offer asks about
+        // each field the two hold differently. Unread, it asks about the name alone.
+        if (taken !== undefined && opts.contactGetCaller !== undefined) {
+          void opts.contactGetCaller({ email: taken.email }).then(({ contact }) => {
+            if (disposed || contactDialog === null || contactDialog.merge_offer?.email !== taken.email || contact === null) return;
+            contactDialog = { ...contactDialog, merge_offer: { ...contactDialog.merge_offer, contact } };
+            render();
+          }, () => undefined);
+        }
+        return;
+      }
+      if (disposed) return;
+    }
+    // An edit keeps the address the contact is keyed on, unless it was changed above.
+    const key = promoted?.email ?? placeholder ?? (contactDialog.mode === 'edit' && original !== undefined ? original.email : editedEmail);
+    // Only the address changed: nothing else to save.
+    const onlyTheAddress = promoted !== undefined && original !== undefined
+      && contactDialogFingerprint({ ...submittedValues, email: '' })
+        === contactDialogFingerprint({ ...contactValuesFromRecord(original), email: '' });
     try {
-      await opts.contactUpsertCaller(contactUpsertArgs(submittedValues, previous));
+      if (!onlyTheAddress) await opts.contactUpsertCaller(contactUpsertArgs({ ...submittedValues, email: key }, promoted ?? previous));
       if (disposed) return;
       contactDialog = null;
       retireContactDialogDraft();
+      // D-336 slice I — the edited contact's page is found by its id, not its address: one
+      // given an address moves its page there, a save retried after the address went in
+      // too (audit 2026-11-01: the retry left the page and the URL on the placeholder).
+      const editedId = (promoted ?? original)?.contact_id;
+      const onItsPage = contactDetail !== null && (contactDetail.email === key
+        || (editedId !== undefined && contactDetail.contact?.contact_id === editedId));
+      // Focus goes back to the Edit button of the page the contact now has.
+      if (onItsPage && contactDialogReturnFocus?.kind === 'edit') contactDialogReturnFocus = { kind: 'edit', email: key };
       pendingLoadPromise = refreshActive();
       await pendingLoadPromise;
       if (disposed) return;
@@ -14107,9 +14933,7 @@ export const bootstrapDataRoute = (
       // the value, it changes the WINNER, and with it every provenance line the
       // page is showing. Leaving the open detail on the pre-edit record would
       // keep rendering "from HubSpot" under a value the user just typed.
-      if (contactDetail !== null && contactDetail.email === editedEmail) {
-        await openContactDetail(editedEmail);
-      }
+      if (onItsPage) await openContactDetail(key);
       if (!disposed) focusContactDialogReturnTarget();
     } catch (err) {
       if (disposed || contactDialog === null) return;
@@ -14117,9 +14941,50 @@ export const bootstrapDataRoute = (
         ...contactDialog,
         submitting: false,
         submit_error: errMessage(err),
+        // The address was saved; Save again keeps the rest, under it.
+        ...(promoted !== undefined
+          ? { original: promoted, email_addable: false, values: { ...contactDialog.values, email: promoted.email } }
+          : {}),
       };
       render();
     }
+  };
+
+  /** D-336 slice P — merge the contact being edited into the one that has the address the
+   *  owner gave it, then open that one: its page now holds both. A failure says why and keeps
+   *  the offer. */
+  const mergeContactDialog = async (): Promise<void> => {
+    const dialog = contactDialog;
+    const offer = dialog?.merge_offer;
+    const other = dialog?.original?.email;
+    if (dialog === null || offer === undefined || other === undefined || dialog.submitting
+      || dialog.merging === true || opts.contactMergePairCaller === undefined) return;
+    contactDialog = { ...dialog, merging: true, submit_error: null };
+    render();
+    let survivor: ContactRecord;
+    try {
+      // Where the names differ, the one the owner picked; the kept contact's unless they changed it.
+      const names = mergeNameChoices(dialog);
+      const name = names.length === 0 ? undefined : dialog.merge_name ?? names[0];
+      survivor = (await opts.contactMergePairCaller({
+        survivor_email: offer.email, other_email: other, ...(name !== undefined ? { name } : {}),
+        ...mergeFieldPicks(dialog),
+      })).survivor;
+    } catch (err) {
+      if (disposed || contactDialog === null) return;
+      contactDialog = { ...contactDialog, merging: false, submit_error: errMessage(err) };
+      render();
+      return;
+    }
+    if (disposed) return;
+    contactDialog = null;
+    retireContactDialogDraft();
+    contactDialogReturnFocus = { kind: 'edit', email: survivor.email };
+    pendingLoadPromise = refreshActive();
+    await pendingLoadPromise;
+    if (disposed) return;
+    await openContactDetail(survivor.email);
+    if (!disposed) focusContactDialogReturnTarget();
   };
 
   const deleteContact = async (email: string): Promise<void> => {
@@ -14771,6 +15636,8 @@ export const bootstrapDataRoute = (
   const openContactDetail = async (email: string, focusHeading = false): Promise<void> => {
     const trimmed = email.trim();
     if (trimmed.length === 0) return;
+    if (!mailMessageSurface.beforeLeave()) return;
+    mailMessageSurface.reset();
     cancelContactEditOpen();
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     pendingContactDetailFocusEmail =
@@ -14874,7 +15741,16 @@ export const bootstrapDataRoute = (
     // D-325 — a reference by contact id (Today, an occasion) opens the same page
     // by the contact's email, so its timeline and address are the usual ones.
     const byId = contactResult.ok ? contactResult.contact : null;
-    if (!trimmed.includes('@') && byId?.email && byId.email !== trimmed) { void openContactDetail(byId.email); return; }
+    // D-336 slice I — so does a placeholder the contact had before it got an address.
+    if ((!trimmed.includes('@') || isMentionOnlyEmail(trimmed)) && byId?.email && byId.email !== trimmed) { void openContactDetail(byId.email); return; }
+    // D-336 slice R — and an address with no contact of its own that is a contact's second one,
+    // such as the one it was changed from. `contact.get` still reads an address's own row only.
+    if (contactResult.ok && contactResult.contact === null && trimmed.includes('@') && !isMentionOnlyEmail(trimmed)
+      && opts.contactResolveCaller !== undefined) {
+      const owner = await opts.contactResolveCaller({ email: trimmed }).then((found) => found.contact ?? null, () => null);
+      if (disposed || navigation !== navigationGeneration || contactDetail !== pendingDetail) return;
+      if (owner?.email && owner.email !== trimmed && owner.merged_into === undefined) { void openContactDetail(owner.email); return; }
+    }
 
     const nextErrors: DataLoadErrors = { ...errors };
     if (!contactResult.ok) nextErrors.contact_detail = contactResult.message;
@@ -14884,6 +15760,8 @@ export const bootstrapDataRoute = (
       email: trimmed,
       from_search: contactSearchReturn?.email === trimmed,
       contact: contactResult.ok ? contactResult.contact : null,
+      ...(opts.mailCompose && contactResult.ok && contactResult.contact
+        && contactResult.contact.merged_into === undefined ? { mail: { opening: false } } : {}),
       ...(contactResult.ok && contactResult.identifiers ? { identifiers: contactResult.identifiers } : {}),
       response: timelineResult.ok ? timelineResult.response : null,
       contributions: contributionsResult.ok ? contributionsResult.contributions : [],
@@ -14891,6 +15769,13 @@ export const bootstrapDataRoute = (
       // The recorded history is loading from the first paint, so nothing repaints
       // the detail between a restored focus and the history landing.
       ...(opts.contactHistoryCaller && contactResult.ok && contactResult.contact ? { history: null, history_can_hide: opts.contactEpisodeHideCaller !== undefined } : {}),
+      ...(opts.contactClaimsCaller && contactResult.ok && contactResult.contact ? {
+        relationships: null,
+        relationships_can_link: {
+          own: opts.memoryGetCaller !== undefined && opts.memoryUpdateCaller !== undefined,
+          agent: opts.memoryGetCaller !== undefined && opts.memoryReplaceCaller !== undefined,
+        },
+      } : {}),
     };
     loadingContactDetail = false;
     errors = nextErrors;
@@ -14910,6 +15795,113 @@ export const bootstrapDataRoute = (
         if (disposed || contactDetail !== current || activeTab !== 'contact') return; current.history = history; paintKeepingFocus();
       }).catch(error => { if (!disposed && contactDetail === current && activeTab === 'contact') {
         if (classifyRpcError(error).code === 'unknown_method') delete current.history; else current.history_failed = true; paintKeepingFocus(); } });
+    }
+    // D-336 slice D — the Relationships section, read after the page settles, like the
+    // history. An older server has no `memory.claims`, so the page shows no section.
+    if (opts.contactClaimsCaller && contactDetail.contact) {
+      const current = contactDetail;
+      void opts.contactClaimsCaller(current.contact!.contact_id ?? current.email).then(found => {
+        if (disposed || contactDetail !== current || activeTab !== 'contact') return;
+        // A reply with no list (a server that answers wrongly) shows no section.
+        current.relationships = { claims: Array.isArray(found?.claims) ? found.claims : [], ...(found?.more === true ? { more: true } : {}) };
+        render();
+      }).catch(error => { if (!disposed && contactDetail === current && activeTab === 'contact') {
+        if (classifyRpcError(error).code === 'unknown_method') delete current.relationships; else current.relationships_failed = true;
+        render(); } });
+    }
+  };
+  const openContactEmail = async (email: string): Promise<void> => {
+    const current = contactDetail;
+    if (!current?.mail || current.mail.opening || loadingContactDetail || !current.contact
+      || current.email !== email || current.contact.merged_into !== undefined
+      || contactDialog !== null || openingContactEditEmail !== null) return;
+    const mail = current.mail;
+    const navigation = navigationGeneration;
+    const sequence = contactEmailOpenSeq;
+    const isCurrent = (): boolean => !disposed && activeLens === 'data' && activeTab === 'contact'
+      && navigation === navigationGeneration && sequence === contactEmailOpenSeq && contactDetail === current
+      && !loadingContactDetail && current.contact?.merged_into === undefined
+      && contactDialog === null && openingContactEditEmail === null;
+    mail.opening = true;
+    delete mail.error; delete mail.notice;
+    render();
+    try {
+      const result = await mailMessageSurface.openCreate({
+        to: [current.email], isCurrent,
+        onClosed: outcome => {
+          if (!isCurrent()) return;
+          delete mail.error;
+          if (outcome) mail.notice = outcome === 'held' ? 'Email is waiting for approval.' : 'Email sent.';
+          render();
+          focusContactEmail(current.email);
+        },
+      });
+      if (isCurrent() && result.error) mail.error = result.error;
+    } finally {
+      if (isCurrent()) { mail.opening = false; render(); }
+    }
+  };
+  const focusRelationshipLink = (memory_id: string): void => {
+    const queryable = routeRoot as unknown as { querySelectorAll?: (selector: string) => ArrayLike<HTMLElement> };
+    Array.from(queryable.querySelectorAll?.('[data-relationship-id]') ?? [])
+      .find((el) => el.getAttribute('data-relationship-id') === memory_id)?.focus?.({ preventScroll: true });
+  };
+  /** D-336 — link a "matched by name" relationship to this contact: the owner's note is
+   *  changed, an agent's is replaced by the owner's version with the same words, as the Memory
+   *  lens's Replace does. The note is read first, so the link is made on its current claim. */
+  const linkContactRelationship = async (memory_id: string): Promise<void> => {
+    const current = contactDetail;
+    const contact = current?.contact;
+    const row = current?.relationships?.claims.find((claim) => claim.memory_id === memory_id);
+    const getCaller = opts.memoryGetCaller;
+    const claimsCaller = opts.contactClaimsCaller;
+    const busy = current?.relationship_link;
+    if (!current || !contact?.contact_id || !row || !getCaller || !claimsCaller
+      || (busy !== undefined && 'busy' in busy && busy.busy)) return;
+    const contactId = contact.contact_id;
+    current.relationship_link = { memory_id, busy: true };
+    render();
+    focusRelationshipLink(memory_id);
+    const isCurrent = (): boolean => !disposed && contactDetail === current && activeTab === 'contact';
+    try {
+      const entry = await getCaller({ memory_id });
+      const place = entry.claim === undefined ? undefined : relationshipEndToLink(entry.claim, contact);
+      if (entry.claim === undefined || place === undefined) {
+        throw new Error('This note no longer names this contact in words. Reopen the contact to see it.');
+      }
+      const claim: MemoryClaim = { ...entry.claim, [place]: { contact_id: contactId, name: contact.name!.trim() } };
+      let linked: 'own' | 'agent';
+      if (isOwnMemoryEntry(entry) && opts.memoryUpdateCaller !== undefined) {
+        await opts.memoryUpdateCaller({ memory_id, claim });
+        linked = 'own';
+      } else if (isReplaceableEntry(entry) && opts.memoryReplaceCaller !== undefined) {
+        await opts.memoryReplaceCaller({
+          memory_id,
+          kind: entry.kind,
+          ...(entry.summary !== undefined && entry.summary.length > 0 ? { summary: entry.summary } : {}),
+          body: entry.body ?? '',
+          ...(entry.event_at !== undefined ? { event_at: entry.event_at } : {}),
+          claim,
+        });
+        linked = 'agent';
+      } else {
+        throw new Error('Only your own notes and the current version of an AI’s note can be linked.');
+      }
+      // Linked: a list that cannot be read again says so, as on opening the page.
+      const found = await claimsCaller(contactId).catch(() => undefined);
+      if (!isCurrent()) return;
+      if (found === undefined) current.relationships_failed = true;
+      else current.relationships = { claims: Array.isArray(found?.claims) ? found.claims : [], ...(found?.more === true ? { more: true } : {}) };
+      current.relationship_link = { linked };
+      render();
+      routeRoot.querySelector<HTMLElement>('[data-contact-relationships] h3')?.focus({ preventScroll: true });
+    } catch (error) {
+      if (!isCurrent()) return;
+      // An older server has no `memory.replace` and says so (D-198 §12).
+      current.relationship_link = { memory_id, busy: false, error: classifyRpcError(error).code === 'unknown_method'
+        ? 'Your Recued server needs an update to link an AI’s note.' : errMessage(error) };
+      render();
+      focusRelationshipLink(memory_id);
     }
   };
   /** D-325 P44 — Hide where an episode is cited: it leaves this page and every list,
@@ -14955,20 +15947,99 @@ export const bootstrapDataRoute = (
     setTimeout(() => view.URL!.revokeObjectURL(url), 1000);
   };
 
+  const hasFileRenameChanges = (): boolean => !!fileLifecycle?.rename
+    && fileLifecycle.rename.value.normalize('NFC').trim() !== fileLifecycle.rename.original;
+  const beforeLeaveFileRename = (): boolean => {
+    if ((fileLifecycle?.operation === 'rename' && fileLifecycle.busy) || hasFileRenameChanges()) {
+      fileLifecycle = { ...fileLifecycle!, error: fileLifecycle?.busy ? fileLifecycle.operation === 'rename' ? 'Wait for the filename to finish saving.' : 'Wait for the file check to finish.'
+        : 'Save or cancel the filename change before leaving.' };
+      render();
+      routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="file-rename-input"]`)?.focus({ preventScroll: true });
+      return false;
+    }
+    return true;
+  };
+  const updateFileName = (preview: FileLifecyclePreview): void => {
+    if (preview.can_rename === false) {
+      // A retained message snapshot is not evidence of a saved library row.
+      savedFiles.cancel(); savedFiles.remove(new Set([preview.record_id]));
+      explorerRecords = explorerRecords.filter(record => record.record_id !== preview.record_id);
+      return;
+    }
+    const rename = (record: CollectionRecord): CollectionRecord => record.record_id === preview.record_id
+      ? { ...record, hot_fields: { ...record.hot_fields, filename: preview.filename },
+        ...(preview.modified_at === undefined ? {} : { modified_at: preview.modified_at }) } : record;
+    if (explorerDetail?.record) explorerDetail = { ...explorerDetail, record: rename(explorerDetail.record) };
+    explorerRecords = explorerRecords.map(rename);
+    savedFiles.rename(preview.record_id, preview.filename);
+    if (opts.fileListCaller && explorerSelectedSlug === SAVED_FILES_SLUG && !savedFiles.snapshot().unsupported) {
+      explorerRecords = savedFiles.snapshot().files.map(savedFileRecord);
+    }
+  };
   const loadFileUsage = async (error?: string): Promise<void> => {
     const fileId = explorerDetail?.record_id;
     if (!fileId || !opts.fileUsageCaller || activeTab !== 'files') return;
     const generation = ++fileLifecycleGeneration;
-    fileLifecycle = { fileId, busy: true, ...(error ? { error } : {}) }; render();
+    const previous = fileLifecycle?.fileId === fileId ? fileLifecycle : undefined;
+    const retained = previous?.rename ? previous : undefined;
+    fileLifecycle = { ...retained, fileId, busy: true, operation: undefined, error }; render();
     try {
       const preview = await opts.fileUsageCaller({ record_id: fileId });
       if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== fileId) return;
-      fileLifecycle = { fileId, preview, busy: false, ...(error ? { error } : {}) };
+      fileLifecycle = { fileId, preview, busy: false,
+        error: previous?.rename && preview.can_rename === false ? 'This file is no longer saved in your library. You can copy your draft name or cancel.' : error,
+        ...(previous?.rename ? { rename: { ...previous.rename, revision: preview.revision, original: preview.filename } } : {}) };
+      if (previous?.rename) updateFileName(preview);
     } catch (failure) {
       if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== fileId) return;
-      fileLifecycle = { fileId, busy: false, error: errMessage(failure) };
+      fileLifecycle = retained?.rename
+        ? { ...retained, fileId, busy: false, operation: undefined, rename: { ...retained.rename, revision: undefined },
+          error: `${errMessage(failure)} Your filename draft is kept. Check again before saving.` }
+        : { fileId, busy: false, error: errMessage(failure) };
     }
     render();
+  };
+  const renameFile = async (): Promise<void> => {
+    const current = fileLifecycle;
+    if (!current?.rename?.revision || !current.preview?.can_rename || current.busy || !opts.fileRenameCaller
+      || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId) return;
+    const filename = current.rename.value.normalize('NFC').trim();
+    if (!filename || filename === current.preview.filename) return;
+    const generation = ++fileLifecycleGeneration;
+    fileLifecycle = { ...current, busy: true, operation: 'rename', error: undefined }; render();
+    try {
+      opaqueMutationsInFlight++;
+      let preview: FileLifecyclePreview;
+      try {
+        preview = await opts.fileRenameCaller({ record_id: current.fileId, filename, revision: current.rename.revision });
+      } finally { opaqueMutationsInFlight--; }
+      if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId) return;
+      updateFileName(preview);
+      const confirmed = preview.can_rename === true && !preview.deleted && preview.filename === filename;
+      fileLifecycle = confirmed
+        ? { fileId: current.fileId, preview, busy: false }
+        : { ...current, preview, busy: false, operation: undefined,
+          rename: { ...current.rename, revision: preview.revision, original: preview.filename },
+          error: preview.can_rename !== true ? 'This file is no longer stored in the library and cannot be renamed.'
+            : 'The saved file has a different name now. Review its current name before saving again.' };
+      if (confirmed) fileLifecycleNotice = 'File renamed. Existing chat attachments keep their recorded names.';
+    } catch (error) {
+      if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId) return;
+      // A failed response can follow a successful write. Read before allowing
+      // another explicit Save; never repeat the mutation automatically.
+      await loadFileUsage(errMessage(error));
+      if (disposed || fileLifecycleGeneration !== generation + 1 || explorerDetail?.record_id !== current.fileId) return;
+      if (fileLifecycle?.preview?.can_rename === true && !fileLifecycle.preview.deleted && fileLifecycle.preview.filename === filename && !fileLifecycle.busy) {
+        const preview = fileLifecycle.preview;
+        updateFileName(preview);
+        fileLifecycle = { fileId: current.fileId, preview, busy: false };
+        fileLifecycleNotice = 'The saved file has the requested name. Existing chat attachments keep their recorded names.';
+      }
+    }
+    render();
+    if (!fileLifecycle?.rename && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller) {
+      await savedFiles.search(savedFiles.snapshot().query, showArchivedFiles);
+    }
   };
   const finishFileMutation = async (current: FileLifecyclePanelState, action: FileLifecycleMutation['action'], notice?: string): Promise<void> => {
     savedFiles.remove(new Set([current.fileId, ...(current.preview ? [current.preview.record_id] : [])]));
@@ -14983,7 +16054,7 @@ export const bootstrapDataRoute = (
   };
   const mutateFile = async (action: FileLifecycleMutation['action']): Promise<void> => {
     const current = fileLifecycle;
-    if (!current?.preview || current.busy || (action === 'delete' && current.preview.in_use) || !opts.fileMutateCaller
+    if (!current?.preview || current.busy || current.rename || (action === 'delete' && current.preview.in_use) || !opts.fileMutateCaller
       || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId
       || (action === 'restore' && current.preview.can_restore !== true)
       || (action === 'delete' && !current.confirmDelete)) return;
@@ -15133,6 +16204,8 @@ export const bootstrapDataRoute = (
 
   const closeContactDetail = (): void => {
     if (contactDetail === null) return;
+    if (!mailMessageSurface.beforeLeave()) return;
+    mailMessageSurface.reset();
     if (contactSearchReturn) { returnToContactSearch(); return; }
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const returnEmail =
@@ -15704,6 +16777,11 @@ export const bootstrapDataRoute = (
   };
 
   const onClick = (ev: Event): void => {
+    const batchTarget = targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR) ?? targetWithAttr(ev, SHARED_ACTION_ATTR);
+    const batchAction = batchTarget?.getAttribute(DATA_ROUTE_ACTION_ATTR) ?? batchTarget?.getAttribute(SHARED_ACTION_ATTR);
+    if (activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG
+      && batchAction?.startsWith(FILE_BATCH_ACTION)) { fileBatch.handleAction(batchAction); return; }
+    if (fileBatch.busy()) { ev.preventDefault(); focusFileBatch(); return; }
     if (contactRecovery.busy()) { ev.preventDefault(); return; }
     // Form-renderer array Add/Remove for the work-entity dialog's
     // `data.contact` ref arrays (note/project related contacts). These
@@ -15842,6 +16920,66 @@ export const bootstrapDataRoute = (
     if (action === MEMORY_COMPOSE_SUBMIT_ACTION) {
       void submitMemoryCompose();
       return;
+    }
+    // D-336 slice E — the relationship beside the summary.
+    if (action === MEMORY_CLAIM_ADD_ACTION && memoryCompose.open && !memoryCompose.submitting) {
+      syncMemoryComposeFromDom();
+      // A new note with no summary yet gets one built from the relationship (§3.5).
+      memoryCompose = { ...memoryCompose, summaryFollows: memoryCompose.mode === 'create' && memoryCompose.summary.trim() === '' };
+      setComposeClaim({ subject: { text: '' }, relation: '', object: { text: '' } }, true);
+      focusComposeClaimField('claim-subject');
+      return;
+    }
+    if (action === MEMORY_CLAIM_REMOVE_ACTION && memoryCompose.open && !memoryCompose.submitting) {
+      syncMemoryComposeFromDom();
+      memoryCompose = { ...memoryCompose, summaryFollows: false };
+      setComposeClaim(undefined, true);
+      routeRoot.querySelector?.<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_CLAIM_ADD_ACTION}"]`)?.focus?.({ preventScroll: true });
+      return;
+    }
+    const claimEnd = target.getAttribute(MEMORY_CLAIM_END_ATTR);
+    if ((claimEnd === 'subject' || claimEnd === 'object') && memoryCompose.open && !memoryCompose.submitting && memoryCompose.claim !== undefined) {
+      if (action === MEMORY_CLAIM_LINK_ACTION) {
+        const kind = target.getAttribute(MEMORY_CLAIM_LINK_ATTR);
+        if (kind === 'contact' || kind === 'asset') void linkComposeClaimEnd(claimEnd, kind);
+        return;
+      }
+      if (action === MEMORY_CLAIM_LINK_CANCEL_ACTION) {
+        const { linking: _linking, ...rest } = memoryCompose;
+        memoryCompose = rest;
+        render();
+        focusComposeClaimField(`claim-${claimEnd}`);
+        return;
+      }
+      if (action === MEMORY_CLAIM_ADD_CONTACT_ACTION) {
+        void addComposeClaimContact(claimEnd);
+        return;
+      }
+      if (action === MEMORY_CLAIM_ADD_THING_ACTION) {
+        void addComposeClaimThing(claimEnd);
+        return;
+      }
+      if (action === MEMORY_CLAIM_PICK_ACTION || action === MEMORY_CLAIM_YOU_ACTION || action === MEMORY_CLAIM_UNLINK_ACTION) {
+        syncMemoryComposeFromDom();
+        const claim = memoryCompose.claim;
+        const current = claim[claimEnd];
+        let next: MemoryClaimEnd | undefined;
+        if (action === MEMORY_CLAIM_YOU_ACTION) next = { owner: true };
+        else if (action === MEMORY_CLAIM_UNLINK_ACTION) next = { text: 'text' in current ? current.text : 'owner' in current ? '' : current.name };
+        else {
+          const id = target.getAttribute(MEMORY_CLAIM_PICK_ID_ATTR);
+          const name = target.getAttribute(MEMORY_CLAIM_PICK_NAME_ATTR);
+          const kind = memoryCompose.linking?.kind;
+          if (id !== null && name !== null && kind !== undefined) {
+            next = kind === 'contact' ? { contact_id: id, name } : { asset_id: id, name };
+          }
+        }
+        if (next !== undefined) {
+          setComposeClaim({ ...claim, [claimEnd]: next }, true);
+          if (action === MEMORY_CLAIM_UNLINK_ACTION) focusComposeClaimField(`claim-${claimEnd}`);
+        }
+        return;
+      }
     }
     if (action === MEMORY_COMPOSE_DISCARD_KEEP_ACTION) {
       closeMemoryComposeDiscardGuard();
@@ -16166,6 +17304,12 @@ export const bootstrapDataRoute = (
       if (slug !== null) void selectExplorerInstance(slug);
       return;
     }
+    if (action === 'file-open-preview') {
+      const id = target.getAttribute(COLLECTION_RECORD_ID_ATTR); if (id) previewListedFile(id); return;
+    }
+    if (action === 'file-open-details') {
+      const id = target.getAttribute('data-file-details-id'); if (id) void openExplorerRecord(id); return;
+    }
     if (action === COLLECTION_OPEN_RECORD_ACTION) {
       const recordId = target.getAttribute(COLLECTION_RECORD_ID_ATTR);
       const agendaSource = target.getAttribute(AGENDA_SOURCE), agendaKey = target.getAttribute(AGENDA_FOCUS);
@@ -16312,9 +17456,19 @@ export const bootstrapDataRoute = (
       if (email !== null) void openEditContactDialog(email);
       return;
     }
+    if (action === 'contact-email') {
+      const email = target.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR);
+      if (email !== null) void openContactEmail(email);
+      return;
+    }
     if (action === 'hide-contact-episode') {
       const id = target.getAttribute('data-episode-id');
       if (id !== null) void hideContactEpisode(id);
+      return;
+    }
+    if (action === 'link-contact-relationship') {
+      const id = target.getAttribute('data-relationship-id');
+      if (id !== null) void linkContactRelationship(id);
       return;
     }
     if (action === 'open-contact-detail') {
@@ -16562,6 +17716,28 @@ export const bootstrapDataRoute = (
       closeContactDialog();
       return;
     }
+    if (action === DATA_ROUTE_CONTACT_MERGE_ACTION) {
+      void mergeContactDialog();
+      return;
+    }
+    if (action === DATA_ROUTE_CONTACT_MERGE_FIELD_ACTION) {
+      const field = target.getAttribute(DATA_ROUTE_CONTACT_MERGE_FIELD_ATTR) as MergePickField | null;
+      const value = target.getAttribute(DATA_ROUTE_CONTACT_MERGE_VALUE_ATTR);
+      if (contactDialog !== null && contactDialog.merging !== true && field !== null && value !== null
+        && MERGE_PICK_FIELDS.some(([known]) => known === field) && mergeFieldChoices(contactDialog, field).includes(value)) {
+        contactDialog = { ...contactDialog, merge_picks: { ...contactDialog.merge_picks, [field]: value } };
+        render();
+      }
+      return;
+    }
+    if (action === DATA_ROUTE_CONTACT_MERGE_NAME_ACTION) {
+      const name = target.getAttribute(DATA_ROUTE_CONTACT_MERGE_NAME_ATTR);
+      if (contactDialog !== null && contactDialog.merging !== true && name !== null && mergeNameChoices(contactDialog).includes(name)) {
+        contactDialog = { ...contactDialog, merge_name: name };
+        render();
+      }
+      return;
+    }
     if (action === 'submit-contact-dialog') {
       syncContactDialogFromDom();
       void confirmContactDialog();
@@ -16608,14 +17784,32 @@ export const bootstrapDataRoute = (
       });
       return;
     }
+    if (action === 'file-rename' && fileLifecycle?.preview?.can_rename && !fileLifecycle.busy && opts.fileRenameCaller) {
+      const p = fileLifecycle.preview;
+      fileLifecycleNotice = '';
+      fileLifecycle = { ...fileLifecycle, rename: { value: p.filename, original: p.filename, revision: p.revision }, error: undefined, confirmDelete: false };
+      render();
+      const input = routeRoot.querySelector<HTMLInputElement>(`[${DATA_ROUTE_ACTION_ATTR}="file-rename-input"]`);
+      input?.focus(); input?.select(); return;
+    }
+    if (action === 'file-rename-cancel') {
+      if (fileLifecycle?.rename && !fileLifecycle.busy) {
+        fileLifecycle = { ...fileLifecycle, rename: undefined, error: undefined }; render();
+        routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="file-rename"]`)?.focus();
+      }
+      return;
+    }
+    if (action === 'file-rename-save') { pendingLoadPromise = renameFile(); return; }
     if (action === 'file-usage') { if (!fileLifecycle?.busy) pendingLoadPromise = loadFileUsage(); return; }
     if (action === 'file-toggle-archived') {
+      if (!beforeLeaveFileRename()) return;
+      fileBatch.reset();
       savedFiles.cancel();
       showArchivedFiles = !showArchivedFiles; fileLifecycle = undefined; fileLifecycleGeneration++;
       pendingLoadPromise = loadExplorer('files').then(() => { if (!disposed) render(); }); return;
     }
     if (action === 'file-delete' || action === 'file-delete-cancel') {
-      if (fileLifecycle && !fileLifecycle.busy) { fileLifecycle = { ...fileLifecycle, confirmDelete: action === 'file-delete' }; render();
+      if (fileLifecycle && !fileLifecycle.busy && !fileLifecycle.rename) { fileLifecycle = { ...fileLifecycle, confirmDelete: action === 'file-delete' }; render();
         routeRoot.querySelector<HTMLElement>('[data-file-lifecycle]')?.focus(); }
       return;
     }
@@ -16632,7 +17826,12 @@ export const bootstrapDataRoute = (
       if (projectWork && canEditProject(projectWork.project)) void openEditWorkEntityDialog('project', projectWork.project.id, 'edit');
       return;
     }
-    if (action === 'project-commitment-link-existing') { void openProjectCommitmentList(); return; }
+    if (action === 'project-work-link-existing') {
+      const kind = target.getAttribute('data-project-kind');
+      if (kind === 'task' || kind === 'note' || kind === 'commitment') void openProjectWorkList(kind);
+      return;
+    }
+    if (action === 'confirm-project-work-link') { pendingLoadPromise = confirmProjectWorkLink(); return; }
     if (action === 'project-commitment-scope') {
       const status = target.getAttribute('data-project-status');
       if (activeTab === 'project' && projectWork && !projectEditing && (status === 'open' || status === 'all')) projectWork.setCommitmentStatus(status);
@@ -16803,6 +18002,13 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
+    if (target.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-rename-input' && fileLifecycle?.rename && !fileLifecycle.busy) {
+      fileLifecycle.rename.value = target.value;
+      const save = routeRoot.querySelector<HTMLButtonElement>(`[${DATA_ROUTE_ACTION_ATTR}="file-rename-save"]`);
+      if (save) save.disabled = !fileLifecycle.preview?.can_rename || !fileLifecycle.rename.revision || !target.value.trim()
+        || target.value.normalize('NFC').trim() === fileLifecycle.preview.filename;
+      return;
+    }
     if (activeTab === 'calendar' && typeof target.getAttribute === 'function' && calendarAgenda.handleInput(target)) return;
     if (activeTab === 'calendar' && calendarCreateSurface.handleInput(target as HTMLElement)) return;
     if (activeTab === 'calendar' && calendarEventSurface.handleInput(target as HTMLElement)) return;
@@ -16976,7 +18182,35 @@ export const bootstrapDataRoute = (
         && !memoryComposeDiscardGuardOpen
         && (memoryField === 'kind' || memoryField === 'summary' || memoryField === 'body')
       ) {
-        memoryCompose = { ...memoryCompose, [memoryField]: target.value };
+        memoryCompose = {
+          ...memoryCompose,
+          [memoryField]: target.value,
+          // D-336 slice E — a summary the owner writes no longer follows the relationship.
+          ...(memoryField === 'summary' ? { summaryFollows: false } : {}),
+        };
+        return;
+      }
+      if (
+        memoryCompose.open
+        && !memoryCompose.submitting
+        && !memoryComposeDiscardGuardOpen
+        && memoryCompose.claim !== undefined
+        && (memoryField === 'claim-subject' || memoryField === 'claim-object' || memoryField === 'claim-relation')
+      ) {
+        const claim = memoryCompose.claim;
+        const pending = memoryCompose.linking?.end;
+        setComposeClaim(memoryField === 'claim-relation'
+          ? { ...claim, relation: target.value }
+          : memoryField === 'claim-subject'
+            ? { ...claim, subject: { text: target.value } }
+            : { ...claim, object: { text: target.value } }, false);
+        // D-336 audit 2026-11-01 — the change drops a lookup or an add under way, so its
+        // matches go too, in place: its "Adding “Mia”…" would otherwise stay up for good.
+        if (pending !== undefined) dropMemoryClaimMatches(routeRoot.querySelector?.('[data-memory-claim]'), pending);
+        // The relation decides what each end can be linked to, shown as it is typed.
+        if (memoryField === 'claim-relation') {
+          showMemoryClaimTakes(routeRoot.querySelector?.('[data-memory-claim]'), target.value);
+        }
         return;
       }
       if (
@@ -16992,7 +18226,12 @@ export const bootstrapDataRoute = (
         };
         return;
       }
-      if (target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-saved-query') { savedFileQueryInput = target.value; return; }
+      if (target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-saved-query') {
+        if (fileBatch.busy()) { target.value = savedFileQueryInput; return; }
+        savedFileQueryInput = target.value;
+        if (fileBatch.holdsList()) { fileBatch.reset(); render(); }
+        return;
+      }
       if (target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query') {
         cloudFileQueryInput = target.value; return;
       }
@@ -17012,6 +18251,7 @@ export const bootstrapDataRoute = (
   };
 
   const onChange = (ev: Event): void => {
+    if (fileBatch.busy()) { render(); focusFileBatch(); return; }
     const target = ev.target as HTMLInputElement | HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
     if (activeTab === 'calendar' && calendarAgenda.handleChange(target)) return;
@@ -17078,6 +18318,7 @@ export const bootstrapDataRoute = (
       if (email !== null) setMergeSurvivor(email);
       return;
     }
+    if (action === 'file-batch-toggle' && activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG) { fileBatch.toggle(target.getAttribute('data-file-batch-id') ?? '', (target as HTMLInputElement).checked); return; }
     if (action === 'task-bulk-toggle' && activeTab === 'task') { taskBulk.toggle(target.getAttribute('data-task-id') ?? '', (target as HTMLInputElement).checked); return; }
     if (action === 'task-bulk-date' && activeTab === 'task') { taskBulk.setDate(target.value); return; }
     if (taskBulk.busy()) { render(); focusTaskBatch(); return; }
@@ -17127,7 +18368,13 @@ export const bootstrapDataRoute = (
   };
 
   const onKeyDown = (ev: KeyboardEvent): void => {
+    if (calendarCreateSurface.handleKeyDown(ev)) return;
+    if (fileBatch.busy() && (ev.key === 'Escape' || targetWithAttr(ev, DATA_ROUTE_TAB_ATTR))) { ev.preventDefault(); return; }
     if (contactRecovery.busy() && (ev.key === 'Escape' || targetWithAttr(ev, DATA_ROUTE_TAB_ATTR))) { ev.preventDefault(); return; }
+    if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-rename-input') {
+      if (!ev.isComposing) { ev.preventDefault(); pendingLoadPromise = renameFile(); }
+      return;
+    }
     if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-saved-query') {
       ev.preventDefault(); pendingLoadPromise = browseSavedFiles('search'); return;
     }
@@ -17299,6 +18546,8 @@ export const bootstrapDataRoute = (
   };
   routeRoot.addEventListener('submit', onRecordsViewSubmit);
   routeRoot.addEventListener('submit', calendarCreateSurface.handleSubmit);
+  routeRoot.addEventListener('compositionstart', calendarCreateSurface.handleComposition);
+  routeRoot.addEventListener('compositionend', calendarCreateSurface.handleComposition);
   routeRoot.addEventListener('change', onChange);
   routeRoot.addEventListener('keydown', onKeyDown);
 
@@ -17352,9 +18601,10 @@ export const bootstrapDataRoute = (
         || activeTab !== initialDeepLinkTab
         || activeLens !== initialDeepLinkLens
       ) return undefined;
-      // D-198 Slice 1b — the Memory lens has no per-entity deep link (v1); a
-      // hand-crafted `#data/memory/<x>` must not open a Data-tab detail.
-      if (activeLens === 'memory') return undefined;
+      // `#data/memory/<id>` opens that note in the Memory lens (D-336 slice D: a
+      // relationship links to the note that says it). It never opens a Data-tab detail.
+      if (activeLens === 'memory') return openMemoryDetail(initialEntityId);
+      if (activeTab === 'reminder') return undefined; // The surface reads the exact initial ID during its load.
       if (activeTab === 'contact') {
         // `#data/contact/scan` addresses the merge page; anything else is an
         // email. The literal cannot collide with a contact id — every email
@@ -17421,6 +18671,7 @@ export const bootstrapDataRoute = (
     // A remote page walk or search also stays stable until an explicit refresh.
     if (activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller) {
       const state = savedFiles.snapshot();
+      if (fileBatch.holdsList()) return;
       if (state.loading || state.unsupported || state.pages > 1 || state.query.length > 0 || state.error || savedFileQueryInput.trim() !== state.query
         || (doc.activeElement as HTMLElement | null)?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-saved-query') return;
     }
@@ -17468,7 +18719,7 @@ export const bootstrapDataRoute = (
       // D-324 — a reminder rang: the list moves it to the ones rung. A reminder
       // writes no warehouse event, so this notification is the only signal.
       opts.subscribe('notification.notify', (event) => {
-        if (activeLens === 'data' && activeTab === 'reminder' && event.link_url === REMINDER_LIST_LINK) {
+        if (activeLens === 'data' && activeTab === 'reminder' && parseReminderLink(event.link_url) !== null) {
           scheduleLiveRefresh();
         }
       }),
@@ -17547,9 +18798,10 @@ export const bootstrapDataRoute = (
     );
   }
 
-  const hasDataInFlightWork = (): boolean => contactRecovery.busy() || taskBulk.busy() || opaqueMutationsInFlight > 0
+  const hasDataInFlightWork = (): boolean => contactRecovery.busy() || taskBulk.busy() || fileBatch.busy() || opaqueMutationsInFlight > 0
     || workEntityState.dialog?.submitting === true
     || contactDialog?.submitting === true
+    || contactDialog?.merging === true
     || savingFormResponse
     || exportingFormResponseFormat !== null
     || bookingManageLinkBusy
@@ -17629,8 +18881,8 @@ export const bootstrapDataRoute = (
     timeline: () => timeline,
     getLoadErrors: () => errors,
     hasInFlightWork: hasDataInFlightWork,
-    hasUnsavedChanges: () => mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || calendarCreateSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
-    unsavedChangesPrompt: () => (mailMessageSurface.hasUnsavedChanges()
+    hasUnsavedChanges: () => hasFileRenameChanges() || mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || calendarCreateSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
+    unsavedChangesPrompt: () => (hasFileRenameChanges() ? 'Leave Data? Your filename change is not saved.' : mailMessageSurface.hasUnsavedChanges()
       ? 'Leave Data? Your email draft is not saved.' : calendarCreateSurface.hasUnsavedChanges()
       ? 'Leave Data? Your new event is not saved.' : calendarEventSurface.hasUnsavedChanges()
       ? 'Leave Data? Your event changes are not saved.' : recordsImport.hasUnsavedChanges()
@@ -17647,13 +18899,21 @@ export const bootstrapDataRoute = (
     refresh: startRefresh,
     whenLoaded: async () => {
       await taskBulk.whenSettled();
+      await fileBatch.whenSettled();
       await pendingLoadPromise;
       if (activeTab === 'search') await assetSearch.whenLoaded();
       if (activeTab === 'calendar' && explorerDetail === null) await calendarAgenda.whenLoaded();
       if (activeTab === 'reminder') await remindersSurface.whenLoaded();
     },
     navigateDeepLink: (hash) => {
+      const reminderAddress = parseReminderLink(hash);
+      if (!disposed && activeLens === 'data' && activeTab === 'reminder' && reminderAddress) {
+        if (!remindersSurface.open(reminderAddress.reminder_id, false)) return false;
+        dataHistory.adopt(dataAddress(hash, reminderAddress.reminder_id ?? undefined));
+        return true;
+      }
       if (!disposed && activeLens === 'data' && activeTab === 'files' && documentSearchReturn?.hash === hash && !hasDataInFlightWork()) {
+        if (!beforeLeaveFileRename()) return false;
         returnToDocumentSearch(true); return true;
       }
       if (!disposed && activeLens === 'data' && activeTab === 'calendar' && explorerDetail !== null
@@ -17663,7 +18923,7 @@ export const bootstrapDataRoute = (
       }
       if (disposed || activeLens !== 'data' || activeTab !== 'contact' || !contactSearchReturn
         || hash !== contactSearchReturn.hash || contactDialog !== null || openingContactEditEmail !== null
-        || hasDataInFlightWork()) return false;
+        || hasDataInFlightWork() || !mailMessageSurface.beforeLeave()) return false;
       returnToContactSearch(true);
       return true;
     },
@@ -17731,6 +18991,7 @@ export const bootstrapDataRoute = (
       assetSearch.dispose();
       documentSearch.dispose();
       savedFiles.dispose();
+      fileBatch.dispose();
       remindersSurface.dispose();
       taskBulk.dispose();
       calendarAgenda.dispose();
@@ -17758,6 +19019,8 @@ export const bootstrapDataRoute = (
       routeRoot.removeEventListener('submit', onRecordsViewSubmit);
       routeRoot.removeEventListener('keydown', onKeyDown);
       routeRoot.removeEventListener('submit', calendarCreateSurface.handleSubmit);
+      routeRoot.removeEventListener('compositionstart', calendarCreateSurface.handleComposition);
+      routeRoot.removeEventListener('compositionend', calendarCreateSurface.handleComposition);
       doc.removeEventListener('focusin', onCollectionFocusIn);
       doc.removeEventListener('focusout', onCollectionFocusOut);
       collectionPickerBreakpoint?.removeEventListener?.('change', onCollectionBreakpointChange);

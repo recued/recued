@@ -239,6 +239,8 @@ export interface CalendarSearchQuery {
  *  CAS-stored. See `CollectionSearchMatch` in `@recued/contracts`. */
 export interface CalendarSearchMatch {
   record_id: string;
+  /** D-336 (spec §56) — the provider's own id, the one a write takes (`calendar.update`). */
+  source_id: string;
   hot: CalendarRecordHotFields;
   rank: number;
   body?: string;
@@ -999,6 +1001,7 @@ export const createCalendarTable = (
         }
         return {
           record_id: m.key,
+          source_id: row.source_id,
           hot: rowHotFields(row),
           rank: m.rank,
           ...body,

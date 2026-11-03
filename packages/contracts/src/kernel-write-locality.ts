@@ -127,8 +127,9 @@ export const kernelWriteStaysInRecued = (
  *  writes with: `work.create` its kind's create (it never names a Source), `work.update` its
  *  kind's update or a task's mark-done (by the id it names), a calendar tool its calendar
  *  (absent = the local one), the memory tools the memory store (a forget is an overlay mark
- *  in it). Any other tool, or arguments that do not say, answers `false` — `recipe.schedule`
- *  among them: its row is local, but the runs it starts act on their own. */
+ *  in it), `contact.write` the address book. Any other tool, or arguments that do not say,
+ *  answers `false` — `recipe.schedule` among them: its row is local, but the runs it starts
+ *  act on their own. */
 export const tier1WriteStaysInRecued = (
   tool: string,
   args: Readonly<Record<string, unknown>>,
@@ -150,6 +151,12 @@ export const tier1WriteStaysInRecued = (
     case 'memory.write':
     case 'memory.forget':
       return kernelWriteStaysInRecued('core.memory.write', [{}]);
+    // D-336 slice F — the address book has no outside half: its sources (a CRM, a contact
+    // book, mail and calendar) sync into it and nothing writes back to them, so a contact an
+    // AI adds or changes stays on the server. ⚠ A contact write-back to a Source would make
+    // this false; it would then have to name the contact's Source, as a task's does.
+    case 'contact.write':
+      return true;
     default:
       return false;
   }

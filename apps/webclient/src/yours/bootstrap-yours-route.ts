@@ -1,10 +1,16 @@
 import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_STATUSES, HOME_ASSISTANT_WRITER_SETUP, PROACTIVE_PROPOSAL_KINDS, assetDocumentDetails, isAssetDate, occasionNextDate, type Asset, type AssetClassPreset, type FileAttachmentSelection,
   type AssetEvidence, type AssetPatch, type AssetRule, type ContactRecord, type Episode, type EpisodeInput, type Link, type Occasion, type ProactiveProposal,
   type TimelineRequest, type TimelineResponse, type TripDetails, type YoursAssetFilter, type YoursAssetSphere, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
+import {
+  claimEndNamingInWords, memoryClaimSentence, type MemoryClaim, type MemoryClaimsResult, type MemoryGetRequest,
+  type MemoryGetResponse, type MemoryReplaceRequest, type MemoryUpdateRequest,
+} from '@recued/contracts';
+import { isOwnMemoryEntry, isReplaceableEntry } from '../data/memory-lens.js';
 import type { DataCommitmentCloseCaller } from '../data/bootstrap-data-route.js';
 import { renderActionLabel, type IconName } from '@recued/ui-shared/icon-render';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
-import { serializeLogsRunAddress, serializeSourceRecordAddress } from '../shell/route.js';
+import { serializeLogsRunAddress, serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
+import { classifyRpcError } from '../shell/rpc-error-copy.js';
 import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { mountAssetFactsEditor } from './asset-facts-editor.js';
@@ -50,6 +56,16 @@ export interface YoursRouteOptions {
   contacts?(): Promise<ContactRecord[]>;
   links?(id: string): Promise<Link[]>;
   timeline?(input: TimelineRequest): Promise<TimelineResponse>;
+  /** D-336 slice D — the notes whose claim names this thing (`memory.claims`). */
+  claims?(asset: string): Promise<MemoryClaimsResult & { more?: true }>;
+  /** D-336 (spec §45) — a "matched by name" line links its name to this thing: the owner's own
+   *  note changes in place, an AI's is replaced by the owner's version, as the Memory view's
+   *  Replace does. Absent ⇒ no line offers it. */
+  memory?: {
+    get(args: MemoryGetRequest): Promise<MemoryGetResponse>;
+    update(args: MemoryUpdateRequest): Promise<unknown>;
+    replace(args: MemoryReplaceRequest): Promise<unknown>;
+  };
   files?: FilePreviewCallers & {
     get(input: { record_id: string }): Promise<FileAttachmentSelection>;
     list(input: import('@recued/contracts').FileAttachmentListRequest): Promise<import('@recued/contracts').FileAttachmentListResult>;
@@ -159,6 +175,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   let snapshot: YoursSnapshot | undefined; let contacts: ContactRecord[] = []; let files: Link[] = [];
   let filesAvailable = false;
   let timeline: TimelineResponse | undefined; let editor: Editor | undefined; let routeEditorOpened = false;
+  // D-336 slice D — the Relationships section's notes; `failed` when the read failed.
+  let relationships: (MemoryClaimsResult & { more?: true }) | undefined; let relationshipsFailed = false;
   let editorReturnFocus: EditorReturnFocus | undefined;
   let disposed = false; let dirty = false; let typing = false; let busy = false; let loading = false; let generation = 0;
   let draftVersion = 0;
@@ -272,6 +290,31 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     } }
   };
   const change = (input: YoursCommand, keep = false) => write(() => options.change(input), keep);
+  /** D-336 (spec §45) — link a "matched by name" relationship to this thing. The note is read
+   *  first, so the link is made on its current claim; the page then reads its relationships again. */
+  const linkThing = (memory_id: string, asset: Asset) => write(async (): Promise<YoursCommandResult> => {
+    const memory = options.memory!;
+    const entry = await memory.get({ memory_id });
+    const place = entry.claim === undefined ? undefined : claimEndNamingInWords(entry.claim, asset.name, 'thing');
+    if (entry.claim === undefined || place === undefined) throw new Error('This note no longer names this thing in words. Refresh to see it.');
+    const claim: MemoryClaim = { ...entry.claim, [place]: { asset_id: asset.id, name: asset.name } };
+    if (isOwnMemoryEntry(entry)) {
+      await memory.update({ memory_id, claim });
+      return { message: 'Linked.' };
+    }
+    if (!isReplaceableEntry(entry)) throw new Error('Only your own notes and the current version of an AI’s note can be linked.');
+    try {
+      await memory.replace({
+        memory_id, kind: entry.kind, ...(entry.summary !== undefined && entry.summary.length > 0 ? { summary: entry.summary } : {}),
+        body: entry.body ?? '', ...(entry.event_at !== undefined ? { event_at: entry.event_at } : {}), claim,
+      });
+    } catch (error) {
+      // An older server has no `memory.replace` and says so (D-198 §12).
+      if (classifyRpcError(error).code === 'unknown_method') throw new Error('Your Recued server needs an update to link an AI’s note.');
+      throw error;
+    }
+    return { message: 'Linked. The note is now yours, in place of the AI’s.' };
+  });
   const writerEditor = (field: string): 'writer_setup' | 'writer' => options.writerSetup &&
     Object.hasOwn(HOME_ASSISTANT_WRITER_SETUP.fields, field) ? 'writer_setup' : 'writer';
   const open = (value: Editor, returnFocus?: EditorReturnFocus) => {
@@ -1251,6 +1294,26 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       for (const row of snapshot.related_assets.filter(row => row.id !== asset.belongs_to)) link(related, `${row.name} · ${row.retirement}`, `#yours/asset/${encodeURIComponent(row.id)}`);
       button(related, asset.belongs_to ? 'Change parent' : 'Choose parent', () => open({ type: 'parent', asset }));
       button(related, 'Link another record for the same thing', () => open({ type: 'same_thing', asset }));
+      // D-336 slice D — what memory says about this thing, one sentence a note, each
+      // opening its note. Shown only when a note names it, or when the read failed.
+      if (relationshipsFailed || (relationships?.claims.length ?? 0) > 0) {
+        const relations = section(panels.overview, 'Relationships'); relations.dataset.yoursRelationships = '';
+        if (relationshipsFailed) el('p', 'Relationships could not be read. Refresh to retry.', relations).setAttribute('role', 'status');
+        for (const row of relationships?.claims ?? []) {
+          const item = el('p', undefined, relations); item.dataset.yoursRelationship = row.memory_id;
+          link(item, memoryClaimSentence(row.claim), serializeShellRoute('data', 'memory', row.memory_id));
+          // The space is outside the phrase, so a narrow line breaks before it, never inside it.
+          if (row.by === 'name') { item.append(' '); const note = el('span', 'matched by name', item); note.className = 'yours-muted'; }
+          // D-336 (spec §45) — and links it to this thing, where one end names it in words.
+          if (row.by === 'name' && options.memory && (row.origin_actor === 'user_self' || row.origin_actor === 'contracted_user')
+            && claimEndNamingInWords(row.claim, asset.name, 'thing') !== undefined) {
+            item.append(' ');
+            button(item, 'Link to this thing', () => linkThing(row.memory_id, asset), `link-thing-${row.memory_id}`)
+              .setAttribute('aria-label', `Link to this thing: ${memoryClaimSentence(row.claim)}`);
+          }
+        }
+        if (relationships?.more === true) el('p', 'The newest 50 are shown.', relations).className = 'yours-muted';
+      }
       const attachments = section(panels.files, 'Files');
       const attached = files.filter(link => link.role === 'attachment' && link.to_collection === 'file');
       if (!attached.length) el('p', 'No attached files.', attachments);
@@ -1576,9 +1639,20 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           // Back must not reopen this invalid page and redirect again.
           void navigateAssets(Math.max(0, Math.ceil(result.total_assets / 50) - 1), true); return;
         }
+        // The Relationships read runs beside the rest but is kept apart from them, so a
+        // server with no `memory.claims` (an older one) shows no section rather than a
+        // failure among the page's other reads.
+        type ClaimsRead = { found: MemoryClaimsResult & { more?: true } } | { failed: boolean } | { none: true };
+        const claimsPending: Promise<ClaimsRead> = selected && options.claims ? options.claims(selected).then(
+          (found): ClaimsRead => ({ found }), (error: unknown): ClaimsRead => ({ failed: classifyRpcError(error).code !== 'unknown_method' }),
+        ) : Promise.resolve({ none: true });
         const extra = await Promise.allSettled([options.contacts?.() ?? Promise.resolve([]), selected ? options.links?.(selected) ?? Promise.resolve([]) : Promise.resolve([]),
           selected ? options.timeline?.({ entity_id: `asset:${selected}`, limit: 30 }) ?? Promise.resolve(undefined) : Promise.resolve(undefined)]);
+        const claimsRead = await claimsPending;
         if (disposed || version !== generation || newerDraft()) return;
+        // A reply with no list (a server that answers wrongly) shows no section.
+        relationships = 'found' in claimsRead && Array.isArray(claimsRead.found?.claims) ? claimsRead.found : undefined;
+        relationshipsFailed = 'failed' in claimsRead && claimsRead.failed === true;
         snapshot = result;
         contacts = extra[0].status === 'fulfilled' ? extra[0].value : []; files = extra[1].status === 'fulfilled' ? extra[1].value : []; timeline = extra[2].status === 'fulfilled' ? extra[2].value : undefined;
         filesAvailable = options.links !== undefined && extra[1].status === 'fulfilled';

@@ -11,6 +11,7 @@
 import type {
   ChatPlanRecord,
   ServerEvent,
+  ServerPendingAsk,
   ToolTier,
 } from '@recued/contracts';
 
@@ -178,6 +179,19 @@ export const pendingChatPlanHref = (
     ? { messageId: plan.message_id }
     : {}),
 });
+
+/** D-336 slice N — where the approval of a held chat write leads: its card in Chat
+ *  (`ServerPendingAsk.chat_plan`), which is not in this store (`planFromRecord`), as the
+ *  ask card's `chatHref` and `chatChangeable`. */
+export const heldAskChatLink = (
+  ask: Pick<ServerPendingAsk, 'chat_plan'>,
+): { chatHref?: string; chatChangeable?: boolean } =>
+  ask.chat_plan === undefined
+    ? {}
+    : {
+        chatHref: serializeChatPlanAddress({ sessionId: ask.chat_plan.session_id, planId: ask.chat_plan.plan_id }),
+        ...(ask.chat_plan.changeable === true ? { chatChangeable: true } : {}),
+      };
 
 /** One copy source for the full Approvals route and compact attention popover,
  * so neither surface can imply that approval itself executed the action. */

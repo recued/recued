@@ -479,6 +479,24 @@ describe('the grounding corpus is what the model was GIVEN, not what it SENT', (
     ).toEqual([]);
   });
 
+  it("D-336 slice G — a held write's answer grounds what it names; a refusal's never does", () => {
+    // Live (bench task 417): the held answer named the note the save contradicts and said to
+    // forget it, and the forget was refused as a guessed id, since every `detail` was
+    // stripped. A held write's answer is the server's own, never the model's echoed.
+    const held = JSON.stringify({
+      user_message: "remember that Mia is Dana's sister",
+      prior_tool_calls: [{
+        tool_name: 'memory.write', args: { summary: "Mia is Dana's sister." }, status: 'error', reason: 'awaiting_approval',
+        detail: "plan_id=p1. It was sent to the owner for approval and runs by itself once they approve it. "
+          + "It contradicts \"Mia is Dana's daughter.\" ('umem_a0e97bb9-c336'), which you saved. "
+          + 'If this corrects it, forget that one with memory.forget.',
+      }],
+    });
+    expect(ungroundedArgumentsInCall({ memory_id: 'umem_a0e97bb9-c336' }, groundingCorpusFromPacket(held))).toEqual([]);
+    const refused = held.replace('"awaiting_approval"', '"invalid_args"');
+    expect(ungroundedArgumentsInCall({ memory_id: 'umem_a0e97bb9-c336' }, groundingCorpusFromPacket(refused))).toHaveLength(1);
+  });
+
   it('an unparseable body falls back to itself, never to empty', () => {
     // ⚠ Refusing every call on a malformed packet would be a worse failure than
     // the hole. A broken body is a bug elsewhere; this must not amplify it.

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { SituationDeliverySettings } from '@recued/contracts';
 
 const panel = (page: Page) => page.locator('[data-situation-delivery]');
 const time = (page: Page) => panel(page).getByLabel('Time', { exact: true });
@@ -301,4 +302,59 @@ test('the card says when the next digest goes, in the server’s zone, and nothi
     minute: '2-digit', timeZone: 'Europe/Paris' }).format(Date.parse('2030-10-28T07:00:00Z')));
   await expect(panel(page).locator('[data-situation-next]')).toHaveText(`Next digest: ${expected}`);
   expect(expected).toContain('08:00');
+});
+
+// §15.7 amendment (2026-11-02) — how far ahead the digest looks. The harness starts as an older
+// server, which names no window; `current` turns it into one that does and mounts the card again.
+const often = (page: Page) => panel(page).getByLabel('How often', { exact: true });
+const lookAhead = (page: Page) => panel(page).getByLabel('How far ahead', { exact: true });
+const weeklyHint = (page: Page) => panel(page).locator('[data-look-ahead-hint]');
+const choices = (page: Page) => lookAhead(page).locator('option').evaluateAll(options => options.map(option => [(option as HTMLOptionElement).value, option.textContent]));
+const current = async (page: Page, settings: SituationDeliverySettings = { frequency: 'weekly', weekday: 1, time: '09:00', day_of: true, look_ahead_days: 7 }) => {
+  await page.evaluate(value => { window.__overview.setServer({ settings: value }); window.__overview.remount(); }, settings);
+  await release(page, 'read', 1); await expect(time(page)).toHaveValue(settings.time);
+};
+
+test('an older server names no window, so the card offers none and a save sends none', async ({ page }) => {
+  await open(page); await expect(lookAhead(page)).toBeHidden(); await expect(weeklyHint(page)).toBeHidden();
+  await often(page).selectOption('daily'); await expect(lookAhead(page)).toBeHidden();
+  await activate(page, 'save');
+  expect(await changes(page)).toEqual([{ kind: 'save', settings: { frequency: 'daily', weekday: 1, time: '09:00', day_of: true } }]);
+});
+
+for (const width of [390, 1280]) {
+  test(`a daily digest can look today and tomorrow ahead, a weekly one a week or more, and Daily gives the window back at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 }); await open(page); await current(page);
+    await expect(lookAhead(page)).toHaveValue('7'); await expect(weeklyHint(page)).toBeVisible();
+    expect(await choices(page)).toEqual([['7', 'Next 7 days'], ['14', 'Next 14 days']]);
+    await often(page).selectOption('daily'); await expect(weeklyHint(page)).toBeHidden();
+    expect(await choices(page)).toEqual([['2', 'Today and tomorrow'], ['3', 'Next 3 days'], ['7', 'Next 7 days'], ['14', 'Next 14 days']]);
+    await expect(lookAhead(page)).toHaveValue('7');
+    await lookAhead(page).selectOption('2'); expect(await unsaved(page)).toBe(true);
+    // Weekly shows a week, which is what the server has, so nothing is unsaved.
+    await often(page).selectOption('weekly'); await expect(lookAhead(page)).toHaveValue('7'); expect(await unsaved(page)).toBe(false);
+    await often(page).selectOption('daily'); await expect(lookAhead(page)).toHaveValue('2');
+    await activate(page, 'save');
+    expect(await changes(page)).toEqual([{ kind: 'save', settings: { frequency: 'daily', weekday: 1, time: '09:00', day_of: true, look_ahead_days: 2 } }]);
+    await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('Digest settings saved.');
+    await expect(lookAhead(page)).toHaveValue('2'); expect(await unsaved(page)).toBe(false);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('an untouched window adopts the server’s, a chosen one survives a refresh, and both are locked while saving', async ({ page }) => {
+  await open(page); await current(page, { frequency: 'daily', weekday: 1, time: '09:00', day_of: true, look_ahead_days: 3 });
+  await expect(lookAhead(page)).toHaveValue('3'); await expect(weeklyHint(page)).toBeHidden();
+  await page.evaluate(() => {
+    window.__overview.setServer({ settings: { frequency: 'weekly', weekday: 1, time: '09:00', day_of: true, look_ahead_days: 14 } });
+    window.__overview.refresh();
+  });
+  await release(page, 'read', 2); await expect(lookAhead(page)).toHaveValue('14'); await expect(weeklyHint(page)).toBeVisible();
+  expect(await unsaved(page)).toBe(false);
+  await lookAhead(page).selectOption('7');
+  await page.evaluate(() => { window.__overview.setServer({ pending: 1 }); window.__overview.refresh(); });
+  await release(page, 'read', 3); await expect(lookAhead(page)).toHaveValue('7'); expect(await unsaved(page)).toBe(true);
+  await activate(page, 'save'); await expect(lookAhead(page)).toBeDisabled();
+  await finish(page, 'save', 0, 4); await expect(lookAhead(page)).toBeEnabled(); await expect(lookAhead(page)).toHaveValue('7');
+  expect(await changes(page)).toEqual([{ kind: 'save', settings: { frequency: 'weekly', weekday: 1, time: '09:00', day_of: true, look_ahead_days: 7 } }]);
 });

@@ -387,6 +387,12 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // (contact-rooted engagement evidence; D-139). No backing ingredient. OWNER-default-only
   // (sensitive — exposes a contact's engagement history): see OWNER_DEFAULT_ONLY_GRANT_ENTRIES.
   nativeOp('core.contact.engagements.read', 'contact', 'read', 'contact'),
+  // D-336 slice F — NATIVE verb-op for the Tier-1 `contact.write` tool: an AI adds a
+  // contact or changes one's details. No backing ingredient (a chat tool, not
+  // recipe-runnable; recipes keep `core.contact.upsert`). OWNER-default-only, like
+  // `core.memory.write`: on for the owner, off for every door until the owner turns it
+  // on. See OWNER_DEFAULT_ONLY_GRANT_ENTRIES.
+  nativeOp('core.contact.write', 'contact', 'write', 'contact'),
 
   // ── notification — the alert-dispatch surface; backed by the anti-shadow
   //    `core-notification-send` slug (bare `notification-send` is the alias).
@@ -1109,12 +1115,23 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    Slice C: `core.dom.tabs(target)` → a `list_tabs` → `{ tabs, truncated }`;
   //    `core.dom.open(target, address)` → an `open_tab` (a write: it asks for the
   //    address as the owner) → `{ page, url, title }` of a new tab.
+  //    Slice H, all three reads on a page handle: `core.dom.wait(target, page,
+  //    selector, until?, text?, timeout_seconds?)` → a `wait_for_element` →
+  //    `{ page, url, title, found, waited_ms }`; `core.dom.table(target, page,
+  //    ref?, selector?)` → a `read_table` → `{ page, url, title, columns, rows,
+  //    truncated }`; `core.dom.screenshot(target, page, ref?, selector?)` → a
+  //    `screenshot_page` → `{ page, url, title, image, width, height }`, where the
+  //    server keeps the picture and `image` refers to it (`BrowserImageRef`).
+  //    A screenshot is a read and does not ask (owner's ruling, 2026-11-01).
   op('core.dom.read', 'dom', 'dom-read', 'read', 'browser'),
   op('core.dom.write', 'dom', 'dom-write', 'write', 'browser'),
   op('core.dom.inspect', 'dom', 'dom-inspect', 'read', 'browser'),
   op('core.dom.click', 'dom', 'dom-click', 'write', 'browser'),
   op('core.dom.tabs', 'dom', 'dom-tabs', 'read', 'browser'),
   op('core.dom.open', 'dom', 'dom-open', 'write', 'browser'),
+  op('core.dom.wait', 'dom', 'dom-wait', 'read', 'browser'),
+  op('core.dom.table', 'dom', 'dom-table', 'read', 'browser'),
+  op('core.dom.screenshot', 'dom', 'dom-screenshot', 'read', 'browser'),
 ];
 
 // ────────────────────────────────────────────────────────────────

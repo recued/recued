@@ -3,6 +3,7 @@ import type { Checkpoint } from '@recued/contracts';
 import { buildAuditEntry } from '@recued/storage';
 
 import { composeRetentionPruners } from '../composition/bin/wire-retention-pruners.js';
+import { HELD_WRITE_EXPIRED_MESSAGE } from '../chat-held-writes.js';
 
 type RegisteredInterval = {
   name: string;
@@ -328,6 +329,68 @@ describe('composeRetentionPruners D-214 expiry handoff', () => {
     });
     expect(deleted).toBe(true);
     expect(current.commit_status).toBe('failed');
+  });
+});
+
+describe('composeRetentionPruners D-337 slice R — a held recipe run that expired reaches its conversation', () => {
+  // Before, only a held write's expiry was told to the chat (`onRawOpExpired`): a held recipe
+  // run's conversation never heard, its call kept "waiting to hear back", and the model's next
+  // turn read it as pending.
+  const NOW = 4_000_000_000;
+  const chatSource = {
+    channel: 'chat', actor: 'user_self', chat_session_id: 'session-chat', user_id: 'owner', turn_id: 'turn-chat',
+  } as const;
+  const expireOne = async (execution_source: typeof chatSource | undefined) => {
+    const cp: Checkpoint = {
+      checkpoint_id: 'cp-recipe', run_id: 'run-recipe', recipe_id: 'kitchen/remove-event',
+      gated_step_id: 'remove', step_state: {}, created_at: 1,
+    };
+    let deleted = false;
+    let current = buildAuditEntry({
+      recipe_id: 'kitchen/remove-event', recipe_hash: 'hash', commit_status: 'awaiting_approval',
+      duration_ms: 1, errors: [], config_snapshot: {}, trigger_url: null, trigger_source: 'manual',
+      instance_id: 'server', run_id: 'run-recipe', now: 1, checkpoint_id: 'cp-recipe',
+      ...(execution_source !== undefined ? { execution_source } : {}),
+    });
+    const chatRunSettledSink = vi.fn();
+    const registrations = composeWithDeps({
+      checkpointStore: {
+        list: vi.fn(async () => [cp]),
+        get: vi.fn(async () => deleted ? null : cp),
+        delete: vi.fn(async () => { deleted = true; }),
+      },
+      auditLog: {
+        get: vi.fn(async () => current),
+        append: vi.fn(async (entry) => { current = entry; }),
+        logActivity: vi.fn(async () => undefined),
+      },
+      chatRunSettledSink,
+      runtimeConfig: { get: vi.fn(() => 30) },
+      now: () => NOW,
+    });
+    // The whole pass, `onExpired` included, so a sink not called is one never called.
+    await registrations.find((r) => r.name === 'checkpoint-stale-prune')!.tick();
+    expect(deleted).toBe(true);
+    return { chatRunSettledSink, retired: () => current };
+  };
+
+  it('tells the chat\'s run-settled sink, under the run\'s own source, in a held write\'s words', async () => {
+    const { chatRunSettledSink, retired } = await expireOne(chatSource);
+    expect(retired().commit_status).toBe('failed');
+    expect(chatRunSettledSink).toHaveBeenCalledTimes(1);
+    expect(chatRunSettledSink).toHaveBeenCalledWith({
+      execution_source: chatSource,
+      run_id: 'run-recipe',
+      tool_name: 'kitchen/remove-event',
+      result: { success: false, expired: true, message: HELD_WRITE_EXPIRED_MESSAGE },
+      ts: NOW,
+    });
+  });
+
+  it('⛔ CONTROL: a run nothing started from a conversation tells no one', async () => {
+    const { chatRunSettledSink, retired } = await expireOne(undefined);
+    expect(retired().commit_status).toBe('failed');
+    expect(chatRunSettledSink).not.toHaveBeenCalled();
   });
 });
 

@@ -36,6 +36,7 @@ describe('owner message read and reply context', () => {
     const client: WsClient = { ws: null, realm: 'test', instance_id: null, display_name: 'test', connected_at: 1 };
     await expect(slice.handlers['collection.mail.message.get'](ref, client)).rejects.toMatchObject({ code: 'unauthorized' });
     await expect(slice.handlers['collection.mail.conversation.get'](ref, client)).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(slice.handlers['collection.mail.message.attachments'](ref, client)).rejects.toMatchObject({ code: 'unauthorized' });
     await expect(slice.handlers['collection.mail.message.get'](ref, { ...client, instance_id: 'owner' }))
       .rejects.toMatchObject({ code: 'not_found' });
   });

@@ -146,7 +146,8 @@ export const formatChatMarkdownExport = (
     parts.push('---', `## ${roles[message.role]} · ${stamp(message.ts)}`);
     const tool = message.toolCall;
     if (isChatToolCallRecord(tool) && tool.message_id === message.id && tool.session_id === options.sessionId) {
-      parts.push(`Recorded tool status: ${label(tool.tool_name)} · ${tool.denied ? 'not approved' : tool.state}`);
+      parts.push(`Recorded tool status: ${label(tool.tool_name)} · ${
+        tool.denied ? 'not approved' : tool.expired ? 'not answered in time' : tool.state}`);
     }
     if (message.content) parts.push(message.role === 'tool' || message.role === 'system'
       ? codeFence(message.content, 'text') : messageBody(message.content, message.sources, options.baseUrl));

@@ -7,6 +7,25 @@ export interface MailMessageRef {
   /** Constrains a conversation selection to its original mailbox and thread. */
   conversation?: MailConversationScope;
 }
+export interface MailMessageAttachmentsRequest extends MailMessageRef {
+  expected_incarnation?: string;
+}
+export interface MailMessageAttachment {
+  file_id: string;
+  filename: string;
+  mime_type: string;
+  size: number | null;
+  content_hash?: string;
+  selection_revision?: string;
+  unavailable_reason?: string;
+}
+/** Retained links only; no remote attachment fetch or mailbox write. */
+export interface MailMessageAttachmentsSnapshot extends MailMessageRef {
+  incarnation: string;
+  items: MailMessageAttachment[];
+  warnings: string[];
+  truncated: boolean;
+}
 export interface MailConversationCursor { received_at: number; record_id: string }
 export interface MailConversationRequest extends MailMessageRef {
   before?: MailConversationCursor;
@@ -25,6 +44,7 @@ export interface MailConversationItem {
   direction: 'inbound' | 'outbound' | 'unknown';
   folder: string;
   is_read: boolean;
+  is_flagged?: boolean;
   has_attachments: boolean;
   snippet: string;
 }
@@ -53,4 +73,25 @@ export interface MailMessageSnapshot extends MailMessageRef {
   /** Absent on older servers; forwarding requires a fresh complete original. */
   forward?: MailForwardContext | null;
   forward_unavailable_reason?: string;
+  /** Absent on older servers. Sending access is independent of these actions. */
+  state?: MailMessageState;
+}
+
+export interface MailMessageState {
+  /** Binds an action to this message in this enrollment of the mailbox. */
+  identity: string | null;
+  is_read: boolean;
+  is_flagged: boolean;
+  verified: boolean;
+  can_mark: boolean;
+  can_flag: boolean;
+  unavailable_reason?: string;
+}
+export interface MailMessageStateChange extends MailMessageRef {
+  expected_identity: string;
+  change: { kind: 'read' | 'star'; value: boolean };
+}
+export interface MailMessageStateResult extends MailMessageRef {
+  state: MailMessageState;
+  record: import('../collections.js').CollectionRecord;
 }

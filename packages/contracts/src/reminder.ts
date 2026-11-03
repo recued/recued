@@ -112,6 +112,12 @@ export interface ReminderListResult {
   };
 }
 
+/** Exact retained reminder, independent of the waiting list's filters and pages. */
+export interface ReminderGetResult {
+  /** Null when the reminder is absent or its history has been pruned. */
+  reminder: ReminderView | null;
+}
+
 /** The same creation receipt for a model-set reminder and an Automation alarm. */
 export interface ReminderCreateResult {
   reminder: ReminderView;
@@ -161,8 +167,21 @@ export const REMINDER_LATE_MS = 5 * 60 * 1000;
  *  a model took to call the tool. It rings at the next check. */
 export const REMINDER_PAST_GRACE_MS = 2 * 60 * 1000;
 
-/** The link a delivered reminder carries: the upcoming list. */
+/** Legacy notification destination; still accepted for reminders already sent. */
 export const REMINDER_LIST_LINK = '#data/reminder';
+
+/** Reminder IDs are opaque, bounded tokens (the store generates rem_<uuid>). */
+export const reminderDetailLink = (reminderId: string): string => {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(reminderId)) throw new Error('Invalid reminder ID');
+  return `${REMINDER_LIST_LINK}/${reminderId}`;
+};
+
+/** A narrow notification allowlist as well as the list/detail route parser. */
+export const parseReminderLink = (link: unknown): { reminder_id: string | null } | null => {
+  if (typeof link !== 'string') return null;
+  const match = /^#data\/reminder(?:\/([A-Za-z0-9_-]{1,128}))?$/.exec(link);
+  return match ? { reminder_id: match[1] ?? null } : null;
+};
 
 const zoneOrUtc = (timeZone: string | null | undefined): string => {
   if (typeof timeZone === 'string' && timeZone.length > 0) {

@@ -209,6 +209,18 @@ describe('D-325 evidence-led episodes and measured recall', () => {
     const fenced = await items(false, { ...allGrants, isCollectionReadGranted: collection => collection !== 'contact' });
     expect(fenced.some(item => item.basis === 'derived')).toBe(false);
   });
+  it('D-336 slice R — an invite still holding the address a contact was changed from joins that contact\'s purchase', async () => {
+    const f = fixture(); f.contacts.upsertManual({ email: 'casey@old.example.test', name: 'Casey' }, Date.parse('2025-01-01'));
+    const casey = f.contacts.get('casey@old.example.test')!.contact_id!;
+    f.contacts.changeVerifiedEmail({ contact_id: casey, email: 'casey@example.test' }, Date.parse('2025-02-01'));
+    f.calendar.upsert({ size_bytes: 0, now: Date.parse('2025-10-01'), event: { source_id: 'dinner', ical_uid: 'dinner', calendar_id: 'home', summary: 'Dinner',
+      start_at: Date.parse('2025-10-17T18:00Z'), end_at: Date.parse('2025-10-17T21:00Z'), timezone: 'UTC', is_all_day: false, status: 'confirmed',
+      attendees: [{ email: 'casey@old.example.test', response_status: 'accepted' }], created_at: 1, updated_at: 1 } });
+    f.purchase('lilies', '2025-10-17', { person: casey });
+    const past = { time: { from: Date.parse('2025-10-16'), to: Date.parse('2025-10-21') }, surface: 'tool' as const };
+    const items = (await f.run(past, true, allGrants)).clusters.flatMap(cluster => cluster.items);
+    expect(items.some(item => item.basis === 'derived')).toBe(true);
+  });
   it('checks each source’s verb/data/sphere before correlation and rechecks placements after asynchronous reads', async () => {
     const f = fixture(); f.plan('trip'); f.purchase('flowers', '2025-10-17', { location: 'Las Vegas' });
     const read = vi.spyOn(f.facts, 'listFactPage'); const past = { time: { from: Date.parse('2025-10-16'), to: Date.parse('2025-10-21') }, surface: 'tool' as const };

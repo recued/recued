@@ -21,11 +21,15 @@
  *  whose write API matches a shipped dialect declare it and resolve with zero new
  *  code; a structurally-novel API adds one reviewed dialect builder to the closed set
  *  below (the same extension model as `SearchStyle`):
- *    - `hubspot_properties` — one `body.properties` object of BARE property names
- *      (the `properties.` prefix stripped from each vendor `field_path`), scalar
- *      values STRING-coerced (the inverse of the read side's G2 number-from-string —
- *      HubSpot stores/compares properties as strings). Emitted as the
- *      `body.properties` wire-key arg.
+ *    - `hubspot_properties` — one `body.properties.<name>` wire-key arg per property,
+ *      the BARE property name (the `properties.` prefix stripped from each vendor
+ *      `field_path`), scalar values STRING-coerced (the inverse of the read side's G2
+ *      number-from-string — HubSpot stores/compares properties as strings). These are
+ *      the keys HubSpot's own operations declare, each checked by a closed request
+ *      schema; the request builder nests them into `{"properties": {…}}`.
+ *      ⛔ It once sent one `body.properties` OBJECT, which every closed HubSpot write
+ *      refused as an undeclared argument (`deal.update` and 8 more): a vendor-neutral
+ *      deal update could not run on HubSpot at all (D-337 §7.23, 2026-11-02).
  *    - `salesforce_sobject` — each vendor `field_path` a flat `body.<field>` wire-key
  *      arg, values TYPE-preserved (the sObject REST body is typed JSON).
  *  The `id` record selector is dialect-INDEPENDENT — it maps to the vendor path-param
@@ -205,7 +209,7 @@ const writeIdentifierReason = (field: ResolvedWriteField): string =>
   `dot-path of identifier segments with no prototype keys)`;
 
 // ────────────────────────────────────────────────────────────────
-// HubSpot — { properties: { <bareName>: <stringified> } }  →  body.properties arg
+// HubSpot — { <bareName>: <stringified> }  →  body.properties.<bareName> wire-key args
 // ────────────────────────────────────────────────────────────────
 
 /** HubSpot write paths are `properties.<name>`; the create/update body wants the BARE
@@ -224,22 +228,23 @@ const hubspotWriteValue = (value: unknown): unknown =>
   typeof value === 'number' || typeof value === 'boolean' ? String(value) : value;
 
 const buildHubspotPropertiesWrite: VendorWriteBuilder = ({ fields }) => {
-  // Null-proto so a `__proto__` bare name (rejected below too) lands as an own
+  // Null-proto so a `__proto__` key (rejected below too) lands as an own
   // property, never the prototype — defense in depth with the segment guard.
-  const properties: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const field of fields) {
     if (!PROJECTION_FIELD_PATH_REGEX.test(field.field_path)) {
       return { ok: false, reason: writeIdentifierReason(field) };
     }
     const bareName = hubspotWireName(field.field_path);
-    // The bare name becomes an OBJECT KEY in `properties`; reject any prototype-
-    // sensitive / non-identifier segment (`properties.__proto__` → pollution).
-    if (!bareName.split('.').every(isSafeIdentifierSegment)) {
+    // A HubSpot property name is ONE identifier, and it becomes one segment of the wire
+    // key; reject a dotted, prototype-sensitive or non-identifier one (`properties.__proto__`
+    // → pollution; `properties.a.b` would nest, not name a property).
+    if (!isSafeIdentifierSegment(bareName)) {
       return { ok: false, reason: writeIdentifierReason(field) };
     }
-    properties[bareName] = hubspotWriteValue(field.value);
+    out[`body.properties.${bareName}`] = hubspotWriteValue(field.value);
   }
-  return { ok: true, args: { 'body.properties': properties } };
+  return { ok: true, args: out };
 };
 
 // ────────────────────────────────────────────────────────────────

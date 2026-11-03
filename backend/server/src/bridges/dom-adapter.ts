@@ -62,10 +62,18 @@ import { captureProviderHandoffFence } from '../execution/provider-handoff.js';
 import { currentRunAbortContext } from '../execution/run-abort-context.js';
 
 import {
+  BRIDGE_COMMAND_MAX_TIMEOUT_MS,
   BRIDGE_DESCRIBE_OUTPUT_KEYS,
   BRIDGE_INSPECT_OUTPUT_KEYS,
   BRIDGE_OPEN_OUTPUT_KEYS,
+  BRIDGE_SCREENSHOT_MAX_BASE64,
+  BRIDGE_SCREENSHOT_MAX_EDGE,
+  BRIDGE_SCREENSHOT_OUTPUT_KEYS,
+  BRIDGE_TABLE_OUTPUT_KEYS,
   BRIDGE_TABS_OUTPUT_KEYS,
+  BRIDGE_WAIT_DEFAULT_MS,
+  BRIDGE_WAIT_MAX_MS,
+  BRIDGE_WAIT_OUTPUT_KEYS,
   isPatternWithinGrantedOrigins,
   type ApprovalValueLabels,
   type HeldBrowserTarget,
@@ -80,6 +88,7 @@ import {
   type Adapter,
   type ResolvedCall,
 } from '@recued/ingredients';
+import { browserImages, type BrowserImageStore } from './browser-images.js';
 import type {
   BridgeDispatcher,
   DispatchOutcome,
@@ -113,6 +122,10 @@ export interface CreateBridgeDomAdapterOptions {
    *  default when undefined. Optional — most callers leave it absent
    *  so the bridge's default kicks in. */
   defaultTimeoutMs?: number;
+  /** D-335 slice H — where a screenshot's picture is kept while its step's
+   *  output carries a reference to it. Defaults to the process's store, which
+   *  the MCP server reads. */
+  images?: BrowserImageStore;
 }
 
 const DOM_WRITE_PREFIX = 'dom.';
@@ -141,11 +154,21 @@ const CORE_DOM_CLICK_SLUG = 'dom-click';
  *  (one `open_tab`). */
 const CORE_DOM_TABS_SLUG = 'dom-tabs';
 const CORE_DOM_OPEN_SLUG = 'dom-open';
+/** D-335 slice H — `core.dom.wait` (one `wait_for_element`), `core.dom.table`
+ *  (one `read_table`) and `core.dom.screenshot` (one `screenshot_page`), each on
+ *  a page handle. */
+const CORE_DOM_WAIT_SLUG = 'dom-wait';
+const CORE_DOM_TABLE_SLUG = 'dom-table';
+const CORE_DOM_SCREENSHOT_SLUG = 'dom-screenshot';
 
 /** The ops whose one command's answer is the step's whole output. */
-const WHOLE_ANSWER_ACTIONS: ReadonlySet<BridgeAction> = new Set(['inspect', 'list_tabs', 'open_tab']);
+const WHOLE_ANSWER_SLUGS: ReadonlySet<string> = new Set([CORE_DOM_INSPECT_SLUG, CORE_DOM_TABS_SLUG, CORE_DOM_OPEN_SLUG,
+  CORE_DOM_WAIT_SLUG, CORE_DOM_TABLE_SLUG, CORE_DOM_SCREENSHOT_SLUG]);
+const WHOLE_ANSWER_ACTIONS: ReadonlySet<BridgeAction> = new Set(['inspect', 'list_tabs', 'open_tab',
+  'wait_for_element', 'read_table', 'screenshot_page']);
 /** The actions that change nothing on a page: a lost answer is a failed read. */
-const READ_ACTIONS: ReadonlySet<BridgeAction> = new Set(['read_dom', 'inspect', 'describe', 'list_tabs']);
+const READ_ACTIONS: ReadonlySet<BridgeAction> = new Set(['read_dom', 'inspect', 'describe', 'list_tabs',
+  'wait_for_element', 'read_table', 'screenshot_page']);
 
 const isCoreDomSlug = (slug: string): boolean =>
   slug === CORE_DOM_READ_SLUG || slug === CORE_DOM_WRITE_SLUG || slug === CORE_DOM_CLICK_SLUG;
@@ -159,7 +182,9 @@ const coreDomElement = (
   slug: string,
 ): { element: Record<string, string>; label: string } => {
   const op = slug === CORE_DOM_INSPECT_SLUG ? 'core.dom.inspect'
-    : slug === CORE_DOM_CLICK_SLUG ? 'core.dom.click' : 'core.dom.write';
+    : slug === CORE_DOM_CLICK_SLUG ? 'core.dom.click'
+      : slug === CORE_DOM_TABLE_SLUG ? 'core.dom.table'
+        : slug === CORE_DOM_SCREENSHOT_SLUG ? 'core.dom.screenshot' : 'core.dom.write';
   const optional = (key: string): string | undefined => {
     const value = input[key];
     if (value === undefined || value === null || value === '') return undefined;
@@ -185,6 +210,40 @@ const coreDomElement = (
   };
 };
 
+/** D-335 slice H — a `core.dom.wait`: the page, what to wait for, and for how
+ *  long. Its command's own budget outlasts the wait, so a page that never
+ *  answers is `found: false` from the Bridge, not a command that timed out. */
+const buildWaitCall = (target: string, input: Record<string, unknown>) => {
+  const slug = CORE_DOM_WAIT_SLUG;
+  const page = reqDomArg(input, 'page', slug);
+  const selector = reqDomArg(input, 'selector', slug);
+  const blank = (value: unknown) => value === undefined || value === null || value === '';
+  const until = blank(input.until) ? 'shown' : input.until;
+  if (until !== 'shown' && until !== 'gone') {
+    throw new IngredientError('DOM_SELECTOR_MISSING', "core.dom.wait: 'until' is shown or gone", { slug, until });
+  }
+  const text = input.text;
+  if (!blank(text) && typeof text !== 'string') {
+    throw new IngredientError('DOM_SELECTOR_MISSING', "core.dom.wait: 'text' must be text", { slug });
+  }
+  let wait = BRIDGE_WAIT_DEFAULT_MS;
+  if (!blank(input.timeout_seconds)) {
+    const seconds = typeof input.timeout_seconds === 'number' ? input.timeout_seconds
+      : typeof input.timeout_seconds === 'string' ? Number(input.timeout_seconds) : Number.NaN;
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      throw new IngredientError('DOM_SELECTOR_MISSING', "core.dom.wait: 'timeout_seconds' is a number of seconds", { slug });
+    }
+    wait = Math.min(BRIDGE_WAIT_MAX_MS, Math.round(seconds * 1000));
+  }
+  return {
+    target,
+    action: 'wait_for_element' as const,
+    args: { page, selector, until, ...(typeof text === 'string' && text !== '' ? { text } : {}), timeout_ms: wait },
+    label: selector,
+    timeout_ms: Math.min(BRIDGE_COMMAND_MAX_TIMEOUT_MS, wait + 10_000),
+  };
+};
+
 /** A one-command `core.dom` call: its target, action and command args.
  *  `core.dom.open` checks its address here, so an address that is not a web
  *  address or not on the target fails before any Bridge is asked (the Bridge
@@ -192,9 +251,18 @@ const coreDomElement = (
 const buildWholeAnswerCall = (
   slug: string,
   input: Record<string, unknown>,
-): { target: string; action: BridgeAction; args: Record<string, string>; label: string } => {
+): { target: string; action: BridgeAction; args: Record<string, string | number>; label: string; timeout_ms?: number } => {
   const target = reqDomArg(input, 'target', slug);
   if (slug === CORE_DOM_TABS_SLUG) return { target, action: 'list_tabs', args: {}, label: 'the open tabs' };
+  if (slug === CORE_DOM_WAIT_SLUG) return buildWaitCall(target, input);
+  if (slug === CORE_DOM_TABLE_SLUG || slug === CORE_DOM_SCREENSHOT_SLUG) {
+    const { element, label } = coreDomElement(input, slug);
+    if (element.page === undefined) {
+      throw new IngredientError('DOM_SELECTOR_MISSING', `${slug === CORE_DOM_TABLE_SLUG ? 'core.dom.table' : 'core.dom.screenshot'}: `
+        + 'pass the page handle that listing the tabs or opening a page answered', { slug });
+    }
+    return { target, action: slug === CORE_DOM_TABLE_SLUG ? 'read_table' : 'screenshot_page', args: element, label };
+  }
   if (slug === CORE_DOM_OPEN_SLUG) {
     // The op takes `address`: a manifest input named `url` is an HTTP
     // ingredient's fixed endpoint, which no caller may supply. The Bridge's
@@ -337,15 +405,14 @@ export const describeBridgeDomCall = (
   // `buildArgsForEntry` / `buildIdempotencyKey` read: the synthetic
   // `{ [CORE_DOM_VALUE_FIELD]: value }` for a core.dom write, else the resolved
   // step input.
-  if (resolved.slug === CORE_DOM_INSPECT_SLUG || resolved.slug === CORE_DOM_TABS_SLUG
-    || resolved.slug === CORE_DOM_OPEN_SLUG) {
-    const { target, action, args, label } = buildWholeAnswerCall(resolved.slug, resolved.input);
+  if (WHOLE_ANSWER_SLUGS.has(resolved.slug)) {
+    const { target, action, args, label, timeout_ms } = buildWholeAnswerCall(resolved.slug, resolved.input);
     const entry: DomEntry = { selector: label, marker: action, index: 1, action };
     return {
       ingredient: buildIngredientRef(manifest, [target]),
       callInput: { __core_dom_target: target, ...args },
       entries: [{ entry, action, args: args as Record<string, unknown>,
-        expects_output_keys: expectsKeysForAction(action) }],
+        expects_output_keys: expectsKeysForAction(action), ...(timeout_ms !== undefined ? { timeout_ms } : {}) }],
     };
   }
   let domain_allowlist: string[];
@@ -373,7 +440,8 @@ export const describeBridgeDomCall = (
   return { ingredient, callInput, entries: entries.map(entry => {
     const action = classifyEntryAction(entry);
     return { entry, action, args: buildArgsForEntry(entry, action, callInput, resolved.slug),
-      expects_output_keys: expectsKeysForAction(action) };
+      expects_output_keys: expectsKeysForAction(action) } as {
+      entry: DomEntry; action: BridgeAction; args: Record<string, unknown>; expects_output_keys: string[]; timeout_ms?: number };
   }) };
 };
 
@@ -415,7 +483,7 @@ export const createBridgeDomAdapter = (
     // per command; the recipe-level output map can encode many. Each
     // entry gets its own dispatch + its own bridge idempotency cell.
     const outcomes: PerEntryOutcome[] = [];
-    for (const { entry, action, args, expects_output_keys } of entries) {
+    for (const { entry, action, args, expects_output_keys, timeout_ms } of entries) {
       assertHandoff();
       const idempotency_key = buildIdempotencyKey({
         recipe_run_id,
@@ -432,16 +500,18 @@ export const createBridgeDomAdapter = (
         args,
         expects_output_keys,
         idempotency_key,
-        ...(options.defaultTimeoutMs !== undefined
-          ? { timeout_ms: options.defaultTimeoutMs }
-          : {}),
+        // A wait carries its own budget, longer than the wait.
+        ...(timeout_ms !== undefined ? { timeout_ms }
+          : options.defaultTimeoutMs !== undefined ? { timeout_ms: options.defaultTimeoutMs } : {}),
       };
 
       const scope = currentPreapprovalIo();
       const reviewed = scope ? await scope.prepareDomCommand(resolved, request, entry.index - 1) : undefined;
       assertHandoff();
       const outcome = await dispatcher.dispatch(request, reviewed);
-      const outputs = translateDispatchOutcome(outcome, resolved.slug, entry);
+      let outputs = translateDispatchOutcome(outcome, resolved.slug, entry);
+      // D-335 slice H — the picture is kept here and the output refers to it.
+      if (action === 'screenshot_page') outputs = keepScreenshot(outputs, options.images ?? browserImages, resolved.slug);
       outcomes.push({ entry, action, outputs });
     }
 
@@ -648,6 +718,12 @@ const expectsKeysForAction = (action: BridgeAction): string[] => {
       return [...BRIDGE_TABS_OUTPUT_KEYS];
     case 'open_tab':
       return [...BRIDGE_OPEN_OUTPUT_KEYS];
+    case 'wait_for_element':
+      return [...BRIDGE_WAIT_OUTPUT_KEYS];
+    case 'read_table':
+      return [...BRIDGE_TABLE_OUTPUT_KEYS];
+    case 'screenshot_page':
+      return [...BRIDGE_SCREENSHOT_OUTPUT_KEYS];
     default:
       return [];
   }
@@ -695,6 +771,30 @@ const capacityGapMessage = (outcome: Extract<DispatchOutcome, { kind: 'capacity_
   }
   if (outcome.reason === 'bridge_label_unavailable') return 'The Browser Bridge this step names is not connected to this server.';
   return 'No Browser Bridge is connected to this server: open Chrome with the Recued Browser Bridge paired to it.';
+};
+
+/** D-335 slice H — what the Bridges said when none of them could take the
+ *  step. A Bridge words the gap it finds for the AI to pass on ("Screenshots
+ *  are off: turn on …"), and this line used to drop it for "every paired
+ *  bridge reported a capacity gap", so the AI could not say how to fix it.
+ *  Bridges that all say the same thing say it once, and Bridges that differ
+ *  are named. A Bridge with no label is not named by its token id. The old
+ *  line stands when no Bridge said anything. */
+const aggregateGapMessage = (
+  bridges: Extract<DispatchOutcome, { kind: 'aggregate_capacity_gap' }>['aggregate']['bridges'],
+  slug: string,
+  selector: string,
+): string => {
+  const words = bridges.map(bridge => bridge.message?.trim() ?? '');
+  if (words.every(word => word === '')) {
+    return `DOM ingredient '${slug}' cannot run — every paired bridge reported a capacity gap (selector '${selector}')`;
+  }
+  if (words.every(word => word === words[0])) return words[0]!;
+  return bridges.map((bridge, i) => {
+    const who = bridge.bridge_label !== bridge.bridge_id ? `Browser Bridge “${bridge.bridge_label}”` : 'A Browser Bridge';
+    const word = words[i] || 'it could not take this step.';
+    return `${who}: ${/[.!?]$/.test(word) ? word : `${word}.`}`;
+  }).join(' ');
 };
 
 /** Map a bridge-side `BridgeErrorCode` to a recipe-error code. Falls
@@ -909,7 +1009,7 @@ export const translateDispatchOutcome = (
   if (outcome.kind === 'aggregate_capacity_gap') {
     throw new IngredientError(
       'ROLE_RESTRICTION',
-      `DOM ingredient '${slug}' cannot run — every paired bridge reported a capacity gap (selector '${entry.selector}')`,
+      aggregateGapMessage(outcome.aggregate.bridges, slug, entry.selector),
       {
         slug,
         selector: entry.selector,
@@ -934,6 +1034,27 @@ export const translateDispatchOutcome = (
       selector: entry.selector,
     },
   );
+};
+
+/** D-335 slice H — a screenshot as a step's output: the Bridge's picture is put
+ *  in the server's store and the output carries a `BrowserImageRef` to it, so no
+ *  history, chat or audit row ever holds the picture. A picture this cannot
+ *  read is a failed step, never an output with nothing in it. */
+const keepScreenshot = (
+  outputs: Record<string, unknown> | undefined,
+  images: BrowserImageStore,
+  slug: string,
+): Record<string, unknown> => {
+  const { page, url, title, image, mime_type, width, height } = outputs ?? {};
+  const side = (value: unknown): value is number =>
+    Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= BRIDGE_SCREENSHOT_MAX_EDGE;
+  if (typeof image !== 'string' || image.length === 0 || image.length > BRIDGE_SCREENSHOT_MAX_BASE64
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(image) || (mime_type !== 'image/jpeg' && mime_type !== 'image/png')
+    || !side(width) || !side(height)) {
+    throw new IngredientError('INGREDIENT_ADAPTER_ALL_FAILED',
+      'core.dom.screenshot: the Browser Bridge answered no picture that could be read', { slug });
+  }
+  return { page, url, title, width, height, image: images.put({ mime_type, data: image, width, height }) };
 };
 
 /** Aggregate per-entry outcomes into the `executeDOM`-shaped step output:

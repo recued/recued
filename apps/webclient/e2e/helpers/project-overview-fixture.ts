@@ -24,6 +24,8 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
       { ...base('task', 'other-task'), _kind: 'task', title: 'Other project task', parent_project_id: 'other', done: false, blocks_task_ids: [] },
       { ...base('note', 'standalone'), _kind: 'note', title: 'Independent launch note', body: 'Same words, no project link.', last_user_action_at: now,
         related_project_ids: [], related_contact_ids: [], related_mail_thread_ids: [], related_calendar_event_ids: [] },
+      { ...base('note', 'readonly-note'), _kind: 'note', source_id: 'remote.note', title: 'Provider reference note', body: 'Read-only source material.', last_user_action_at: now,
+        related_project_ids: [], related_contact_ids: [], related_mail_thread_ids: [], related_calendar_event_ids: [] },
       promise('approval', 'Client will approve the launch', { blocks_project_ids: ['launch'], counterparty_contact_id: 'client',
         promised_for_at: now - 86_400_000, due_status: 'overdue' }),
       promise('delivery', 'Send the release package', { direction: 'outbound', blocks_project_ids: ['launch'],
@@ -37,6 +39,7 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
       source_kind: 'builtin', source_label: 'Recued', write_capable: true, registered_at: now }));
     sources.push({ id: 'remote.project', top_tier_kind: 'project', source_kind: 'connection', source_label: 'Read-only projects', write_capable: false, registered_at: now });
     sources.push({ id: 'remote.commitment', top_tier_kind: 'commitment', source_kind: 'connection', source_label: 'Read-only promises', write_capable: false, registered_at: now });
+    sources.push({ id: 'remote.note', top_tier_kind: 'note', source_kind: 'connection', source_label: 'Read-only notes', write_capable: false, registered_at: now });
     const reads: WorkEntityProjectItemsRpcRequest[] = [];
     const writes: Array<Record<string, unknown>> = [];
     let held: (() => void) | undefined;
@@ -44,7 +47,22 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
     let wrongCreateLink = false;
     let noteFailure = failNotes;
     let failCommitmentRead = false;
+    let omitLinkConfirmation = false;
+    let holdLinkWrite = false;
+    let heldLinkWrite: (() => void) | undefined;
     const controls = { reads, writes,
+      holdNextLinkWrite() { holdLinkWrite = true; },
+      releaseLinkWrite() { if (!heldLinkWrite) throw new Error('No project link write is waiting.'); const finish = heldLinkWrite; heldLinkWrite = undefined; finish(); },
+      confirmLink(id: string) { entities = entities.map(entity => {
+        if (entity.id !== id || (entity._kind !== 'task' && entity._kind !== 'note')) return entity;
+        const confirmed = { ...entity }; delete confirmed.pending_write; return confirmed;
+      }); },
+      changeLinks(kind: 'task' | 'note', id: string, projects: string[]) {
+        entities = entities.map(entity => entity._kind === kind && entity.id === id
+          ? entity._kind === 'task' ? { ...entity, parent_project_id: projects[0] } : { ...entity, related_project_ids: projects } : entity);
+      },
+      setSourceWritable(kind: 'task' | 'note', value: boolean) { sources.find(source => source.id === `recued.${kind}`)!.write_capable = value; },
+      omitNextLinkConfirmation() { omitLinkConfirmation = true; },
       updateFromServer(title: string) {
         entities = entities.map(entity => entity._kind === 'project' && entity.id === 'launch' ? { ...entity, title }
           : entity._kind === 'task' && entity.id === 'task-00' ? { ...entity, done: true } : entity);
@@ -99,7 +117,7 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
           items: rows.slice(offset, offset + limit).map(entity => ({ id: entity.id,
             title: entity._kind === 'commitment' ? entity.statement : entity._kind === 'task' || entity._kind === 'note' ? entity.title ?? 'Note' : '',
             excerpt: entity._kind === 'task' || entity._kind === 'note' ? entity.body ?? '' : '', source_id: entity.source_id,
-            source_label: 'Recued', updated_at: entity.updated_at, stale: false, pending_write: false,
+            source_label: 'Recued', updated_at: entity.updated_at, stale: false, pending_write: entity.pending_write !== undefined,
             ...(entity._kind === 'task' ? { done: entity.done, ...(entity.due_at !== undefined ? { due_at: entity.due_at } : {}) } : {}),
             ...(entity._kind === 'commitment' ? { commitment: { direction: entity.direction, lifecycle_state: entity.lifecycle_state,
               due_status: entity.due_status, ...(entity.promised_for_at !== undefined ? { promised_for_at: entity.promised_for_at } : {}),
@@ -134,7 +152,17 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
         if (!existing && saved._kind === 'task' && wrongCreateLink) { saved.parent_project_id = 'other'; wrongCreateLink = false; }
         if (saved._kind === 'project' && args.kind === 'project' && args.target_completion_at === null) delete saved.target_completion_at;
         if (saved._kind === 'task' && args.kind === 'task' && 'clear_due_at' in args && args.clear_due_at) delete saved.due_at;
+        if (existing && holdLinkWrite) saved = { ...saved, pending_write: { staged_at: now, operation: 'update',
+          dirty_fields: saved._kind === 'task' ? ['parent_project_id'] : ['related_project_ids'], state: 'awaiting_verify' } };
         entities = [...entities.filter(entity => !(entity._kind === args.kind && entity.id === id)), saved];
+        if (existing && holdLinkWrite) {
+          holdLinkWrite = false;
+          return new Promise(resolve => { heldLinkWrite = () => resolve({ result: { entity: saved } }); });
+        }
+        if (existing && saved._kind === 'note' && omitLinkConfirmation) {
+          omitLinkConfirmation = false;
+          return { result: { entity: { ...saved, related_project_ids: saved.related_project_ids.filter(project => project !== 'launch') } } };
+        }
         return { result: { entity: saved } };
       }
       if (method === 'work_entity.task.mark_done') {
@@ -164,6 +192,12 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
 declare global { interface Window { __projectOverview: {
   reads: WorkEntityProjectItemsRpcRequest[];
   writes: Array<Record<string, unknown>>;
+  changeLinks(kind: 'task' | 'note', id: string, projects: string[]): void;
+  setSourceWritable(kind: 'task' | 'note', value: boolean): void;
+  omitNextLinkConfirmation(): void;
+  holdNextLinkWrite(): void;
+  releaseLinkWrite(): void;
+  confirmLink(id: string): void;
   failNotes(value: boolean): void;
   failNextCommitmentRead(): void;
   holdTaskPage(): void;

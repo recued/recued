@@ -44,6 +44,7 @@ import {
 import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
 import {
   ASK_CARD_ATTR,
+  ASK_CARD_CHAT_LINK_ATTR,
   ASK_CARD_ERROR_ATTR,
   ASK_CARD_GRANT_ATTR,
   ASK_CARD_OPTION_ATTR,
@@ -439,6 +440,27 @@ describe('D-169 P2 — bootstrapApprovalsRoute: re-hosts the asks panel', () => 
     const cards = collectByAttr(root, ASK_CARD_ATTR);
     expect(cards.map((c) => c.getAttribute(ASK_CARD_ATTR))).toEqual(['a1', 'a2']);
 
+    route.dispose();
+  });
+
+  it('D-336 slice N — a held chat write\'s card leads to its card in Chat, and stays read-only', async () => {
+    const runList = vi.fn(async () => ({
+      asks: [
+        ask('a1', { title: 'Save to memory', chat_plan: { session_id: 'sess 1', plan_id: 'plan-1', changeable: true } }),
+        ask('a2', { chat_plan: { session_id: 'sess-1', plan_id: 'plan-2' } }),
+        ask('a3'),
+      ],
+    }));
+    const { root, route } = mountFor({ runList });
+    await route.asksPanel().whenLoaded();
+
+    const links = collectByAttr(root, ASK_CARD_CHAT_LINK_ATTR);
+    expect(links.map((link) => [link.getAttribute(ASK_CARD_CHAT_LINK_ATTR), link.getAttribute('href'), link.textContent]))
+      .toEqual([
+        // The route the chat reads (`serializeChatPlanAddress`), each part encoded.
+        ['a1', '#chat/session/sess%201/plan/plan-1', 'Change it in Chat'],
+        ['a2', '#chat/session/sess-1/plan/plan-2', 'Review in Chat'],
+      ]);
     route.dispose();
   });
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,9 @@ import {
 } from '../inbound-file-collection.js';
 import { createCollectionRegistry, type CollectionRegistry } from '../../registry.js';
 import { handleCollectionGet } from '../../collection-handler.js';
+import { collectionTableName } from '../../table.js';
+import { countHousekeepingSourceRecords } from '../../../housekeeping/source-counts.js';
+import { createFileSourceWalker } from '../../../housekeeping/source-walkers.js';
 
 const sha256 = (bytes: Buffer): string =>
   createHash('sha256').update(bytes).digest('hex');
@@ -65,6 +68,26 @@ afterEach(async () => {
 });
 
 describe('data.file.received ingest', () => {
+  it('previews the visible file population without hydrating archived files or reading bodies', async () => {
+    for (const source_id of ['visible', 'archived']) {
+      await h.collection.ingest({ bytes: Buffer.from(source_id), filename: `${source_id}.txt`,
+        mime_type: 'text/plain', origin: 'reception_drop', source_id, now: 1_000 });
+    }
+    const table = collectionTableName('file', 'received');
+    h.db.prepare(`UPDATE "${table}" SET hot_fields = json_set(hot_fields, '$.archived', 1) WHERE source_id = ?`).run('archived');
+    const expected = [...createFileSourceWalker(h.registry).walkAfter('', 100)].length;
+    expect(expected).toBe(1);
+    const list = vi.spyOn(h.collection, 'list').mockImplementation(() => { throw new Error('Preview must not hydrate files'); });
+    try {
+      h.db.pragma('query_only = ON');
+      expect(countHousekeepingSourceRecords(h.db, h.registry, 'data.file')).toBe(expected);
+      expect(list).not.toHaveBeenCalled();
+    } finally {
+      list.mockRestore();
+      h.db.pragma('query_only = OFF');
+    }
+  });
+
   it('uses deterministic per-ingest record ids while sharing identical CAS bytes', async () => {
     const bytes = Buffer.from('same file body');
     const first = await h.collection.ingest({

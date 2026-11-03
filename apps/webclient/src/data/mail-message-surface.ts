@@ -1,16 +1,20 @@
+import { createMailAttachmentsSurface, MAIL_ATTACHMENTS_STYLES, type MailAttachmentsCaller } from './mail-attachments-surface.js';
+import type { FilePreviewCallers } from '../files/file-preview.js';
 import type {
   CollectionRecord, MailConversationItem, MailConversationRequest, MailConversationSnapshot,
-  MailMessageRef, MailMessageSnapshot,
+  MailMessageRef, MailMessageSnapshot, MailMessageState, MailMessageStateChange, MailMessageStateResult,
 } from '@recued/contracts';
 import { deriveReplyAllValues, deriveForwardValues } from '@recued/contracts';
 import { e, formatClientDateTime, MAIL_COMPOSE_STYLES, renderActionIcon } from '@recued/ui-shared';
-import { mountMailCompose, type MailComposeDeps, type MailComposeMount } from '../mail/mail-compose-host.js';
+import { mountMailCompose, type MailComposeDeps, type MailComposeMount, type MailComposeSubmitOutcome } from '../mail/mail-compose-host.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { COLLECTION_DETAIL_HEADING_ATTR } from './collection-explorer.js';
 
 export interface MailMessageCallers {
+  attachments?: MailAttachmentsCaller;
   get?: (ref: MailMessageRef) => Promise<MailMessageSnapshot>;
   conversation?: (ref: MailConversationRequest) => Promise<MailConversationSnapshot>;
+  updateState?: (input: MailMessageStateChange) => Promise<MailMessageStateResult>;
 }
 interface MailConversationScroll {
   slug: string;
@@ -20,7 +24,7 @@ interface MailConversationScroll {
   anchor: { record_id: string; offset: number } | null;
 }
 
-export const MAIL_MESSAGE_STYLES = `
+export const MAIL_MESSAGE_STYLES = MAIL_ATTACHMENTS_STYLES + `
 .data-mail-conversation { min-width: 0; display: grid; gap: 18px; }
 .data-mail-conversation-head { display: grid; gap: 8px; }
 .data-mail-conversation-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
@@ -52,6 +56,10 @@ export const MAIL_MESSAGE_STYLES = `
 .data-mail-message-actions .data-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .data-mail-message-actions .data-mail-message-refresh { min-width: 42px; min-height: 42px; }
 .data-mail-message-note { margin: 0; color: var(--fg-muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.data-mail-message-more { display: contents; }
+.data-mail-message-menu { order: 1; flex-basis: 100%; min-width: 0; padding: 6px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.data-mail-message-menu .data-button { justify-content: start; width: 100%; text-align: left; }
+.data-mail-message-menu p { grid-column: 1 / -1; padding: 4px 6px; margin: 0; }
 .data-mail-conversation-older { justify-self: start; }
 @media (max-width: 720px) {
   .data-mail-conversation-layout { grid-template-columns: minmax(0, 1fr); }
@@ -68,9 +76,12 @@ export const MAIL_MESSAGE_STYLES = `
 export const createMailMessageSurface = (opts: {
   document: Document;
   callers: MailMessageCallers;
+  files?: FilePreviewCallers;
   compose?: MailComposeDeps;
   actionAttr: string;
   onSelectedRecord?(slug: string, record: CollectionRecord): void;
+  onStateChanged?(slug: string, record: CollectionRecord): void;
+  onStateChecked?(ref: MailMessageRef, state: MailMessageState): void;
   render(): void;
 }) => {
   let anchor: MailMessageRef | null = null;
@@ -82,24 +93,32 @@ export const createMailMessageSurface = (opts: {
   let loading = false, opening = false, refreshing = false, olderLoading = false;
   let error: string | null = null, conversationError: string | null = null;
   let notice = '';
+  let moreOpen = false, mutating = false, stateNeedsCheck = false;
+  let uncertainIdentity: string | null = null;
   let generation = 0, readGeneration = 0;
   let disposed = false;
   let portal: HTMLElement | null = null;
   let compose: MailComposeMount | null = null;
   let composeWasOpen = false;
-  let composeTarget: 'reply' | 'reply-all' | 'forward' = 'reply';
+  let composeTarget: 'reply' | 'reply-all' | 'forward' | 'create' = 'reply';
+  let createGeneration = 0, createOpening = false;
+  let createClosed: ((outcome: MailComposeSubmitOutcome | null) => void) | null = null;
   const action = (name: string): string => `${opts.actionAttr}="mail-message-${name}"`;
   const busy = (pending: boolean): string => pending ? ' aria-disabled="true" aria-busy="true"' : '';
   const paint = (): void => opts.render();
+  const attachments = createMailAttachmentsSurface({ document: opts.document, get: opts.callers.attachments, files: opts.files,
+    actionAttr: opts.actionAttr, render: paint });
   const focusComposeAction = (): void => {
     (opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-${composeTarget}"]`)
       ?? opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-reply"]`)
       ?? opts.document.querySelector<HTMLButtonElement>(`[${opts.actionAttr}="mail-message-refresh"]`))?.focus();
   };
   const beforeLeave = (): boolean => {
+    if (mutating) return false;
     if (compose?.state().dialog) { portal?.querySelector<HTMLElement>('[data-mail-compose-ai-brief]')?.focus(); return false; }
     return true;
   };
+  const cancelCreateOpen = (): void => { createGeneration++; createOpening = false; };
   const ensureCompose = (): MailComposeMount | null => {
     if (!opts.compose) return null;
     if (compose) return compose;
@@ -116,11 +135,14 @@ export const createMailMessageSurface = (opts: {
       const isOpen = compose?.state().dialog != null;
       if (composeWasOpen && !isOpen && !disposed) {
         const outcome = compose?.lastOutcome();
-        if (outcome) {
+        if (composeTarget === 'create') {
+          const closed = createClosed; createClosed = null;
+          closed?.(outcome ?? null);
+        } else if (outcome) {
           const message = composeTarget === 'forward' ? 'Forward' : 'Reply';
           notice = outcome === 'held' ? `${message} is waiting for approval.` : `${message} sent.`; paint();
         }
-        focusComposeAction();
+        if (composeTarget !== 'create') focusComposeAction();
       }
       composeWasOpen = isOpen;
     } });
@@ -137,17 +159,29 @@ export const createMailMessageSurface = (opts: {
       modified_at: selected.modified_at, size_bytes: selected.size_bytes,
       hot_fields: { from: selected.from, to: selected.to, subject: selected.subject,
         thread_id: conversation.thread_id, direction: selected.direction, folder: selected.folder,
-        is_read: selected.is_read, has_attachments: selected.has_attachments },
+        is_read: selected.is_read, is_flagged: selected.is_flagged === true, has_attachments: selected.has_attachments },
     });
   };
   const acceptMessage = (result: MailMessageSnapshot, current: MailMessageRef): void => {
     if (result.slug !== current.slug || result.record_id !== current.record_id) throw new Error('The email changed. Refresh the conversation before continuing.');
+    if (stateNeedsCheck && result.state?.verified) {
+      if (result.state.identity !== uncertainIdentity) throw new Error('This mailbox changed. Reopen the email from Mail before changing its status.');
+      stateNeedsCheck = false; uncertainIdentity = null;
+    }
     snapshot = result;
+    if (result.state?.verified) {
+      messages = messages.map(message => message.record_id === current.record_id
+        ? { ...message, is_read: result.state!.is_read, is_flagged: result.state!.is_flagged } : message);
+      syncSelectedRecord();
+      opts.onStateChecked?.(current, result.state);
+    }
   };
   const read = async (): Promise<void> => {
     if (!ref || !opts.callers.get) return;
     const current = ref, root = generation, request = ++readGeneration;
-    loading = true; error = null; paint();
+    loading = true; error = null; notice = '';
+    attachments.open(current, messages.find(message => message.record_id === current.record_id)?.has_attachments === true
+      || snapshot?.forward?.original_message.has_attachments === true); paint();
     try {
       const result = await opts.callers.get(current);
       if (disposed || root !== generation || request !== readGeneration) return;
@@ -161,7 +195,7 @@ export const createMailMessageSurface = (opts: {
     messages = [...unique.values()].sort((a, b) => a.received_at - b.received_at || (a.record_id < b.record_id ? -1 : a.record_id > b.record_id ? 1 : 0));
   };
   const loadConversation = async (older = false): Promise<void> => {
-    if (!anchor || !opts.callers.conversation || refreshing || olderLoading) return;
+    if (!anchor || !opts.callers.conversation || refreshing || olderLoading || mutating) return;
     const current = !older && conversation && ref ? { slug: ref.slug, record_id: ref.record_id } : anchor, root = generation;
     const prior = conversation;
     if (older) olderLoading = true; else refreshing = true;
@@ -203,21 +237,23 @@ export const createMailMessageSurface = (opts: {
   };
   const open = async (next: MailMessageRef): Promise<void> => {
     if (!opts.callers.get) return;
-    generation++; readGeneration++;
+    generation++; readGeneration++; attachments.reset();
     anchor = { slug: next.slug, record_id: next.record_id }; ref = anchor;
     conversation = null; messages = []; snapshot = null; expanded = true; olderLoaded = false;
     loading = false; opening = false; refreshing = false; olderLoading = false;
     error = null; conversationError = null; notice = '';
+    moreOpen = false; mutating = false; stateNeedsCheck = false; uncertainIdentity = null;
     if (opts.callers.conversation) await loadConversation(); else await read();
   };
   const select = (id: string, toggle: boolean): void => {
     if (!anchor || !messages.some(message => message.record_id === id) || !beforeLeave() || opening) return;
-    if (ref?.record_id === id) { expanded = toggle ? !expanded : true; paint(); return; }
-    ref = scoped(id); snapshot = null; notice = ''; expanded = true;
+    if (ref?.record_id === id) { expanded = toggle ? !expanded : true; if (!expanded) attachments.closePreview(); paint(); return; }
+    attachments.closePreview(); ref = scoped(id); snapshot = null; notice = ''; expanded = true;
+    moreOpen = false; stateNeedsCheck = false; uncertainIdentity = null;
     syncSelectedRecord(); void read();
   };
   const composeMessage = async (target: 'reply' | 'reply-all' | 'forward'): Promise<void> => {
-    if (!ref || !snapshot || !opts.callers.get || opening || loading || refreshing || compose?.state().dialog) return;
+    if (!ref || !snapshot || !opts.callers.get || opening || loading || refreshing || mutating || compose?.state().dialog) return;
     if (target === 'forward' ? !snapshot.forward || !deriveForwardValues(snapshot.forward)
       : !snapshot.reply || target === 'reply-all' && !deriveReplyAllValues(snapshot.reply)) return;
     const host = ensureCompose(); if (!host) return;
@@ -238,15 +274,57 @@ export const createMailMessageSurface = (opts: {
     } catch (err) { if (!disposed && root === generation && request === readGeneration) error = humanizeRpcError(err); }
     finally { if (!disposed && root === generation && request === readGeneration) { opening = false; paint(); } }
   };
+  const changeState = async (kind: 'read' | 'star'): Promise<void> => {
+    const state = snapshot?.state;
+    if (!ref || !state?.identity || !state.verified || !opts.callers.updateState || stateNeedsCheck
+      || mutating || loading || opening || refreshing || olderLoading || compose?.state().dialog
+      || !(kind === 'read' ? state.can_mark : state.can_flag)) return;
+    const current = ref, root = generation, value = !(kind === 'read' ? state.is_read : state.is_flagged);
+    mutating = true; moreOpen = false; error = null; notice = ''; readGeneration++; paint();
+    try {
+      const result = await opts.callers.updateState({ ...current, expected_identity: state.identity, change: { kind, value } });
+      if (disposed || root !== generation) return;
+      if (result.slug !== current.slug || result.record_id !== current.record_id || result.record?.record_id !== current.record_id
+        || !result.state?.verified || result.state.identity !== state.identity
+        || (kind === 'read' ? result.state.is_read : result.state.is_flagged) !== value
+        || result.record.hot_fields.is_read !== result.state.is_read || result.record.hot_fields.is_flagged !== result.state.is_flagged) {
+        throw new Error('The email change could not be confirmed.');
+      }
+      if (snapshot) snapshot = { ...snapshot, state: result.state };
+      messages = messages.map(message => message.record_id === current.record_id ? { ...message,
+        is_read: result.state.is_read, is_flagged: result.state.is_flagged,
+        modified_at: result.record.modified_at ?? message.modified_at,
+        folder: typeof result.record.hot_fields.folder === 'string' ? result.record.hot_fields.folder : message.folder } : message);
+      syncSelectedRecord(); opts.onStateChanged?.(current.slug, result.record);
+      notice = kind === 'read' ? value ? 'Marked as read.' : 'Marked as unread.' : value ? 'Email starred.' : 'Star removed.';
+    } catch (err) {
+      if (disposed || root !== generation) return;
+      stateNeedsCheck = true; uncertainIdentity = state.identity;
+      error = `${humanizeRpcError(err)} Refresh this email before trying another change.`;
+    } finally {
+      if (!disposed && root === generation) { mutating = false; paint(); }
+    }
+  };
   const renderMessage = (): string => {
+    const state = snapshot?.state;
+    const pending = loading || opening || refreshing || olderLoading || mutating;
+    const more = state && opts.callers.updateState ? `<div class="data-mail-message-more">
+      <button type="button" class="data-button" data-mail-focus="more" ${action('more')} aria-expanded="${moreOpen}"${busy(pending)}>${renderActionIcon('more')}<span>More</span></button>
+      ${moreOpen ? `<div class="data-mail-message-menu" role="group" aria-label="Email actions">
+        <button type="button" class="data-button" data-mail-focus="mark" ${action('mark')}${pending || stateNeedsCheck || !state.can_mark ? ' disabled' : ''}>${state.is_read ? 'Mark as unread' : 'Mark as read'}</button>
+        <button type="button" class="data-button" data-mail-focus="star" ${action('star')}${pending || stateNeedsCheck || !state.can_flag ? ' disabled' : ''}>${state.is_flagged ? 'Remove star' : 'Star email'}</button>
+        ${stateNeedsCheck ? '<p class="data-mail-message-note">Refresh this email to check whether the change was applied.</p>' : state.unavailable_reason ? `<p class="data-mail-message-note">${e(state.unavailable_reason)}</p>` : ''}
+      </div>` : ''}</div>` : '';
     const controls = `<div class="data-mail-message-actions">${snapshot?.reply && opts.compose
-      ? `<button type="button" class="data-button" data-mail-focus="reply" ${action('reply')}${busy(loading || opening || refreshing)}>${renderActionIcon('reply')}<span>${opening && composeTarget === 'reply' ? 'Checking reply…' : 'Reply'}</span></button>
-        ${deriveReplyAllValues(snapshot.reply) ? `<button type="button" class="data-button" data-mail-focus="reply-all" ${action('reply-all')}${busy(loading || opening || refreshing)}>${renderActionIcon('reply-all')}<span>${opening && composeTarget === 'reply-all' ? 'Checking reply…' : 'Reply all'}</span></button>` : ''}` : ''}
-      ${snapshot?.forward && opts.compose && deriveForwardValues(snapshot.forward) ? `<button type="button" class="data-button" data-mail-focus="forward" ${action('forward')}${busy(loading || opening || refreshing)}>${renderActionIcon('forward')}<span>${opening && composeTarget === 'forward' ? 'Checking email…' : 'Forward'}</span></button>` : ''}
-      <button type="button" class="data-button data-mail-message-refresh" data-mail-focus="refresh" ${action('refresh')} aria-label="Refresh email" title="Refresh email"${busy(loading || opening || refreshing)}>${renderActionIcon('refresh')}</button></div>`;
+      ? `<button type="button" class="data-button" data-mail-focus="reply" ${action('reply')}${busy(pending)}>${renderActionIcon('reply')}<span>${opening && composeTarget === 'reply' ? 'Checking reply…' : 'Reply'}</span></button>
+        ${deriveReplyAllValues(snapshot.reply) ? `<button type="button" class="data-button" data-mail-focus="reply-all" ${action('reply-all')}${busy(pending)}>${renderActionIcon('reply-all')}<span>${opening && composeTarget === 'reply-all' ? 'Checking reply…' : 'Reply all'}</span></button>` : ''}` : ''}
+      ${snapshot?.forward && opts.compose && deriveForwardValues(snapshot.forward) ? `<button type="button" class="data-button" data-mail-focus="forward" ${action('forward')}${busy(pending)}>${renderActionIcon('forward')}<span>${opening && composeTarget === 'forward' ? 'Checking email…' : 'Forward'}</span></button>` : ''}
+      ${more}<button type="button" class="data-button data-mail-message-refresh" data-mail-focus="refresh" ${action('refresh')} aria-label="Refresh email" title="Refresh email"${busy(pending)}>${renderActionIcon('refresh')}</button></div>`;
     return `<article class="data-mail-message" aria-label="Email message" aria-busy="${loading}">
       ${controls}${loading ? '<p role="status">Reading email…</p>' : ''}${error ? `<p role="alert" tabindex="-1" data-mail-focus="error">${e(error)}</p>` : ''}
       ${notice ? `<p role="status">${e(notice)}</p>` : ''}
+      ${mutating ? '<p role="status">Updating email…</p>' : ''}
+      ${state ? `<p class="data-mail-message-note" aria-label="Email status">${stateNeedsCheck ? 'Last confirmed: ' : state.verified ? '' : 'Last synced: '}${state.is_read ? 'Read' : 'Unread'}${state.is_flagged ? ' · Starred' : ''}</p>` : ''}
       ${snapshot ? `<dl><dt>From</dt><dd>${e(snapshot.from)}</dd><dt>To</dt><dd>${e(snapshot.to.join(', '))}</dd>
         ${snapshot.cc.length ? `<dt>Cc</dt><dd>${e(snapshot.cc.join(', '))}</dd>` : ''}</dl>
       ${snapshot.reply_unavailable_reason ? `<p class="data-mail-message-note">${e(snapshot.reply_unavailable_reason)}</p>` : ''}
@@ -254,10 +332,49 @@ export const createMailMessageSurface = (opts: {
       ${snapshot.read === 'stored' ? '<p class="data-mail-message-note">Showing the stored copy.</p>' : ''}
       ${snapshot.body_truncated ? '<p role="status" class="data-mail-message-note">Showing the beginning of this long email. AI reply drafting is unavailable for a partial message.</p>' : ''}
       ${snapshot.body === null ? '<p role="status">The email body is unavailable.</p>' : `<pre>${e(snapshot.body || '(Empty message)')}</pre>`}` : ''}
+      ${attachments.render()}
     </article>`;
   };
   return {
     open,
+    /** A contact starts a new message in the same Data compose portal. The
+     * caller owns its context; readiness is a read and may finish after leaving. */
+    async openCreate(request: {
+      to: readonly string[];
+      isCurrent(): boolean;
+      onClosed(outcome: MailComposeSubmitOutcome | null): void;
+    }): Promise<{ opened: boolean; error?: string }> {
+      if (disposed || !request.isCurrent()) return { opened: false };
+      if (createOpening) return { opened: false, error: 'An email is already opening.' };
+      const host = ensureCompose();
+      if (!host) return { opened: false, error: 'Email composition is unavailable here.' };
+      if (host.state().dialog) {
+        beforeLeave();
+        return { opened: false, error: 'Finish or close your open email before starting another.' };
+      }
+      const seq = ++createGeneration, owner = generation;
+      createOpening = true;
+      try {
+        const readiness = await host.refresh();
+        if (disposed || seq !== createGeneration || owner !== generation || !request.isCurrent()) return { opened: false };
+        if (host.state().dialog) return { opened: false, error: 'Finish or close your open email before starting another.' };
+        if (readiness.status !== 'ready' && readiness.status !== 'draft_only') {
+          return { opened: false, error: readiness.status === 'none'
+            ? 'Connect a mailbox in Connections before writing an email.'
+            : readiness.status === 'read_only'
+              ? 'Your mailboxes are read-only. Enable sending or draft access in Connections.'
+              : 'Your mail accounts could not be checked. Try Email again.' };
+        }
+        composeTarget = 'create'; createClosed = request.onClosed;
+        if (!host.openCreate({ to: request.to })) {
+          createClosed = null;
+          return { opened: false, error: 'The email could not be opened. Check your mailbox connection and try again.' };
+        }
+        return { opened: true };
+      } catch (error) {
+        return { opened: false, error: humanizeRpcError(error) };
+      } finally { if (seq === createGeneration) createOpening = false; }
+    },
     hasSnapshot: () => ref !== null,
     render: (): string => {
       if (!opts.callers.get || !ref) return '';
@@ -273,21 +390,21 @@ export const createMailMessageSurface = (opts: {
       return `<section class="data-mail-conversation" aria-label="Email conversation">
         <header class="data-mail-conversation-head">
           <div class="data-mail-conversation-heading"><h2 ${COLLECTION_DETAIL_HEADING_ATTR} tabindex="-1">${e(conversation.anchor.subject || '(No subject)')}</h2>
-          <button type="button" class="data-button" data-mail-focus="conversation-refresh" ${action('conversation-refresh')}${busy(refreshing || olderLoading || opening)}>${refreshing ? 'Refreshing…' : 'Refresh conversation'}</button></div>
+          <button type="button" class="data-button" data-mail-focus="conversation-refresh" ${action('conversation-refresh')}${busy(refreshing || olderLoading || opening || mutating)}>${refreshing ? 'Refreshing…' : 'Refresh conversation'}</button></div>
           <p class="data-mail-message-note">${e(conversation.mailbox_address)} · ${messages.length} loaded ${messages.length === 1 ? 'message' : 'messages'}</p>
           <p class="data-mail-message-note">${conversation.thread_id === null ? 'No conversation ID is available. Showing this email only.' : 'Showing synced messages from this mailbox. Earlier or unsynced messages may be missing.'}</p>
         </header>
         ${conversationError ? `<p role="alert">${e(conversationError)}</p>` : ''}
-        ${conversation.next_before ? `<button type="button" class="data-button data-mail-conversation-older" data-mail-focus="older" ${action('older')}${busy(olderLoading || refreshing || opening)}>${olderLoading ? 'Loading older messages…' : 'Load older messages'}</button>` : olderLoaded ? '<p class="data-mail-message-note" role="status" tabindex="-1" data-mail-focus="older">All available synced messages are loaded.</p>' : ''}
+        ${conversation.next_before ? `<button type="button" class="data-button data-mail-conversation-older" data-mail-focus="older" ${action('older')}${busy(olderLoading || refreshing || opening || mutating)}>${olderLoading ? 'Loading older messages…' : 'Load older messages'}</button>` : olderLoaded ? '<p class="data-mail-message-note" role="status" tabindex="-1" data-mail-focus="older">All available synced messages are loaded.</p>' : ''}
         <div class="data-mail-conversation-layout">
-          <nav class="data-mail-conversation-index" aria-label="Messages in this conversation">${messages.map(message => `<button type="button" ${action('select')} data-mail-record="${e(message.record_id)}" data-mail-focus="index:${e(message.record_id)}" aria-current="${ref!.record_id === message.record_id}"><strong>${e(sender(message))}</strong><span>${label(message)} · ${e(formatClientDateTime(message.received_at))}</span></button>`).join('')}</nav>
+          <nav class="data-mail-conversation-index" aria-label="Messages in this conversation">${messages.map(message => `<button type="button" ${action('select')} data-mail-record="${e(message.record_id)}" data-mail-focus="index:${e(message.record_id)}" aria-current="${ref!.record_id === message.record_id}"><strong>${e(sender(message))}</strong><span>${label(message)}${!message.is_read ? ' · Unread' : ''}${message.is_flagged ? ' · Starred' : ''} · ${e(formatClientDateTime(message.received_at))}</span></button>`).join('')}</nav>
           <div class="data-mail-conversation-messages">${messages.map((message, index) => {
             const selected = message.record_id === ref!.record_id, isOpen = selected && expanded;
             return `<section class="data-mail-conversation-card${selected ? ' is-selected' : ''}">
               <button type="button" class="data-mail-conversation-toggle" ${action('toggle')} data-mail-record="${e(message.record_id)}" data-mail-focus="card:${e(message.record_id)}" aria-expanded="${isOpen}" aria-controls="mail-message-panel-${index}">
                 <strong>${e(sender(message))}</strong><time>${e(formatClientDateTime(message.received_at))}</time>
                 ${message.subject && message.subject !== subject ? `<span class="data-mail-conversation-subject">${e(message.subject)}</span>` : ''}
-                <span class="data-mail-conversation-labels">${label(message)}${message.folder && message.folder.toLowerCase() !== label(message).toLowerCase() ? ` · ${e(message.folder)}` : ''}${message.direction !== 'outbound' && !message.is_read ? ' · Unread' : ''}${message.has_attachments ? ' · Attachments' : ''} · ${isOpen ? 'Collapse' : 'Read email'}</span>
+                <span class="data-mail-conversation-labels">${label(message)}${message.folder && message.folder.toLowerCase() !== label(message).toLowerCase() ? ` · ${e(message.folder)}` : ''}${message.direction !== 'outbound' && !message.is_read ? ' · Unread' : ''}${message.is_flagged ? ' · Starred' : ''}${message.has_attachments ? ' · Attachments' : ''} · ${isOpen ? 'Collapse' : 'Read email'}</span>
                 ${!isOpen && message.snippet ? `<span class="data-mail-conversation-preview">${e(message.snippet)}</span>` : ''}
               </button><div id="mail-message-panel-${index}"${isOpen ? '' : ' hidden'}>${isOpen ? renderMessage() : ''}</div>
             </section>`;
@@ -296,6 +413,11 @@ export const createMailMessageSurface = (opts: {
       </section>`;
     },
     handleAction: (name: string, target?: HTMLElement): void => {
+      if (mutating) return;
+      if (attachments.handleAction(name, target)) return;
+      if (name === 'mail-message-more' && !loading && !opening && !refreshing) { moreOpen = !moreOpen; paint(); }
+      if (name === 'mail-message-mark') void changeState('read');
+      if (name === 'mail-message-star') void changeState('star');
       if (name === 'mail-message-refresh' && ref && !opening && !loading && !refreshing && beforeLeave()) void read();
       if (name === 'mail-message-conversation-refresh' && !opening && beforeLeave()) void loadConversation();
       if (name === 'mail-message-older' && conversation?.next_before && !opening && beforeLeave()) void loadConversation(true);
@@ -348,17 +470,21 @@ export const createMailMessageSurface = (opts: {
       if (!previous || previous.slug !== ref?.slug || previous.record_id !== ref.record_id) return;
       const target = Array.from(root.querySelectorAll<HTMLElement>('[data-mail-focus]'))
         .find(node => node.getAttribute('data-mail-focus') === previous.key)
+        ?? (previous.key === 'mark' || previous.key === 'star' ? root.querySelector<HTMLElement>('[data-mail-focus="more"]') : null)
         ?? (previous.key === 'reply' || previous.key === 'reply-all' || previous.key === 'forward' ? root.querySelector<HTMLElement>('[data-mail-focus="error"]') : null);
       target?.focus({ preventScroll: true });
     },
     beforeLeave,
+    cancelCreateOpen,
     reset: (): void => {
-      generation++; readGeneration++; anchor = null; ref = null; conversation = null; messages = []; snapshot = null;
+      attachments.reset(); generation++; readGeneration++; anchor = null; ref = null; conversation = null; messages = []; snapshot = null;
+      cancelCreateOpen();
       loading = false; opening = false; refreshing = false; olderLoading = false; olderLoaded = false; error = null; conversationError = null; notice = '';
-      composeTarget = 'reply';
+      moreOpen = false; mutating = false; stateNeedsCheck = false; uncertainIdentity = null;
+      if (!compose?.state().dialog) { composeTarget = 'reply'; createClosed = null; }
     },
     hasUnsavedChanges: (): boolean => compose?.hasUnsavedChanges() === true,
-    hasInFlightWork: (): boolean => opening || compose?.hasInFlightWork() === true,
-    dispose: (): void => { disposed = true; generation++; readGeneration++; compose?.destroy(); portal?.remove(); },
+    hasInFlightWork: (): boolean => opening || mutating || compose?.hasInFlightWork() === true,
+    dispose: (): void => { attachments.dispose(); disposed = true; generation++; readGeneration++; compose?.destroy(); portal?.remove(); },
   };
 };

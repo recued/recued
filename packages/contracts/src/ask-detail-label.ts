@@ -61,15 +61,26 @@ export const approvalFieldLabel = (key: string): string =>
  *  is passed by its name and known by its address, so
  *  `{ sender_mail_instance: { recueddev: 'recued.dev@gmail.com (Gmail)' } }`
  *  shows `sender_mail_instance: recueddev` as `recued.dev@gmail.com (Gmail)`.
+ *  D-336 (spec §40) — and a recipient by the contact it is:
+ *  `{ to: { 'mia@example.com': 'Mia Whitfield <mia@example.com>' } }`.
  *  The server records it on the held run's checkpoint
  *  (`PreflightCheckpointContext.value_labels`). Display only: the call still
  *  carries the name. */
 export type ApprovalValueLabels = Readonly<Record<string, Readonly<Record<string, string>>>>;
 
+/** D-336 (spec §41) — the labels under this key name a value under any argument, at any
+ *  depth: a contact's address as `Mia Whitfield <mia@example.com>` in a calendar event's
+ *  attendees, a contact's id as `Mia Whitfield`. A label under the argument's own key wins. */
+export const ANY_ARGUMENT = '*';
+
 const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** The owner's name for one top-level argument value, or undefined.
+/** The owner's name for one top-level argument value, or undefined. A list of
+ *  strings (a mail's `to`) reads each member as the owner knows it, the rest as
+ *  they are, joined as the ask joins a list; a list of more than one leads with
+ *  its count, which a clipped line would otherwise lose. Undefined when no member
+ *  has a label, so the line reads as it always did.
  *
  *  ⛔ READ DEFENSIVELY, AND OWN KEYS ONLY. The labels come back off a persisted
  *  checkpoint: a malformed one names nothing rather than failing the ask, and a
@@ -79,11 +90,71 @@ export const approvalValueLabel = (
   key: string,
   value: unknown,
 ): string | undefined => {
-  if (typeof value !== 'string' || !isPlainRecord(labels) || !Object.hasOwn(labels, key)) {
+  if (!isPlainRecord(labels)) return undefined;
+  // The argument's own labels first, then those that name a value anywhere.
+  const scopes = (key === ANY_ARGUMENT ? [key] : [key, ANY_ARGUMENT])
+    .filter((scope) => Object.hasOwn(labels, scope))
+    .map((scope) => labels[scope])
+    .filter(isPlainRecord);
+  if (scopes.length === 0) return undefined;
+  const one = (member: string): string | undefined => {
+    for (const byValue of scopes) {
+      if (!Object.hasOwn(byValue, member)) continue;
+      const label = byValue[member];
+      if (typeof label === 'string' && label.trim() !== '') return label.trim();
+    }
+    return undefined;
+  };
+  if (typeof value === 'string') return one(value);
+  if (!Array.isArray(value) || value.length === 0 || !value.every((member) => typeof member === 'string')) {
     return undefined;
   }
-  const byValue = labels[key];
-  if (!isPlainRecord(byValue) || !Object.hasOwn(byValue, value)) return undefined;
-  const label = byValue[value];
-  return typeof label === 'string' && label.trim() !== '' ? label.trim() : undefined;
+  const members = value as readonly string[];
+  const known = members.map(one);
+  if (known.every((label) => label === undefined)) return undefined;
+  const body = members.map((member, i) => known[i] ?? member).join(', ');
+  return members.length === 1 ? body : `${members.length}: ${body}`;
+};
+
+/** How deep `nameValuesIn` reads: deeper than any call a person reads. */
+const NAME_DEPTH_MAX = 8;
+
+/** D-336 (spec §41) — `value` with every string the labels name anywhere (`ANY_ARGUMENT`)
+ *  read as its label, for a display that shows a structure: a calendar event's attendees
+ *  `[{ email: 'Mia Whitfield <mia@example.com>' }]`. The same value when nothing in it is
+ *  named. Display only. */
+export const nameValuesIn = (value: unknown, labels: unknown, depth = 0): unknown => {
+  if (typeof value === 'string') return approvalValueLabel(labels, ANY_ARGUMENT, value) ?? value;
+  if (value === null || typeof value !== 'object' || depth >= NAME_DEPTH_MAX) return value;
+  let changed = false;
+  const named = (member: unknown): unknown => {
+    const out = nameValuesIn(member, labels, depth + 1);
+    if (out !== member) changed = true;
+    return out;
+  };
+  // `fromEntries` defines each key as its own, a `__proto__` key included.
+  const out = Array.isArray(value)
+    ? value.map(named)
+    : Object.fromEntries(Object.entries(value).map(([key, member]) => [key, named(member)]));
+  return changed ? out : value;
+};
+
+/** Two sets of labels as one, per argument and per value, the first's label kept where both
+ *  name a value. Read defensively, as either may come off a persisted checkpoint: what is
+ *  malformed adds nothing. Undefined when neither names anything. */
+export const mergeValueLabels = (first: unknown, second: unknown): ApprovalValueLabels | undefined => {
+  const merged = new Map<string, Map<string, string>>();
+  for (const labels of [first, second]) {
+    if (!isPlainRecord(labels)) continue;
+    for (const [key, byValue] of Object.entries(labels)) {
+      if (!isPlainRecord(byValue)) continue;
+      for (const [value, label] of Object.entries(byValue)) {
+        if (typeof label !== 'string' || label.trim() === '') continue;
+        const known = merged.get(key) ?? new Map<string, string>();
+        if (!known.has(value)) merged.set(key, known.set(value, label));
+      }
+    }
+  }
+  return merged.size === 0 ? undefined
+    : Object.fromEntries([...merged].map(([key, known]) => [key, Object.fromEntries(known)]));
 };

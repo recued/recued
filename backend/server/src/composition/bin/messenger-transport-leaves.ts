@@ -23,8 +23,11 @@ import {
   createRemoteChannel,
   type RemoteChannel,
   type RemoteChannelCredential,
+  type RemotePromptRecord,
 } from '@recued/notification';
+import type Database from 'better-sqlite3';
 import type { KeyManager } from '../../key-manager.js';
+import { createSQLiteCollection } from '../../sqlite-collection.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 import {
   createRemoteCredentialResolver,
@@ -218,7 +221,15 @@ export const buildMessengerRemoteChannels = (deps: {
   /** D-158 amendment 2026-10-20 — see `buildMessengerCredentialResolvers`: a
    *  plain notify or ask follows the owner's choice for the channel. */
   plainConnection?: (vendor: string) => () => Promise<ConnectionRow | { reason: string }>;
+  /** D-158 P3 — where each channel keeps what it sent, so a restart neither posts an open
+   *  approval again nor leaves one sent before it with its buttons once it closes. Absent (a
+   *  dbless harness) ⇒ in memory only, as before. */
+  db?: Database.Database;
 }): Record<string, RemoteChannel> => {
+  // One table for every vendor: a record's key starts with its channel's name.
+  const promptRecords = deps.db !== undefined
+    ? createSQLiteCollection<RemotePromptRecord>(deps.db, 'messenger_prompt_records')
+    : undefined;
   // ⛔ ALL transports, not the interactive subset — see
   // `buildAllMessengerTransports`. A `landing-page` vendor is a real channel.
   const transports = buildAllMessengerTransports(deps.transportOptions ?? {});
@@ -243,6 +254,7 @@ export const buildMessengerRemoteChannels = (deps: {
       resolveCredential,
       ...(capability !== undefined ? { capability } : {}),
       ...(deps.answerLink !== undefined ? { answerLink: deps.answerLink } : {}),
+      ...(promptRecords !== undefined ? { promptRecords } : {}),
     });
   }
   return out;

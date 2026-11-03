@@ -49,6 +49,7 @@ import {
   sanitizeTimelineOriginFilter,
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
+import { PREFLIGHT_HANDLER_KIND, type planApproval } from '@recued/gateway';
 import type { PendingAsk } from '@recued/notification';
 
 import type { WsClient } from './ws-server.js';
@@ -96,6 +97,9 @@ export interface HistoryDeps {
   /** The held action's name as the owner knows it ("Send mail"), or null
    *  (`ask-card-action-name.ts`). Absent ⇒ no ask carries `action_name`. */
   nameAskAction?: (ask: PendingAsk) => string | null;
+  /** D-336 slice N — the card in Chat of a held chat write's ask, or null
+   *  (`createAskChatPlanFinder`). Absent ⇒ no ask carries `chat_plan`. */
+  findAskChatPlan?: (ask: PendingAsk) => Promise<ServerPendingAsk['chat_plan'] | null>;
   /** D-158 ask-store read — backs `notification.pending_asks`. Injected
    *  as a thunk over `NotificationBlock.listOpenAsks` so the handler
    *  never holds the ask store directly. Absent → returns `[]`. */
@@ -286,6 +290,17 @@ export const handlePendingAsks = async (
       }
     }))
     : undefined;
+  // D-336 slice N — and each held chat write's card in Chat: one indexed read for a preflight
+  // ask, none for the rest. One that cannot be read costs only its own link.
+  const chatPlans = deps.findAskChatPlan !== undefined
+    ? await Promise.all(sorted.map(async (p) => {
+      try {
+        return await deps.findAskChatPlan!(p);
+      } catch {
+        return null;
+      }
+    }))
+    : undefined;
   return {
     asks: sorted.map((p, i) => ({
       ask_id: p.ask_id,
@@ -318,8 +333,27 @@ export const handlePendingAsks = async (
       ...(details?.[i]?.length ? { details: details[i] } : {}),
       // And the action's name, for the same reason again.
       ...actionNameOf(deps, p),
+      // And the held chat write's card in Chat, for the same reason.
+      ...(chatPlans?.[i] ? { chat_plan: chatPlans[i]! } : {}),
     })),
   };
+};
+
+/** D-336 slice N — the card in Chat of a held chat write (D-329), for its ask: the plan its
+ *  hold's run belongs to, while it still waits on that run. A preflight ask from anywhere else
+ *  (a recipe run, an AI app over MCP) has no plan, so no card. `changeable` when that card can
+ *  change the call before the yes: it takes a change to some argument (`editable_args`), and
+ *  the reviewed arguments could be read, which the card needs. */
+export const createAskChatPlanFinder = (
+  plans: Pick<planApproval.PlanApprovalStore, 'findByHoldRun'>,
+) => async (ask: PendingAsk): Promise<ServerPendingAsk['chat_plan'] | null> => {
+  const run_id = ask.handler_payload.run_id;
+  if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND || typeof run_id !== 'string' || run_id === '') return null;
+  // A lapsed hold's plan is cancelled, so it no longer waits either.
+  const plan = await plans.findByHoldRun?.(run_id);
+  if (plan === undefined || plan.status !== 'proposed') return null;
+  const changeable = (plan.editable_args?.length ?? 0) > 0 && plan.args !== null && typeof plan.args === 'object';
+  return { session_id: plan.session_id, plan_id: plan.plan_id, ...(changeable ? { changeable: true } : {}) };
 };
 
 /** `{ action_name }` for an ask whose held action has a name, else nothing. A

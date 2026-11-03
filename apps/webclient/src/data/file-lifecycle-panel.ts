@@ -5,13 +5,14 @@ export interface FileLifecyclePanelState {
   fileId: string;
   preview?: FileLifecyclePreview;
   busy: boolean;
-  operation?: FileLifecycleMutation['action'];
+  operation?: FileLifecycleMutation['action'] | 'rename';
+  rename?: { value: string; original: string; revision?: string };
   error?: string;
   confirmDelete?: boolean;
 }
 const escape = (value: string): string => value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-export const renderFileLifecyclePanel = (state: FileLifecyclePanelState, actionAttr: string): string => {
+export const renderFileLifecyclePanel = (state: FileLifecyclePanelState, actionAttr: string, canRename = false): string => {
   const p = state.preview;
   const disabled = state.busy ? ' disabled aria-busy="true"' : '';
   const button = (action: string, label: string, unavailable = false): string =>
@@ -26,7 +27,14 @@ export const renderFileLifecyclePanel = (state: FileLifecyclePanelState, actionA
         : serializeChatSessionAddress({ sessionId: u.session_id }))}">${u.message_id ? 'Open message' : 'Open conversation'}</a>${u.turn_id ? ` · ${escape(u.state)}` : ''}</li>`).join('')}</ul>` : ''}
       ${p.usages_truncated ? '<p>Showing the first 100 uses. The counts and deletion include every use.</p>' : ''}
       ${p.in_use ? '<p role="status">File currently in use. Permanent deletion is available after the active operation finishes.</p>' : ''}
-      ${p.deleted ? '<p>File deleted for good. The messages about it are still there.</p>' : state.confirmDelete ? `
+      ${state.rename ? `<div data-file-rename>
+        <p>Current name: ${escape(p.filename)}</p>
+        <label>Filename <input class="data-input" type="text" maxlength="255" ${actionAttr}="file-rename-input" value="${escape(state.rename.value)}"${state.busy ? ' disabled' : ''} /></label>
+        <p>Changes the saved file’s name. Existing chat attachments keep their recorded names.</p>
+        ${button('file-rename-save', state.operation === 'rename' ? 'Saving…' : 'Save name', !p.can_rename || !state.rename.revision || !state.rename.value.trim() || state.rename.value.normalize('NFC').trim() === p.filename)}
+        ${button('file-rename-cancel', 'Cancel')}
+      </div>` : canRename && p.can_rename ? button('file-rename', 'Rename') : ''}
+      ${state.rename ? '' : p.deleted ? '<p>File deleted for good. The messages about it are still there.</p>' : state.confirmDelete ? `
         <p>Permanently delete this file and its retained attachment versions? Conversations will show “File deleted”. Queued messages needing it will fail. Copies already sent to Messenger remain there.</p>
         ${button('file-delete-confirm', 'Yes, delete it for good', p.in_use)} ${button('file-delete-cancel', 'Keep file')}` : `
         <p>Archive moves the file to archived files and keeps its attachments available. Permanent deletion removes those attachments too.</p>

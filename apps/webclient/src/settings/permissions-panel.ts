@@ -325,10 +325,11 @@ const operationLabel = (v: OverrideView): string =>
  *  `OverridePolicyInput` field set; an absent facet is omitted. */
 const policyFacets = (p: OverridePolicyInput): string[] => {
   const parts: string[] = [];
-  if (p.denied === true) parts.push('denied');
-  if (p.approval !== undefined) parts.push(`approval: ${p.approval}`);
+  if (p.denied === true) parts.push('never allowed');
+  if (p.approval !== undefined) parts.push((APPROVAL_WORDS[p.approval as keyof typeof APPROVAL_WORDS] ?? p.approval).toLowerCase());
   if (p.max_risk_without_approval !== undefined) {
-    parts.push(`how risky it may get before asking you: ${p.max_risk_without_approval}`);
+    const words = MAX_RISK_WORDS[p.max_risk_without_approval as keyof typeof MAX_RISK_WORDS] ?? p.max_risk_without_approval;
+    parts.push(`how risky it may get before asking you: ${words.toLowerCase()}`);
   }
   if (p.timeout_ms !== undefined) parts.push(`timeout: ${p.timeout_ms} ms`);
   if (p.cache_ttl_ms !== undefined) parts.push(`cache TTL: ${p.cache_ttl_ms} ms`);
@@ -343,12 +344,25 @@ const policyFacets = (p: OverridePolicyInput): string[] => {
  *  override to `user_self` is the self-restriction path (D-161 N.3 — the former
  *  `contracted_self` actor collapsed into a `user_self` carrying a contract). */
 const ACTOR_OPTIONS: ReadonlyArray<{ value: Actor; label: string }> = [
-  { value: 'user_self', label: 'You (user_self)' },
+  { value: 'user_self', label: 'You' },
   { value: 'contracted_user', label: 'An app you have a contract with' },
 ];
 
 const APPROVAL_OPTIONS = ['never', 'ask', 'always'] as const;
 const MAX_RISK_OPTIONS = ['read', 'write', 'admin', 'none'] as const;
+/** D-336 (spec §52) — each choice in the owner's words, never the stored value. `ask` asks only
+ *  when the action's risk is above what the caller may do unasked, so it is not "Ask". */
+const APPROVAL_WORDS: Readonly<Record<(typeof APPROVAL_OPTIONS)[number], string>> = {
+  never: 'Never ask',
+  ask: 'Ask when its risk calls for it',
+  always: 'Always ask',
+};
+const MAX_RISK_WORDS: Readonly<Record<(typeof MAX_RISK_OPTIONS)[number], string>> = {
+  read: 'Reading only',
+  write: 'Making changes',
+  admin: 'Admin changes',
+  none: 'Nothing: ask for everything',
+};
 
 /** Project a create draft into the `OverridePolicyInput` the rpc expects: only
  *  set facets the user actually chose (an unchecked `denied` / a blank select is
@@ -538,7 +552,8 @@ export const mountPermissionsPanel = (
     heading.className = 'perm-row-heading';
     const actor = doc.createElement('span');
     actor.className = 'perm-actor';
-    actor.textContent = view.actor;
+    // D-336 (spec §52) — in the form's words: "You", never `user_self`.
+    actor.textContent = ACTOR_OPTIONS.find((option) => option.value === view.actor)?.label ?? view.actor;
     heading.appendChild(actor);
     const op = doc.createElement('span');
     op.className = 'perm-op';
@@ -1077,7 +1092,7 @@ export const mountPermissionsPanel = (
       'Approval',
       [
         { value: '', label: 'No change' },
-        ...APPROVAL_OPTIONS.map((a) => ({ value: a, label: a })),
+        ...APPROVAL_OPTIONS.map((a) => ({ value: a, label: APPROVAL_WORDS[a] })),
       ],
       state.draft.approval ?? '',
       false,
@@ -1088,7 +1103,7 @@ export const mountPermissionsPanel = (
       'How risky it may get before asking you',
       [
         { value: '', label: 'No change' },
-        ...MAX_RISK_OPTIONS.map((r) => ({ value: r, label: r })),
+        ...MAX_RISK_OPTIONS.map((r) => ({ value: r, label: MAX_RISK_WORDS[r] })),
       ],
       state.draft.max_risk_without_approval ?? '',
       false,

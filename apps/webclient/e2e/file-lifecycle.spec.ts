@@ -18,14 +18,15 @@ const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedL
   for (let i = 1; i < libraryCount; i++) await fixture.files!.ingest({ filename: `Invoice ${String(i).padStart(3, '0')}.txt`,
     bytes: Buffer.from(`Invoice body ${i}`), mime_type: 'text/plain', origin: 'webclient_upload', source_id: `saved-test-${i}`, scan_status: 'clean' });
   const context = await browser.newContext();
-  const calls: string[] = []; let loseAck = false, restoreSupport = true;
+  const calls: string[] = []; let loseAck = false, restoreSupport = true, failUsage = false;
   let mutationGate: Promise<void> | undefined, releaseMutation: (() => void) | undefined;
   let listGate: Promise<void> | undefined, releaseList: (() => void) | undefined;
   let waitingForList = false;
   await context.route(/\/(?:file-lifecycle-rpc|d265-rpc)$/, async route => {
     const { method, args } = route.request().postDataJSON(); calls.push(method);
     try {
-      if (method === 'data.file.mutate' && mutationGate) {
+      if (method === 'data.file.usage' && failUsage) { failUsage = false; throw new Error('File usage is temporarily unavailable.'); }
+      if (['data.file.mutate', 'data.file.rename'].includes(method) && mutationGate) {
         const pending = mutationGate; mutationGate = undefined; await pending;
       }
       if (['collection.list', 'data.file.attachments.list'].includes(method) && listGate) {
@@ -39,7 +40,7 @@ const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedL
       if (method === 'data.file.usage' && !restoreSupport && result && typeof result === 'object') {
         const legacy = { ...result }; Reflect.deleteProperty(legacy, 'can_restore'); result = legacy;
       }
-      if (method === 'data.file.mutate' && loseAck) { loseAck = false; throw new Error('Acknowledgement lost'); }
+      if (['data.file.mutate', 'data.file.rename'].includes(method) && loseAck) { loseAck = false; throw new Error('Acknowledgement lost'); }
       await route.fulfill({ json: { result } });
     } catch (error) { await route.fulfill({ json: { error: String(error) } }); }
   });
@@ -47,7 +48,7 @@ const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedL
   if (fullApp) {
     await data.addInitScript(() => {
       Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
-        if (['collection.listInstances', 'collection.list', 'collection.get', 'data.file.usage', 'data.file.mutate', 'data.file.read', 'data.file.attachments.list', 'data.file.attachments.preview'].includes(method)) {
+        if (['collection.listInstances', 'collection.list', 'collection.get', 'data.file.usage', 'data.file.mutate', 'data.file.rename', 'data.file.read', 'data.file.attachments.list', 'data.file.attachments.preview'].includes(method)) {
           const response = await fetch('/file-lifecycle-rpc', { method: 'POST', body: JSON.stringify({ method, args }) });
           const envelope = await response.json();
           return envelope.error ? { error: typeof envelope.error === 'string' ? { code: 'bad_request', message: envelope.error } : envelope.error } : envelope;
@@ -64,7 +65,7 @@ const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedL
   }
   await chat.goto('/chat-queue-harness.html');
   await expect(chat.locator('body')).toHaveAttribute('data-ready', 'true');
-  return { data, chat, fixture, calls, loseAck: () => { loseAck = true; },
+  return { data, chat, fixture, calls, loseAck: () => { loseAck = true; }, failUsage: () => { failUsage = true; },
     listSupport: (supported: boolean) => { savedListSupported = supported; },
     restoreSupport: (enabled: boolean) => { restoreSupport = enabled; },
     holdMutation: () => { mutationGate = new Promise(resolve => { releaseMutation = resolve; }); },
@@ -79,6 +80,73 @@ const setup = async (browser: Browser, fullApp = false, libraryCount = 0, savedL
 };
 const openUsage = async (page: Page) => { await page.getByRole('button', { name: 'Manage file', exact: true }).click();
   await expect(page.locator('[data-file-lifecycle]')).toContainText('1 message in 1 conversation'); };
+
+test('reviews selected saved files, reports a changed review without retrying writes, and restores the confirmed archives', async ({ browser }, testInfo) => {
+  const f = await setup(browser, true, 4);
+  try {
+    await f.data.setViewportSize({ width: 390, height: 844 });
+    const choose = (name: string) => f.data.getByRole('checkbox', { name: `Select ${name}`, exact: true });
+    for (const name of ['Attachment.pdf', 'Invoice 001.txt', 'Invoice 002.txt']) await choose(name).check();
+    await f.data.getByRole('button', { name: 'Review archive', exact: true }).click();
+    let review = f.data.getByRole('region', { name: 'Review selected files' });
+    await expect(review.getByRole('button', { name: 'Archive 3 files', exact: true })).toBeEnabled();
+    expect(f.calls.filter(method => method === 'data.file.mutate')).toHaveLength(0);
+    await review.getByRole('button', { name: 'Back to selection' }).click();
+    await expect(choose('Attachment.pdf')).toBeChecked();
+    await f.data.getByRole('button', { name: 'Review archive', exact: true }).click();
+    review = f.data.getByRole('region', { name: 'Review selected files' });
+    await expect(review.getByRole('button', { name: 'Archive 3 files', exact: true })).toBeEnabled();
+    await f.data.screenshot({ path: testInfo.outputPath('file-batch-phone-review.png'), fullPage: true });
+    // Archive/restore leaves a new revision and a historical archive receipt.
+    // Replaying that receipt must not be presented as the file's current state.
+    const changed = f.fixture.files!.list({ platform: 'file', slug: 'received', limit: 10 })
+      .find(row => row.hot_fields.filename === 'Invoice 001.txt')!.record_id;
+    for (const action of ['archive', 'restore']) await f.fixture.rpc('data.file.mutate', { record_id: changed, action,
+      revision: f.fixture.files!.attachmentLifecycle!.preview(changed).revision });
+    const renamed = f.fixture.files!.get(changed)!;
+    f.fixture.files!.upsert({ ...renamed, modified_at: renamed.modified_at + 1,
+      hot_fields: { ...renamed.hot_fields, filename: 'Renamed invoice.txt' } });
+    f.holdMutation(); f.loseAck();
+    await review.getByRole('button', { name: 'Archive 3 files', exact: true }).click();
+    const results = f.data.getByRole('region', { name: 'File batch results' });
+    await expect(f.data.getByRole('combobox', { name: 'Collection', exact: true })).toBeDisabled();
+    await expect(f.data.getByRole('searchbox', { name: 'Search saved files' })).toBeDisabled();
+    expect(await f.data.evaluate(() => window.dispatchEvent(new Event('beforeunload', { cancelable: true })))).toBe(false);
+    await f.data.getByRole('combobox', { name: 'Collection', exact: true }).evaluate(select => {
+      (select as HTMLSelectElement).value = 'task'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect(f.data.getByRole('combobox', { name: 'Collection', exact: true })).toHaveValue('files');
+    f.releaseMutation();
+    await expect(results).toContainText('2 confirmed'); await expect(results).toContainText('1 not confirmed');
+    await expect(results).toContainText('The file is currently in the library');
+    await expect(results.getByText('Renamed invoice.txt', { exact: true })).toBeVisible();
+    await expect(results.getByText('Reviewed as Invoice 001.txt', { exact: true })).toBeVisible();
+    await results.getByRole('button', { name: 'Check unconfirmed' }).click();
+    await expect(results).toHaveAttribute('aria-busy', 'false');
+    expect(f.calls.filter(method => method === 'data.file.mutate')).toHaveLength(3);
+    expect(f.fixture.files!.get(changed)?.hot_fields.archived).toBe(0);
+    await f.data.setViewportSize({ width: 1280, height: 900 });
+    await results.scrollIntoViewIfNeeded();
+    await f.data.screenshot({ path: testInfo.outputPath('file-batch-desktop-results.png'), fullPage: true });
+    await results.getByRole('button', { name: 'Start another selection' }).click();
+    await choose('Invoice 001.txt').check();
+    await f.data.getByRole('button', { name: 'Review archive', exact: true }).click();
+    await f.data.getByRole('button', { name: 'Archive 1 file', exact: true }).click();
+    await expect(results).toContainText('1 confirmed');
+    await f.data.getByRole('button', { name: 'Show archived files', exact: true }).click();
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(3);
+    await f.data.getByRole('button', { name: 'Select shown', exact: true }).click();
+    await f.data.getByRole('button', { name: 'Review restore', exact: true }).click();
+    await f.data.getByRole('button', { name: 'Restore 3 files', exact: true }).click();
+    await expect(results).toContainText('3 confirmed');
+    expect(f.calls.filter(method => method === 'data.file.mutate')).toHaveLength(7);
+    await f.data.getByRole('button', { name: 'Show current files', exact: true }).click();
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(4);
+    const attachment = (await f.fixture.messages())[0]!.attachments![0]!;
+    const bytes = await f.fixture.rpc('data.file.read', { record_id: attachment.file_id }) as { bytes_b64: string };
+    expect(Buffer.from(bytes.bytes_b64, 'base64').toString()).toBe('%PDF-original-file');
+  } finally { await f.close(); }
+});
 
 test('Saved files pages past 100 and searches the complete retained library, with a distinct no-match state', async ({ browser }) => {
   const f = await setup(browser, true, 137);
@@ -115,13 +183,12 @@ test('Saved files keeps the searched page and reading position through preview a
     const reads = f.calls.filter(method => method === 'data.file.attachments.list').length;
     await search.fill('Unsubmitted search');
     await row.scrollIntoViewIfNeeded(); await row.click();
-    await f.data.getByRole('button', { name: 'Preview file', exact: true }).click();
     const preview = f.data.getByRole('dialog', { name: 'File preview' });
-    await expect(preview.getByLabel('File text')).toContainText('Invoice body'); await preview.press('Escape');
+    await expect(preview.getByLabel('File text')).toContainText('Invoice body');
     const downloading = f.data.waitForEvent('download');
     await f.data.getByRole('button', { name: 'Download file', exact: true }).click();
     const download = await downloading; expect(download.suggestedFilename()).toBe(filename); await download.delete();
-    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await preview.getByRole('button', { name: 'Close preview', exact: true }).click();
     await expect(rows).toHaveCount(90); await expect(search).toHaveValue('Unsubmitted search');
     await expect(f.data.locator('[data-saved-file-status]')).toContainText('for “Invoice”');
     await expect(f.data.locator(`[data-collection-record="${id}"]`)).toBeFocused();
@@ -167,7 +234,7 @@ test('an older server retains its saved-file list and archive browsing; an updat
     const search = f.data.getByRole('searchbox', { name: 'Search saved files' }); await expect(search).toBeVisible();
     await expect(f.data.locator('[data-collection-record]')).toHaveCount(30);
     await search.fill('Attachment'); await search.press('Enter');
-    await f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`).click(); await openUsage(f.data);
+    await f.data.locator(`[data-file-details-id="${f.fixture.fileId}"], [data-collection-record="${f.fixture.fileId}"]:not([data-recued-data-action="file-open-preview"])`).click(); await openUsage(f.data);
     await f.data.getByRole('button', { name: 'Archive', exact: true }).click();
     await expect(f.data.locator('[data-collection-record]')).toHaveCount(0);
     await f.data.getByRole('button', { name: 'Show archived files', exact: true }).click();
@@ -257,7 +324,7 @@ test('restores an archived file on a phone, waits for server support, and keeps 
     await f.data.setViewportSize({ width: 390, height: 844 });
     await openUsage(f.data); await f.data.getByRole('button', { name: 'Archive', exact: true }).click();
     await f.data.getByRole('button', { name: 'Show archived files' }).click();
-    await f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`).click();
+    await f.data.locator(`[data-file-details-id="${f.fixture.fileId}"], [data-collection-record="${f.fixture.fileId}"]:not([data-recued-data-action="file-open-preview"])`).click();
     f.restoreSupport(false); await openUsage(f.data);
     const panel = f.data.locator('[data-file-lifecycle]');
     await expect(panel).toContainText('Update the server to restore archived files.');
@@ -301,7 +368,7 @@ test('requires another click after stale restore impact and verifies a restored 
   try {
     await openUsage(f.data); await f.data.getByRole('button', { name: 'Archive', exact: true }).click();
     await f.data.getByRole('button', { name: 'Show archived files' }).click();
-    await f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`).click(); await openUsage(f.data);
+    await f.data.locator(`[data-file-details-id="${f.fixture.fileId}"], [data-collection-record="${f.fixture.fileId}"]:not([data-recued-data-action="file-open-preview"])`).click(); await openUsage(f.data);
     const panel = f.data.locator('[data-file-lifecycle]');
     const restore = panel.getByRole('button', { name: 'Restore to library', exact: true });
     f.holdMutation(); await restore.click();
@@ -321,5 +388,151 @@ test('requires another click after stale restore impact and verifies a restored 
     await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toBeVisible();
     await expect(f.chat.locator('[data-chat-attachments]')).toContainText('Attachment.pdf');
     expect((await f.fixture.messages())[0]!.content).toBe('Attached document');
+  } finally { await f.close(); }
+});
+
+
+test('saved-file rename updates discovery, preview and download while preserving past attachment names', async ({ browser }, testInfo) => {
+  const f = await setup(browser, true, 3);
+  try {
+    await f.data.locator(`[data-file-details-id="${f.fixture.fileId}"], [data-collection-record="${f.fixture.fileId}"]:not([data-recued-data-action="file-open-preview"])`).click(); await openUsage(f.data);
+    await f.data.getByRole('button', { name: 'Rename', exact: true }).click();
+    const input = f.data.getByRole('textbox', { name: 'Filename', exact: true });
+    await expect(input).toHaveValue('Attachment.pdf');
+    await expect(f.data.getByRole('button', { name: 'Save name', exact: true })).toBeDisabled();
+    await input.fill('Client agreement.pdf');
+    for (const [width, theme] of [[1280, 'light'], [390, 'dark']] as const) {
+      await f.data.setViewportSize({ width, height: 900 });
+      await f.data.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      await f.data.locator('[data-file-rename]').scrollIntoViewIfNeeded();
+      await f.data.screenshot({ path: testInfo.outputPath(`file-rename-${width}-${theme}.png`), fullPage: true, animations: 'disabled' });
+    }
+    await f.data.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(f.data.locator('[data-file-lifecycle-notice]')).toContainText('File renamed');
+    await expect(input).toHaveCount(0);
+    await f.data.getByRole('button', { name: 'Preview file', exact: true }).click();
+    const preview = f.data.getByRole('dialog', { name: 'File preview' });
+    await expect(preview).toContainText('Client agreement.pdf'); await preview.press('Escape');
+    const downloading = f.data.waitForEvent('download'); await f.data.getByRole('button', { name: 'Download file', exact: true }).click();
+    const download = await downloading; expect(download.suggestedFilename()).toBe('Client agreement.pdf'); await download.delete();
+    const attachment = (await f.fixture.messages())[0]!.attachments![0]!;
+    expect(attachment.filename).toBe('Attachment.pdf');
+    expect(await f.fixture.rpc('data.file.read', { record_id: attachment.file_id })).toMatchObject({ filename: 'Attachment.pdf', bytes_b64: Buffer.from('%PDF-original-file').toString('base64') });
+    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    const search = f.data.getByRole('searchbox', { name: 'Search saved files' });
+    await search.fill('Attachment'); await search.press('Enter'); await expect(f.data.locator('[data-collection-record]')).toHaveCount(0);
+    await search.fill('Client agreement'); await search.press('Enter'); await expect(f.data.locator('[data-collection-record]')).toHaveCount(1);
+    await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toContainText('Client agreement.pdf');
+    expect(f.calls.filter(method => method === 'data.file.rename')).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test('saved-file rename preserves drafts on validation and conflict, guards navigation, and saves only after review', async ({ browser }) => {
+  const f = await setup(browser, true);
+  try {
+    await openUsage(f.data); await f.data.getByRole('button', { name: 'Rename', exact: true }).click();
+    const input = f.data.getByRole('textbox', { name: 'Filename', exact: true });
+    await input.fill('folder/name.pdf'); await f.data.getByRole('button', { name: 'Save name', exact: true }).click();
+    const panel = f.data.locator('[data-file-lifecycle]');
+    await expect(panel.getByRole('alert')).toContainText('without slashes'); await expect(input).toHaveValue('folder/name.pdf');
+    await input.fill('My draft.pdf');
+    for (const name of ['← Back', 'Show archived files']) {
+      await f.data.getByRole('button', { name, exact: true }).click();
+      await expect(panel.getByRole('alert')).toContainText('Save or cancel'); await expect(input).toHaveValue('My draft.pdf');
+    }
+    await f.data.setViewportSize({ width: 390, height: 900 });
+    await f.data.getByRole('combobox', { name: 'Collection', exact: true }).selectOption('task');
+    await expect(f.data.getByRole('combobox', { name: 'Collection', exact: true })).toHaveValue('files');
+    await expect(input).toHaveValue('My draft.pdf');
+    await f.fixture.rpc('data.file.rename', { record_id: f.fixture.fileId, filename: 'Changed elsewhere.pdf',
+      revision: f.fixture.files!.attachmentLifecycle!.preview(f.fixture.fileId).revision });
+    await f.data.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(panel.getByRole('alert')).toContainText('Review its current name');
+    await expect(panel).toContainText('Current name: Changed elsewhere.pdf'); await expect(input).toHaveValue('My draft.pdf');
+    expect(f.calls.filter(method => method === 'data.file.rename')).toHaveLength(2);
+    await f.data.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(f.data.locator('[data-file-lifecycle-notice]')).toContainText('File renamed');
+    expect(f.fixture.files!.get(f.fixture.fileId)!.hot_fields.filename).toBe('My draft.pdf');
+    await f.data.getByRole('button', { name: 'Rename', exact: true }).click();
+    await input.fill('Discard this.pdf'); await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(f.data.locator('[data-collection-record]')).toHaveCount(1);
+    expect(f.calls.filter(method => method === 'data.file.rename')).toHaveLength(3);
+  } finally { await f.close(); }
+});
+
+test('saved-file rename reconciles a lost acknowledgement and keeps the confirmed name when its list refresh fails', async ({ browser }) => {
+  const f = await setup(browser, true, 3);
+  try {
+    await f.data.locator(`[data-file-details-id="${f.fixture.fileId}"], [data-collection-record="${f.fixture.fileId}"]:not([data-recued-data-action="file-open-preview"])`).click(); await openUsage(f.data);
+    await f.data.getByRole('button', { name: 'Rename', exact: true }).click();
+    await f.data.getByRole('textbox', { name: 'Filename', exact: true }).fill('Confirmed name.pdf');
+    f.holdMutation(); f.loseAck(); f.holdListFailure();
+    await f.data.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(f.data.getByRole('button', { name: 'Saving…', exact: true })).toBeDisabled();
+    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(f.data.locator('[data-file-lifecycle]')).toContainText('Wait for the filename');
+    f.releaseMutation();
+    await expect.poll(f.waitingForList).toBe(true);
+    await expect(f.data.locator('[data-file-lifecycle-notice]')).toContainText('has the requested name');
+    await expect(f.data.getByRole('textbox', { name: 'Filename', exact: true })).toHaveCount(0);
+    f.releaseList(); await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toContainText('Confirmed name.pdf');
+    await expect(f.data.getByRole('alert').filter({ hasText: 'Saved files could not be loaded' })).toBeVisible();
+    expect(f.calls.filter(method => method === 'data.file.rename')).toHaveLength(1);
+    await f.data.getByRole('button', { name: 'Retry', exact: true }).click(); await expect(f.data.locator('[data-collection-record]')).toHaveCount(3);
+  } finally { await f.close(); }
+});
+
+
+test('saved-file rename keeps searched rows consistent and removes a deleted file after a conflict review', async ({ browser }) => {
+  const f = await setup(browser, true, 3);
+  try {
+    const rows = f.data.locator('[data-collection-record]');
+    const search = f.data.getByRole('searchbox', { name: 'Search saved files' });
+    await search.fill('Attachment'); await search.press('Enter'); await expect(rows).toHaveCount(1);
+    await f.data.getByRole('button', { name: 'Details for Attachment.pdf', exact: true }).click(); await openUsage(f.data);
+    const panel = f.data.locator('[data-file-lifecycle]');
+    await panel.getByRole('button', { name: 'Rename', exact: true }).click();
+    const input = panel.getByRole('textbox', { name: 'Filename', exact: true }); await input.fill('My draft.pdf');
+    await f.fixture.rpc('data.file.rename', { record_id: f.fixture.fileId, filename: 'Other name.pdf',
+      revision: f.fixture.files!.attachmentLifecycle!.preview(f.fixture.fileId).revision });
+    await panel.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(panel).toContainText('Current name: Other name.pdf'); await expect(input).toHaveValue('My draft.pdf');
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(rows).toHaveCount(0); await expect(f.data.locator('[data-saved-file-status]')).toContainText('0 saved files shown');
+    await search.fill(''); await search.press('Enter'); await expect(rows).toHaveCount(3);
+    await f.data.locator(`[data-file-details-id="${f.fixture.fileId}"], [data-collection-record="${f.fixture.fileId}"]:not([data-recued-data-action="file-open-preview"])`).click(); await openUsage(f.data);
+    await panel.getByRole('button', { name: 'Rename', exact: true }).click(); await input.fill('Another draft.pdf');
+    await f.fixture.rpc('data.file.mutate', { record_id: f.fixture.fileId, action: 'delete',
+      revision: f.fixture.files!.attachmentLifecycle!.preview(f.fixture.fileId).revision });
+    await panel.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(panel).toHaveAttribute('aria-busy', 'false'); await expect(input).toHaveValue('Another draft.pdf');
+    await expect(panel.getByRole('button', { name: 'Save name', exact: true })).toBeDisabled();
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(rows).toHaveCount(2); await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toHaveCount(0);
+    expect(f.calls.filter(method => method === 'data.file.rename')).toHaveLength(2);
+  } finally { await f.close(); }
+});
+
+test('saved-file rename keeps an uncertain draft and requires a successful recheck before saving again', async ({ browser }) => {
+  const f = await setup(browser, true);
+  try {
+    await openUsage(f.data); const panel = f.data.locator('[data-file-lifecycle]');
+    await panel.getByRole('button', { name: 'Rename', exact: true }).click();
+    const input = panel.getByRole('textbox', { name: 'Filename', exact: true }); await input.fill('Unconfirmed name.pdf');
+    f.loseAck(); f.failUsage(); await panel.getByRole('button', { name: 'Save name', exact: true }).click();
+    await expect(panel).toHaveAttribute('aria-busy', 'false'); await expect(input).toHaveValue('Unconfirmed name.pdf');
+    await expect(panel.getByRole('button', { name: 'Save name', exact: true })).toBeDisabled();
+    await expect(panel.getByRole('alert')).toContainText('Check again before saving');
+    expect(f.calls.filter(method => method === 'data.file.rename')).toHaveLength(1);
+    await panel.getByRole('button', { name: 'Check again', exact: true }).click();
+    await expect(panel).toContainText('Current name: Unconfirmed name.pdf'); await expect(input).toHaveValue('Unconfirmed name.pdf');
+    await panel.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await f.data.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(f.data.locator(`[data-collection-record="${f.fixture.fileId}"]`)).toContainText('Unconfirmed name.pdf');
+    expect(f.calls.filter(method => method === 'data.file.rename')).toHaveLength(1);
   } finally { await f.close(); }
 });

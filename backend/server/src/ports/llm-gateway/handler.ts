@@ -32,6 +32,8 @@ import {
   type TokenUsage,
 } from '@recued/llm';
 import {
+  KERNEL_OP_REGISTRY,
+  isGrantableKernelOp,
   isLlmGatewayPaidAcknowledged,
   isMcpInboundConcurrencyTier,
   isMcpInboundTokenToolAuthorized,
@@ -49,7 +51,16 @@ import {
   type LlmGatewayTurnInput,
   type LlmGatewayToolUsageMeter,
 } from '../../chat-orchestrator.js';
-import { ChatContextLengthError } from '../../chat-turn-executor.js';
+import { ChatContextLengthError, ChatTurnUnansweredError } from '../../chat-turn-executor.js';
+import type { McpActionRecord, McpActionStore } from '../../mcp-action-store.js';
+import {
+  LLM_GATEWAY_CARRIED_NOTE,
+  LLM_GATEWAY_HELD_MESSAGE,
+  llmGatewayStillWaitingNote,
+  llmGatewayWaitingTrailer,
+  readCarriedHeldCalls,
+  type CarriedHeldCalls,
+} from './held-calls.js';
 import {
   policyEmitsApplicationInstructions,
   policyInjectsCallerInstructions,
@@ -179,7 +190,25 @@ export interface LlmGatewayCompletionInput {
    * not call this seam. */
   readonly assert_live_authority?: () => void | Promise<void>;
   readonly llm_gateway_tool_usage?: LlmGatewayToolUsageMeter;
+  /** D-337 ruling 4, design (a) — how long the request may wait, in all, for the owner's answers
+   *  to calls it holds, and the signal that the caller went away. */
+  readonly held_wait?: { readonly ms: number; readonly signal?: AbortSignal };
 }
+
+/** D-337 ruling 4, design (a) — the longest a request waits, in all, for the owner to answer the
+ *  calls it holds for approval; then the model is told the call waits, as before. Two minutes: an
+ *  owner answering from their phone, not one away from it (a later answer reaches the
+ *  conversation's next request: design (b), `held-calls.ts`). A streamed reply sends keep-alive lines
+ *  meanwhile (`LLM_GATEWAY_STREAM_KEEPALIVE_MS`); an unstreamed one waits less
+ *  (`LLM_GATEWAY_HELD_WAIT_UNSTREAMED_MS`). */
+export const LLM_GATEWAY_HELD_WAIT_MS = 120_000;
+
+/** D-337 slice R — the same limit for a request that is not streamed. Such a reply sends nothing
+ *  while it waits, and a proxy in front of the server cuts a silent response at its read timeout
+ *  (nginx's default is 60 s). A cut reply is lost with the reference design (b) needs, so the
+ *  conversation would never hear the outcome, and an app that retries may ask again. So it waits
+ *  less; an answer after that reaches the conversation's next request. */
+export const LLM_GATEWAY_HELD_WAIT_UNSTREAMED_MS = 25_000;
 
 export interface LlmGatewayCompletionResult {
   readonly id?: string;
@@ -235,12 +264,17 @@ export interface LlmGatewayHandlerDeps {
     | 'statusFor'
     | 'tokensToday'
     | 'isInCooldown'
+    | 'cooldownUntil'
     | 'currentCursor'
   >;
   readonly now?: () => number;
   readonly rng?: () => number;
   readonly max_body_bytes?: number;
   readonly max_prompt_chars?: number;
+  /** D-337 ruling 4, design (a) — how long a request waits, in all, for the owner's answers to
+   *  calls it holds, streamed or not. Absent ⇒ `LLM_GATEWAY_HELD_WAIT_MS` for a streamed request,
+   *  `LLM_GATEWAY_HELD_WAIT_UNSTREAMED_MS` for one that is not; 0 ⇒ a held call returns at once. */
+  readonly held_wait_ms?: number;
   /** Process-wide completion ceiling. Invalid values fall back to the
    *  exported production default; per-token ceilings come from the verified
    *  token's authored `concurrency_tier`. */
@@ -283,6 +317,13 @@ export interface LlmGatewaySharedChatCompletionProviderDeps {
   readonly quota: QuotaTracker;
   readonly tabProbe: () => Promise<Set<import('@recued/contracts').WebChatTab>>;
   readonly timeout_ms?: number;
+  /** D-337 follow-up 24, design (b) — the MCP door's action records, where a call still waiting
+   *  when its reply goes is found again by the reference that reply carries (`held-calls.ts`).
+   *  Absent ⇒ a waiting call's outcome reaches no later request, as before. */
+  readonly heldActions?: Pick<McpActionStore, 'createHeld' | 'getOwned'>;
+  /** The door's status read (`reconcileMcpAction`): a record still waiting is read from its run, so
+   *  a run retired with no answer (an approval that expired) is told, not carried for ever. */
+  readonly reconcileHeldAction?: (record: McpActionRecord) => Promise<McpActionRecord>;
 }
 
 type OpenAiErrorType =
@@ -352,6 +393,20 @@ const staticRecipeIngredientDependencies = (
  * A top-level recipe grant is presentation authority, not transitive ingredient
  * authority: every concrete dependency must also be present in the token's raw
  * or MCP-prefixed ingredient grants (or its separately-authorized CLI set). */
+/** D-232 § 20.20, at the gateway — does this key grant an ingredient through a kernel op the
+ *  ingredient backs (`core.data.calendar.delete` → `calendar-delete`)? An owner grants a kernel op
+ *  only by its op id, never by its ingredient's slug, so without this join the grant is inert here:
+ *  a recipe using a kernel ingredient was never offered by the gateway, and a step of one would die
+ *  `tool_not_in_contract`. The MCP door's snapshot (`buildMcpContractSnapshot`) and the approval
+ *  resume's (`approval-resume-authority.ts`) already join the two; the gateway's projections did
+ *  not (found 2026-11-02, driving D-337 ruling 4 live). Explicit grants only, never author
+ *  defaults; an op the registry keeps from doors (`isGrantableKernelOp`) never. */
+export const isKernelBackingSlugGranted = (
+  token: Pick<McpInboundTokenRecord, 'grants'>,
+  slug: string,
+): boolean => KERNEL_OP_REGISTRY.some((entry) =>
+  entry.backing_slug === slug && isGrantableKernelOp(entry.op) && token.grants[entry.op] === true);
+
 export const listLlmGatewayCallableRecipeNames = (input: {
   readonly entries: ReadonlyArray<ToolEntry>;
   readonly token: McpInboundTokenRecord;
@@ -387,7 +442,8 @@ export const listLlmGatewayCallableRecipeNames = (input: {
       }
     }
     return input.token.grants[dependency.slug] === true
-      || input.token.grants[`recued_ingredient_${dependency.slug}`] === true;
+      || input.token.grants[`recued_ingredient_${dependency.slug}`] === true
+      || isKernelBackingSlugGranted(input.token, dependency.slug);
   };
 
   const callable: string[] = [];
@@ -738,6 +794,18 @@ const quotaSlotAvailable = (
   return true;
 };
 
+/** D-337 follow-up 33 — when a model paused after a provider failure may be tried again: only
+ *  when the pause is all that stops it, so a source past its day's budget promises no time. */
+const pausedUntil = (
+  quota: LlmGatewayHandlerDeps['quota'] | undefined,
+  id: string,
+  dailyCap: number | undefined,
+): number | undefined => {
+  const until = quota?.cooldownUntil?.(id);
+  if (until === undefined) return undefined;
+  return dailyCap !== undefined && dailyCap > 0 && quota!.tokensToday(id) >= dailyCap ? undefined : until;
+};
+
 const poolEntryToSlot = (entry: FreePoolApiEntry): LLMSlot => ({
   provider: entry.provider,
   model: entry.model,
@@ -791,7 +859,10 @@ const pickPoolEntry = (
 export const resolveLlmGatewayRoute = (
   config: LLMConfig,
   deps: Pick<LlmGatewayHandlerDeps, 'quota' | 'rng'> = {},
-): { ok: true; route: LlmGatewayResolvedRoute } | { ok: false; code: string; message: string } => {
+): { ok: true; route: LlmGatewayResolvedRoute }
+  /** `retry_at` — D-337 follow-up 33: when the route's model, paused after a provider failure,
+   *  may be tried again. Absent when it is unavailable for another reason. */
+  | { ok: false; code: string; message: string; retry_at?: number } => {
   const configured = config.llm_gateway_default_route;
   if (!configured) {
     return {
@@ -806,10 +877,12 @@ export const resolveLlmGatewayRoute = (
     const configuredRoute = configured as Extract<LlmGatewayDefaultRoute, `slot:${string}`>;
     const slot = normalizeLLMSlot(config[slotKey], slotKey);
     if (!slot || !quotaSlotAvailable(slot, slotKey, deps.quota)) {
+      const retryAt = slot ? pausedUntil(deps.quota, slotKey, slot.daily_budget_tokens) : undefined;
       return {
         ok: false,
         code: 'llm_gateway_route_unavailable',
         message: `${configured} is not currently available.`,
+        ...(retryAt !== undefined ? { retry_at: retryAt } : {}),
       };
     }
     return {
@@ -834,10 +907,16 @@ export const resolveLlmGatewayRoute = (
 
   const pool = availablePoolEntries(config, deps.quota);
   if (pool.length === 0) {
+    // The earliest a paused entry may be tried again, when one is paused.
+    const resumes = (config.free_pool ?? [])
+      .filter((entry) => entry.type === 'api' && entry.enabled && entry.api_key && entry.model)
+      .map((entry) => pausedUntil(deps.quota, entry.id, entry.daily_cap_tokens ?? undefined))
+      .filter((until): until is number => until !== undefined);
     return {
       ok: false,
       code: 'llm_gateway_route_unavailable',
       message: 'No enabled free-pool entry is currently available.',
+      ...(resumes.length > 0 ? { retry_at: Math.min(...resumes) } : {}),
     };
   }
   const entry = pickPoolEntry(pool, config, deps.quota, deps.rng ?? Math.random);
@@ -1032,7 +1111,33 @@ const sharedGatewayTurnInput = (
     input.route.kind === 'pool' ? 'free_pool' : input.route.source_id,
   input_token_budget: input.input_token_budget,
   ...(toolUsage !== undefined ? { llm_gateway_tool_usage: toolUsage } : {}),
+  ...(input.held_wait !== undefined ? { held_wait: input.held_wait } : {}),
 });
+
+/** D-337 follow-up 24 — the calls this request's latest reply left waiting, read for its key.
+ *  Nothing to read without the action records. */
+const carriedHeldCallsFor = async (
+  deps: LlmGatewaySharedChatCompletionProviderDeps,
+  input: LlmGatewayCompletionInput,
+): Promise<CarriedHeldCalls> =>
+  deps.heldActions === undefined
+    ? { settled: [], waiting: [] }
+    : readCarriedHeldCalls(deps.heldActions, input.messages, input.token.token_id, deps.reconcileHeldAction);
+
+const carriedTurnInput = (
+  carried: CarriedHeldCalls,
+): Pick<LlmGatewayTurnInput, 'held_results' | 'in_flight_context'> => {
+  const answered = carried.settled.length > 0;
+  // D-337 slice S — and what still waits, which the turn otherwise holds nothing of.
+  const notes = [
+    ...(answered ? [LLM_GATEWAY_CARRIED_NOTE] : []),
+    ...(carried.waiting.length > 0 ? [llmGatewayStillWaitingNote(carried.waiting.length, answered)] : []),
+  ];
+  return {
+    ...(answered ? { held_results: carried.settled } : {}),
+    ...(notes.length > 0 ? { in_flight_context: notes.join('\n\n') } : {}),
+  };
+};
 
 /** D-196 — production provider that adapts OpenAI messages + an exact selected
  * route onto the existing chat cognition engine. */
@@ -1043,22 +1148,32 @@ export const createLlmGatewaySharedChatCompletionProvider = (
     // Run the exact shared first-round assembly with a local sentinel result.
     // No provider, dispatch, usage meter, or durable chat surface is touched;
     // `ChatContextLengthError` therefore reaches the HTTP handler before its
-    // seller rate/usage admission point.
-    await deps.orchestrator.runLlmGatewayTurn(sharedGatewayTurnInput(
-      input,
-      async () => ({
-        body: {
-          response: 'llm_gateway context preflight',
-          events: [],
-          tool_calls: [],
-        },
-      }),
-    ));
+    // seller rate/usage admission point. The outcomes this request carries are
+    // part of that first round, so they are counted too.
+    const carried = await carriedHeldCallsFor(deps, input);
+    await deps.orchestrator.runLlmGatewayTurn({
+      ...sharedGatewayTurnInput(
+        input,
+        async () => ({
+          body: {
+            response: 'llm_gateway context preflight',
+            events: [],
+            tool_calls: [],
+          },
+        }),
+      ),
+      ...carriedTurnInput(carried),
+    });
   },
   async complete(input) {
     let lastFinishReason: LLMFinishReason | undefined;
     const routeConfig = selectedRouteConfig(input);
-    const turn = await deps.orchestrator.runLlmGatewayTurn(sharedGatewayTurnInput(
+    // D-337 follow-up 24 — the calls the conversation's latest reply left waiting: settled ones are
+    // told now, the rest go on this reply again.
+    const carried = await carriedHeldCallsFor(deps, input);
+    const heldActions = deps.heldActions;
+    const turn = await deps.orchestrator.runLlmGatewayTurn({
+      ...sharedGatewayTurnInput(
       input,
       async (manifest, aiInput) => {
         await input.assert_live_authority?.();
@@ -1090,10 +1205,23 @@ export const createLlmGatewaySharedChatCompletionProvider = (
         };
       },
       input.llm_gateway_tool_usage,
-    ));
+      ),
+      ...carriedTurnInput(carried),
+      held_message: LLM_GATEWAY_HELD_MESSAGE,
+      ...(heldActions !== undefined
+        ? {
+            on_held: async ({ run_id, tool_name }: { readonly run_id: string; readonly tool_name: string }) =>
+              (await heldActions.createHeld({ run_id, principal_id: input.token.token_id, tool_name, kind: 'recipe' }))
+                .action_ref,
+          }
+        : {}),
+    });
+    const waiting = [...new Set([...carried.waiting, ...(turn.waiting_refs ?? [])])];
     return {
       id: `chatcmpl_${turn.turn_id}`,
-      content: turn.assistant_content,
+      content: waiting.length > 0
+        ? `${turn.assistant_content}${llmGatewayWaitingTrailer(waiting)}`
+        : turn.assistant_content,
       ...(turn.usage !== undefined
         ? {
             usage: {
@@ -1363,13 +1491,63 @@ const parseChatCompletionRequest = (
   };
 };
 
+interface CompletionFailure {
+  readonly status: number;
+  readonly code: string;
+  readonly message: string;
+  readonly type: OpenAiErrorType;
+  /** Written on the JSON path only: the streaming path's headers are already out. */
+  readonly headers?: Record<string, string>;
+}
+
+/** Whole seconds until `retry_at`, at least 1: what `Retry-After` and the message both say. */
+const secondsUntil = (retry_at: number | undefined, nowMs: number): number | undefined =>
+  retry_at !== undefined ? Math.max(1, Math.ceil((retry_at - nowMs) / 1000)) : undefined;
+const tryAgainIn = (seconds: number | undefined): string =>
+  seconds !== undefined ? ` Try again in ${seconds} second${seconds === 1 ? '' : 's'}.` : '';
+const retryAfterHeader = (seconds: number | undefined): Pick<CompletionFailure, 'headers'> =>
+  seconds !== undefined ? { headers: { 'Retry-After': String(seconds) } } : {};
+
+/** D-337 follow-up 33 — a model paused after a provider failure, wherever the gateway finds it:
+ *  at the route, before the turn, or in it. A 503 with `Retry-After`, which OpenAI's SDKs wait out
+ *  before they retry. */
+const cooldownFailure = (retry_at: number | undefined, nowMs: number): CompletionFailure => {
+  const seconds = secondsUntil(retry_at, nowMs);
+  return { status: 503, code: 'llm_gateway_model_cooling_down', type: 'server_error', ...retryAfterHeader(seconds),
+    message: `The AI model this service uses is paused after a provider failure.${tryAgainIn(seconds) || ' Try again shortly.'}` };
+};
+
+/** D-337 follow-up 33 — a turn that produced no answer, said as its cause.
+ *  The app's user reads this, not the owner, so it names no Settings.
+ *  Before, every cause was the same 502. */
+const describeUnansweredTurn = (e: ChatTurnUnansweredError, nowMs: number): CompletionFailure => {
+  const seconds = secondsUntil(e.retry_at, nowMs);
+  switch (e.reason) {
+    case 'cooldown':
+      return cooldownFailure(e.retry_at, nowMs);
+    case 'no_source':
+      return { status: 503, code: 'llm_gateway_no_model', type: 'server_error',
+        message: 'No AI model is available to this service right now.' };
+    case 'invalid_output':
+      return { status: 502, code: 'llm_gateway_model_output_invalid', type: 'server_error',
+        message: 'The AI model returned an answer that could not be read.' };
+    case 'provider_failure':
+      return { status: 502, code: 'llm_gateway_provider_failed', type: 'server_error', ...retryAfterHeader(seconds),
+        message: `The AI provider failed before answering.${tryAgainIn(seconds)}` };
+    default:
+      return { status: 502, code: 'llm_gateway_provider_failed', type: 'server_error', message: e.message };
+  }
+};
+
 /** One description of a failed provider call, for both wire shapes: the JSON
  *  path writes it as a status code, the streaming path as an in-band SSE
  *  error event (the headers are already out). Keeping the mapping in one
  *  place is what stops the two shapes from disagreeing about the same error. */
 const describeCompletionFailure = (
   e: unknown,
-): { status: number; code: string; message: string; type: OpenAiErrorType } => {
+  nowMs: number,
+): CompletionFailure => {
+  if (e instanceof ChatTurnUnansweredError) return describeUnansweredTurn(e, nowMs);
   if (
     e instanceof ChatContextLengthError
     || (e instanceof LLMError && e.code === 'AI_TOKEN_BUDGET_EXCEEDED')
@@ -1395,7 +1573,7 @@ const describeCompletionFailure = (
 const loadConfigAndRoute = (
   deps: LlmGatewayHandlerDeps,
 ): { ok: true; config: LLMConfig; route: LlmGatewayResolvedRoute; alias: string }
-  | { ok: false; status: number; code: string; message: string } => {
+  | { ok: false; status: number; code: string; message: string; headers?: Record<string, string> } => {
   let config: LLMConfig | undefined;
   try {
     config = deps.getLlmConfig();
@@ -1412,6 +1590,12 @@ const loadConfigAndRoute = (
   }
   const route = resolveLlmGatewayRoute(config, { quota: deps.quota, rng: deps.rng });
   if (!route.ok) {
+    // D-337 follow-up 33 — a route whose model is paused is told as a turn tells it, with when to
+    // try again (found live: the paused model's requests never reached the turn).
+    if (route.retry_at !== undefined) {
+      const { status, code, message, headers } = cooldownFailure(route.retry_at, (deps.now ?? Date.now)());
+      return { ok: false, status, code, message, ...(headers ? { headers } : {}) };
+    }
     return {
       ok: false,
       status: 503,
@@ -2053,6 +2237,7 @@ export const createLlmGatewayPortHandler = (
         initialRoute.code,
         initialRoute.message,
         'server_error',
+        initialRoute.headers,
       );
       return;
     }
@@ -2137,7 +2322,7 @@ export const createLlmGatewayPortHandler = (
     }
     const route = loadConfigAndRoute(deps);
     if (!route.ok) {
-      writeOpenAiError(res, route.status, route.code, route.message, 'server_error');
+      writeOpenAiError(res, route.status, route.code, route.message, 'server_error', route.headers);
       return;
     }
     const contextBudget = resolveRouteContextBudget(route.route);
@@ -2394,6 +2579,15 @@ export const createLlmGatewayPortHandler = (
       ? openLlmGatewayStream(res)
       : null;
 
+    // D-337 ruling 4, design (a) — a call held for the owner's approval keeps this request open
+    // for their answer, up to the limit; a caller that goes away ends the wait.
+    const callerGone = new AbortController();
+    const onCallerGone = (): void => {
+      if (!res.writableEnded) callerGone.abort();
+    };
+    res.once('close', onCallerGone);
+    const heldWaitMs = deps.held_wait_ms
+      ?? (stream !== null ? LLM_GATEWAY_HELD_WAIT_MS : LLM_GATEWAY_HELD_WAIT_UNSTREAMED_MS);
     let completion: LlmGatewayCompletionResult;
     try {
       completion = await deps.completionProvider.complete({
@@ -2401,17 +2595,18 @@ export const createLlmGatewayPortHandler = (
         ...(gatewayToolUsage !== undefined
           ? { llm_gateway_tool_usage: gatewayToolUsage }
           : {}),
+        ...(heldWaitMs > 0 ? { held_wait: { ms: heldWaitMs, signal: callerGone.signal } } : {}),
       });
     } catch (e) {
       if (chatTurnReservation && gatewayUsageReservations) {
         gatewayUsageReservations.cancel(chatTurnReservation);
       }
-      const failure = describeCompletionFailure(e);
+      const failure = describeCompletionFailure(e, now());
       if (stream) {
         stream.fail({ message: failure.message, type: failure.type, code: failure.code });
         return;
       }
-      writeOpenAiError(res, failure.status, failure.code, failure.message, failure.type);
+      writeOpenAiError(res, failure.status, failure.code, failure.message, failure.type, failure.headers);
       return;
     }
 

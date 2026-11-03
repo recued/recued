@@ -10,6 +10,11 @@ import {
   composeExecuteDeps,
 } from '../composition/bin/wire-execute-deps.js';
 import { createSeededCatalogOperationProfileStore } from '../connection-operation-profile-boot.js';
+import { heldCheckpointDetails } from '../ask-card-held-op-details.js';
+import { calendarEventApprovalLabel } from '../held-calendar-labels.js';
+import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
+import { buildResolverDeps } from '../composition/bin/wire-reception-inbox-deps.js';
+import { createFileRefDescriber, createFileViewResolverFromRegistry } from '../file-view-resolver.js';
 import type { ConnectionOperationProfileStore } from '../connection-operation-profile.js';
 import {
   createCliReachabilityResolver,
@@ -221,6 +226,9 @@ export interface ComposeExecutionContextOptions {
     | 'memoryRedactionStore'
     | 'contactStoreRef'
     | 'crmRecordMirrorStoreRef'
+    // D-336 (spec §52) — an attachment on a held call's ask reads as its file.
+    | 'fileMetaStoreRef'
+    | 'fileSourceSyncStateRef'
     | 'annotationDeps'
     | 'annotationStoreRef'
     | 'enrichmentStoreRef'
@@ -246,6 +254,8 @@ export interface ComposeExecutionContextOptions {
     AppContext,
     | 'situationAccessRef'
     | 'internalRegistryRef'
+    // D-336 slice O's open item — the chat bundle's "a Tier-1 call was held" step.
+    | 'tier1HeldRef'
     | 'isVaultUnlocked'
     | 'webhookConsumerStoreRef'
     | 'webhookDeliveryStoreRef'
@@ -631,6 +641,8 @@ export const composeExecutionContext = async (
         // D-158 amendment 2026-10-20 — a plain notify or ask goes through the
         // connection the owner chose for the channel, as email's does.
         ...(storage.db ? { plainConnection: (vendor: string) => createOwnerNotificationConnection(storage.db!, app.connectionStoreRef!, vendor) } : {}),
+        // D-158 P3 — what each channel sent outlives a restart.
+        ...(storage.db ? { db: storage.db } : {}),
       })
     : {};
   // D-158 P2b email-adapter slice — OUTBOUND server-wiring for the
@@ -667,6 +679,8 @@ export const composeExecutionContext = async (
           },
         }) } : {}),
         answerLink: askAnswerLink,
+        // D-158 P3 — which asks it emailed outlives a restart.
+        ...(storage.db ? { db: storage.db } : {}),
       })
     : undefined;
   // D-165 — boot-seed the catalog operation-profile store for enrolled
@@ -767,6 +781,8 @@ export const composeExecutionContext = async (
     getRunSettledSink: () => lateBound.getRunSettledSink(),
     // D-329 — the registry a held Tier-1 tool call resumes through.
     tier1Registry: () => app.internalRegistryRef,
+    // D-336 slice O's open item — a held save marks the earlier saves of its fact still waiting.
+    onTier1Held: async (call) => { await app.tier1HeldRef?.(call); },
     // The page that started a held run reads its result from here once the
     // approval lets it finish (`execution.get`).
     settledRunResults: storage.settledRunResults,
@@ -808,6 +824,30 @@ export const composeExecutionContext = async (
     // D-177 N.11 rule 1 — contact store for the open-projection walk's
     // per-row stored-cleanliness gate (dotted-email record resolution).
     ...(app.contactStoreRef ? { contactStore: app.contactStoreRef } : {}),
+    // D-336 (spec §50) — the CRM records a held call changes, by name on its approval.
+    ...(app.crmRecordMirrorStoreRef ? { crmRecordMirror: app.crmRecordMirrorStoreRef } : {}),
+    // D-336 (spec §52) — what a single held call changes, recorded with the hold so the ask
+    // every channel receives says it: the card's own rows, over the installed catalogs.
+    // The ask leaves Recued, so a secret-named field's value is hidden there.
+    heldCallDetails: (checkpoint, zone) => {
+      const installed = buildResolverDeps(storage.localManifestStore);
+      return heldCheckpointDetails({
+        resolveArgEditSchema: (id, args) => resolveArgEditSchema(id, args, installed),
+        lookupRequestSchema: (id) => installed.lookupOperation(id)?.request_schema,
+        rawOpOperationId: (catalogSlug, operation) =>
+          executorConfig.manifests.get(catalogSlug)?.operations?.[operation]?.operation_id ?? operation,
+        // An attachment reads as its file, as on the card. Built per call: the file stores are
+        // assigned after this composer runs.
+        describeFileRef: createFileRefDescriber(createFileViewResolverFromRegistry(
+          collection.collectionRegistry,
+          app.fileMetaStoreRef,
+          app.fileSourceSyncStateRef,
+        )),
+      }, zone, checkpoint, { hideSecrets: true });
+    },
+    // D-336 (spec §52) — a recipe's held calendar change names its event as chat's does.
+    calendarEventLabel: (slug, source_id, zone) =>
+      calendarEventApprovalLabel(collection.collectionRegistry, slug, source_id, zone),
     // Document-toolkit — hand the inbound data.file collection to the cli
     // executor so an `output_capture` op (docling parse-in) lands its produced
     // file as a `tool_output` data.file and returns `result.file_ref`.

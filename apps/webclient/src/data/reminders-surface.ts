@@ -10,6 +10,7 @@
  * Like the Mail facts tab, it keeps its own state and renders HTML strings. The
  * Data route forwards:
  *   - `render()` inside its tab panel, and `refresh()` from its loader;
+ *   - an exact reminder address, preserving list filters and pages beneath it;
  *   - clicks whose action starts with `reminders-`, and `input` / `change`
  *     events from the wording and time fields (`REMINDERS_FIELD_ATTR`);
  *   - focus: `captureFocus()` before a repaint, `restoreFocus()` after, by a
@@ -23,6 +24,8 @@
 
 import {
   REMINDER_TEXT_MAX,
+  formatReminderWhen,
+  type ReminderGetResult,
   zonedWallClockToEpochMs,
   type ReminderCancelResult,
   type ReminderListResult,
@@ -45,6 +48,7 @@ export const REMINDERS_ACTION_PREFIX = 'reminders-';
 
 /** Every reminder rpc the tab calls; an absent one hides what needs it. */
 export interface ReminderCallers {
+  readonly get?: (args: { reminder_id: string }) => Promise<ReminderGetResult>;
   readonly list?: (args: ReminderListRequest) => Promise<ReminderListResult>;
   readonly create?: (args: { text: string; at: number; creation_id: string }) => Promise<ReminderCreateResult>;
   readonly update?: (args: { reminder_id: string; at?: number; text?: string }) => Promise<ReminderUpdateResult>;
@@ -53,6 +57,8 @@ export interface ReminderCallers {
 
 export interface RemindersSurfaceDeps {
   readonly callers: ReminderCallers;
+  readonly initialId?: string;
+  readonly onAddressChange?: () => void;
   /** The Data route's action attribute: clicks are dispatched by it. */
   readonly actionAttr: string;
   /** Repaint the route. */
@@ -65,7 +71,10 @@ export interface RemindersSurfaceDeps {
 
 export interface RemindersSurface {
   render(): string;
-  /** Load the list. `silent` keeps what is shown until the new one lands. */
+  /** Keep the list state beneath the addressed reminder. False when a draft or write blocks navigation. */
+  open(id: string | null, syncAddress?: boolean): boolean;
+  detailId(): string | undefined;
+  /** Reload the list or addressed reminder. `silent` keeps the confirmed view while reading. */
   refresh(silent?: boolean): Promise<void>;
   /** A click on an action starting with `reminders-`; true when handled. */
   handleAction(action: string, target: HTMLElement): boolean;
@@ -90,7 +99,10 @@ export { reminderWallClockValue } from '../reminders/reminder-time.js';
 
 const zoneOf = (reminder: ReminderView): string => reminder.time_zone ?? 'UTC';
 
+interface ReminderDetail { id: string; reminder: ReminderView | null; loaded: boolean; loading: boolean; error: string | null }
+
 interface State {
+  detail: ReminderDetail | null;
   reminders: ReminderView[];
   delivered: ReminderView[];
   count: number;
@@ -142,12 +154,16 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     return { query: '', range: 'all', from: today, through: nextDay(today, 6) };
   };
   let state: State = {
+    detail: deps.initialId ? { id: deps.initialId, reminder: null, loaded: false, loading: false, error: null } : null,
     reminders: [], delivered: [], count: 0, loaded: false, loading: false, error: null,
     editing: null, confirming: null, working: null, notice: null, historyOpen: false,
     matchedCount: 0, nextCursor: null, paging: null, moreLoading: false, moreError: null, filterError: null,
     draft: initialFilters(), applied: initialFilters(), creating: false,
   };
   let pending: Promise<void> = Promise.resolve();
+  let detailPending: Promise<void> = Promise.resolve();
+  let detailSeq = 0;
+  let listNeedsRefresh = false;
   let pageQuery: ReminderListPageInput = {};
   let createHost: HTMLElement | null = null;
   let createForm: ReturnType<typeof mountReminderCreateForm> | undefined;
@@ -225,6 +241,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       const retired = editing !== null && !canEdit;
       const finished = retired ? delivered.find(row => row.reminder_id === editing.id) : undefined;
       pageQuery = query;
+      listNeedsRefresh = false;
       state = { ...state, reminders, delivered, count: latest.count, matchedCount: latest.page?.matched_count ?? latest.count,
         nextCursor: latest.page?.next_cursor ?? null, paging: latest.page !== undefined,
         loaded: true, loading: false, moreLoading: false, error: null,
@@ -254,8 +271,45 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     pending = read(silent, append); return pending;
   };
 
-  const find = (id: string): ReminderView | undefined => state.reminders.find((r) => r.reminder_id === id);
-  const confirmedState = (id: string, reminder: ReminderView | undefined, retired: boolean): Pick<State, 'reminders' | 'delivered' | 'count' | 'matchedCount'> => ({
+  const readDetail = async (silent: boolean): Promise<void> => {
+    const detail = state.detail;
+    if (!detail || disposed) return;
+    const mine = ++detailSeq;
+    state = { ...state, detail: { ...detail, loading: true, error: null } };
+    if (!silent) deps.render();
+    try {
+      if (!callers.get) throw new Error('Update the server to open individual reminders. You can still use the reminder list.');
+      const out = await callers.get({ reminder_id: detail.id });
+      if (disposed || mine !== detailSeq || state.detail?.id !== detail.id) return;
+      if (!out || out.reminder !== null && out.reminder?.reminder_id !== detail.id) throw new Error('This reminder could not be confirmed. Try again.');
+      const row = out.reminder;
+      const listed = state.reminders.find(item => item.reminder_id === detail.id);
+      // A notification can reveal a row that rang while this list was retained.
+      // Keep the pages beneath it, then reconcile them on return.
+      if (listed && (!row || row.state !== 'pending' || row.text !== listed.text || row.at !== listed.at
+        || row.managed_by !== listed.managed_by)) listNeedsRefresh = true;
+      const retired = state.editing !== null && (row === null || row.state !== 'pending' || row.managed_by === 'clock');
+      state = { ...state, detail: { id: detail.id, reminder: row, loaded: true, loading: false, error: null },
+        editing: retired ? null : state.editing,
+        confirming: row?.state === 'pending' && row.managed_by !== 'clock' ? state.confirming : null,
+        ...(retired ? { notice: { tone: 'bad', text: row?.state === 'delivered' ? 'This reminder has already rung. Your changes were not saved.'
+          : row?.state === 'cancelled' ? 'This reminder was cancelled. Your changes were not saved.'
+          : row?.managed_by === 'clock' ? 'This reminder is managed in Yours. Your changes were not saved.'
+          : 'This reminder is no longer available. Your changes were not saved.' } as const } : {}),
+      };
+    } catch (error) {
+      if (disposed || mine !== detailSeq || state.detail?.id !== detail.id) return;
+      state = { ...state, detail: { ...state.detail, loading: false, error: humanizeRpcError(error) } };
+    }
+    deps.render();
+  };
+  const refreshCurrent = (silent: boolean): Promise<void> => state.detail
+    ? (detailPending = readDetail(silent)) : load(silent);
+  const find = (id: string): ReminderView | undefined => state.detail?.id === id
+    ? state.detail.reminder ?? undefined : state.reminders.find((r) => r.reminder_id === id);
+  const confirmedState = (id: string, reminder: ReminderView | undefined, retired: boolean): Pick<State, 'detail' | 'reminders' | 'delivered' | 'count' | 'matchedCount'> => ({
+    detail: state.detail?.id === id ? { ...state.detail, reminder: reminder ?? (retired ? null : state.detail.reminder),
+      loaded: true, loading: false, error: null } : state.detail,
     reminders: [...(retired || reminder && !matches(reminder) ? state.reminders.filter(row => row.reminder_id !== id)
       : reminder ? state.reminders.map(row => row.reminder_id === id ? reminder : row) : state.reminders)]
       .sort((a, b) => a.at - b.at || a.reminder_id.localeCompare(b.reminder_id)),
@@ -278,6 +332,28 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       return false;
     }
     return true;
+  };
+  const open = (id: string | null, syncAddress = true): boolean => {
+    if (disposed) return false;
+    if ((state.detail?.id ?? null) === id) return true;
+    if (!beforeLeave()) return false;
+    const oldId = state.detail?.id;
+    seq++; detailSeq++;
+    state = { ...state, detail: id === null ? null : { id, reminder: null, loaded: false, loading: false, error: null },
+      loading: false, moreLoading: false, editing: null, confirming: null, notice: null };
+    const returnFocus = !listNeedsRefresh && oldId && state.reminders.some(row => row.reminder_id === oldId) ? `row:${oldId}` : 'query';
+    pendingFocus = { key: id === null ? returnFocus : 'detail' };
+    if (syncAddress) deps.onAddressChange?.();
+    deps.render();
+    if (id !== null) detailPending = readDetail(false);
+    else if (!state.loaded || listNeedsRefresh) { listNeedsRefresh = false; void load(state.loaded); }
+    return true;
+  };
+  const retireReadsForWrite = (): void => {
+    seq++; detailSeq++;
+    listNeedsRefresh = true;
+    state = { ...state, loading: false, moreLoading: false,
+      detail: state.detail ? { ...state.detail, loading: false } : null };
   };
   const applyFilters = (clear = false): void => {
     if (!beforeLeave()) return;
@@ -359,6 +435,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       pendingFocus = { key: `edit:${id}` }; deps.render();
       return;
     }
+    retireReadsForWrite();
     state = { ...state, working: id, notice: { text: 'Saving reminder…', tone: 'ok' } };
     pendingFocus = { key: 'notice', from: [`save:${id}`, `text:${id}`, `at:${id}`, `keep-time:${id}`] };
     deps.render();
@@ -378,7 +455,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       // The refresh may retire the control just restored. Redirect only if it
       // still owns focus; another row or tab must keep the focus moved there.
       pendingFocus = { key: settledFocus, from: [settledFocus], fallback: 'notice' };
-      await load(true);
+      await refreshCurrent(true);
     } catch (error) {
       if (disposed) return;
       const current = find(id);
@@ -392,7 +469,9 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
   };
 
   const cancel = async (id: string): Promise<void> => {
-    if (callers.cancel === undefined || find(id) === undefined) return;
+    const reminder = find(id);
+    if (state.working !== null || callers.cancel === undefined || reminder?.state !== 'pending' || reminder.managed_by === 'clock') return;
+    retireReadsForWrite();
     state = { ...state, working: id, notice: { text: 'Cancelling reminder…', tone: 'ok' } };
     pendingFocus = { key: 'notice', from: [`cancel-confirm:${id}`, `cancel-keep:${id}`] };
     deps.render();
@@ -406,7 +485,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       };
       pendingFocus = { key: 'notice', from: ['notice'] };
       deps.render();
-      await load(true);
+      await refreshCurrent(true);
     } catch (error) {
       if (disposed) return;
       state = { ...state, working: null, confirming: null, notice: { text: humanizeRpcError(error), tone: 'bad' } };
@@ -528,8 +607,30 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       </details>`;
   };
 
+  const renderNotice = (): string => `<p class="reminders-notice" data-tone="${state.notice?.tone ?? 'ok'}" role="status" aria-live="polite" tabindex="-1" ${focus('notice')}>${e(state.notice?.text ?? '')}</p>`;
+  const renderDetail = (detail: ReminderDetail): string => {
+    const reminder = detail.reminder;
+    return `<section class="reminders" ${REMINDERS_HOST_ATTR}>
+      <div class="data-contact-toolbar">
+        <button type="button" class="data-button" ${act('reminders-back')} ${focus('back')}>Back to reminders</button>
+        <button type="button" class="data-button" ${act('reminders-retry')} ${focus('refresh')} ${detail.loading ? 'aria-disabled="true" aria-busy="true"' : ''}>${detail.loading ? 'Refreshing…' : 'Refresh'}</button>
+      </div>
+      <h2 class="data-section-title" tabindex="-1" ${focus('detail')}>Reminder</h2>
+      ${renderNotice()}
+      ${detail.error ? `<p class="reminders-error" role="alert">${e(detail.error)} <button type="button" class="data-button" ${act('reminders-retry')} ${focus('retry')}>Try again</button></p>` : ''}
+      ${reminder ? `<article class="reminders-detail" data-reminder-id="${e(detail.id)}" data-state="${e(reminder.state)}">
+        <p class="reminders-detail-text">${e(reminder.text)}</p>
+        <dl class="reminders-detail-meta"><div><dt>Scheduled for</dt><dd>${e(reminder.when)}<span class="reminders-subtle">${e(zoneOf(reminder))}</span></dd></div>
+          <div><dt>Status</dt><dd>${reminder.state === 'pending' ? 'Waiting to ring' : reminder.state === 'delivered' ? 'Rang' : 'Cancelled'}${reminder.delivered_at !== null ? `<span class="reminders-subtle">${e(formatReminderWhen(reminder.delivered_at, zoneOf(reminder), now()))}</span>` : ''}</dd></div></dl>
+        ${renderActions(reminder)}
+      </article>` : detail.loaded ? '<p class="reminders-empty">This reminder is no longer available. It may have been removed, or its 30-day history has expired.</p>'
+        : detail.loading ? '<p class="reminders-empty" role="status">Loading reminder…</p>' : ''}
+    </section>`;
+  };
   return {
-    render: () => `
+    open,
+    detailId: () => state.detail?.id,
+    render: () => state.detail ? renderDetail(state.detail) : `
       <section class="reminders" ${REMINDERS_HOST_ATTR}>
         <div class="data-contact-toolbar">
           <h2 class="data-section-title">Reminders</h2>
@@ -539,23 +640,24 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
         </div>
         <p class="reminders-intro">Each reminder rings once, at its time, on every channel you set up.</p>
         <div data-reminders-create-slot></div>
-        <p class="reminders-notice" data-tone="${state.notice?.tone ?? 'ok'}" role="status" aria-live="polite" tabindex="-1" ${focus('notice')}>${e(state.notice?.text ?? '')}</p>
+        ${renderNotice()}
         ${state.error !== null && state.loaded ? `<p class="reminders-error" role="alert">${e(state.error)}</p>` : ''}
         ${renderFilters()}
         ${renderUpcoming()}
         ${renderHistory()}
       </section>`,
 
-    refresh: (silent = false) => load(silent),
+    refresh: (silent = false) => refreshCurrent(silent),
 
     handleAction: (action, target) => {
       if (!action.startsWith(REMINDERS_ACTION_PREFIX)) return false;
       const id = target.getAttribute('data-reminder-id') ?? '';
+      if (action === 'reminders-back') { open(null); return true; }
       if (action === 'reminders-create') { openCreate(target); return true; }
       if (action === 'reminders-apply' || action === 'reminders-clear') { applyFilters(action === 'reminders-clear'); return true; }
       if (action === 'reminders-more') { if (beforeLeave()) void load(true, true); return true; }
       if (action === 'reminders-retry') {
-        if (!state.loading && !state.moreLoading && beforeLeave()) void load(false);
+        if (!state.loading && !state.moreLoading && !state.detail?.loading && beforeLeave()) void refreshCurrent(false);
         return true;
       }
       if (action === 'reminders-history-toggle') {
@@ -585,7 +687,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       } else if (action === 'reminders-save') {
         void save(id);
         return true;
-      } else if (action === 'reminders-cancel' && reminder !== undefined && reminder.managed_by !== 'clock') {
+      } else if (action === 'reminders-cancel' && reminder?.state === 'pending' && reminder.managed_by !== 'clock') {
         state = { ...state, editing: null, confirming: id, notice: null };
         pendingFocus = { key: `cancel-keep:${id}` };
       } else if (action === 'reminders-cancel-keep') {
@@ -637,10 +739,10 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       return true;
     },
 
-    isBusy: () => state.loading || state.moreLoading || state.working !== null || state.editing !== null || state.confirming !== null
+    isBusy: () => state.detail?.loading === true || state.loading || state.moreLoading || state.working !== null || state.editing !== null || state.confirming !== null
       || createForm?.hasDraft() === true || JSON.stringify(state.draft) !== JSON.stringify(state.applied),
     beforeLeave,
-    whenLoaded: () => pending,
+    whenLoaded: () => state.detail ? detailPending : pending,
 
     hasUnsavedChanges: () => {
       const editing = state.editing;
@@ -681,6 +783,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     dispose: () => {
       disposed = true;
       seq += 1;
+      detailSeq += 1;
       createForm?.dispose();
       pendingFocus = null;
     },
@@ -695,6 +798,12 @@ export const REMINDERS_STYLES = `
 .reminders-filters p { flex-basis:100%; margin:0; }
 @media(max-width:600px) { .reminders-filters label { flex:1 1 100%; } }
 [${REMINDERS_HOST_ATTR}] { min-width: 0; }
+[${REMINDERS_HOST_ATTR}] .reminders-detail { display:grid; gap:20px; max-width:48rem; padding:24px; border:1px solid var(--border); border-radius:12px; background:var(--surface); min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-detail-text { margin:0; font-size:20px; line-height:1.5; overflow-wrap:anywhere; }
+[${REMINDERS_HOST_ATTR}] .reminders-detail-meta { display:flex; flex-wrap:wrap; gap:16px 40px; margin:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-detail-meta div { display:grid; gap:4px; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-detail-meta dt { color:var(--muted); font-size:12px; }
+[${REMINDERS_HOST_ATTR}] .reminders-detail-meta dd { display:grid; gap:4px; margin:0; font-size:14px; overflow-wrap:anywhere; }
 [${REMINDERS_HOST_ATTR}] .reminders-intro { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
 [${REMINDERS_HOST_ATTR}] .reminders-notice { margin: 0 0 8px; font-size: 13px; min-height: 0; }
 [${REMINDERS_HOST_ATTR}] .reminders-notice:empty { display: none; }

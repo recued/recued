@@ -1,8 +1,9 @@
+import type { OperationArgType } from '@recued/contracts';
 /** Portable authoring interpretation of REST path and CLI argument references. No payload traversal. */
 import { closedInputMetadata } from './closed-inputs.js';
 export type BindingArgumentPath = (string | number)[];
 export type BindingArgumentSyntax = 'rest' | 'cli' | 'literal';
-export interface BindingArgumentField { path: BindingArgumentPath; syntax: BindingArgumentSyntax; engine?: boolean }
+export interface BindingArgumentField { path: BindingArgumentPath; syntax: BindingArgumentSyntax; engine?: boolean; argumentType?: OperationArgType }
 export interface BindingArgumentToken { key: string; start: number; end: number }
 export interface BindingArgumentReference extends BindingArgumentToken { path: BindingArgumentPath; engine: boolean; target?: 'key' }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -41,8 +42,8 @@ export const operationBindingArgumentReferences = (operation: unknown) => {
   const fields: BindingArgumentField[] = [], references: BindingArgumentReference[] = [], schemaReferences: BindingArgumentReference[] = [], engineKeys: string[] = [];
   let complete = true, reason = '';
   const refuse = (message: string) => { complete = false; reason ||= message; };
-  const field = (path: BindingArgumentPath, syntax: BindingArgumentSyntax = 'literal', engine = false) => {
-    if (typeof bindingArgumentValue(operation, path) === 'string') fields.push({ path, syntax, engine });
+  const field = (path: BindingArgumentPath, syntax: BindingArgumentSyntax = 'literal', engine = false, argumentType?: OperationArgType) => {
+    if (argumentType || typeof bindingArgumentValue(operation, path) === 'string') fields.push({ path, syntax, engine, ...(argumentType ? { argumentType } : {}) });
   };
   const keys = (value: unknown, allowed: ReadonlySet<string>, label: string) => {
     if (!object(value)) { refuse(`Malformed ${label}.`); return; }
@@ -66,8 +67,8 @@ export const operationBindingArgumentReferences = (operation: unknown) => {
   else if (operation.editable_args !== undefined) refuse('Editable arguments must be an array before rename.');
   if (bind.kind === 'rest') {
     keys(bind, restKeys, 'REST binding'); field(['bind','path_template'], 'rest');
-    for (const path of [['bind','upload','arg'],['bind','chunked_upload','arg']]) field(path);
-    if (bindingArgumentValue(bind,['response_capture','filename_source','kind']) === 'arg') field(['bind','response_capture','filename_source','arg']);
+    for (const path of [['bind','upload','arg'],['bind','chunked_upload','arg']]) field(path, 'literal', false, 'file_ref');
+    if (bindingArgumentValue(bind,['response_capture','filename_source','kind']) === 'arg') field(['bind','response_capture','filename_source','arg'], 'literal', false, 'string');
   } else if (bind.kind === 'cli_invocation') {
     keys(bind, cliKeys, 'CLI binding');
     if (Array.isArray(bind.argv_template)) for (let i = 0; i < bind.argv_template.length; i++) {
@@ -84,7 +85,7 @@ export const operationBindingArgumentReferences = (operation: unknown) => {
     if (typeof dir === 'string' && dir) { engineKeys.push(dir); field(['bind','output_capture','dir_arg'], 'literal', true); }
   } else refuse('Rename currently supports REST paths and CLI invocations only.');
   for (const entry of fields) {
-    const value = bindingArgumentValue(operation, entry.path) as string;
+    const value = bindingArgumentValue(operation, entry.path); if (typeof value !== 'string') continue;
     for (const token of bindingArgumentTokens(value, entry.syntax)) {
       references.push({ ...token, path: entry.path, engine: entry.engine === true || engineKeys.includes(token.key) });
       if (references.length + schemaReferences.length > 5000) { refuse('Binding reference discovery reached its 5,000-reference limit.'); return { fields, references, schemaReferences, engineKeys, complete, reason }; }

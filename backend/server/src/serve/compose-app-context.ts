@@ -288,6 +288,7 @@ import {
   createMessageCommitmentLedger,
   type MessageCommitmentLedger,
 } from '../storage/message-commitment-ledger.js';
+import { contactClaimEnds, ownerClaimRecords } from '../memory-claim.js';
 
 import type { MarketplaceCatalogue } from '../install-offers/catalogue.js';
 
@@ -344,6 +345,9 @@ export interface AppContext extends LlmSubstrate {
   /** D-318 step 5 — be told of each run that settles after its turn, as the
    *  sink above is (the email door's follow-ups). Absent on a db-less boot. */
   readonly onChatRunSettled?: (listener: (settled: PreflightRunSettled) => void) => () => void;
+  /** D-337 — be told when a continuation's turn ends (the conversation carrying on after an
+   *  approval): the email door sends its answer then. Absent on a db-less boot. */
+  readonly onChatHeldResultTurnEnded?: ChatOrchestratorBundle['onHeldResultTurnEnded'];
   serverState: ServerStateStore | undefined;
   keys: KeyManager | undefined;
   /** Live vault-unlocked predicate. `true` when there is no vault
@@ -403,6 +407,9 @@ export interface AppContext extends LlmSubstrate {
   executionCaseSourcePruner:
     ChatOrchestratorBundle['executionCaseSourcePruner'] | undefined;
   internalRegistryRef: InternalToolRegistry | undefined;
+  /** D-336 slice O's open item — the chat bundle's "a Tier-1 call was held" step, which marks
+   *  the earlier saves of the same fact still waiting. */
+  tier1HeldRef?: ChatOrchestratorBundle['onTier1Held'];
   ownerDocumentSearch?: ChatOrchestratorBundle['ownerDocumentSearch'];
   /** D-177 N.11 rule 5 (slice D) — the chat bundle's per-session
    *  forwarded-sender candidate index, retained so the execution-context
@@ -847,7 +854,12 @@ export const composeAppContext = (
       memoryBlobs,
       // The raw handle turns on the FTS5 recall index over `summary + body`
       // (`memory.search`'s `query`). Absent → the store's substring fallback.
-      { db },
+      // D-336 audit 2026-11-01 — a claim's contact end is its merge group. Read when a
+      // claim is looked up: the contact store is opened further down.
+      {
+        db,
+        sameClaimEnd: (end_key) => (contactStoreRef === undefined ? [end_key] : contactClaimEnds(contactStoreRef)(end_key)),
+      },
     );
     // The same opener the run readers use on their own handle, so the marks the
     // Memory lens writes are the marks `data.timeline` and run history honour.
@@ -957,6 +969,12 @@ export const composeAppContext = (
       // the redaction store so recall omits "forgotten" rows.
       getUserMemoryStore: () => userMemoryStore,
       getMemoryRedactionStore: () => memoryRedactionStore,
+      // D-336 slice E — a claim the owner changed on a held save's card is checked, when the
+      // save runs, by the owner's lookups, as their own forms' claims are.
+      getOwnerClaimRecords: () => ownerClaimRecords({
+        ...(contactStoreRef ? { contacts: contactStoreRef } : {}),
+        ...(workEntityStore ? { work: workEntityStore } : {}),
+      }),
       // RUNG 4 — the query embedder for meaning-based recall. Built from the
       // substrate's own pieces rather than added to `LlmSubstrate`, so the
       // memory path stays self-contained and housekeeping's callable bundle is
@@ -1801,6 +1819,7 @@ export const composeAppContext = (
     executionCaseArgumentStore: chatBundle?.executionCaseArgumentStore,
     executionCaseSourcePruner: chatBundle?.executionCaseSourcePruner,
     internalRegistryRef: chatBundle?.internalRegistry,
+    ...(chatBundle?.onTier1Held !== undefined ? { tier1HeldRef: chatBundle.onTier1Held } : {}),
     ownerDocumentSearch: chatBundle?.ownerDocumentSearch,
     chatForwardedSenderIndexRef: chatBundle?.forwardedSenderIndex,
     /** D-137 — writes the result half of a paired tool call when a held run
@@ -1809,6 +1828,7 @@ export const composeAppContext = (
      *  composed in the execution context, after this one. */
     chatRunSettledSink: chatBundle?.runSettledSink,
     onChatRunSettled: chatBundle?.onRunSettled,
+    onChatHeldResultTurnEnded: chatBundle?.onHeldResultTurnEnded,
     warehouseBus,
     stopWarehouseEventBridges,
     housekeepingConfigRef,

@@ -176,6 +176,13 @@ export interface PlanApprovalCard {
   /** D-329 — how the owner knows the records `args` names, by their names
    *  (`ChatPlanProposal.value_labels`). Display only: `args` is what runs. */
   value_labels?: import('@recued/contracts').ApprovalValueLabels;
+  /** D-336 slice E — what the owner may change on this card while approving it
+   *  (`ChatPlanProposal.editable_args`): a held save's `claim`. Absent from an older
+   *  server, which would ignore a change, so the card then approves as shown. */
+  editable_args?: readonly string[];
+  /** D-336 slice G — notes already in memory a held save meets
+   *  (`ChatPlanProposal.memory_conflicts`), for the relationship as proposed. */
+  memory_conflicts?: readonly import('@recued/contracts').MemorySaveConflict[];
 }
 
 /** Execution receipt for a consumed one-time approval. `held` is distinct
@@ -382,6 +389,8 @@ export const hydrateThreadFromSnapshot = (
       ...(record.plan.hold !== undefined ? { held: true as const } : {}),
       ...(record.plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
       ...(record.plan.value_labels !== undefined ? { value_labels: record.plan.value_labels } : {}),
+      ...(record.plan.editable_args !== undefined ? { editable_args: record.plan.editable_args } : {}),
+      ...(record.plan.memory_conflicts !== undefined ? { memory_conflicts: record.plan.memory_conflicts } : {}),
       recovered: true,
       payload_available: record.payload_available,
     })),
@@ -748,8 +757,18 @@ export const reduceChatThreadEvent = (
     // broadcast for reconnect / multi-client coherence while the plan
     // is still pending, and a late replay must not flip an
     // already-resolved card back to 'proposed'.
-    if (state.plan_cards.some((c) => c.plan_id === event.plan_id)) {
-      return state;
+    const known = state.plan_cards.find((c) => c.plan_id === event.plan_id);
+    if (known !== undefined) {
+      // D-336 slice O's open item — a later save of the same fact, held since, is "Asked again"
+      // on a card still waiting: its conflicts are taken again, and nothing else is.
+      if (known.status !== 'proposed' || event.memory_conflicts === undefined
+        || JSON.stringify(known.memory_conflicts ?? []) === JSON.stringify(event.memory_conflicts)) {
+        return state;
+      }
+      return {
+        ...state,
+        plan_cards: state.plan_cards.map((c) => (c.plan_id === event.plan_id ? { ...c, memory_conflicts: event.memory_conflicts } : c)),
+      };
     }
     return {
       ...state,
@@ -771,6 +790,8 @@ export const reduceChatThreadEvent = (
           status: 'proposed',
           ...(event.held === true ? { held: true as const } : {}),
           ...(event.value_labels !== undefined ? { value_labels: event.value_labels } : {}),
+          ...(event.editable_args !== undefined ? { editable_args: event.editable_args } : {}),
+          ...(event.memory_conflicts !== undefined ? { memory_conflicts: event.memory_conflicts } : {}),
           recovered: false,
           payload_available: true,
         },
@@ -994,6 +1015,7 @@ export const applyPlanResolution = (
           ...(plan.hold !== undefined ? { held: true as const } : {}),
           ...(plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
           ...(plan.value_labels !== undefined ? { value_labels: plan.value_labels } : {}),
+          ...(plan.memory_conflicts !== undefined ? { memory_conflicts: plan.memory_conflicts } : {}),
         },
       ],
     };
@@ -1001,13 +1023,21 @@ export const applyPlanResolution = (
   const existing = state.plan_cards[index];
   const held = plan.hold !== undefined && existing.held !== true;
   const lapsed = plan.hold?.lapsed_at !== undefined && existing.lapsed !== true;
-  if (existing.status === plan.status && !held && !lapsed) return state;
+  // D-336 slice E — the owner changed it while approving: the card shows what ran.
+  const changed = plan.args_hash !== undefined && existing.args_hash !== undefined && plan.args_hash !== existing.args_hash;
+  if (existing.status === plan.status && !held && !lapsed && !changed) return state;
   const copy = state.plan_cards.slice();
+  // Slice G — the notes it met were for the relationship as proposed, so a change of it
+  // drops them; a change of the summary alone keeps them, as the server does.
+  const claimOf = (args: unknown) => JSON.stringify((args as { claim?: unknown } | null | undefined)?.claim ?? null);
+  const met = !changed || claimOf(existing.args) === claimOf(plan.args);
+  const { memory_conflicts: _met, ...unmet } = existing;
   copy[index] = {
-    ...existing,
+    ...(met ? existing : unmet),
     status: plan.status,
     ...(held ? { held: true as const } : {}),
     ...(lapsed ? { lapsed: true as const } : {}),
+    ...(changed ? { args: plan.args, args_hash: plan.args_hash } : {}),
   };
   return { ...state, plan_cards: copy };
 };
@@ -1167,9 +1197,11 @@ const applySessionChanged = (
   }
   if (event.field === 'message') {
     const message = event.value as ChatMessage | undefined;
+    // D-337 — `system` too: a turn the server starts when an approval is answered opens with
+    // Recued's record of the answer ("Approved: …"), shown as it lands, not on the next load.
     if (!message || typeof message.id !== 'string' || message.session_id !== state.session.id
       || typeof message.content !== 'string' || !Number.isFinite(message.ts)
-      || !['user', 'assistant'].includes(message.role)) return state;
+      || !['user', 'assistant', 'system'].includes(message.role)) return state;
     if (state.messages.some((row) => row.id === message.id)) return state;
     return { ...state, messages: [...state.messages, message].sort((a, b) =>
       a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) };

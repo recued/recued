@@ -27,7 +27,7 @@
 
 import {
   REMINDER_HISTORY_MS,
-  REMINDER_LIST_LINK,
+  reminderDetailLink,
   reminderDeliveryText,
 } from '@recued/contracts';
 
@@ -107,11 +107,12 @@ export const createReminderDelivery = (deps: ReminderDeliveryDeps): ReminderDeli
       let delivered_to: readonly string[] = [];
       try {
         const baseUrl = deps.publicBaseUrl?.();
+        const reminderLink = reminderDetailLink(reminder.reminder_id);
         ({ delivered_to } = await deps.send({
           title: 'Reminder',
           text: reminderDeliveryText(reminder, current),
-          ...(baseUrl ? { link_url: `${baseUrl.replace(/\/$/, '')}/${REMINDER_LIST_LINK}` } : {}),
-          ui_link_url: REMINDER_LIST_LINK,
+          ...(baseUrl ? { link_url: `${baseUrl.replace(/\/$/, '')}/${reminderLink}` } : {}),
+          ui_link_url: reminderLink,
         }));
       } catch {
         delivered_to = [];
