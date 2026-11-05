@@ -123,6 +123,16 @@ with `sudo` too. The installer prints the exact command. Here is why. Without a 
 seal the key file to the machine. That way reads a host key only root can
 read. A Linux desktop session installs a user unit and needs no root.
 
+## Extensions
+
+- **[Recued Bridge — Chrome Web Store](https://chromewebstore.google.com/detail/recued-bridge/djcmgogfnidomcclggkikpkflgeapbac).**
+  Pair Chrome with your Recued server so recipes and AI agents can work with
+  web pages you allow.
+- **[Recued Kitchen — VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=recued.recued-kitchen).**
+  Author recipes, packs and compositions with local validation. Local editing
+  needs no Recued connection; connect when you want to read and save Kitchen
+  drafts.
+
 ## Packs
 
 A pack is a JSON file. It says how to connect to any resource: a CLI, a SaaS,
