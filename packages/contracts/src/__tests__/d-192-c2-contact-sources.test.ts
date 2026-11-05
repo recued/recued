@@ -384,17 +384,19 @@ describe('D-192 C-2 slice 5 — the shipped registry', () => {
     expect(pd?.supplies.attributes).toContain('name');
   });
 
-  it('no CRM supplies title / photo / birthday — and the contact book is why that gap exists', () => {
+  it('no CRM supplies title / photo, and only HubSpot and Salesforce a birthday — and the contact book is why that gap exists', () => {
     // The CRM half is unchanged: HubSpot `jobtitle` + Salesforce `Title` exist in the
-    // vendor APIs but are neither declared as meta-fields nor requested by the
-    // reconcilers. Promising `title` there would promise a value no code can produce.
-    // And no CRM carries a photo or a birthday AT ALL — those are what an address
-    // book is FOR, which is the argument for having one.
+    // vendor APIs but are not requested by the reconcilers. Promising `title` there
+    // would promise a value no code can produce. No CRM carries a photo AT ALL.
+    // D-338 §10: HubSpot's reconciler fetches `date_of_birth`, and Salesforce's `Birthdate`
+    // where the org shows it (its stream's events keep the last snapshot's), so both
+    // promise a birthday. No other CRM's reconciler reads one.
     for (const d of CONTACT_SOURCE_DECLARATIONS) {
       if (d.rung !== 'vendor_meta') continue;
       expect(d.supplies.attributes, d.vendor).not.toContain('title');
       expect(d.supplies.attributes, d.vendor).not.toContain('photo');
-      expect(d.supplies.attributes, d.vendor).not.toContain('birthday');
+      if (d.vendor === 'hubspot' || d.vendor === 'salesforce') expect(d.supplies.attributes, d.vendor).toContain('birthday');
+      else expect(d.supplies.attributes, d.vendor).not.toContain('birthday');
     }
 
     // ✅ And the contact book closes half of it: Google supplies the PHOTO — a URL,

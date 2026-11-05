@@ -7,6 +7,84 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.11.5 — 2026-11-05
+
+Your AI can fill in and send a form on a web page with one approval, pick one of a field's
+suggestions, and keep working when a page redraws its buttons; you can let it act on a site without
+asking each time. After you answer an approval, a chat carries on with the tools it was using.
+In Telegram, Slack and Discord, Recued's notifications arrive as notices you can reply to; a
+scheduled prompt can tell you when it is done, and the Agenda can add AI suggestions. Browser
+Bridge 0.0.7 opens on your approvals.
+
+### Before you update
+
+- **Update Recued before installing or updating Browser Toolkit.** Its new version and the new Act
+  on a web page need this release. An older Recued refuses them, says to update, and installs
+  nothing; the version you have keeps working.
+- **Much of what is new in the Browser Toolkit needs Browser Bridge 0.0.7**, which goes to the
+  Chrome Web Store with this release: sending a form, picking a suggestion, noticing a CAPTCHA,
+  quoting a page's error message, clicking a button the page drew again, and answering the page a
+  click loads. With an older Bridge, the AI is told to update it, or the step works as before.
+- **The hosted web app's new controls need this release.** On an older server they say to update it
+  or do not appear. One does neither: on an older server, the Coming up card says that Due today
+  skips a day your Agenda lists, but that server still sends it.
+
+### Added
+
+- **Several steps on a web page with one approval.** A new Browser Toolkit recipe, Act on a web
+  page, lets your AI type into fields, click, send a form and wait for something, up to 20 steps,
+  approved once. The approval lists every step as the page shows it and never shows what goes into a
+  password, sign-in code or card field. It stops at the first step that does not work, at a CAPTCHA
+  nobody has solved, and as soon as the page shows an error message, which it quotes.
+- **Pick a field's suggestion.** For a field that suggests as you type, such as a city or a contact,
+  the AI names the suggestion; Recued types, clicks the one with that text and checks the field took
+  it. When none or several match, it stops and lists them.
+- **Allow the toolkit on a site.** An approval for typing, clicking or opening a page offers "Allow
+  on <site> for this session" and "Always allow on <site>". A pass covers one site, one kind of
+  action and one caller. After you approve the same kind of action on a site on three occasions in a
+  month, Recued suggests always allowing it. Contracts lists passes and suggestions, where you end
+  or dismiss them.
+- **Disconnect a Browser Bridge from its side panel**, which also says when Chrome has its
+  notifications turned off. Needs Browser Bridge 0.0.7.
+- **Notices you can reply to.** When you chat with Recued on Telegram, Slack or Discord, its
+  notifications there arrive as notices. Reply to one to ask about it. The app shows each as a card,
+  and labels an answer Recued gave from your own records without AI.
+- **Notify me when it’s done.** A scheduled prompt can send its answer to your notification channels
+  each time a run finishes. Chat turns it on when you ask to be told.
+- **AI suggestions for your Agenda.** After your agenda goes out, Recued's AI can look it over and
+  send suggestions, such as clashes, travel time and what to prepare. A day with nothing on gets
+  none, and costs no AI.
+- **Birthdays from HubSpot and Salesforce** for the contacts Recued knows. A contact gets its
+  birthday the next time Recued reads it from the CRM: at once for a new connection, otherwise once
+  the contact next changes there.
+
+### Changed
+
+- **A chat carries on with the tools it was using.** After you answer an approval, the conversation
+  goes straight on with the recipe tools it had found, instead of searching for them again.
+- **A request waiting for your approval stops instead of retrying**, and carries on once you answer.
+- **The chat looks for the Browser Toolkit** when you ask about your open tabs or a web page.
+- **A click that loads a new page answers that page**, so the AI reads it without listing your tabs.
+- **A click or typing that could only fail is not put to you**: the AI is told at once that the page
+  changed, and reads it again.
+- **The Browser Bridge's side panel opens on your approvals**, and every other section folds to one
+  line that says what it holds. Needs Browser Bridge 0.0.7.
+- **Someone who installs the Browser Bridge before Recued is told where to get Recued.** Needs
+  Browser Bridge 0.0.7.
+- **Chat schedules in your timezone** instead of asking you for one.
+- **Messages about your days have clearer names.** The Digest is now Coming up, the due-day note is
+  Due today and no longer repeats your Agenda, and a private item reads Reminder in Yours.
+- **The Agenda puts a day's birthdays and anniversaries on one line each**, and in the app each name
+  opens that person.
+
+### Fixed
+
+- **A button the page draws again is still clicked.** When a page rebuilds a control, such as a
+  search form once you type, the Bridge finds the same one and clicks it, if the page shows exactly
+  one. Needs Browser Bridge 0.0.7.
+- **A Salesforce search no longer fails** when the org hides a contact's job title or birthday from
+  the connected user, or its deals have no forecast amount.
+
 ## 26.11.3 — 2026-11-03
 
 Once you approve something the AI asked for, the conversation carries on by itself with the

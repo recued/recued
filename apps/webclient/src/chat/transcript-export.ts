@@ -15,6 +15,8 @@ interface ExportMessage {
   sources: ReturnType<typeof chatSourceCitationsOf>;
   unresolvedSources: boolean;
   toolCall?: unknown;
+  /** D-338 — a notice's own title, shown beside "Notice". */
+  noticeTitle?: string;
 }
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -49,7 +51,9 @@ const parseExport = (value: unknown, sessionId: string) => {
         ...(attachment.legacy_capture === true ? { legacy_capture: true } : {}) };
     });
     const sources = chatSourceCitationsOf(row.source_citations);
+    const notice = record(row.notice);
     return { id: row.id, role: row.role, content: row.content, ts: row.ts, attachments, sources,
+      ...(row.role === 'notice' && typeof notice?.title === 'string' && notice.title.trim() ? { noticeTitle: notice.title } : {}),
       unresolvedSources: row.source_citations !== undefined
         && (!Array.isArray(row.source_citations) || sources.length !== row.source_citations.length),
       toolCall: row.tool_call };
@@ -138,12 +142,12 @@ export const formatChatMarkdownExport = (
 ): string => {
   const bundle = parseExport(value, options.sessionId);
   const stamp = (at: number) => formatClientDateTime(at, options);
-  const roles: Record<ChatMessageRole, string> = { user: 'User', assistant: 'Assistant', tool: 'Tool', system: 'System' };
+  const roles: Record<ChatMessageRole, string> = { user: 'User', assistant: 'Assistant', tool: 'Tool', system: 'System', notice: 'Notice' };
   const parts = [`# ${label(bundle.title)}`, `Exported from Recued · ${stamp(bundle.exportedAt)}`];
   if (!bundle.messages.length) parts.push('No messages in this conversation.');
   let hasSources = false, hasAttachments = false;
   for (const message of bundle.messages) {
-    parts.push('---', `## ${roles[message.role]} · ${stamp(message.ts)}`);
+    parts.push('---', `## ${roles[message.role]}${message.noticeTitle ? ` · ${label(message.noticeTitle)}` : ''} · ${stamp(message.ts)}`);
     const tool = message.toolCall;
     if (isChatToolCallRecord(tool) && tool.message_id === message.id && tool.session_id === options.sessionId) {
       parts.push(`Recorded tool status: ${label(tool.tool_name)} · ${

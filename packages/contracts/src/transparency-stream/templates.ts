@@ -201,6 +201,9 @@ export const TRANSPARENCY_TEMPLATES_EN: Readonly<{
     if (e.termination_reason === 'context_trim_livelock') {
       return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'} — results were repeatedly removed to fit the context window`;
     }
+    if (e.termination_reason === 'waiting_for_approval') {
+      return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'} — the rest waits for an approval`;
+    }
     return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'}`;
   },
 

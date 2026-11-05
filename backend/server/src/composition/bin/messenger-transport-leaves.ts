@@ -24,6 +24,7 @@ import {
   type RemoteChannel,
   type RemoteChannelCredential,
   type RemotePromptRecord,
+  type RemoteNoticeHook,
 } from '@recued/notification';
 import type Database from 'better-sqlite3';
 import type { KeyManager } from '../../key-manager.js';
@@ -225,6 +226,9 @@ export const buildMessengerRemoteChannels = (deps: {
    *  approval again nor leaves one sent before it with its buttons once it closes. Absent (a
    *  dbless harness) ⇒ in memory only, as before. */
   db?: Database.Database;
+  /** D-338 — a notify to a messenger the owner chats with Recued on is a notice in that chat.
+   *  Absent ⇒ every notify goes as before. */
+  notices?: RemoteNoticeHook;
 }): Record<string, RemoteChannel> => {
   // One table for every vendor: a record's key starts with its channel's name.
   const promptRecords = deps.db !== undefined
@@ -255,6 +259,7 @@ export const buildMessengerRemoteChannels = (deps: {
       ...(capability !== undefined ? { capability } : {}),
       ...(deps.answerLink !== undefined ? { answerLink: deps.answerLink } : {}),
       ...(promptRecords !== undefined ? { promptRecords } : {}),
+      ...(deps.notices !== undefined ? { notices: deps.notices } : {}),
     });
   }
   return out;

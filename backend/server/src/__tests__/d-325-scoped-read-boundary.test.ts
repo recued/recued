@@ -30,7 +30,8 @@ const fixture = async () => {
   const scoped = () => ({ owner: false, spheres: ['professional' as const], grants, referenceSphere: (ref: { collection: string; id: string }) => spheres.resolve(ref).sphere });
   const access = { context: scoped, fence: scoped,
     fieldVersion: async () => { throw new Error('Unexpected field probe'); },
-    read: async () => { throw new Error('Unexpected situation read'); }, prefetch: async () => { throw new Error('Unexpected prefetch'); } } as SituationAccess;
+    read: async () => { throw new Error('Unexpected situation read'); }, prefetch: async () => { throw new Error('Unexpected prefetch'); },
+    isPrivate: () => false } as SituationAccess;
   const home = (await dispatchers.commitmentCreate({ statement: 'Family-only secret', direction: 'outbound', derivation: 'user_declared', counterparty_contact_id: 'private-person' })).commitment;
   const business = (await dispatchers.commitmentCreate({ statement: 'Business delivery', direction: 'outbound', derivation: 'user_declared', counterparty_contact_id: 'private-person' })).commitment;
   const unknown = (await dispatchers.commitmentCreate({ statement: 'Unsorted secret', direction: 'outbound', derivation: 'user_declared' })).commitment;

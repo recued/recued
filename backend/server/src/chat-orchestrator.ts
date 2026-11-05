@@ -83,7 +83,7 @@ import { heldPeopleValueLabels } from './held-people-labels.js';
  */
 
 import { dateFormatIssue } from './date-argument-format.js';
-import type { InstallOffer } from '@recued/contracts';
+import type { ChatAnswerSource, InstallOffer } from '@recued/contracts';
 import { answerSourceCitations } from './chat-source-citations.js';
 import { installOffersFromToolResults } from './install-offers/turn-offers.js';
 import { bindMailWorkChatTools } from './mail-work-chat-plan.js';
@@ -197,11 +197,13 @@ import {
   ChatContextLengthError,
   ChatTurnUnansweredError,
   runChatTurn,
+  resolveChatTimeZone,
   isNonTerminalToolResult,
   type RunChatTurnPromptContent,
   type RunChatTurnResult,
   type ChatPriorToolPointers,
 } from './chat-turn-executor.js';
+import { CHAT_TURN_TIME_ZONE_STATE_KEY, withTurnZone } from './chat-clock.js';
 import { createChatPiiSlotOrderingSeeder } from './chat-pii-slot-ordering.js';
 import { markChatToolCallSaved, rememberChatToolCallFailure, withChatToolCallContext } from './chat-tool-call-context.js';
 import { withToolProgress } from './execution/tool-progress.js';
@@ -276,6 +278,8 @@ import type {
   ExecutionCaseProposalCritic,
 } from './execution-case-critic.js';
 import { parseBrief } from './chat-rolling-brief.js';
+import { noticeQuoteText } from './chat-notices.js';
+import { gateAnswerOf, recordAnswerInBrief } from './chat-no-model-answers.js';
 import { heldPlanEditableArgs } from './chat-plan-edits.js';
 import type { CurrentAssetAttachment } from './chat-asset-fresh-read.js';
 import type { ContactStore } from './storage/contact-store.js';
@@ -1112,6 +1116,9 @@ export interface ChatOrchestratorDeps {
    *  own channel as where approvals are answered only while they go there
    *  (`RunChatTurnInputs.approvals_here`). Absent, or a read that fails ⇒ the bell alone. */
   approvalChannels?: () => Promise<readonly string[]>;
+  /** D-338 — whether a conversation is linked to a messenger its notices go to (Telegram, Slack,
+   *  Discord), so the model is told notices it cannot see are there. Absent ⇒ never. */
+  noticesHere?: (session_id: string) => boolean;
   /** D-121 broadcast bus. */
   broadcast?: ChatBroadcastEmitter;
   /** Audit log — chat lifecycle codes (`chat_session_created`,
@@ -1563,6 +1570,78 @@ export const CARRIED_HELD_RESULTS_NOTE =
   'Calls this conversation waited on settled while no model could carry it on. They come first in '
   + 'prior_tool_calls with their outcomes, as if they had just returned: take them into account, '
   + 'and pick up any work in progress they were part of, as well as answering the message.';
+
+/** D-337 slice W (2026-11-04) — what a conversation carrying on after an approval is told of the
+ *  recipe tools its request was using, listed again in full (`carryRecipeTools`).
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const CARRIED_TOOLS_NOTE =
+  'The recipe tools this conversation was using before the approval are listed in "available_tools" again, '
+  + 'with their arguments: call them directly, without searching for them again.';
+/** The most recipe tools a continuation carries; a request that searched widely carries what it met
+ *  first. */
+export const CARRIED_TOOLS_LIMIT = 12;
+/** How far back a continuation reads its conversation for the request it carries on: that request
+ *  is the one just before it. */
+const CARRY_SCAN_MESSAGES = 80;
+
+/** D-337 slice W — the tools a request of this conversation called, and the recipes its
+ *  `tools.search` calls returned, by name: the request `turn_id` names first, in the order it met
+ *  them, then the conversation's other recent requests, newest first, since a continuation of a
+ *  continuation carries on work its first request searched for. Read from the conversation's own
+ *  rows (its last page): the calls its answers name, and the rows of what each call returned. */
+export const toolsOfTurn = async (
+  chatStore: Pick<ChatStore, 'listMessagePage'>,
+  session_id: string,
+  turn_id: string,
+): Promise<string[]> => {
+  const { messages } = await chatStore.listMessagePage(session_id, CARRY_SCAN_MESSAGES);
+  const names: string[] = [];
+  const add = (name: string | undefined) => {
+    if (name !== undefined && name !== TOOLS_SEARCH_TOOL_NAME && !names.includes(name)) names.push(name);
+  };
+  const read = (message: ChatMessage) => {
+    for (const call of message.tool_calls ?? []) add(call.tool_name);
+    if (message.role !== 'tool') return;
+    const name = toolNameFromRow(message.content);
+    if (name !== TOOLS_SEARCH_TOOL_NAME) {
+      add(name);
+      return;
+    }
+    for (const found of message.content.matchAll(/"recipe_slug":"((?:[^"\\]|\\.)+)"/g)) add(JSON.parse(`"${found[1]!}"`) as string);
+  };
+  // Each request's rows in its own order; the requests themselves newest first, after `turn_id`.
+  const byTurn = new Map<string, ChatMessage[]>();
+  for (const message of messages) {
+    if (message.turn_id === undefined) continue;
+    byTurn.set(message.turn_id, [...(byTurn.get(message.turn_id) ?? []), message]);
+  }
+  const others = [...byTurn.keys()].filter((id) => id !== turn_id).reverse();
+  for (const id of [turn_id, ...others]) for (const message of byTurn.get(id) ?? []) read(message);
+  return names;
+};
+
+/** D-337 slice W — the turn's tools with the recipe tools `names` lists in full: in lean-core,
+ *  added after the core tools; in index mode, in place of their one-line entries. Only from
+ *  `entries`, the turn's own grant-decided catalog, so nothing is shown that its search would not
+ *  find; at most {@link CARRIED_TOOLS_LIMIT}. Answers the tools, and how many it carried. */
+export const carryRecipeTools = (
+  tools: ReadonlyArray<ChatMainTurnTool>,
+  entries: ReadonlyArray<ToolEntry>,
+  names: readonly string[],
+  allow: (entry: ToolEntry) => boolean = () => true,
+): { tools: ReadonlyArray<ChatMainTurnTool>; carried: number } => {
+  const byName = new Map(entries.filter((entry) => entry.tier === 2 && allow(entry)).map((entry) => [entry.name, entry]));
+  const listed = new Map(tools.map((tool) => [tool.recipe_slug, tool]));
+  const full = names.flatMap((name) => {
+    const entry = byName.get(name);
+    if (entry === undefined || listed.get(name)?.args_schema !== undefined) return [];
+    return [{ recipe_slug: entry.name, args_schema: entry.arg_schema,
+      ...(entry.description ? { description: entry.description } : {}) } as ChatMainTurnTool];
+  }).slice(0, CARRIED_TOOLS_LIMIT);
+  if (full.length === 0) return { tools, carried: 0 };
+  const replacing = new Set(full.map((tool) => tool.recipe_slug));
+  return { tools: [...tools.filter((tool) => !replacing.has(tool.recipe_slug)), ...full], carried: full.length };
+};
 
 /** The conversation's own channel when the owner's approval requests go there now: a Telegram,
  *  Slack or email chat of the owner's own (`approvalChannelOf`) whose channel has approvals on. */
@@ -2346,6 +2425,54 @@ export const renderAttachmentMarker = (
   return `\n[files attached to this message: ${list}]\nAttachment references are complete stored file_ref values. Copy the entire value inside parentheses, including file:. These files are already stored.`;
 };
 
+/** D-338 — how much of a quoted message rides with the row that quoted it. */
+export const TAIL_QUOTE_MAX_CHARS = 2_000;
+
+/** D-338 — what each windowed row quoted, by the quoted message's id.
+ *
+ *  ⛔ A QUOTE LASTED ONE TURN. The stored row keeps a reference, not the text
+ *  (`appendMessage` refuses to copy it into content), and the window renders the
+ *  stored text — so the turn after a quoted reply saw the reply and its answer,
+ *  never what was quoted. For a notice that was all of it: a notice is never in
+ *  the window itself. Now a row's quote rides with it while the row is in the
+ *  window and leaves with it, so the bound is the window: at most one quote per
+ *  row, capped at {@link TAIL_QUOTE_MAX_CHARS}.
+ *
+ *  A quoted message already in the window is not repeated. A target that is gone
+ *  (deleted, or a role no reader may quote) adds nothing. */
+const tailQuotes = async (
+  chatStore: ChatStore,
+  session_id: string,
+  selected: readonly ChatMessage[],
+): Promise<ReadonlyMap<string, { role: ChatMessage['role']; text: string }>> => {
+  const inWindow = new Set(selected.map((m) => m.id));
+  const quotes = new Map<string, { role: ChatMessage['role']; text: string }>();
+  for (const m of selected) {
+    const reference = m.reply_to;
+    if (!reference || !('message_id' in reference)) continue;
+    const id = reference.message_id;
+    if (inWindow.has(id) || quotes.has(id)) continue;
+    let target: ChatMessage | undefined;
+    try {
+      const page = await chatStore.listMessagePage(session_id, 1, undefined, { around_message_id: id });
+      target = page.messages.find((t) => t.id === id
+        && (t.role === 'user' || t.role === 'assistant' || t.role === 'notice'));
+    } catch (error) {
+      // A sealed vault and a mis-wired store are the tail's to report; a quote
+      // that cannot be read costs only itself, never the window it rides in.
+      if (error instanceof ChatVaultLockedError || error instanceof TypeError) throw error;
+      continue;
+    }
+    if (target === undefined) continue;
+    const chars = Array.from(target.role === 'notice' ? noticeQuoteText(target) : target.content);
+    quotes.set(id, {
+      role: target.role,
+      text: chars.length > TAIL_QUOTE_MAX_CHARS ? `${chars.slice(0, TAIL_QUOTE_MAX_CHARS).join('')}…` : chars.join(''),
+    });
+  }
+  return quotes;
+};
+
 /** ⚠ EXPORTED FOR THE SEAM TEST, and that is not incidental. `renderAttachmentMarker`
  *  is a pure function with its own tests — and those tests pass whether or not
  *  anything CALLS it. A marker function nobody invokes is the same
@@ -2386,18 +2513,23 @@ export const buildChatTail = async (
     const names = attachedIds.length > 0 && resolveFileNames !== undefined
       ? resolveFileNames(attachedIds)
       : new Map<string, string>();
+    const quotes = await tailQuotes(chatStore, session_id, selected);
 
     return {
       messages: selected.map((m) => {
         const marker = m.attachments && m.attachments.length > 0
           ? renderAttachmentMarker(m.attachments, names)
           : '';
+        // Appended to the model's COPY of the turn only — `selected` is
+        // mapped, never mutated, so nothing is written back to the stored
+        // message and chat history still renders what the person typed.
+        const content = marker.length > 0 ? `${m.content}${marker}` : m.content;
+        const quote = m.reply_to && 'message_id' in m.reply_to ? quotes.get(m.reply_to.message_id) : undefined;
         return {
           role: m.role,
-          // Appended to the model's COPY of the turn only — `selected` is
-          // mapped, never mutated, so nothing is written back to the stored
-          // message and chat history still renders what the person typed.
-          content: marker.length > 0 ? `${m.content}${marker}` : m.content,
+          // D-338 — a row that quoted something keeps it while the row is in the
+          // window, in the shape the quoting turn itself sent.
+          content: quote ? JSON.stringify({ reply_to: quote, message: content }) : content,
         };
       }),
       item_ids: selected.map((m) => m.id),
@@ -2531,7 +2663,9 @@ export const createChatOrchestrator = (
   // D-225 § 9.8.1 — the turn's `source` arrives per CALL (this closure is bound
   // at orchestrator construction, where no turn exists yet), so the raw-op half
   // of the catalog can be derived from the caller's contract.
-  const buildCatalog: ChatCatalogBuilder = (picker_target, projection, source) => {
+  /** The turn's grant-decided entries before any projection: the catalog's, and (D-337 slice W) the
+   *  recipe tools a continuation carries are picked from them. */
+  const catalogEntriesFor = (source: ExecutionSource | undefined): ToolEntry[] => {
     // ⛔ BEFORE ANY ENTRY IS READ. This surface serves ONE tenant — the owner —
     // and a contracted source arriving here is a routing error, not a request
     // for a narrower catalog. The `: registryEntries` fallthrough below is
@@ -2566,20 +2700,18 @@ export const createChatOrchestrator = (
     // them, and this slice deletes the store. An enrolled MCP tool now reaches
     // chat exactly once — as a `recued_op_*` pack operation governed by the
     // contract — instead of twice through two different gates.
-    //
+    // D-225 § 9.8.1 — raw catalog ops are DERIVED from the turn's contract
+    // rather than assembled and filtered at dispatch.
+    const rawOps = deps.rawOpSource ? deps.rawOpSource(source) : [];
+    return [...catalogEntries, ...(rawOps as typeof catalogEntries)];
+  };
+  const buildCatalog: ChatCatalogBuilder = (_picker_target, projection, source) => {
     // ⚠ The empty set is still THREADED rather than removed from
     // `buildChatMainTurnTools`: its parameter is a general "names to withhold"
     // seam, and emptying the only current producer is not a reason to delete a
     // seam the next one would have to re-add.
     const disabledTier3Names = new Set<string>();
-    // D-225 § 9.8.1 — raw catalog ops are DERIVED from the turn's contract
-    // rather than assembled and filtered at dispatch.
-    const rawOps = deps.rawOpSource ? deps.rawOpSource(source) : [];
-    return buildChatMainTurnTools(
-      [...catalogEntries, ...(rawOps as typeof catalogEntries)],
-      disabledTier3Names,
-      projection,
-    );
+    return buildChatMainTurnTools(catalogEntriesFor(source), disabledTier3Names, projection);
   };
 
   // The stream registry is now ALWAYS populated: the `catalog` hook (A.8
@@ -2719,7 +2851,7 @@ export const createChatOrchestrator = (
     retry_of_plan_id,
     read_only,
     tool_name,
-    arg_values,
+    arg_values: model_arg_values,
     round_index,
     picker_target,
     execution_source,
@@ -2730,6 +2862,9 @@ export const createChatOrchestrator = (
     time_zone,
     get_retained_candidates,
   }) => {
+    // D-338 §13 — a zone the model left out is the turn's, before anything below reads the
+    // call: its check, card, hash, hold and run all see one set of arguments.
+    const arg_values = withTurnZone(tool_name, model_arg_values, time_zone);
     // D-219 — ONE builder for every `chat_tool_call` detail on this path.
     //
     // ⛔ There are three write sites (mcp-wire, peer, internal) and they were
@@ -3763,6 +3898,9 @@ export const createChatOrchestrator = (
       });
     const chatInputTokenBudget = resolveTurnInputTokenBudget();
     const streamState = new Map<string, unknown>();
+    // D-338 — the turn's clock for the before-turn hooks, from the inputs `runChatTurn`
+    // resolves its own from: the situation lookup writes an item's time on it.
+    streamState.set(CHAT_TURN_TIME_ZONE_STATE_KEY, resolveChatTimeZone(params.time_zone, deps.serverTimeZone?.()));
     const prefetchSourceCapture = params.execution_source.channel === 'chat' && params.execution_source.actor === 'user_self'
       && !executionSourceHasContract(params.execution_source) && picker_target === 'self' && !params.read_only
       && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id
@@ -3966,12 +4104,32 @@ export const createChatOrchestrator = (
         : catalogTools.filter(
             (tool) => tool.recipe_slug !== RECALL_SEARCH_TOOL_NAME,
           );
-      const availableTools =
+      const listedTools =
         readOnlyToolNames === null
           ? surfaceCatalogTools
           : surfaceCatalogTools.filter(
               (tool) => readOnlyToolNames.has(tool.recipe_slug),
             );
+      // ⛔ D-337 slice W — A CONVERSATION CARRYING ON AFTER AN APPROVAL STARTS WITH THE RECIPE TOOLS
+      //   ITS REQUEST WAS USING. Lean-core lists no recipe, and a model may call only one a search of
+      //   its own request returned, so each continuation searched for the Browser Toolkit again: 2
+      //   or 3 `tools.search` rounds in every measured search run (D-335 slice E). The tools the
+      //   request called, and the recipes its searches returned, are listed again in full, picked
+      //   from this turn's own grant-decided catalog (`catalogEntriesFor`), so nothing is shown
+      //   that its search would not find. A read-only turn carries only reads.
+      let carriedTools = 0;
+      let availableTools = listedTools;
+      if (params.continuation_of_turn_id !== undefined && perTurnProjection.mode !== 'full') {
+        try {
+          const names = await toolsOfTurn(deps.chatStore, session_id, params.continuation_of_turn_id);
+          const carry = carryRecipeTools(listedTools, catalogEntriesFor(params.execution_source), names,
+            (entry) => readOnlyToolNames === null || entry.classification === 'read');
+          availableTools = carry.tools;
+          carriedTools = carry.carried;
+        } catch {
+          // The tools are a convenience: a search finds them as before.
+        }
+      }
 
       // ENACT (N.9) the PII egress plan (read above): wrap `executeAiCall` so
       // every outbound packet is aliased (incl. the tool loop's per-reinvoke
@@ -4032,6 +4190,9 @@ export const createChatOrchestrator = (
       // The owner's own Telegram or email conversation, when its approval requests go there: the
       // approvals posture says to answer them there, as a held call's message does.
       const approvalsHere = await approvalsHereIn(params.execution_source, deps.approvalChannels);
+      // D-338 — a conversation with notices in it says so, wherever the owner types in it.
+      let noticesHere = false;
+      try { noticesHere = deps.noticesHere?.(session_id) === true; } catch { noticesHere = false; }
 
       const result = await runChatTurn(
         {
@@ -4055,6 +4216,7 @@ export const createChatOrchestrator = (
               }
             : {}),
           ...(approvalsHere !== undefined ? { approvals_here: approvalsHere } : {}),
+          ...(noticesHere ? { notices_here: true } : {}),
           ...(params.contract_snapshot !== undefined
             ? { contract_snapshot: params.contract_snapshot }
             : {}),
@@ -4070,7 +4232,10 @@ export const createChatOrchestrator = (
           ...(priorToolPointers
             ? { prior_tool_pointers: priorToolPointers }
             : {}),
-          ...(inFlightContext ? { in_flight_context: inFlightContext } : {}),
+          ...(inFlightContext !== undefined || carriedTools > 0
+            ? { in_flight_context: [inFlightContext, carriedTools > 0 ? CARRIED_TOOLS_NOTE : undefined]
+              .filter((part): part is string => part !== undefined).join('\n') }
+            : {}),
           ...(executionCaseContext
             ? { execution_case_context: executionCaseContext }
             : {}),
@@ -4481,6 +4646,8 @@ export const createChatOrchestrator = (
         picker_at_send: pickerAtSend,
         model_used: modelUsed,
         execution_source: executionSource,
+        // D-338 — Recued's own words, no model: labelled "without AI".
+        answered_without_model: {},
         turn_id,
         // ⛔ NOT `now()`. This short-circuit spends no provider call, so the ack
         // lands in the SAME millisecond as the user row it answers — and the
@@ -4554,9 +4721,11 @@ export const createChatOrchestrator = (
       try {
         const page = await deps.chatStore.listMessagePage(input.session_id, 1, undefined, { around_message_id: input.reply_to_message_id });
         const reference = page.messages.find((message) => message.id === input.reply_to_message_id
-          && (message.role === 'user' || message.role === 'assistant'));
+          && (message.role === 'user' || message.role === 'assistant' || message.role === 'notice'));
         if (!reference) throw new Error('The original reply target is no longer retained.');
-        modelMessage = JSON.stringify({ reply_to: { message_id: reference.id, role: reference.role, text: reference.content }, message: turnMessage });
+        // D-338 — a quoted notice gives what the owner saw, its title included.
+        const quoted = reference.role === 'notice' ? noticeQuoteText(reference) : reference.content;
+        modelMessage = JSON.stringify({ reply_to: { message_id: reference.id, role: reference.role, text: quoted }, message: turnMessage });
       } catch (error) { failPendingUserSource(); throw error; }
     }
     const assistantMessageId = mintId();
@@ -4761,6 +4930,9 @@ export const createChatOrchestrator = (
       readPiiRestoredText(streamState)
       ?? (capturedResult === undefined ? streamSummary.final_text : undefined)
       ?? turnResult.assistant_content;
+    // D-338 — the deterministic gate answered: no model ran. The reply is labelled so, and its
+    // answer goes into the brief, which no tool-free turn would otherwise update.
+    const gateAnswer = capturedResult === undefined ? gateAnswerOf(streamState) : undefined;
     // D-337 — the model answered: its first call returned, and no provider failure ended the turn.
     const answered = turnResult.final_ai_output !== undefined && turnResult.tool_loop_failure === undefined;
     // D-337 — a continuation its model did not answer still tells the owner what became of each
@@ -4935,7 +5107,12 @@ export const createChatOrchestrator = (
         const offers = installOffersFromToolResults(turnResult.tool_results);
         return offers.length > 0 ? { install_offers: offers } : {};
       })(),
+      ...(gateAnswer !== undefined ? { answered_without_model: gateAnswer } : {}),
     });
+    if (gateAnswer !== undefined) {
+      try { await recordAnswerInBrief(deps.chatStore, input.session_id, assistantContent, turnMessage); }
+      catch (error) { console.error('[chat] could not add an answer given without a model to the brief', error); }
+    }
     // Anchor any plan proposed by this turn to the durable assistant row before
     // broadcasting completion. Recovery may fail to link, but it must never
     // fail an otherwise-committed assistant message.
@@ -5145,7 +5322,13 @@ export const createChatOrchestrator = (
     }
     // Replace the cache with committed history before prompt middleware reads.
     await streamSessionStore.preload(session_id);
-    const persistAssistant = async (text: string, result?: ReturnType<typeof getCapturedResult>): Promise<void> => {
+    // D-338 — `noModel` marks a reply Recued wrote without calling a model (a fixed reply, or the
+    // gate's answer with the store it read), which the app labels "without AI".
+    const persistAssistant = async (
+      text: string,
+      result?: ReturnType<typeof getCapturedResult>,
+      noModel?: { from?: ChatAnswerSource },
+    ): Promise<void> => {
       const message = await deps.chatStore.appendMessage({
         assert_active: input.assert_active, on_committed: input.complete_turn,
         id: mintId(), session_id, role: 'assistant', content: text,
@@ -5163,6 +5346,7 @@ export const createChatOrchestrator = (
           const offers = installOffersFromToolResults(result?.tool_results);
           return offers.length > 0 ? { install_offers: offers } : {};
         })(),
+        ...(noModel !== undefined ? { answered_without_model: noModel } : {}),
       });
       await Promise.resolve(deps.planApprovalStore?.linkTurnToMessage?.(session_id, turn_id, message.id)).catch(() => {});
       safeBroadcast(deps.broadcast, { kind: 'chat.message_complete', session_id, turn_id, final: message });
@@ -5181,7 +5365,7 @@ export const createChatOrchestrator = (
 
     // D-318 step 6 — answered as given: no model, nothing run.
     if (input.fixed_answer !== undefined) {
-      await persistAssistant(input.fixed_answer);
+      await persistAssistant(input.fixed_answer, undefined, {});
       await input.channel.deliver({ kind: 'message', session_id, turn_id, text: input.fixed_answer });
       return { turn_id };
     }
@@ -5189,7 +5373,7 @@ export const createChatOrchestrator = (
     if (!voiceTranscribed && userText.trim().length === 0 && userAttachments && userAttachments.length > 0) {
       const text = mediaOnlyAffordance(userAttachments,
         deps.resolveFileNames?.(userAttachments.map((a) => a.file_id)) ?? new Map<string, string>());
-      await persistAssistant(text);
+      await persistAssistant(text, undefined, {});
       await input.channel.deliver({ kind: 'message', session_id, turn_id, text });
       return { turn_id };
     }
@@ -5292,8 +5476,15 @@ export const createChatOrchestrator = (
       turn_id,
       rounds: getPlannerRounds(),
     });
-    const turnResult = getCapturedResult() ?? { assistant_content: '' };
-    await persistAssistant(finalText ?? turnResult.assistant_content, turnResult);
+    const captured = getCapturedResult();
+    const turnResult = captured ?? { assistant_content: '' };
+    // D-338 — as the app's turn does: a gate answer is labelled and goes into the brief.
+    const gateAnswer = captured === undefined ? gateAnswerOf(streamState) : undefined;
+    await persistAssistant(finalText ?? turnResult.assistant_content, turnResult, gateAnswer);
+    if (gateAnswer !== undefined) {
+      try { await recordAnswerInBrief(deps.chatStore, session_id, finalText ?? turnResult.assistant_content, userText); }
+      catch (error) { console.error('[chat] could not add an answer given without a model to the brief', error); }
+    }
     await input.channel.deliver({ kind: 'message', session_id, turn_id,
       text: finalText ?? turnResult.assistant_content });
     const totalUsage = turnResult.usage;

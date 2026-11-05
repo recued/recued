@@ -39,3 +39,38 @@ export const eventWhenOnTurnClock = (hot: unknown, zone: string | undefined): st
   const offset = utcOffsetLabel(when.start, zone);
   return offset ? `${when.text} (${offset})` : when.text;
 };
+
+/** D-338 — the turn's clock zone in the stream's per-turn state, seeded by the
+ *  orchestrator before the turn's hooks run (`buildTurnDriver`), from the inputs
+ *  `runChatTurn` resolves its own `turnTimeZone` from. A before-turn hook that writes
+ *  an instant (the situation lookup) is then on the clock `current_date` is stamped in. */
+export const CHAT_TURN_TIME_ZONE_STATE_KEY = 'chat.turn_time_zone';
+
+/** The zone seeded under `CHAT_TURN_TIME_ZONE_STATE_KEY`; none when nothing seeded one.
+ *  ⛔ Never throws, whatever it is handed: the lookup reads it inside the block whose
+ *  catch withholds the whole lookup, so a throw here would cost the model every row
+ *  (a hand-built turn's `state: {}` did, in `d-325-asset-search-terms`). */
+export const chatTurnTimeZoneOf = (state: unknown): string | undefined => {
+  const zone = state instanceof Map ? state.get(CHAT_TURN_TIME_ZONE_STATE_KEY) : undefined;
+  return typeof zone === 'string' ? zone : undefined;
+};
+
+/** D-338 §13 — the tool argument the turn's own zone fills when the model leaves it out. */
+const TURN_ZONE_ARGS: Readonly<Record<string, string>> = { 'schedule.run_prompt': 'time_zone' };
+
+/** A call's arguments with the turn's zone where the model gave none (absent, null or blank).
+ *  The model sees only the zone's offset, never its name (2026-06-09: an IANA id carries a
+ *  city the model repeats), so a required zone made it ask the owner (5 of 6 runs) or write
+ *  `UTC` off `UTC+00:00` for a Dublin owner, an hour out once summer time starts.
+ *
+ *  ⛔ Filled where the dispatch begins, never in the tool: a held call is checked, shown,
+ *  hashed and kept with these arguments, and the approved run (`dispatchResumedTier1Call`)
+ *  is given no zone, so the owner approves the zone it runs in and the run still has it.
+ *  No zone (an MCP caller keeps its own clock) leaves the call as it came. */
+export const withTurnZone = (tool: string, args: unknown, zone: string | undefined): unknown => {
+  const field = Object.hasOwn(TURN_ZONE_ARGS, tool) ? TURN_ZONE_ARGS[tool] : undefined;
+  if (field === undefined || zone === undefined || args === null || typeof args !== 'object' || Array.isArray(args)) return args;
+  const given = (args as Record<string, unknown>)[field];
+  const left = given === undefined || given === null || (typeof given === 'string' && given.trim() === '');
+  return left ? { ...(args as Record<string, unknown>), [field]: zone } : args;
+};

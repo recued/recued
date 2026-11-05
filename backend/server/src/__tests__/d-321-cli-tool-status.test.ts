@@ -135,8 +135,10 @@ describe.skipIf(process.platform === 'win32')('D-321 — CliToolStatus', () => {
       const dir = folder();
       stub(dir, 'hang', `sleep 30 &\necho $! > "${dir}/bg"\nsleep 30`);
       const started = Date.now();
-      const report = await statusOn(dir, { timeoutMs: 300 }).check({ probe: ['hang', '--version'], tested: OPENCODE });
-      expect(report).toMatchObject({ state: 'broken', probe_result: { kind: 'broken', cause: 'timeout', timeout_ms: 300 } });
+      // ⚠ 1.5 s, not 300 ms: the stub must start, fork and write `bg` before the limit kills it,
+      //   and on a loaded sweep machine 300 ms was not enough (2026-11-04, 2 of 3 sweeps: ENOENT on bg).
+      const report = await statusOn(dir, { timeoutMs: 1_500 }).check({ probe: ['hang', '--version'], tested: OPENCODE });
+      expect(report).toMatchObject({ state: 'broken', probe_result: { kind: 'broken', cause: 'timeout', timeout_ms: 1_500 } });
       expect(Date.now() - started).toBeLessThan(5_000);
       const bg = Number(readFileSync(join(dir, 'bg'), 'utf8').trim());
       expect(await eventually(() => !alive(bg))).toBe(true);

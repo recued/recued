@@ -2,6 +2,8 @@ import type { SituationAgendaSettings, SituationAgendaStatus } from '@recued/con
 import { e } from '@recued/ui-shared';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
 import { deliveryCardStyles, nextDigestText } from './situation-delivery-panel.js';
+import { safeMentions, setTextWithMentions } from '../shell/text-with-mentions.js';
+import { situationRefHref } from '../data/situation-ref-href.js';
 
 export const AGENDA_PANEL_ATTR = 'data-situation-agenda';
 
@@ -36,6 +38,9 @@ const DAILY_LEDE = 'Your day in time order, sent to your notification channels a
   + 'on that day, recurring events included, every time, whether or not it changed. If nothing is on, nothing is sent.';
 const WEEKLY_LEDE = 'Your day or your week in time order, sent to your notification channels as “Agenda” with its dates. It lists '
   + 'everything on those days, recurring events included, every time, whether or not it changed. If nothing is on, nothing is sent.';
+/** D-338 slice 3 — what "Add AI suggestions" does, where the owner turns it on. */
+const SUGGESTIONS_HINT = 'After your agenda goes out, Recued’s AI looks it over and sends suggestions, such as clashes, travel '
+  + 'time and what to prepare. It runs as a scheduled prompt with its own conversation, and a day with nothing on gets none. ';
 
 export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
   const doc = opts.document ?? document;
@@ -104,6 +109,22 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
   const timezone = node('p', 'Times use your ', form, 'sd-hint');
   node('a', 'server timezone', timezone).href = '#settings/server/timezone';
   node('span', '. A time inside quiet hours waits until they end. Send now goes at once.', timezone);
+  // D-338 slice 3 — offered only by a server that names suggestions: one before them would drop
+  // the field from a save, and say it was saved.
+  const suggestionsLabel = node('label', undefined, form, 'sd-check');
+  suggestionsLabel.setAttribute('data-agenda-suggestions', '');
+  suggestionsLabel.hidden = true;
+  const suggestions = node('input', undefined, suggestionsLabel);
+  suggestions.type = 'checkbox';
+  suggestions.name = 'suggestions';
+  suggestions.setAttribute('aria-label', 'Add AI suggestions');
+  node('span', 'Add AI suggestions', suggestionsLabel);
+  const suggestionsHint = node('p', SUGGESTIONS_HINT, form, 'sd-hint');
+  suggestionsHint.setAttribute('data-agenda-suggestions-hint', '');
+  suggestionsHint.hidden = true;
+  const suggestionsLink = node('a', 'Open its conversation', suggestionsHint);
+  suggestionsLink.setAttribute('data-agenda-suggestions-conversation', '');
+  suggestionsLink.hidden = true;
   const actions = node('div', undefined, form, 'sd-actions');
   const saveButton = node('button', 'Save agenda settings', actions, 'rx-btn rx-btn-secondary rx-btn-sm');
   saveButton.type = 'submit';
@@ -120,7 +141,7 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
   retry.hidden = true;
   const results = node('div');
   results.setAttribute('data-agenda-results', '');
-  const controls = [enabled, frequency, weekday, day, time, saveButton, sendButton];
+  const controls = [enabled, frequency, weekday, day, time, suggestions, saveButton, sendButton];
   let disposed = false;
   let busy = false;
   let dirty = false;
@@ -138,6 +159,7 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
     for (const control of controls) control.disabled = value;
   };
   const weeklyNamed = () => agenda?.settings.frequency !== undefined;
+  const suggestionsNamed = () => agenda?.settings.suggestions !== undefined;
   const weekly = () => weeklyNamed() && frequency.value === 'weekly';
   // Labels follow the frequency and the weekday; values stay, so a draft keeps its choice. A
   // focused Day stays until it is blurred, so a refresh cannot drop keyboard focus.
@@ -153,11 +175,17 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
     day.setAttribute('aria-label', label);
     dailyHint.hidden = weekly();
     weeklyHint.hidden = !weekly();
+    suggestionsLabel.hidden = !suggestionsNamed();
+    suggestionsHint.hidden = !suggestionsNamed();
+    const conversation = agenda?.suggestions_session_id;
+    suggestionsLink.hidden = conversation === undefined;
+    if (conversation !== undefined) suggestionsLink.href = `#chat/session/${encodeURIComponent(conversation)}`;
   };
   const settings = (): SituationAgendaSettings => ({ enabled: enabled.checked, time: time.value, day: day.value === 'tomorrow' ? 'tomorrow' : 'today',
-    ...(weeklyNamed() ? { frequency: frequency.value === 'weekly' ? 'weekly' as const : 'daily' as const, weekday: Number(weekday.value) } : {}) });
+    ...(weeklyNamed() ? { frequency: frequency.value === 'weekly' ? 'weekly' as const : 'daily' as const, weekday: Number(weekday.value) } : {}),
+    ...(suggestionsNamed() ? { suggestions: suggestions.checked } : {}) });
   const sameSettings = (a: SituationAgendaSettings, b: SituationAgendaSettings) => a.enabled === b.enabled && a.time === b.time && a.day === b.day
-    && a.frequency === b.frequency && a.weekday === b.weekday;
+    && a.frequency === b.frequency && a.weekday === b.weekday && a.suggestions === b.suggestions;
   const updateDirty = () => {
     if (disposed || busy || !agenda) return;
     // A failed save may have reached the server. Only a fresh read can resolve it.
@@ -179,6 +207,7 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
       day.value = agenda.settings.day;
       if (agenda.settings.frequency !== undefined) frequency.value = agenda.settings.frequency;
       if (agenda.settings.weekday !== undefined) weekday.value = String(agenda.settings.weekday);
+      if (agenda.settings.suggestions !== undefined) suggestions.checked = agenda.settings.suggestions;
       // Native time controls hold an incomplete segment outside `value`: a focused one is left be.
       if (doc.activeElement !== time && time.value !== agenda.settings.time) time.value = agenda.settings.time;
     }
@@ -194,6 +223,10 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
       ${pending ? `<p>${count(pending, 'agenda is', 'agendas are')} waiting to be sent. Recued retries ${pending === 1 ? 'it' : 'them'} that day.</p>` : ''}
       ${uncertain ? `<p>${count(uncertain, 'delivery', 'deliveries')} could not be confirmed, even after one repeat. Open Today to see the day.</p>` : ''}
       ${run ? `<p>Last checked ${e(new Date(run.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))} · ${e(RUN_MODE[run.mode] ?? run.mode)} · ${e(RUN_STATE[run.state] ?? run.state)}</p>${sent?.text ? `<details><summary>What it sent</summary><p class="sd-sent">${e(sent.text)}</p></details>` : ''}` : '<p>No agenda has been sent yet.</p>'}`;
+    // D-338 §11 — the names it linked open their contacts here too.
+    const sentText = results.querySelector('.sd-sent');
+    const sentMentions = safeMentions(sent?.mentions);
+    if (sentText && sent?.text && sentMentions) setTextWithMentions(doc, sentText, sent.text, sentMentions, situationRefHref);
     const details = results.querySelector('details');
     if (details) details.open = open;
     if (heldSummary) (details?.querySelector('summary') ?? notice).focus({ preventScroll: true });

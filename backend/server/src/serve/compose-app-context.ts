@@ -383,6 +383,8 @@ export interface AppContext extends LlmSubstrate {
   annotationDeps: AnnotationRpcDeps | undefined;
   annotationStoreRef: AnnotationStore | undefined;
   chatStoreRef: ChatStore | undefined;
+  /** D-338 — makes a notification to a linked messenger a notice in that chat. */
+  chatNoticesRef: import('@recued/notification').RemoteNoticeHook | undefined;
   chatConnectionMcpStoreRef: ChatConnectionMcpStore | undefined;
   chatInboundTokenStoreRef: ChatInboundTokenStore | undefined;
   chatOrchestratorRef: ChatOrchestrator | undefined;
@@ -1808,6 +1810,7 @@ export const composeAppContext = (
     annotationStoreRef,
     situationAccessRef,
     chatStoreRef: chatBundle?.chatStore,
+    chatNoticesRef: chatBundle?.chatNotices,
     chatConnectionMcpStoreRef: chatBundle?.connectionMcpStore,
     chatInboundTokenStoreRef: chatBundle?.inboundTokenStore,
     chatOrchestratorRef: chatBundle?.orchestrator,

@@ -9586,6 +9586,14 @@ export const bootstrapWebclient = async (
         dismiss: (args: { key_hash: string }) => rpcConn.call('collection.contract.dismissWriteRuleSuggestion', args),
         listRules: () => rpcConn.call('collection.contract.listWriteRules', undefined),
         revoke: (args: { rule_id: string }) => rpcConn.call('collection.contract.revokeWriteRule', args),
+        // D-335 slice F — the passes for Browser Toolkit writes, listed beside the rules.
+        passes: {
+          listSuggestions: () => rpcConn.call('collection.contract.listBrowserPassSuggestions', undefined),
+          accept: (args: { key_hash: string }) => rpcConn.call('collection.contract.acceptBrowserPassSuggestion', args),
+          dismiss: (args: { key_hash: string }) => rpcConn.call('collection.contract.dismissBrowserPassSuggestion', args),
+          listPasses: () => rpcConn.call('collection.contract.listBrowserPasses', undefined),
+          revoke: (args: { pass_id: string }) => rpcConn.call('collection.contract.revokeBrowserPass', args),
+        },
       };
   // D-177 rule 5 (5.c, slice C) — the scoped-grant proposal section (same
   // panel gate; same reserved-out-of-MCP family — the webclient bearer path
@@ -10545,6 +10553,12 @@ export const bootstrapWebclient = async (
                 accept: switchWorkTracker.track(writeRulesCallers.accept),
                 dismiss: switchWorkTracker.track(writeRulesCallers.dismiss),
                 revoke: switchWorkTracker.track(writeRulesCallers.revoke),
+                passes: {
+                  ...writeRulesCallers.passes,
+                  accept: switchWorkTracker.track(writeRulesCallers.passes.accept),
+                  dismiss: switchWorkTracker.track(writeRulesCallers.passes.dismiss),
+                  revoke: switchWorkTracker.track(writeRulesCallers.passes.revoke),
+                },
               },
             }
           : {}),

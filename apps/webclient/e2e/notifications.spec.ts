@@ -68,6 +68,29 @@ test('notification phrase glyph saves once and keeps its settled value', async (
   await expect(input).toHaveValue('harbor moon');
 });
 
+test('D-338 an Agenda\'s birthday names open their contacts from the toast', async ({ page }) => {
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'notification.notify',
+      title: 'Agenda · Thu 5 Nov',
+      text: 'Birthdays: Ilsa Varga and Sam Park\n09:00 Dentist',
+      link_url: '#today',
+      mentions: [{ text: 'Ilsa Varga', ref: { collection: 'contact', id: 'contact-ilsa' } },
+        { text: 'Sam Park', ref: { collection: 'contact', id: 'contact-sam' } }],
+      cursor: 1,
+    },
+  }));
+  const toast = page.locator(`[${NOTIFY_TOAST}="toast-1"]`);
+  await expect(toast).toContainText('Birthdays: Ilsa Varga and Sam Park');
+  const names = toast.locator('a[data-recued-mention="contact"]');
+  await expect(names).toHaveCount(2);
+  expect(await names.evaluateAll(anchors => anchors.map(anchor => [anchor.textContent, anchor.getAttribute('href')])))
+    .toEqual([['Ilsa Varga', '#data/contact/contact-ilsa'], ['Sam Park', '#data/contact/contact-sam']]);
+  await names.first().click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#data/contact/contact-ilsa');
+});
+
 test('notification dismiss actions stay full-sized and contained', async ({ page }) => {
   await page.evaluate(() => window.__app.fireMessage({
     type: 'server_event',

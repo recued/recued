@@ -360,6 +360,14 @@ const INVALID_AI_OUTPUT_MID_TURN_MESSAGE =
  *  remains. No extra synthesis call is allowed past the cap. */
 const TOOL_BUDGET_EXHAUSTED_MESSAGE =
   'The AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.';
+/** Saved explanation for `waiting_for_approval` (D-337): a call of the turn
+ *  waits for the owner's approval and the model, told once that a further call
+ *  that would ask them is not asked until they answer, made another. The turn
+ *  ends there, and the conversation carries on by itself once they answer.
+ *  ⚠ Owner- and model-facing (the turn's answer, then the next turn's history)
+ *  — see `chat-prompt-optimization-log.md`. */
+const WAITING_FOR_APPROVAL_MESSAGE =
+  'The rest of this request waits for your answer to the approval. Once you answer it, this conversation carries on by itself.';
 /** Fail-loud message for the trim-livelock exit.
  *
  *  ⛔⛔ WHY THE TURN ENDS HERE RATHER THAN CARRYING ON. Measured 2026-09-05
@@ -999,6 +1007,19 @@ export const featureTextApprovalsIn = (here: NotificationChannelName): string =>
     + 'of the Recued app (Attention), which also opens the Approvals page, not from the Contracts view.';
 };
 
+/** D-338 — the line a conversation with notices in it carries (a Telegram, Slack or Discord chat
+ *  the owner chats with Recued on, read in the app or on the phone). Notices are stored in that
+ *  conversation and never shown to the model, so without this a reply that leans on one ("what
+ *  does that mean?") is answered as if nothing had been sent. The notice itself tells the owner
+ *  how to quote it; this tells the model the same rule, so it asks instead of guessing.
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const FEATURE_TEXT_NOTICES =
+  'Notices: Recued also posts notices to the user in this conversation (reminders, their agenda, '
+  + 'alerts), and you do not see them. A notice the user quotes in a reply comes with their message '
+  + 'as reply_to, with role "notice". If the user refers to something you cannot find in this '
+  + 'conversation, it may be a notice: ask them to reply to it (on Slack, in its thread), and do '
+  + 'not guess what it said.';
+
 /** A turn's system prompt with its approvals posture told where the conversation is. A prompt
  *  without the posture is left as it is. */
 export const withApprovalsHere = (prompt: string, here: NotificationChannelName | undefined): string =>
@@ -1116,9 +1137,14 @@ export const CHAT_INDEX_MODE_CATALOG_GUIDANCE =
  *  seen in a tools.search result. Keeps the anti-narration nudge + the anti-loop
  *  no-match stop (a weak model must not reword-and-retry). Phrased clear of the
  *  D-177 negative granting-vocabulary pin (`/you (can|may) (grant|approve|allow)/i`).
- *  Double-quoted identifiers (plain string constant, no template backticks). */
+ *  Double-quoted identifiers (plain string constant, no template backticks).
+ *
+ *  2026-11-04: "invoke it by using that "recipe_slug" AS THE TOOL NAME" was read
+ *  once in five runs as the name itself — the model called a tool literally
+ *  named `recipe_slug`. It now says the slug goes in "tool", and that it is the
+ *  field's VALUE. No example slug: a quoted one is a name to guess. */
 export const CHAT_LEAN_CORE_MODE_CATALOG_GUIDANCE =
-  'Tool catalog (lean-core mode): "available_tools" lists only the always-available core tools — contact, mail, calendar, memory, enrichment, deal, and account search, work search and read, plus "recipe.run" and "tools.search". Those are fully defined; call them directly and never search for them. Beyond the core tools, the user has installed MANY recipe tools that are NOT listed here — these produce prepared, curated, or actioned results that the core searches (which only return raw records) do not. Their absence from "available_tools" is a deliberate space saving, NOT evidence that they are missing: if the user names a routine, or asks for something a recipe would do, assume it IS installed and search for it. So: for a plain record lookup (for example "find Pat\'s email" or "what meetings are today") call the core search tool directly. The core tools cover only their own subjects — contacts, mail, calendar, memory, enrichment, deals, accounts, work items. A request about anything else — a building, a unit, an invoice, a queue, a job, a booking — has NO core tool at all, so "tools.search" is the only way to reach one; search rather than reporting that nothing is available. But if the request asks for a prepared view, digest, briefing, triage, or a specific named routine over the user\'s data — even one a core search could partly answer — call "tools.search" FIRST with a short capability query to find the recipe built for it, then invoke it by using that "recipe_slug" AS THE TOOL NAME in "tool_calls" — do not wrap a recipe in "recipe.run", because two different recipes sent through "recipe.run" record as the same tool called twice, which reads as a retry rather than a procedure; fall back to a core search tool only if no recipe matches. If a core search comes back EMPTY for something that belongs to a routine — a customer, a tenant, a unit, an invoice, a job — that is not proof the record does not exist; the core tools only see their own subjects, and the record may live in a recipe\'s own store. Search for the recipe that lists it before telling the user it is missing. In particular, a request to review or act on the user\'s own items that need attention or follow-up — not just look one up — usually has a purpose-built recipe: search for it before settling for a raw core-search list. Always emit the tool call you decide on — do not just describe what you would do. Never invoke a "recipe_slug" you have not seen in a "tools.search" result — a guessed recipe name will fail. If "tools.search" finds no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed, naming any it lists as "installable" that fits (the owner installs it; you cannot). Never tell the user a capability is missing, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language. That rule is about \"tools.search\" ONLY, because the recipe catalog is written in English. The user\'s OWN records — mail, calendar, memory, contacts, deals — are written in whatever language the user writes in, so search THOSE in the language of the request and of the records: an English query against a Chinese or Japanese mailbox matches nothing at all. Whatever you decide, your reply is ALWAYS the AIOutput shape ({"response", "events", "tool_calls"}) and never any other envelope — not a chat message, not an error object, not a copy of "available_tools" or of a tool result.';
+  'Tool catalog (lean-core mode): "available_tools" lists only the always-available core tools — contact, mail, calendar, memory, enrichment, deal, and account search, work search and read, plus "recipe.run" and "tools.search". Those are fully defined; call them directly and never search for them. Beyond the core tools, the user has installed MANY recipe tools that are NOT listed here — these produce prepared, curated, or actioned results that the core searches (which only return raw records) do not. Their absence from "available_tools" is a deliberate space saving, NOT evidence that they are missing: if the user names a routine, or asks for something a recipe would do, assume it IS installed and search for it. So: for a plain record lookup (for example "find Pat\'s email" or "what meetings are today") call the core search tool directly. The core tools cover only their own subjects — contacts, mail, calendar, memory, enrichment, deals, accounts, work items. A request about anything else — a building, a unit, an invoice, a queue, a job, a booking, a web page or the tabs open in the user\'s browser — has NO core tool at all, so "tools.search" is the only way to reach one; search rather than reporting that nothing is available. But if the request asks for a prepared view, digest, briefing, triage, or a specific named routine over the user\'s data — even one a core search could partly answer — call "tools.search" FIRST with a short capability query to find the recipe built for it, then invoke it with the slug the search returned as the "tool" in "tool_calls" — the value of its "recipe_slug", not the field name. Do not wrap a recipe in "recipe.run", because two different recipes sent through "recipe.run" record as the same tool called twice, which reads as a retry rather than a procedure; fall back to a core search tool only if no recipe matches. If a core search comes back EMPTY for something that belongs to a routine — a customer, a tenant, a unit, an invoice, a job — that is not proof the record does not exist; the core tools only see their own subjects, and the record may live in a recipe\'s own store. Search for the recipe that lists it before telling the user it is missing. In particular, a request to review or act on the user\'s own items that need attention or follow-up — not just look one up — usually has a purpose-built recipe: search for it before settling for a raw core-search list. Always emit the tool call you decide on — do not just describe what you would do. Never invoke a "recipe_slug" you have not seen in a "tools.search" result — a guessed recipe name will fail. If "tools.search" finds no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed, naming any it lists as "installable" that fits (the owner installs it; you cannot). Never tell the user a capability is missing, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language. That rule is about \"tools.search\" ONLY, because the recipe catalog is written in English. The user\'s OWN records — mail, calendar, memory, contacts, deals — are written in whatever language the user writes in, so search THOSE in the language of the request and of the records: an English query against a Chinese or Japanese mailbox matches nothing at all. Whatever you decide, your reply is ALWAYS the AIOutput shape ({"response", "events", "tool_calls"}) and never any other envelope — not a chat message, not an error object, not a copy of "available_tools" or of a tool result.';
 
 /** Compose the chat main-turn system prompt for the turn's catalog delivery
  *  mode. `'index'` appends {@link CHAT_INDEX_MODE_CATALOG_GUIDANCE};
@@ -1695,7 +1721,7 @@ export interface ChatMainTurnPromptParts {
  *  makes `Intl.DateTimeFormat` throw `RangeError`, which must degrade, never
  *  crash the turn. Same for `serverZone`: a zone stored before a tz-database
  *  rename can stop validating years later. */
-const resolveChatTimeZone = (timeZone?: string, serverZone?: string): string => {
+export const resolveChatTimeZone = (timeZone?: string, serverZone?: string): string => {
   const valid = (zone: string | undefined): string | undefined => {
     if (!zone) return undefined;
     try {
@@ -2081,6 +2107,9 @@ export interface RunChatTurnInputs {
    *  Notifications): the approvals posture names it as where to answer, then the app
    *  ({@link featureTextApprovalsIn}). Host-computed by the orchestrator. Absent → the bell. */
   readonly approvals_here?: NotificationChannelName;
+  /** D-338 — this conversation holds notices the model cannot see ({@link FEATURE_TEXT_NOTICES}).
+   *  Host-computed by the orchestrator from the conversation's messenger link. */
+  readonly notices_here?: boolean;
 }
 
 /** The capabilities `runChatTurn` needs injected — the AI call, the
@@ -2316,7 +2345,8 @@ export const runChatTurn = async (
   // cancelled. An old body is not a successful refresh.
   if (inputs.mail_work !== undefined) evidenceStore?.clear(session_id);
   const baseSystemPrompt = composeChatMainTurnSystemPrompt(inputs.catalog_mode,
-    withApprovalsHere(inputs.system_prompt ?? CHAT_MAIN_TURN_SYSTEM_PROMPT, inputs.approvals_here));
+    withApprovalsHere(inputs.system_prompt ?? CHAT_MAIN_TURN_SYSTEM_PROMPT, inputs.approvals_here))
+    + (inputs.notices_here === true ? `\n\n${FEATURE_TEXT_NOTICES}` : '');
   const mainSystemPrompt = (mailEvidence ? withMailWorkOutputShape(baseSystemPrompt) : baseSystemPrompt)
     + (inputs.mail_work !== undefined ? `\n\n${MAIL_WORK_INVESTIGATION_GUIDANCE}`
       : mailEvidence ? `\n\n${MAIL_WORK_REFINEMENT_GUIDANCE}` : '');
@@ -3917,6 +3947,10 @@ export const runChatTurn = async (
       // turn. Turn-scoped on purpose: a later turn may legitimately retry the
       // same call once the conversation has supplied what the gate wanted.
       const refusedCallCounts = new Map<string, number>();
+      // D-337 — rounds of this turn in which a call was not asked because one
+      // before it waits for the owner's approval (`not_asked_yet`). The second
+      // such round ends the turn: see `WAITING_FOR_APPROVAL_MESSAGE`.
+      let notAskedRounds = 0;
       // The cap counts WORK, not rounds. A round that dispatched nothing but
       // `tools.search` is the lean-core catalog's own tax — it converts an
       // omitted recipe entry into a callable name and does nothing the owner
@@ -4249,6 +4283,7 @@ export const runChatTurn = async (
         deps.assertActive?.();
         const roundStart = priorToolCalls.length;
         let toolCallsExecuted = 0;
+        let notAskedThisRound = false;
         let reusedAssetRead = false;
         const mailSearchResults: ChatDispatchResult[] = [];
         for (let i = 0; i < nextToolCalls.length; i += 1) {
@@ -4273,6 +4308,7 @@ export const runChatTurn = async (
           // A validation probe is not another executed Chat tool. Keep the
           // original durable result, provenance and read time.
           if (execution.reused) { reusedAssetRead = true; continue; }
+          if (!execution.result.ok && execution.result.reason === 'not_asked_yet') notAskedThisRound = true;
           if (tc.tool === 'mail.search') mailSearchResults.push(execution.result);
           collectProvenance(tc.tool, execution.result);
           toolCallsAccum.push(toolCallProvenanceEntry(
@@ -4389,6 +4425,24 @@ export const runChatTurn = async (
           toolCallsExecuted += 1;
         });
         openRound.tool_calls_executed = toolCallsExecuted;
+        // ⛔ D-337 — TOLD ONCE THAT A CALL WAITS FOR THE OWNER, THE MODEL ASKED
+        //   AGAIN: end the turn rather than spend its rounds on calls that
+        //   cannot be asked until they answer. Measured: in a browser search the
+        //   model sent the same click 8 more times over 4½ minutes while its first
+        //   click waited, each one `not_asked_yet`, and the conversation carried
+        //   on with the answered click only after the round cap. Nothing is
+        //   lost by ending: the conversation carries on by itself with that
+        //   call's outcome once the owner answers, and the model makes the call
+        //   then. Counted by ROUND, so every refusal of the first such round
+        //   reaches the model, which can answer from them; ended before the
+        //   model is called again, which would cost a round for the same call.
+        if (notAskedThisRound && ++notAskedRounds > 1) {
+          terminationReason = 'waiting_for_approval';
+          assistantContent = withStopMessage(currentAiOutput.response, WAITING_FOR_APPROVAL_MESSAGE);
+          // As at the round cap: the round ran, and the model wanted more.
+          completeRound('continue');
+          break toolLoop;
+        }
         // ⛔ THE ROLLING BRIEF, flag-gated. Compress this turn's accumulated
         //   results into a carry-forward BEFORE they force a trim, then drop
         //   them. Runs here — at the round boundary, after the batch has landed

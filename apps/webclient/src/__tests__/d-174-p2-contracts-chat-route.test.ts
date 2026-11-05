@@ -6418,6 +6418,79 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
+  describe('D-338 — what the model can see, told apart', () => {
+    const withClass = (node: FakeEl, cls: string): FakeEl[] => [
+      ...(node.className.split(/\s+/u).includes(cls) ? [node] : []),
+      ...node.children.flatMap((child) => withClass(child, cls)),
+    ];
+    const at = (rows: FakeEl[], id: string): FakeEl => rows.find((row) => row.getAttribute(CHAT_ROUTE_MESSAGE_ATTR) === id)!;
+    const mount = async () => {
+      const doc = makeFakeDocument(); const root = doc.createElement('div');
+      const sends: Array<Record<string, unknown>> = [];
+      const baseConn = stepConn();
+      const rows = [
+        { ...chatMessage(), id: 'notice:1', role: 'notice', content: '09:00  Dentist', ts: 1_000,
+          notice: { vendor: 'telegram', title: 'Agenda · Tue 3 Nov' } },
+        { ...chatMessage(), id: 'asked', role: 'user', content: 'can I move it?', ts: 1_100,
+          reply_to: { message_id: 'notice:1', preview: { role: 'notice', text: '09:00 Dentist', title: 'Agenda · Tue 3 Nov' } } },
+        { ...chatMessage(), id: 'gate', content: "Pat Lee's email address is pat@x.com.", ts: 1_200,
+          answered_without_model: { from: 'contacts' } },
+        { ...chatMessage(), id: 'fixed', content: 'Got your file.', ts: 1_250, answered_without_model: {} },
+        { ...chatMessage(), id: 'model', content: 'Sure.', ts: 1_300 },
+      ] as unknown as ChatMessage[];
+      const conn = (async (method: string, args: Record<string, unknown>): Promise<unknown> => {
+        if (method === 'chat.send') { sends.push(args); return { turn_id: 'accepted' }; }
+        if (method === 'chat.session.get') return { ...chatSession(), id: args.session_id, quoted_replies_available: true,
+          messages: rows.map((row) => ({ ...row, session_id: args.session_id })) };
+        return baseConn(method as never, args as never);
+      }) as ChatRouteConn;
+      const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+        conn, initialSessionId: 'chat_1' });
+      await route.whenLoaded();
+      return { root, route, sends, rows: collectByAttr(root, CHAT_ROUTE_MESSAGE_ATTR) };
+    };
+
+    it('draws a notice as a card with its title, the rule and a Reply, and no delivery line', async () => {
+      const { route, rows } = await mount();
+      const notice = at(rows, 'notice:1');
+      expect(notice.getAttribute('data-role')).toBe('notice');
+      expect(withClass(notice, 'chat-message-role')[0]?.textContent).toBe('Notice · Agenda · Tue 3 Nov');
+      expect(collectByAttr(notice, 'data-chat-notice-rule')[0]?.textContent).toBe('Not part of the chat. Reply to it to ask about it.');
+      expect(collectByAttr(notice, 'data-chat-reply-action').map((el) => el.getAttribute('data-chat-reply-action'))).toEqual(['notice:1']);
+      expect(collectByAttr(notice, 'data-chat-message-delivery')).toEqual([]);
+      // A chat turn carries neither.
+      expect(collectByAttr(at(rows, 'model'), 'data-chat-notice-rule')).toEqual([]);
+      route.dispose();
+    });
+
+    it('names a quoted notice in the reply that quotes it', async () => {
+      const { route, rows } = await mount();
+      expect(collectByAttr(at(rows, 'asked'), 'data-chat-quote')[0]?.children[0]?.textContent).toBe('Notice · Agenda · Tue 3 Nov');
+      route.dispose();
+    });
+
+    it('labels a reply no model wrote, with the store it read', async () => {
+      const { route, rows } = await mount();
+      const labelOf = (id: string) => withClass(at(rows, id), 'chat-message-role')[0]?.textContent;
+      expect(labelOf('gate')).toBe('Assistant · from your contacts, without AI');
+      expect(labelOf('fixed')).toBe('Assistant · without AI');
+      expect(labelOf('model')).toBe('Assistant');
+      expect(at(rows, 'gate').getAttribute('data-chat-without-ai')).toBe('');
+      expect(at(rows, 'model').getAttribute('data-chat-without-ai')).toBeNull();
+      route.dispose();
+    });
+
+    it('replies to a notice from its card', async () => {
+      const { root, route, rows, sends } = await mount();
+      collectByAttr(at(rows, 'notice:1'), 'data-chat-reply-action')[0]!.click();
+      const draft = collectByAttr(root, 'data-chat-reply-draft')[0]!;
+      expect(collectByAttr(draft, 'data-chat-quote')[0]?.children[0]?.textContent).toBe('Replying to a notice · Agenda · Tue 3 Nov');
+      await route.sendMessage('Move the dentist to Thursday');
+      expect(sends[0]).toMatchObject({ session_id: 'chat_1', reply_to_message_id: 'notice:1' });
+      route.dispose();
+    });
+  });
+
   it.each([false, true])('settles a background send without clearing another draft (edited: %s)', async edited => {
     const doc = makeFakeDocument(); const root = doc.createElement('div');
     let acknowledge!: (ack: { turn_id: string }) => void;

@@ -48,6 +48,7 @@ import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapprova
 import { describeProcessBinding } from './process-binding-identity.js';
 import { preapprovalHash } from './preapproval-invocations.js';
 import { createConnectionCacheScopes, markConnectionWriteAdmitted, withConnectionRecoveryFetch, withConnectionWriteCache, type ConnectionCacheStore } from './connection-cache-scope.js';
+import { withSalesforceOptionalColumns } from './data/salesforce/optional-columns-fetch.js';
 import { buildStdioMcpEnvironment } from './mcp-stdio-spawner.js';
 import { currentRunAbortContext } from './execution/run-abort-context.js';
 import { assertProviderHandoffActive, captureProviderHandoffFence } from './execution/provider-handoff.js';
@@ -126,7 +127,9 @@ const reviewedMcpDeps = (deps: ConnectionMcpHandlerDeps,
 const reviewedApiDeps = (deps: ConnectionApiHandlerDeps, checkConnectionRevisions?: () => void,
   cacheScopes?: ReturnType<typeof createConnectionCacheScopes>): ConnectionApiHandlerDeps => ({
   ...deps,
-  fetchImpl: withConnectionRecoveryFetch(deps.fetchImpl ?? globalThis.fetch),
+  // D-338 §15 — outermost, so a Salesforce query asked again without a column the org
+  // cannot give passes the recovery checks on each try.
+  fetchImpl: withSalesforceOptionalColumns(withConnectionRecoveryFetch(deps.fetchImpl ?? globalThis.fetch)),
   ...(deps.managedOAuthFetch ? { managedOAuthFetch: (...args) => {
     cacheScopes?.assertRecoveryActive();
     assertProviderHandoffActive();

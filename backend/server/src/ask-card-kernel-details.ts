@@ -49,6 +49,17 @@ const KERNEL_INPUTS_BY_SLUG: ReadonlyMap<string, readonly string[]> = new Map(
 /** A retry key says nothing to approve (the same rule as the default rows). */
 const PLUMBING = /idempotency/i;
 
+/** D-335 slice J — inputs whose card row says what they hold rather than showing it. A
+ *  sequence's `steps` carry every value it types, a password among them: the ask lists each step
+ *  as the page shows it, hiding what goes into a password, sign-in code or card field, and the
+ *  row only counts them. */
+const SUMMARIZED: Readonly<Record<string, Readonly<Record<string, (value: unknown) => string>>>> = {
+  'dom-act': {
+    steps: (value) => (Array.isArray(value)
+      ? `${value.length} step${value.length === 1 ? '' : 's'}, listed in the ask` : 'the steps listed in the ask'),
+  },
+};
+
 /** The subject of the action reads first: the card's headline was `title` only,
  *  which left a commitment and a calendar event without one. */
 const HEADLINE_LEAVES = ['title', 'statement', 'summary', 'subject', 'name'] as const;
@@ -148,6 +159,11 @@ export const kernelReviewDetails = (
     if (PLUMBING.test(key) || !Object.hasOwn(args, key)) continue;
     const value = args[key];
     if (value === undefined) continue;
+    const summary = SUMMARIZED[slug]?.[key];
+    if (summary !== undefined) {
+      rows.push({ key, value: summary(value), prefix: null });
+      continue;
+    }
     if (isPlainRecord(value) && Object.keys(value).length > 0) {
       for (const [child, inner] of Object.entries(value)) {
         if (inner !== undefined) rows.push({ key: `${key}.${child}`, value: inner, prefix: key });

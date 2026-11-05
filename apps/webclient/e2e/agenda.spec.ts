@@ -76,6 +76,24 @@ test('Send now shows what it sent and keeps every edit for Save', async ({ page 
   expect(await changes(page)).toEqual([{ kind: 'send' }]);
 });
 
+test('the names an Agenda linked open their contacts in what it sent, and the rest stays text (D-338 §11)', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => {
+    const sent = { at: Date.parse('2026-11-02T20:00:00Z'), mode: 'agenda', text: 'Birthdays: Ilsa Varga and Sam Park\n06:00 Wake up', delivered_to: ['in_app'],
+      mentions: [{ text: 'Ilsa Varga', ref: { collection: 'contact', id: 'contact-ilsa' } }, { text: 'Sam Park', ref: { collection: 'contact', id: 'contact-sam' } }] };
+    window.__agenda.setServer({ last_run: { ...sent, state: 'sent' }, last_sent: sent });
+    window.__agenda.refresh();
+  });
+  await release(page, 'read', 1);
+  await panel(page).getByText('What it sent', { exact: true }).click();
+  const sentText = panel(page).locator('.sd-sent');
+  await expect(sentText).toHaveText('Birthdays: Ilsa Varga and Sam Park\n06:00 Wake up');
+  const links = sentText.locator('a[data-recued-mention]');
+  await expect(links).toHaveCount(2);
+  expect(await links.evaluateAll(anchors => anchors.map(anchor => [anchor.textContent, anchor.getAttribute('href')])))
+    .toEqual([['Ilsa Varga', '#data/contact/contact-ilsa'], ['Sam Park', '#data/contact/contact-sam']]);
+});
+
 test('an untouched card adopts the server’s settings, and an edited one keeps its draft through a refresh', async ({ page }) => {
   await open(page);
   await page.evaluate(() => {
@@ -162,6 +180,30 @@ test('a server whose Agenda is daily only offers no week, and a save leaves the 
   await release(page, 'read', 1); await expect(time(page)).toHaveValue('07:00');
   await expect(often(page)).toBeHidden(); await expect(weekday(page)).toBeHidden();
   await expect(panel(page).locator('.sd-lede')).toHaveText(/^Your day in time order/u);
+  // D-338 — and no AI suggestions: it names none.
+  await expect(panel(page).getByLabel('Add AI suggestions', { exact: true })).toBeHidden();
   await edit(page); await activate(page, 'save'); await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('Agenda settings saved.');
   expect(await changes(page)).toEqual([{ kind: 'save', settings: { enabled: true, time: '20:30', day: 'tomorrow' } }]);
+});
+
+test('D-338 — a server with AI suggestions offers them, saves the choice, and links their conversation', async ({ page }) => {
+  await page.goto('/agenda-harness.html'); await page.waitForFunction(() => window.__agenda !== undefined);
+  await page.evaluate(() => {
+    window.__agenda.setServer({ settings: { enabled: true, time: '07:00', day: 'today', frequency: 'daily', weekday: 1, suggestions: false } });
+    window.__agenda.remount();
+  });
+  await release(page, 'read', 1); await expect(time(page)).toHaveValue('07:00');
+  const suggestions = panel(page).getByLabel('Add AI suggestions', { exact: true });
+  const link = panel(page).locator('[data-agenda-suggestions-conversation]');
+  await expect(suggestions).toBeVisible(); await expect(suggestions).not.toBeChecked();
+  await expect(panel(page).locator('[data-agenda-suggestions-hint]')).toContainText('It runs as a scheduled prompt with its own conversation');
+  await expect(link).toBeHidden();
+  await suggestions.check(); expect(await unsaved(page)).toBe(true);
+  // The server sets up their conversation as it saves.
+  await page.evaluate(() => window.__agenda.setServer({ suggestions_session_id: 'scheduled-agenda' }));
+  await activate(page, 'save'); await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('Agenda settings saved.');
+  expect(await changes(page)).toEqual([{ kind: 'save',
+    settings: { enabled: true, time: '07:00', day: 'today', frequency: 'daily', weekday: 1, suggestions: true } }]);
+  await expect(link).toBeVisible(); await expect(link).toHaveAttribute('href', '#chat/session/scheduled-agenda');
+  expect(await unsaved(page)).toBe(false);
 });

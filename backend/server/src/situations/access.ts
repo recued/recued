@@ -1,4 +1,4 @@
-import { OWNER_CONTRACT_ID, parseAssetFactContextRequest, parseSituationQueryInput, type AssetFactContext, type AssetFactContextRequest, type ExecutionSource, type SituationQueryInput, type SituationResult } from '@recued/contracts';
+import { OWNER_CONTRACT_ID, parseAssetFactContextRequest, parseSituationQueryInput, type AssetFactContext, type AssetFactContextRequest, type ExecutionSource, type SituationItem, type SituationQueryInput, type SituationResult } from '@recued/contracts';
 import { resolveGrantGoverningContractId } from '../grant-governing-contract.js';
 import { createGatedReadGrantResolver, type ReadGrantChecker } from '../read-grant-checker.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
@@ -24,6 +24,12 @@ export const createSituationAccess = (deps: {
   memoryAllowed?: SituationReadContext['memoryAllowed'];
   factContext?(input: AssetFactContextRequest, context: SituationReadContext): AssetFactContext | Promise<AssetFactContext>;
   fieldVersion?(input: AssetFactContextRequest, context: SituationReadContext): string | undefined | Promise<string | undefined>;
+  /** D-338 — the server's zone: the clock a day a caller names is read on when the caller has
+   *  none of its own (an MCP agent, a recipe). Chat passes its turn's (`read`). */
+  timeZone?: () => string | undefined;
+  /** D-338 — the Agenda's rule for what the owner's notifications call only "a private
+   *  reminder" (`ScheduledSituations.isPrivateItem`), so a model is told which items those are. */
+  isPrivate?: (item: SituationItem) => boolean;
 }) => {
   const now = deps.now ?? Date.now;
   const definitions = createContractDefinitionStore(deps.contracts, { now });
@@ -93,7 +99,10 @@ export const createSituationAccess = (deps: {
       if (signal?.aborted || before !== authority(source, SITUATION_READ_OP, ['asset'])) throw new SituationAccessError('Permissions changed during the context read. Refresh before relying on it.');
       return version;
     },
-    async read(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal): Promise<SituationResult> {
+    /** True for an item the owner's notifications name only as "a reminder in Yours". */
+    isPrivate: (item: SituationItem): boolean => deps.isPrivate?.(item) === true,
+    /** `time_zone` is the clock a named day is read on: the chat turn's. Without it, the server's. */
+    async read(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal, time_zone?: string): Promise<SituationResult> {
       const access = context(source);
       const before = authority(source, SITUATION_READ_OP);
       if (raw && typeof raw === 'object' && !Array.isArray(raw) && 'context' in raw) {
@@ -104,7 +113,7 @@ export const createSituationAccess = (deps: {
         if (signal?.aborted || before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the context read. Refresh before relying on it.');
         return { clusters: [], omitted: 0, ambiguous: [], fact_context: packet };
       }
-      const input: SituationQueryInput = parseSituationQueryInput(raw);
+      const input: SituationQueryInput = parseSituationQueryInput(raw, time_zone ?? deps.timeZone?.());
       const result = await deps.query({ ...input, surface: 'tool' }, { ...access, ...(signal ? { signal } : {}) });
       if (before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the situation read. Ask the owner to refresh before relying on it.');
       return result;

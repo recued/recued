@@ -3,11 +3,11 @@ import type { SituationDeliverySettings } from '@recued/contracts';
 
 const panel = (page: Page) => page.locator('[data-situation-delivery]');
 const time = (page: Page) => panel(page).getByLabel('Time', { exact: true });
-const save = (page: Page) => panel(page).getByRole('button', { name: 'Save digest settings', exact: true });
+const save = (page: Page) => panel(page).getByRole('button', { name: 'Save “Coming up” settings', exact: true });
 const send = (page: Page) => panel(page).getByRole('button', { name: 'Send now', exact: true });
 const notice = (page: Page) => panel(page).locator('[data-situation-delivery-message]');
 const outside = (page: Page) => page.getByRole('button', { name: 'Outside panel', exact: true });
-const retry = (page: Page) => page.getByRole('button', { name: 'Retry digest settings', exact: true });
+const retry = (page: Page) => page.getByRole('button', { name: 'Retry “Coming up” settings', exact: true });
 const reads = (page: Page) => page.evaluate(() => window.__overview.calls.filter(call => call.kind === 'read').length);
 const changes = (page: Page) => page.evaluate(() => window.__overview.calls.filter(call => call.kind !== 'read'));
 const release = (page: Page, kind: 'read' | 'save' | 'send', index = 0, outcome: 'success' | 'error' | 'unsupported' = 'success') =>
@@ -22,13 +22,13 @@ const edit = async (page: Page) => {
   // The day is shown only for a weekly digest, so it is chosen before leaving weekly.
   await panel(page).getByLabel('Day', { exact: true }).selectOption('5');
   await panel(page).getByLabel('How often', { exact: true }).selectOption('daily');
-  await time(page).fill('23:30'); await panel(page).getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
+  await time(page).fill('23:30'); await panel(page).getByLabel('Also send “Due today” on the day something is due', { exact: true }).uncheck();
 };
 const expectDraft = async (page: Page) => {
   await expect(panel(page).getByLabel('How often', { exact: true })).toHaveValue('daily');
   await expect(panel(page).getByLabel('Day', { exact: true })).toHaveValue('5');
   await expect(time(page)).toHaveValue('23:30');
-  await expect(panel(page).getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
+  await expect(panel(page).getByLabel('Also send “Due today” on the day something is due', { exact: true })).not.toBeChecked();
 };
 const finish = async (page: Page, kind: 'save' | 'send', index = 0, readIndex = 1) => {
   await release(page, kind, index); await expect.poll(() => reads(page)).toBeGreaterThan(readIndex); await release(page, 'read', readIndex);
@@ -38,7 +38,7 @@ const unsaved = (page: Page) => page.evaluate(() => window.__overview.hasUnsaved
 const restore = async (page: Page) => {
   await panel(page).getByLabel('How often', { exact: true }).selectOption('weekly');
   await panel(page).getByLabel('Day', { exact: true }).selectOption('1');
-  await time(page).fill('09:00'); await panel(page).getByLabel('Also send a note on the day something is due', { exact: true }).check();
+  await time(page).fill('09:00'); await panel(page).getByLabel('Also send “Due today” on the day something is due', { exact: true }).check();
 };
 const errors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => { const list: string[] = []; errors.set(page, list); page.on('pageerror', error => list.push(error.message)); });
@@ -56,7 +56,7 @@ for (const width of [390, 1280]) {
     await release(page, 'read', 1);
     await expect(panel(page).getByLabel('How often', { exact: true })).toHaveValue('off');
     await expect(panel(page).getByLabel('Day', { exact: true })).toHaveValue('7');
-    await expect(time(page)).toHaveValue('12:00'); await expect(panel(page).getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
+    await expect(time(page)).toHaveValue('12:00'); await expect(panel(page).getByLabel('Also send “Due today” on the day something is due', { exact: true })).not.toBeChecked();
     expect(await unsaved(page)).toBe(false); await expect(outside(page)).toBeFocused(); expect(await changes(page)).toEqual([]);
     expect(await original!.evaluate(input => input.isConnected)).toBe(true);
   });
@@ -71,13 +71,13 @@ for (const width of [390, 1280]) {
     await restore(page); expect(await unsaved(page)).toBe(true);
     await panel(page).getByLabel('Day', { exact: true }).selectOption('7');
     await panel(page).getByLabel('How often', { exact: true }).selectOption('off'); await time(page).fill('12:00');
-    expect(await unsaved(page)).toBe(true); await panel(page).getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
+    expect(await unsaved(page)).toBe(true); await panel(page).getByLabel('Also send “Due today” on the day something is due', { exact: true }).uncheck();
     expect(await unsaved(page)).toBe(false); expect(await changes(page)).toEqual([]); expect(await reads(page)).toBe(2);
   });
 
   test(`a confirmed save becomes the baseline for later reverts at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 }); await open(page); await edit(page);
-    await activate(page, 'save'); await finish(page, 'save'); await expect(notice(page)).toHaveText('Digest settings saved.');
+    await activate(page, 'save'); await finish(page, 'save'); await expect(notice(page)).toHaveText('“Coming up” settings saved.');
     expect(await unsaved(page)).toBe(false); await restore(page); expect(await unsaved(page)).toBe(true);
     await edit(page); expect(await unsaved(page)).toBe(false);
     expect(await changes(page)).toEqual([{ kind: 'save', settings: draft }]); expect(await reads(page)).toBe(2);
@@ -95,7 +95,7 @@ for (const width of [390, 1280]) {
       await expect(time(page)).toHaveValue('09:00');
       await expect(panel(page).getByLabel('How often', { exact: true })).toHaveValue('weekly');
       await expect(panel(page).getByLabel('Day', { exact: true })).toHaveValue('1');
-      await expect(panel(page).getByLabel('Also send a note on the day something is due', { exact: true })).toBeChecked();
+      await expect(panel(page).getByLabel('Also send “Due today” on the day something is due', { exact: true })).toBeChecked();
       expect(await unsaved(page)).toBe(phase === 'confirmation');
       if (phase === 'confirmation') { await edit(page); expect(await unsaved(page)).toBe(false); }
       expect(await changes(page)).toEqual([{ kind: 'save', settings: draft }]); expect(await reads(page)).toBe(before + 1);
@@ -111,7 +111,7 @@ for (const width of [390, 1280]) {
     await panel(page).getByText('What it sent', { exact: true }).click(); await expect(panel(page)).toContainText('Fixture overview');
     expect(await changes(page)).toEqual([{ kind: 'send' }]);
     await activate(page, 'save'); expect(await changes(page)).toEqual([{ kind: 'send' }, { kind: 'save', settings: draft }]);
-    await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('Digest settings saved.');
+    await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('“Coming up” settings saved.');
     await expectDraft(page); await expect(save(page)).toBeFocused();
     expect(await original!.evaluate(input => input.isConnected && input === document.querySelector('[name="time"]'))).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -132,7 +132,7 @@ test('a failed schedule save retains its draft, announces the error and retries 
   await expect(notice(page)).toHaveAttribute('role', 'alert'); await expect(notice(page)).toHaveText('Could not save the overview schedule. Try again.');
   await expect(save(page)).toBeFocused(); await expectDraft(page); await page.keyboard.press('Enter');
   expect(await changes(page)).toEqual([{ kind: 'save', settings: draft }, { kind: 'save', settings: draft }]);
-  await finish(page, 'save', 1); await expect(notice(page)).toHaveText('Digest settings saved.');
+  await finish(page, 'save', 1); await expect(notice(page)).toHaveText('“Coming up” settings saved.');
 });
 
 for (const kind of ['save', 'send'] as const) {
@@ -171,7 +171,7 @@ test('the day shows only for a weekly digest, and a refresh leaves a focused day
   await outside(page).focus(); await expect(day).toBeHidden(); expect(await changes(page)).toEqual([]);
 });
 
-test('a server without digest settings omits the initial panel', async ({ page }) => {
+test('a server without “Coming up” settings omits the initial panel', async ({ page }) => {
   await page.goto('/situation-delivery-harness.html'); await page.waitForFunction(() => window.__overview !== undefined);
   await release(page, 'read', 0, 'unsupported'); await expect(panel(page)).toHaveCount(0);
   expect(await changes(page)).toEqual([]);
@@ -181,7 +181,7 @@ test('refresh updates delivery results while retaining the form draft and active
   await open(page); await edit(page); await time(page).focus(); const original = await time(page).elementHandle();
   await page.evaluate(() => { window.__overview.setServer({ pending: 2, uncertain: 1 }); window.__overview.refresh(); });
   await expectDraft(page); await release(page, 'read', 1); await expectDraft(page); await expect(time(page)).toBeFocused();
-  await expect(panel(page)).toContainText('2 digests are waiting to be sent.');
+  await expect(panel(page)).toContainText('2 messages are waiting to be sent.');
   await expect(panel(page)).toContainText('1 delivery could not be confirmed');
   expect(await original!.evaluate(input => input.isConnected && document.activeElement === input)).toBe(true);
 });
@@ -196,7 +196,7 @@ for (const kind of ['save', 'send'] as const) {
   test(`an older read cannot replace a ${kind} confirmation`, async ({ page }) => {
     await open(page); await page.evaluate(() => window.__overview.refresh()); await edit(page); await activate(page, kind);
     await finish(page, kind, 0, 2); await release(page, 'read', 1); await expectDraft(page);
-    if (kind === 'save') await expect(notice(page)).toHaveText('Digest settings saved.');
+    if (kind === 'save') await expect(notice(page)).toHaveText('“Coming up” settings saved.');
     else await expect(panel(page).getByText('What it sent', { exact: true })).toBeVisible();
   });
 }
@@ -300,7 +300,7 @@ test('the card says when the next digest goes, in the server’s zone, and nothi
   await expect.poll(() => reads(page)).toBe(2); await release(page, 'read', 1);
   const expected = await page.evaluate(() => new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit',
     minute: '2-digit', timeZone: 'Europe/Paris' }).format(Date.parse('2030-10-28T07:00:00Z')));
-  await expect(panel(page).locator('[data-situation-next]')).toHaveText(`Next digest: ${expected}`);
+  await expect(panel(page).locator('[data-situation-next]')).toHaveText(`Next “Coming up”: ${expected}`);
   expect(expected).toContain('08:00');
 });
 
@@ -336,7 +336,7 @@ for (const width of [390, 1280]) {
     await often(page).selectOption('daily'); await expect(lookAhead(page)).toHaveValue('2');
     await activate(page, 'save');
     expect(await changes(page)).toEqual([{ kind: 'save', settings: { frequency: 'daily', weekday: 1, time: '09:00', day_of: true, look_ahead_days: 2 } }]);
-    await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('Digest settings saved.');
+    await finish(page, 'save', 0, 2); await expect(notice(page)).toHaveText('“Coming up” settings saved.');
     await expect(lookAhead(page)).toHaveValue('2'); expect(await unsaved(page)).toBe(false);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });

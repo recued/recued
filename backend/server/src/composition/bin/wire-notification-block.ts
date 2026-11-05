@@ -23,6 +23,7 @@
  */
 
 import {
+  isBrowserPassOptionId,
   mayHoldAskForQuietHours,
   resolveQuietHoursOccurrence,
   resolveServerTimeZone,
@@ -353,6 +354,8 @@ export const buildAnswerActivity = (record: AnswerAuditRecord): ActivityEntry =>
 const answerAuditAction = (option: string): ActivityAction =>
   option === 'approve'
   || option === 'allow_session'
+  // D-335 slice F — "Allow on <site> for this session" / "Always allow on <site>".
+  || isBrowserPassOptionId(option)
   || option === NEVER_ASK_OPERATION_OPTION_ID
   || option === RELAX_OPERATION_TO_ASK_OPTION_ID
     ? 'approval_allow'

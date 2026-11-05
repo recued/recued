@@ -550,3 +550,145 @@ describe('D-130 P3 — wireSalesforceReconciliation registers contact tasks alon
     expect(getHousekeepingTask(reconciliationTaskId('salesforce', 'opportunity', 'temp'))).toBeUndefined();
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// D-338 §10 — a contact's birthday, where the org shows it
+// ────────────────────────────────────────────────────────────────
+
+describe('D-338 §10 — a Salesforce contact\'s birthday, where the org shows it to the connected user', () => {
+  const BIRTHDAY = '1984-11-05';
+  /** SOQL's answer for a column the connected user may not see: a 400, which echoes the query
+   *  first (so it names `Birthdate` whenever it was asked for; its words are never read). */
+  const refusedFor = (column: string): Response => new Response(JSON.stringify([{
+    message: `\n${buildContactSoql(0, 200, { birthdate: true })}\n${' '.repeat(40)}^\nERROR at Row:1:Column:200\n`
+      + `No such column '${column}' on entity 'Contact'. If you are attempting to use a custom field, be sure to `
+      + "append the '__c' after the custom field name. Please reference your WSDL or the describe call for the "
+      + 'appropriate names.',
+    errorCode: 'INVALID_FIELD',
+  }]), { status: 400 });
+  const page = (records: RawSalesforceRecord[]): Response =>
+    new Response(JSON.stringify({ records, done: true }), { status: 200 });
+
+  it('asks for Birthdate beyond the canonical fields, which the PushTopic Query is made from too', () => {
+    expect(buildContactSoql(0, 200, { birthdate: true }))
+      .toContain(`SELECT ${SALESFORCE_CONTACT_FIELDS.join(', ')}, Birthdate FROM Contact`);
+    expect(buildContactSoql(0, 200)).not.toContain('Birthdate');
+    expect(SALESFORCE_CONTACT_FIELDS).not.toContain('Birthdate');
+  });
+
+  it('a contact without a birthday keeps the hash it had, and one with a birthday changes it', () => {
+    // Pinned against the reconciler before D-338 §10: no record re-materialises for a
+    // birthday it has not got.
+    expect(computeContactHash(rawContact())).toBe('fnv1a:aef4de32');
+    expect(computeContactHash(rawContact({ Birthdate: null }))).toBe('fnv1a:aef4de32');
+    expect(computeContactHash(rawContact({ Birthdate: '05/11/1984' }))).toBe('fnv1a:aef4de32');
+    expect(computeContactHash(rawContact({ Birthdate: BIRTHDAY }))).not.toBe('fnv1a:aef4de32');
+  });
+
+  it('keeps it on the snapshot, only in a contact\'s own forms', () => {
+    expect(projectContactMeta(rawContact({ Birthdate: BIRTHDAY }), 'h', 1).birthday).toBe(BIRTHDAY);
+    expect(projectContactMeta(rawContact({ Birthdate: null }), 'h', 1)).not.toHaveProperty('birthday');
+    expect(projectContactMeta(rawContact({ Birthdate: '05/11/1984' }), 'h', 1)).not.toHaveProperty('birthday');
+  });
+
+  it('reads it in the cycle\'s one query where the org shows it', async () => {
+    const urls: string[] = [];
+    const reconciler = new SalesforceContactReconciler({
+      search: {
+        fetcher: (async (url: string | URL) => { urls.push(String(url)); return page([rawContact({ Birthdate: BIRTHDAY })]); }) as typeof fetch,
+        refreshAuth: async () => sampleAuth(),
+      },
+    });
+    const metas: unknown[] = [];
+    for await (const slim of reconciler.listUpdatedSince(sampleSalesforceConnection(), 0, 200)) metas.push(reconciler.toMeta(slim));
+    expect(urls).toHaveLength(1);
+    expect(decodeURIComponent(urls[0]!)).toContain(', Birthdate FROM Contact');
+    expect(metas).toMatchObject([{ birthday: BIRTHDAY }]);
+  });
+
+  it('where a profile hides it, reads the org without it, and asks again only a day later', async () => {
+    let clock = 1_800_000_000_000;
+    const asked: boolean[] = [];
+    const reconciler = new SalesforceContactReconciler({
+      now: () => clock,
+      search: {
+        fetcher: (async (url: string | URL) => {
+          const withBirthdate = decodeURIComponent(String(url)).includes('Birthdate');
+          asked.push(withBirthdate);
+          return withBirthdate ? refusedFor('Birthdate') : page([rawContact()]);
+        }) as typeof fetch,
+        refreshAuth: async () => sampleAuth(),
+      },
+    });
+    const walk = async (): Promise<string[]> => {
+      const ids: string[] = [];
+      for await (const slim of reconciler.listUpdatedSince(sampleSalesforceConnection(), 0, 200)) ids.push(slim.id);
+      return ids;
+    };
+    expect(await walk()).toEqual(['salesforce_contact_acme-salesforce_003A0000005XYZAB']);
+    expect(asked).toEqual([true, false]);
+    // The next cycle does not ask for the column it was refused.
+    expect(await walk()).toHaveLength(1);
+    expect(asked).toEqual([true, false, false]);
+    // A day on it asks again, so a profile changed to show it is read within a day.
+    clock += 24 * 60 * 60 * 1000;
+    expect(await walk()).toHaveLength(1);
+    expect(asked).toEqual([true, false, false, true, false]);
+  });
+
+  it('a query refused for another column fails as it did, and Birthdate is asked for again next time', async () => {
+    const asked: boolean[] = [];
+    const reconciler = new SalesforceContactReconciler({
+      search: {
+        fetcher: (async (url: string | URL) => {
+          asked.push(decodeURIComponent(String(url)).includes('Birthdate'));
+          return refusedFor('LeadSource');
+        }) as typeof fetch,
+        refreshAuth: async () => sampleAuth(),
+      },
+    });
+    const walk = async (): Promise<void> => {
+      for await (const _slim of reconciler.listUpdatedSince(sampleSalesforceConnection(), 0, 200)) {
+        // exhaust
+      }
+    };
+    // Asked without Birthdate, it is refused again: that refusal is the cycle's.
+    await expect(walk()).rejects.toMatchObject({ name: 'SalesforceSearchError', status: 400 });
+    expect(asked).toEqual([true, false]);
+    // Birthdate was not why, so the next cycle asks for it.
+    await expect(walk()).rejects.toMatchObject({ status: 400 });
+    expect(asked).toEqual([true, false, true, false]);
+  });
+
+  it('a failure that is not a refused query is not asked again without Birthdate', async () => {
+    const urls: string[] = [];
+    const reconciler = new SalesforceContactReconciler({
+      search: {
+        fetcher: (async (url: string | URL) => { urls.push(String(url)); return new Response('[]', { status: 500 }); }) as typeof fetch,
+        refreshAuth: async () => sampleAuth(),
+      },
+    });
+    const walk = async (): Promise<void> => {
+      for await (const _slim of reconciler.listUpdatedSince(sampleSalesforceConnection(), 0, 200)) {
+        // exhaust
+      }
+    };
+    await expect(walk()).rejects.toMatchObject({ name: 'SalesforceSearchError', status: 500 });
+    expect(urls).toHaveLength(1);
+  });
+
+  it('a streamed contact keeps the birthday its last snapshot had, and is hashed as a cycle hashes it', () => {
+    const reconciler = new SalesforceContactReconciler({ search: { refreshAuth: async () => sampleAuth() } });
+    const streamed: SalesforceContactSlimRecord = {
+      id: 'salesforce_contact_acme-salesforce_003A0000005XYZAB', modified_at: 1, _raw: rawContact(),
+    };
+    const cycle: SalesforceContactSlimRecord = { ...streamed, _raw: rawContact({ Birthdate: BIRTHDAY }) };
+    const filled = reconciler.fillStreamGaps(streamed, reconciler.toMeta(cycle));
+    expect(filled._raw.Birthdate).toBe(BIRTHDAY);
+    expect(reconciler.hashOf(filled)).toBe(reconciler.hashOf(cycle));
+    // A record that names the field speaks for itself; with no snapshot nothing is kept.
+    const named: SalesforceContactSlimRecord = { ...streamed, _raw: rawContact({ Birthdate: null }) };
+    expect(reconciler.fillStreamGaps(named, reconciler.toMeta(cycle))).toBe(named);
+    expect(reconciler.fillStreamGaps(streamed, null)).toBe(streamed);
+  });
+});

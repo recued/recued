@@ -41,6 +41,7 @@ export const bootInAppChannel = (
       text: payload.text,
       ...(payload.title !== undefined ? { title: payload.title } : {}),
       ...(payload.link_url !== undefined ? { link_url: payload.link_url } : {}),
+      ...(payload.mentions?.length ? { mentions: payload.mentions } : {}),
     });
     return { ok: true };
   };

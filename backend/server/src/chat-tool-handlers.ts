@@ -6620,6 +6620,11 @@ const createPromptScheduleHandler = (deps: ChatToolHandlerDeps,
     if (action === 'list') return { ok: true, result: await service.list(args.all === true ? undefined : ctx.session_id) };
     let result;
     if (action === 'run_prompt') {
+      // D-338 §13 — a chat's call arrives with its turn's zone (`withTurnZone`, before the
+      // hold), so one without a zone is an external MCP client's, which keeps its own clock.
+      if (typeof args.time_zone !== 'string' || args.time_zone.trim() === '') {
+        return invalidArgs('An external MCP client must supply time_zone, an IANA zone such as America/New_York.');
+      }
       const id = typeof args.creation_id === 'string' ? args.creation_id
         : ctx.turn_id ? `tool:${ctx.turn_id}:${JSON.stringify(args)}` : undefined;
       if (!id) return invalidArgs('An external MCP client must supply a stable creation_id.');
@@ -6655,8 +6660,13 @@ export const buildChatTier1Handlers = (
     try {
       const { situationModelProjection } = await import('./situations/model-projection.js');
       const { situationSourceCitations } = await import('./chat-situation-source-citations.js');
-      const native = await access.read(raw, ctx.execution_source);
-      return { ok: true, ...situationSourceCitations(native, situationModelProjection(native, situationPersonName(deps.getContactStore?.()))) };
+      // D-338 — a day the model names is read on the turn's clock, which `current_date` is in.
+      const native = await access.read(raw, ctx.execution_source, undefined, ctx.time_zone);
+      // D-338 — each item says when it happens on that clock (`when_text`), as `calendar.search`
+      // does (given only epoch ms, a model put meetings an hour early), and which ones the owner's
+      // notifications call only "a reminder in Yours".
+      return { ok: true, ...situationSourceCitations(native, situationModelProjection(native, situationPersonName(deps.getContactStore?.()),
+        { zone: ctx.time_zone, isPrivate: access.isPrivate })) };
     } catch (error) {
       const { SituationAccessError } = await import('./situations/access.js');
       if (error instanceof SituationAccessError) return { ok: true, result: { refused: true, hint: error.message } };

@@ -31,11 +31,20 @@ export type NotificationChannel = NotificationDeliveryChannel;
 export const ALL_NOTIFICATION_CHANNELS: ReadonlyArray<NotificationChannel> =
   NOTIFICATION_DELIVERY_CHANNELS;
 
+/** D-338 §11 — words in a notification's text that name a record: in the app they open
+ *  it (a birthday's name opens the contact). In-app only; every other channel sends text. */
+export interface NotificationMention {
+  text: string;
+  ref: { collection: string; id: string };
+}
+
 export interface NotificationPayload {
   channel: NotificationChannel;
   text: string;
   title?: string;
   link_url?: string;
+  /** In-app only (`NotificationMention`). */
+  mentions?: readonly NotificationMention[];
 }
 
 export interface NotificationDispatchResult {
@@ -62,6 +71,8 @@ export interface NotificationDeps {
 export interface NotificationSendArgs {
   /** Local address for the in-app surface only. */
   ui_link_url?: string;
+  /** D-338 §11 — for the in-app surface only: words in `text` that open a record there. */
+  mentions?: readonly NotificationMention[];
   /** Omitted means fan out to every channel the owner has SET UP (in-app is
    *  always set up; D-312): a channel with nothing enrolled is left out of both
    *  lists. Named channels are the owner's own choice, so a named one that is
@@ -158,6 +169,7 @@ export const handleNotificationSend = async (
           ...(channel === 'in_app' && args.ui_link_url !== undefined
             ? { link_url: args.ui_link_url }
             : args.link_url !== undefined ? { link_url: args.link_url } : {}),
+          ...(channel === 'in_app' && args.mentions?.length ? { mentions: args.mentions } : {}),
         });
         return { channel, ok: out.ok, notSetUp: !out.ok && out.reason === 'NO_CONNECTION_BOUND' };
       } catch {

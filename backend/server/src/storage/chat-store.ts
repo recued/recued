@@ -68,6 +68,7 @@ import {
   executionSourceContractId,
 } from '@recued/contracts';
 import { chatSourceCitationsOf, type ChatSourceCitation, installOffersOf, type InstallOffer } from '@recued/contracts';
+import type { ChatAnswerSource, ChatNotice } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
 import {
   base64ToBytes,
@@ -675,8 +676,11 @@ const aadForMessage = (session_id: string, message_id: string): Uint8Array =>
     `recued/v1/chat/message/${session_id}/${message_id}`,
   );
 
+/** The separately encrypted fields of a message row. D-338 adds `notice`. */
+type ChatMessageField = 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations' | 'notice';
+
 const aadForMessageField = (
-  field: 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations',
+  field: ChatMessageField,
   session_id: string,
   message_id: string,
 ): Uint8Array =>
@@ -755,7 +759,7 @@ export const decodeChatContentFromStorage = async (
 
 const encodeChatMessageFieldForStorage = async (
   plaintextValue: string,
-  field: 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations',
+  field: ChatMessageField,
   identity: { session_id: string; message_id: string },
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -772,7 +776,7 @@ const encodeChatMessageFieldForStorage = async (
 
 const decodeChatMessageFieldFromStorage = async (
   blob: string,
-  field: 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations',
+  field: ChatMessageField,
   identity: { session_id: string; message_id: string },
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -1189,6 +1193,28 @@ const parseReplyReference = (value: unknown): ChatReplyReference | undefined => 
  *  *look* like valid empty conversation history. Only AAD-mismatch /
  *  tampered-row decode failures (the `aead: decryption failed` path)
  *  degrade gracefully. */
+/** D-338 — a stored notice's details, or undefined for anything that is not one. */
+export const chatNoticeOf = (value: unknown): ChatNotice | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.vendor !== 'string' || record.vendor.length === 0) return undefined;
+  return {
+    vendor: record.vendor,
+    ...(typeof record.title === 'string' && record.title.length > 0 ? { title: record.title } : {}),
+    ...(typeof record.link_url === 'string' && record.link_url.length > 0 ? { link_url: record.link_url } : {}),
+  };
+};
+
+const CHAT_ANSWER_SOURCES: ReadonlySet<string> = new Set<ChatAnswerSource>(['contacts', 'calendar', 'mail']);
+
+/** D-338 — the marker on an answer given without a model; a `from` outside the
+ *  closed list reads as a fixed reply rather than as a source nobody wrote. */
+const answeredWithoutModelOf = (value: unknown): { from?: ChatAnswerSource } | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const from = (value as { from?: unknown }).from;
+  return typeof from === 'string' && CHAT_ANSWER_SOURCES.has(from) ? { from: from as ChatAnswerSource } : {};
+};
+
 const messageFromRow = async (
   row: MessageRow,
   getKey?: ChatKeyProvider,
@@ -1267,6 +1293,19 @@ const messageFromRow = async (
       if (error instanceof ChatVaultLockedError) throw error;
     }
   }
+  let notice: ChatNotice | undefined;
+  const storedNotice = parseMessageMetadataObject(row.metadata_blob).notice_encrypted;
+  if (role === 'notice' && typeof storedNotice === 'string') {
+    try {
+      notice = chatNoticeOf(JSON.parse(await decodeChatMessageFieldFromStorage(
+        storedNotice, 'notice', { session_id: row.session_id, message_id: row.message_id }, getKey,
+      )));
+    } catch (error) {
+      if (error instanceof ChatVaultLockedError) throw error;
+    }
+  }
+  const answered_without_model = role === 'assistant'
+    ? answeredWithoutModelOf(parseMessageMetadataObject(row.metadata_blob).answered_without_model) : undefined;
   return {
     id: row.message_id,
     session_id: row.session_id,
@@ -1290,6 +1329,8 @@ const messageFromRow = async (
       : {}),
     ...(install_offers.length > 0 ? { install_offers } : {}),
     ...(source_citations.length > 0 ? { source_citations } : {}),
+    ...(notice ? { notice } : {}),
+    ...(answered_without_model ? { answered_without_model } : {}),
     contributor: CHAT_CONTRIBUTOR_SET.has(
       row.contributor as ChatSessionContributor,
     )
@@ -1364,6 +1405,10 @@ export interface AppendMessageInput {
   /** Server-normalized, evidence-only diagnosis grounding. Stored in the
    * existing message metadata column so both turn rows survive hydration. */
   data_diagnosis?: ChatDataDiagnosisContext;
+  /** D-338 — a `notice` row's title and messenger, encrypted with the row. */
+  notice?: ChatNotice;
+  /** D-338 — an assistant row written without a model call. */
+  answered_without_model?: { from?: ChatAnswerSource };
   /** The turn writing this row. Optional so a caller outside a turn (or an
    *  older one not yet passing it) writes NULL rather than a fabricated id. */
   turn_id?: string;
@@ -2622,7 +2667,7 @@ export const createChatStore = (
       let target = targets.get(cacheKey);
       if (!target) {
         const row = replyRowStmt.get(identity) as MessageRow | undefined;
-        target = row && row.message_id !== message.id && (row.role === 'user' || row.role === 'assistant')
+        target = row && row.message_id !== message.id && (row.role === 'user' || row.role === 'assistant' || row.role === 'notice')
           ? messageFromRow(row, getKey).then(message => ({ row, message })) : Promise.resolve(undefined);
         targets.set(cacheKey, target);
       }
@@ -2633,8 +2678,10 @@ export const createChatStore = (
         || (found.message.attachments?.length ? 'Attachment' : 'Message text unavailable');
       const chars = Array.from(text);
       return { ...message, reply_to: { ...reference, preview: {
-        role: found.message.role === 'user' ? 'user' as const : 'assistant' as const,
+        role: found.message.role === 'user' ? 'user' as const
+          : found.message.role === 'notice' ? 'notice' as const : 'assistant' as const,
         text: chars.slice(0, 240).join('') + (chars.length > 240 ? '…' : ''),
+        ...(found.message.role === 'notice' && found.message.notice?.title ? { title: found.message.notice.title } : {}),
       } } };
     }));
     if (getKey && (!key || !key.equals(Buffer.from(requireChatKey(getKey, 'read quoted replies'))))) {
@@ -2775,6 +2822,15 @@ export const createChatStore = (
     const reply_to_encrypted = reply_to ? await encodeChatMessageFieldForStorage(
       JSON.stringify(reply_to), 'reply_to', identity, getKey,
     ) : undefined;
+    // D-338 — a notice keeps its title and messenger beside it, encrypted as its
+    // text is; the marker for an answer given without a model is a label, kept plain.
+    const notice = input.role === 'notice' ? chatNoticeOf(input.notice) : undefined;
+    if (input.role === 'notice' && notice === undefined) throw new Error('A notice row names the messenger it went to.');
+    const notice_encrypted = notice ? await encodeChatMessageFieldForStorage(
+      JSON.stringify(notice), 'notice', identity, getKey,
+    ) : undefined;
+    const answered_without_model = input.role === 'assistant'
+      ? answeredWithoutModelOf(input.answered_without_model) : undefined;
     const sources = input.role === 'assistant' ? chatSourceCitationsOf(input.source_citations) : [];
     const source_citations_encrypted = sources.length ? await encodeChatMessageFieldForStorage(
       JSON.stringify(sources), 'source_citations', identity, getKey,
@@ -2801,6 +2857,7 @@ export const createChatStore = (
         ? JSON.stringify(input.attachments)
         : null,
       metadata_blob: scheduledSource || input.data_diagnosis || input.tool_call || reply_to_encrypted || source_citations_encrypted || install_offers.length > 0
+        || notice_encrypted || answered_without_model
         ? JSON.stringify({
             ...(scheduledSource ? { execution_source: scheduledSource } : {}),
             ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
@@ -2808,6 +2865,8 @@ export const createChatStore = (
             ...(reply_to_encrypted ? { reply_to_encrypted } : {}),
             ...(source_citations_encrypted ? { source_citations_encrypted } : {}),
             ...(install_offers.length > 0 ? { install_offers } : {}),
+            ...(notice_encrypted ? { notice_encrypted } : {}),
+            ...(answered_without_model ? { answered_without_model } : {}),
           })
         : null,
       contributor,
@@ -2871,6 +2930,8 @@ export const createChatStore = (
       ...(reply_to ? { reply_to } : {}),
       ...(install_offers.length > 0 ? { install_offers } : {}),
       ...(sources.length > 0 ? { source_citations: sources } : {}),
+      ...(notice ? { notice } : {}),
+      ...(answered_without_model ? { answered_without_model } : {}),
       contributor,
       ...(input.turn_id ? { turn_id: input.turn_id } : {}),
       ts,

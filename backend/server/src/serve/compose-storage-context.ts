@@ -42,6 +42,7 @@ import {
   type SettledRunResults,
 } from '../settled-run-results.js';
 import { createWriteRuleStore, type WriteRuleStore } from '../storage/write-rule-store.js';
+import { createBrowserPassStore, type BrowserPassStore } from '../storage/browser-pass-store.js';
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
@@ -273,6 +274,8 @@ export interface StorageContext {
   gatedActionStore: GatedActionStore;
   /** D-329 §3.4 — the write rules an AI's approvals teach. */
   writeRuleStore: WriteRuleStore;
+  /** D-335 slice F — passes for Browser Toolkit writes, and what their approvals teach. */
+  browserPassStore: BrowserPassStore;
   /** What an owner's page-started run answered once its approval let it
    *  finish — written by the approval resumer, read by `execution.get`.
    *  In memory: a courtesy to an open page, not a record. */
@@ -837,6 +840,7 @@ export const composeStorageContext = async (
   );
   const settledRunResults = createSettledRunResults();
   const writeRuleStore = createWriteRuleStore(db);
+  const browserPassStore = createBrowserPassStore(db);
   const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
     { limits: preapprovalLimitsFromEnvironment(process.env) });
   const mailWorkStore = createMailWorkStore(db, createPreapprovalCodec(() => getVaultKey?.() ?? null));
@@ -1047,6 +1051,7 @@ export const composeStorageContext = async (
     mcpActionStore,
     gatedActionStore,
     writeRuleStore,
+    browserPassStore,
     settledRunResults,
     workEntityStoreRef,
     s2sPreviewStoreRef,

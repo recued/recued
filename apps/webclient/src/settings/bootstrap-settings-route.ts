@@ -2666,17 +2666,17 @@ export const bootstrapSettingsRoute = (
       });
     }
 
-    // D-325 §15.7 — the digest is another answer to "what am I told about",
-    // so it sits with the kinds, above the quiet hours that hold both.
-    if (opts.situationDelivery) {
-      const host = doc.createElement('div'); notifSection.appendChild(host);
-      situationDelivery = mountSituationDeliveryPanel({ host, document: doc, ...opts.situationDelivery });
-    }
-    // §15.7 amendment (2026-11-02, later) — the Agenda answers the same question for one day,
-    // apart from the Digest, so it sits right under it.
+    // D-325 §15.7 — what the owner is sent about their days is another answer to "what am I told
+    // about", so it sits with the kinds, above the quiet hours that hold it. D-338 §9 — in the
+    // order of what each is for: the Agenda (your day), then "Coming up" (what changed ahead),
+    // whose card also holds "Due today" (a nudge on a day no Agenda lists).
     if (opts.agendaDelivery) {
       const host = doc.createElement('div'); notifSection.appendChild(host);
       agendaDelivery = mountAgendaPanel({ host, document: doc, ...opts.agendaDelivery });
+    }
+    if (opts.situationDelivery) {
+      const host = doc.createElement('div'); notifSection.appendChild(host);
+      situationDelivery = mountSituationDeliveryPanel({ host, document: doc, ...opts.situationDelivery });
     }
 
     // D-269 step 3 — quiet hours joins the section that already pairs approval
@@ -3536,7 +3536,7 @@ export const bootstrapSettingsRoute = (
         return 'Discard the unsaved notification verification phrase?';
       }
       if (quietHours?.hasUnsavedChanges() === true) return 'Discard the unsaved quiet hours window?';
-      if (situationDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved digest settings?';
+      if (situationDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved “Coming up” settings?';
       if (agendaDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved agenda settings?';
       if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household delivery settings?';
       if (serverTimeZone?.hasUnsavedChanges() === true) return 'Discard the unsaved server timezone?';
@@ -3553,7 +3553,7 @@ export const bootstrapSettingsRoute = (
         return 'A notification setting is still updating. Leave Settings anyway?';
       }
       if (quietHours?.hasInFlightWork() === true) return 'A quiet hours setting is still updating. Leave Settings anyway?';
-      if (situationDelivery?.hasInFlightWork() === true) return 'A digest action is still in progress. Leave Settings anyway?';
+      if (situationDelivery?.hasInFlightWork() === true) return 'A “Coming up” action is still in progress. Leave Settings anyway?';
       if (agendaDelivery?.hasInFlightWork() === true) return 'An agenda action is still in progress. Leave Settings anyway?';
       if (householdDelivery?.hasInFlightWork() === true) return 'Household Telegram is still updating. Leave Settings anyway?';
       if (serverTimeZone?.isSaving() === true) return 'The server timezone is still updating. Leave Settings anyway?';

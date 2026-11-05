@@ -89,6 +89,10 @@ const CORE_ENTITY_FIELDS: ReadonlyMap<
     ['kind', 'string'],
     ['what', 'situation_dimension'],
     ['when', 'situation_dimension'],
+    // D-338 — when it happens, on the turn's clock (`situationWhenText`), and whether the owner's
+    // notifications call it only "a reminder in Yours". Neither is personal data.
+    ['when_text', 'string'],
+    ['private', 'boolean'],
     ['when_day', 'string'],
     ['where', 'situation_dimension'],
     ['who', 'situation_dimension'],

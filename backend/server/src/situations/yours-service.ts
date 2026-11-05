@@ -828,7 +828,15 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       }
       case 'delivery.update': if (!scheduled) throw new Error('The overview service is unavailable'); scheduled.setSettings(input.settings); return { message: 'Overview schedule saved.' };
       case 'delivery.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); await scheduled.sendNow(); return { message: 'Overview checked. It sends only when something changed.' };
-      case 'agenda.update': if (!scheduled) throw new Error('The overview service is unavailable'); scheduled.setAgenda(input.settings); return { message: 'Agenda saved.' };
+      case 'agenda.update': {
+        if (!scheduled) throw new Error('The overview service is unavailable');
+        scheduled.setAgenda(input.settings);
+        // D-338 slice 3 — the AI suggestions' schedule follows the save; the settings stay saved
+        // whether or not it could be set up, and the next save tries again.
+        try { await scheduled.syncAgendaSuggestions(); }
+        catch (error) { throw new Error(`Agenda saved, but its AI suggestions could not be set up: ${error instanceof Error ? error.message : String(error)}`); }
+        return { message: 'Agenda saved.' };
+      }
       case 'agenda.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); await scheduled.sendAgendaNow(); return { message: 'Agenda checked. It is sent only when something is on.' };
       case 'subscriber.reconciled': {
         const receipt = deps.situations.subscriberRun(input.subscriber_id, input.revision);

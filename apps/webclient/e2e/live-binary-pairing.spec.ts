@@ -148,7 +148,14 @@ test.describe(`the packaged binary, launched ${launched}`, () => {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- narrowed by the loop
   if (mode === 'daemon') {
     test('`recued status` sees the server `recued start` produced', () => {
-      const { stdout, stderr } = server.cli(['status', '--db', server.dbPath]);
+      // ⛔ GIVE STATUS THIS SERVER'S PORT, here and after `stop` below. With no
+      // live pidfile and no realm lock, status answers from the port it is handed,
+      // 7717 by default, and on a machine whose own recued serves 7717 it prints
+      // `Status: running — but NOT on this realm`. Measured on 26.11.3 with such a
+      // server up: that fails the check after `stop`, and with our daemon killed
+      // it passed the check below. With the port, the dead daemon reads
+      // `Status: stopped`.
+      const { stdout, stderr } = server.cli(['status', '--db', server.dbPath, '--port', String(server.port)]);
       const said = `${stdout}${stderr}`;
       // ⚠ The BANNER prints `Status:    Running`; the status VERB prints
       // `Status:  running`. Matching the banner's spelling fails a working
@@ -310,7 +317,8 @@ test.describe(`the packaged binary, launched ${launched}`, () => {
       const stopped = server.cli(['stop', '--db', server.dbPath]);
       expect(`${stopped.stdout}${stopped.stderr}`, 'stop did not report stopping anything')
         .toMatch(/stopped/i);
-      const after = server.cli(['status', '--db', server.dbPath]);
+      // This server's port, not 7717: see the status check above.
+      const after = server.cli(['status', '--db', server.dbPath, '--port', String(server.port)]);
       // A daemon nobody can stop is as broken as one nobody can start: the
       // pidfile is the only handle an owner has, and `serve` writes none.
       expect(`${after.stdout}${after.stderr}`, 'the server is still running after `recued stop`')

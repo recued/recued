@@ -191,6 +191,26 @@ describe('D-129 P3 — computeContactHash', () => {
     expect(computeContactHash(rawContact({ associatedcompanyid: 'co-99' }))).not.toBe(base);
   });
 
+  // D-338 §10 — the birthday joins the hash only when it is one, so a record without one
+  // keeps the hash it had before the fetch widened, and nothing re-materialises for it.
+  it('keeps a record\'s hash when it has no birthday, and changes it when it has one', () => {
+    const base = computeContactHash(rawContact());
+    // The hash this record had before the fetch widened, computed by the reconciler as it
+    // was then: a record without a birthday must not change, or every one refreshes at once.
+    expect(base).toBe('fnv1a:8b266695');
+    expect(computeContactHash(rawContact({ date_of_birth: '' }))).toBe(base);
+    expect(computeContactHash(rawContact({ date_of_birth: '05/11/1984' }))).toBe(base);
+    expect(computeContactHash(rawContact({ date_of_birth: '1984-11-05' }))).not.toBe(base);
+    expect(computeContactHash(rawContact({ date_of_birth: '--11-05' }))).not.toBe(computeContactHash(rawContact({ date_of_birth: '1984-11-05' })));
+  });
+
+  it('projects a birthday as a contact keeps one: YYYY-MM-DD or --MM-DD, never a guessed order', () => {
+    const birthdayOf = (date_of_birth: string) => projectContactMeta(rawContact({ date_of_birth }), 'fnv1a:0', 1).birthday;
+    expect(birthdayOf('1984-11-05')).toBe('1984-11-05');
+    expect(birthdayOf(' --11-05 ')).toBe('--11-05');
+    for (const text of ['05/11/1984', '1984-02-30', 'November 5', '']) expect(birthdayOf(text), text).toBeUndefined();
+  });
+
   it('is case-insensitive on email (canonicalization participates in the hash)', () => {
     const lower = computeContactHash(rawContact({ email: 'bob@example.com' }));
     const mixed = computeContactHash(rawContact({ email: 'Bob@Example.COM' }));

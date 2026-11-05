@@ -239,7 +239,7 @@ export const createChatTurnQueueStore = (db: Database.Database, getKey?: ChatKey
         const reply = command.input.reply_to_message_id;
         if (command.family === 'chat' && reply !== undefined
           && (typeof reply !== 'string' || !db.prepare(`SELECT 1 FROM chat_messages
-            WHERE session_id = ? AND message_id = ? AND role IN ('user', 'assistant')`).get(command.session_id, reply))) {
+            WHERE session_id = ? AND message_id = ? AND role IN ('user', 'assistant', 'notice')`).get(command.session_id, reply))) {
           throw new RpcError('not_found', 'The reply target is no longer available in this conversation. Clear the reply or choose another message.', 404);
         }
         const pending = db.prepare(`SELECT COUNT(*) AS n FROM chat_turn_queue

@@ -569,7 +569,8 @@ describe('D-169 P0 - bridge DOM adapter dispatch', () => {
     expect(requestAt(dispatch, 0)).toMatchObject({
       action: 'fill',
       args: { selector: '#subject', value: '12345' },
-      expects_output_keys: ['filled'],
+      // D-335 slice J — and a CAPTCHA the page then shows.
+      expects_output_keys: ['filled', 'challenge'],
     });
   });
 
@@ -606,7 +607,7 @@ describe('D-169 P0 - bridge DOM adapter dispatch', () => {
     expect(requestAt(dispatch, 0)).toMatchObject({
       action: 'click',
       args: { selector: '#send' },
-      expects_output_keys: ['clicked'],
+      expects_output_keys: ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent'],
     });
   });
 
@@ -713,7 +714,27 @@ describe('D-335 - core.dom.click and core.dom.write by ref', () => {
       dispatch: async () => completed(okResult({ clicked: true })) });
     await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' }))).resolves.toEqual({ clicked: 1 });
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'click', args: { page: '7:ABC123', ref: 'e3' },
-      expects_output_keys: ['clicked'] })]);
+      expects_output_keys: ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent'] })]);
+  });
+
+  it('slice J — a CAPTCHA the page shows after a click or typing is in the step\'s output; whether it moved is not', async () => {
+    const landed = { page: '7:DEF456', url: 'https://mail.example.com/login', title: 'Sign in' };
+    const clicked = setupAdapter({ manifest: click.manifest,
+      dispatch: async () => completed(okResult({ clicked: true, moved: true, ...landed, challenge: 'reCAPTCHA' })) });
+    await expect(clicked.adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' })))
+      .resolves.toEqual({ clicked: 1, ...landed, challenge: 'reCAPTCHA' });
+    const typed = setupAdapter({ manifest: write.manifest,
+      dispatch: async () => completed(okResult({ filled: true, challenge: 'hCaptcha' })) });
+    await expect(typed.adapter(write.call({ target: TARGET_A, page: '7:ABC123', ref: 'e5', value: 'Grace' })))
+      .resolves.toMatchObject({ written: 1, challenge: 'hCaptcha' });
+  });
+
+  it('2026-11-04 — a click that answers the page its tab then shows puts it in the step\'s output', async () => {
+    const landed = { page: '7:DEF456', url: 'https://mail.example.com/results', title: 'Results' };
+    const { adapter } = setupAdapter({ manifest: click.manifest,
+      dispatch: async () => completed(okResult({ clicked: true, ...landed })) });
+    await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' })))
+      .resolves.toEqual({ clicked: 1, ...landed });
   });
 
   it('types by ref, and presses the submit on the same page', async () => {
@@ -808,7 +829,7 @@ describe('D-335 slice H - core.dom.wait, core.dom.table and core.dom.screenshot'
       timeout_seconds: 12 }))).resolves.toEqual(answer);
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'wait_for_element',
       args: { page: PAGE, selector: '#saved', until: 'shown', text: 'Saved', timeout_ms: 12_000 },
-      expects_output_keys: ['page', 'url', 'title', 'found', 'waited_ms'], timeout_ms: 22_000 })]);
+      expects_output_keys: ['page', 'url', 'title', 'found', 'waited_ms', 'failed', 'problem'], timeout_ms: 22_000 })]);
   });
 
   it('a wait is at most 30 seconds, and ten by default; its budget stays within the most a command may take', async () => {

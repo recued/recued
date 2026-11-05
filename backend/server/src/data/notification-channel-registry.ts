@@ -44,6 +44,7 @@ import { bootInAppChannel } from './notification/in-app/boot.js';
 import type {
   NotificationChannel,
   NotificationChannelDispatcher,
+  NotificationMention,
 } from '../notification-handler.js';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { SubtypeDispatcherDeps } from '../notification-dispatchers.js';
@@ -70,7 +71,7 @@ export interface NotificationChannelBootDeps {
   /** D-312 — the server's own broadcast of a notification to its paired
    *  clients. The in-app channel falls back to it when no in-app connection is
    *  enrolled: in-app has no credentials and no destination to enroll. */
-  emitInApp?: (body: { text: string; title?: string; link_url?: string }) => void;
+  emitInApp?: (body: { text: string; title?: string; link_url?: string; mentions?: readonly NotificationMention[] }) => void;
   /** D-325 P31/P43 — the owner's named connection (`SubtypeDispatcherDeps`). */
   selectConnection?: SubtypeDispatcherDeps['selectConnection'];
 }

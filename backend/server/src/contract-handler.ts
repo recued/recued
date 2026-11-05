@@ -100,6 +100,7 @@ import {
   type ContractDefinitionStore,
 } from './storage/contract-definition-store.js';
 import { createWriteRuleRpcHandlers } from './write-rule-rpc.js';
+import { createBrowserPassRpcHandlers } from './browser-pass-rpc.js';
 import { createContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import {
   createDelegationSuggestionStore,
@@ -153,6 +154,9 @@ export interface ContractRpcDeps {
   /** D-329 §3.4 — the write rules an AI's approvals teach (`write-rule-rpc.ts`). Absent ⇒
    *  their five methods answer `not_configured`. */
   writeRules?: import('./storage/write-rule-store.js').WriteRuleStore;
+  /** D-335 slice F — passes for Browser Toolkit writes (`browser-pass-rpc.ts`). Absent ⇒
+   *  their five methods answer `not_configured`. */
+  browserPasses?: import('./storage/browser-pass-store.js').BrowserPassStore;
   /** D-177 N.14.8 fork 3 — counts the owner's D-173 rejects on one door, for the
    *  suggestion card's counter-evidence. OPTIONAL: absent ⇒ door rows carry no
    *  reject count at all, which the card renders as "not counted" — never as a
@@ -2453,7 +2457,12 @@ type ContractMethods =
   | 'collection.contract.acceptWriteRuleSuggestion'
   | 'collection.contract.dismissWriteRuleSuggestion'
   | 'collection.contract.listWriteRules'
-  | 'collection.contract.revokeWriteRule';
+  | 'collection.contract.revokeWriteRule'
+  | 'collection.contract.listBrowserPasses'
+  | 'collection.contract.revokeBrowserPass'
+  | 'collection.contract.listBrowserPassSuggestions'
+  | 'collection.contract.acceptBrowserPassSuggestion'
+  | 'collection.contract.dismissBrowserPassSuggestion';
 
 export const makeContractHandlers = (
   deps: ContractRpcDeps | undefined,
@@ -2515,11 +2524,22 @@ export const makeContractHandlers = (
       'collection.contract.dismissWriteRuleSuggestion',
       'collection.contract.listWriteRules',
       'collection.contract.revokeWriteRule',
+      'collection.contract.listBrowserPasses',
+      'collection.contract.revokeBrowserPass',
+      'collection.contract.listBrowserPassSuggestions',
+      'collection.contract.acceptBrowserPassSuggestion',
+      'collection.contract.dismissBrowserPassSuggestion',
     ],
     handlers: {
       // D-329 §3.4 — the write rules an AI's approvals teach.
       ...createWriteRuleRpcHandlers({
         ...(deps.writeRules !== undefined ? { store: deps.writeRules } : {}),
+        ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        now,
+      }),
+      // D-335 slice F — passes for Browser Toolkit writes, and the suggestions to always allow.
+      ...createBrowserPassRpcHandlers({
+        ...(deps.browserPasses !== undefined ? { store: deps.browserPasses } : {}),
         ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
         now,
       }),

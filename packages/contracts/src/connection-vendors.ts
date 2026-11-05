@@ -171,6 +171,14 @@ export interface ConnectionVendorEntityMetaField {
    *  (`closed_state`). The resolver lowers it to a deterministic projection
    *  expression + the SELECT fetches the input paths. */
   derivation?: FieldDerivation;
+  /** D-338 §15 — a column not every account has, which the vendor's query refuses
+   *  whole when asked for: Salesforce SOQL answers a field a profile hides from the
+   *  connected user, or one the object does not have, with a 400 for the entire query.
+   *  The canonical searches still SELECT it (it is mapped, so its value is read where
+   *  there is one); a refused query is asked again without it, per org and object
+   *  (`backend/server/src/data/salesforce/optional-columns-fetch.ts`). Only with a
+   *  `source_path`. */
+  select_if_present?: true;
 }
 
 /** D-130 P7 — closed list of cross-vendor logical CRM entity names.
@@ -793,8 +801,9 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
       { key: 'mailing_postal_code', type: 'string', source_path: 'properties.zip', description: 'zip — the postal code (vCard ADR postal code)' },
       { key: 'mailing_country', type: 'string', source_path: 'properties.country', description: 'country (vCard ADR country)' },
       // vCard BDAY. HubSpot's default "Date of birth" (`date_of_birth`) is a TEXT property,
-      // so the date rides as written, YYYY-MM-DD. Registry-only, like `job_title`: the
-      // reconciler does not fetch it, so the mirror's hash is unchanged.
+      // so the date rides as written, YYYY-MM-DD. D-338 §10: the reconciler fetches it too
+      // (`HUBSPOT_CONTACT_PROPERTIES`), keeping only YYYY-MM-DD or --MM-DD, and it joins the
+      // mirror's hash only when present.
       { key: 'birthday', type: 'string', source_path: 'properties.date_of_birth', description: "date_of_birth — HubSpot's default \"Date of birth\", a text property (YYYY-MM-DD as Recued writes it; vCard BDAY)" },
     ],
   }),
@@ -940,7 +949,8 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
       { key: 'owner', type: 'string', source_path: 'OwnerId', description: 'OwnerId (resolved to email when User read permission granted)' },
       { key: 'key_dates.close_date', type: 'date_ms', date_granularity: 'date', source_path: 'CloseDate', description: 'CloseDate (parsed ISO → ms)' },
       { key: 'key_dates.created_at', type: 'date_ms', date_granularity: 'datetime', source_path: 'CreatedDate', description: 'CreatedDate (parsed ISO → ms)' },
-      { key: 'forecast_amount', type: 'number', source_path: 'ForecastAmount', description: 'ForecastAmount when surfaced (omitted otherwise)' },
+      // D-338 §15 — not on the standard Opportunity, so SOQL refuses it in most orgs.
+      { key: 'forecast_amount', type: 'number', source_path: 'ForecastAmount', description: 'ForecastAmount when surfaced (omitted otherwise)', select_if_present: true },
       // PROJECTED tri-state computed from IsClosed + IsWon (closed_state derivation).
       { key: 'close_state', type: 'string', description: '"open" | "won" | "lost" derived from IsClosed + IsWon', derivation: { kind: 'closed_state', closed_path: 'IsClosed', won_path: 'IsWon' } },
       { key: 'probability', type: 'number', source_path: 'Probability', description: 'Probability percentage 0-100' },
@@ -979,19 +989,20 @@ export const CONNECTION_VENDOR_ENTITIES: ReadonlyArray<ConnectionVendorEntity> =
       { key: 'mailing_address', type: 'object', description: 'structured mailing address from MailingStreet/City/State/PostalCode/Country' },
       // Portable with hubspot.contact.jobtitle. Standard Contact field `Title`
       // (Text 128), already in the salesforce pack's Contact `fields` list.
-      { key: 'job_title', type: 'string', source_path: 'Title', description: 'Title — the role held at the associated account' },
+      { key: 'job_title', type: 'string', source_path: 'Title', description: 'Title — the role held at the associated account', select_if_present: true },
       // D-336 (spec §55) — the vCard contact the AI can set: the address in its ADR parts
       // (the reconciler SELECTs them already, for `mailing_address`), and BDAY as the standard
-      // Contact field `Birthdate` (a date, written YYYY-MM-DD). `Birthdate` is registry-only,
-      // like `Title`: the reconciler does not SELECT it, so the mirror's hash is unchanged.
-      // ⚠ Like `Title`, the canonical search SELECTs it: a profile that hides it from the
-      // connected user fails that org's contact searches (SOQL refuses an unknown column).
+      // Contact field `Birthdate` (a date, written YYYY-MM-DD). D-338 §10: the reconciler
+      // SELECTs it beyond `SALESFORCE_CONTACT_FIELDS` (which the PushTopic's Query is made
+      // from), and reads the org without it when a profile hides it from the connected user.
+      // Like `Title`, the canonical search SELECTs it where the org shows it (`select_if_present`,
+      // D-338 §15): a profile hiding either made SOQL refuse that org's every contact search.
       { key: 'mailing_street', type: 'string', source_path: 'MailingStreet', description: 'MailingStreet — the street line (vCard ADR street)' },
       { key: 'mailing_city', type: 'string', source_path: 'MailingCity', description: 'MailingCity (vCard ADR locality)' },
       { key: 'mailing_region', type: 'string', source_path: 'MailingState', description: 'MailingState — the state or region (vCard ADR region)' },
       { key: 'mailing_postal_code', type: 'string', source_path: 'MailingPostalCode', description: 'MailingPostalCode (vCard ADR postal code)' },
       { key: 'mailing_country', type: 'string', source_path: 'MailingCountry', description: 'MailingCountry (vCard ADR country)' },
-      { key: 'birthday', type: 'string', source_path: 'Birthdate', description: 'Birthdate — YYYY-MM-DD (vCard BDAY)' },
+      { key: 'birthday', type: 'string', source_path: 'Birthdate', description: 'Birthdate — YYYY-MM-DD (vCard BDAY)', select_if_present: true },
     ],
   }),
   buildConnectionVendorEntity({
@@ -1260,6 +1271,10 @@ export const HUBSPOT_CONTACT_PROPERTIES = [
   'zip',
   'country',
   'company',
+  // D-338 §10 — the contact's birthday, so a person Recued knows gets the CRM's date
+  // (`contact-source-sync`, hydrate on match) and the Agenda's birthdays line has it.
+  // It joins the hash only when present: a record without one keeps its hash.
+  'date_of_birth',
 ] as const;
 
 /** D-139 P1a.1 — canonical HubSpot email-engagement properties. The

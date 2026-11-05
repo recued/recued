@@ -80,6 +80,15 @@ const fixture = (realHousehold = false) => {
 };
 
 describe('D-325 actual clock reminder caller', () => {
+  it('names a sensitive item\'s reminder by the menu that holds it, and nothing of the item (D-338: "Reminder in Yours")', async () => {
+    const f = fixture(); const passport = f.put({ name: 'Passport', settings: { sensitive: true }, dates: { expires_on: '2026-11-17' }, rules: [rule()] });
+    const boiler = f.put({ name: 'Boiler', dates: { expires_on: '2026-11-17' }, rules: [rule()] });
+    const b = f.boot(); await b.service.tick();
+    const secret = (await b.block.getAsk(f.currentAsk(passport)))!; const plain = (await b.block.getAsk(f.currentAsk(boiler)))!;
+    expect(secret.message).toMatchObject({ title: 'Reminder in Yours', text: 'An item you track needs attention. Open Yours for the details.' });
+    expect(JSON.stringify(secret.message)).not.toContain('Passport');
+    expect(plain.message.title).toBe('Boiler');
+  });
   it('offers no Done, and takes an answer on a household service only from the owner (§15.7, 2026-10-24)', async () => {
     const f = fixture(true); const asset = f.put({ name: 'Shared boiler', audience: 'household', dates: { serviced_on: '2025-10-17' },
       rules: [rule({ when: { kind: 'interval', field: 'serviced_on', every: { amount: 12, unit: 'months' } } })] });

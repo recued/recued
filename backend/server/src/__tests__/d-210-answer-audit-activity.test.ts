@@ -49,6 +49,14 @@ describe('D-210 — buildAnswerActivity', () => {
     expect(buildAnswerActivity(record({ option: 'deny' })).action).toBe('approval_deny');
   });
 
+  it('D-335 slice F — "Allow on <site> for this session" and "Always allow on <site>" are consent', () => {
+    for (const option of ['allow_site_session', 'allow_site_always']) {
+      const entry = buildAnswerActivity(record({ option, option_label: 'Always allow on github.com' }));
+      expect(entry.action, option).toBe('approval_allow');
+      expect(entry.detail).toContain(`(${option})`);
+    }
+  });
+
   it('records an UNKNOWN option as a denial, never as consent', () => {
     // The block audits every ask kind, not just `gateway.preflight`, and a
     // non-preflight ask's options are arbitrary pack strings. Reading an

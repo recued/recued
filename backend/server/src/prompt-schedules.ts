@@ -11,6 +11,19 @@ import type { ChatOrchestrator, ChatBroadcastEmitter, BroadcastChatEvent } from 
 import { readPromptScheduleOutcome, promptScheduleWorkStamp } from './prompt-schedule-outcome.js';
 import { resolvePromptScheduleTiming, previewPromptScheduleTiming } from './prompt-schedule-timing.js';
 import { createPromptScheduleHealthStore, currentPromptQueueIssue, type PromptScheduleQueueFailure, type PromptScheduleFailureSignal } from './prompt-schedule-health.js';
+import { ensurePromptScheduleDoneTables } from './prompt-schedule-done.js';
+
+/** D-338 slice 3 — what the feature that owns a schedule may do that the screens and tools may not:
+ *  see it in a list, and change it. */
+export interface PromptScheduleOwnerAccess {
+  readonly managed?: boolean;
+}
+const MANAGED_REFUSAL = 'This schedule belongs to the Agenda. Change it on the Agenda card in Settings → Approval & notifications.';
+
+/** D-338 — what a feature that owns schedules says of one run before it starts: run it, or skip it
+ *  because there is nothing to do (the Agenda's suggestions on a day with nothing on). A gate that
+ *  throws runs it, as before there were gates. */
+export type PromptScheduleRunGate = (schedule: PromptSchedule, due_at: number) => Promise<'run' | 'skip'> | 'run' | 'skip';
 
 type Row = { schedule_id: string; session_id: string; revision: number; enabled: number;
   next_run_at: number | null; payload: string; creation_hash: string };
@@ -61,6 +74,15 @@ export const createPromptSchedules = (deps: {
     END;
   `);
   const health = createPromptScheduleHealthStore(db);
+  ensurePromptScheduleDoneTables(db);
+  // Set by each owner once it is composed; the clock asks before it queues an owned run.
+  const runGates = new Map<string, PromptScheduleRunGate>();
+  // D-338 slice 2 — notify only for runs due once notifying was turned on, so turning it on never
+  // sends an answer from before.
+  const watchDone = (id: string, on: boolean, since: number): void => {
+    if (on) db.prepare('INSERT OR IGNORE INTO chat_prompt_done_watch (schedule_id, since) VALUES (?, ?)').run(id, since);
+    else db.prepare('DELETE FROM chat_prompt_done_watch WHERE schedule_id=?').run(id);
+  };
   const recordChange = (action: string, id: string, revision: number): void => {
     try { deps.recordChange?.(action, id, revision); } catch { /* Audit delivery is best effort, like chat metadata changes. */ }
   };
@@ -91,7 +113,8 @@ export const createPromptSchedules = (deps: {
     const latest = db.prepare(`SELECT o.occurrence_id, o.turn_id, o.due_at, o.revision, q.status FROM chat_prompt_occurrences o
       LEFT JOIN chat_turn_queue q ON q.turn_id=o.turn_id WHERE o.schedule_id=? ORDER BY o.due_at DESC, o.rowid DESC LIMIT 1`)
       .get(id) as { occurrence_id: string; turn_id: string | null; due_at: number; revision: number; status: PromptSchedule['last_status'] } | undefined;
-    const schedule: PromptSchedule = { ...saved, enabled: found.enabled === 1, revision: found.revision, next_run_at: found.next_run_at,
+    const schedule: PromptSchedule = { ...saved, notify_on_done: saved.notify_on_done === true,
+      enabled: found.enabled === 1, revision: found.revision, next_run_at: found.next_run_at,
       ...(latest ? { last_run_at: latest.due_at, last_turn_id: latest.turn_id,
         last_status: latest.status ?? (latest.revision === found.revision ? 'queued' : 'cancelled') } : {}) };
     const outcome = await readPromptScheduleOutcome(db, schedule, deps.readPlans);
@@ -101,21 +124,26 @@ export const createPromptSchedules = (deps: {
     return { ...schedule, ...outcome, scheduling_issue: currentPromptQueueIssue({ ...found, admitted_turn_id: admitted }), run_request_scope: deps.instanceId,
       run_now_available: !blocked && !outcome.pending_approvals && !outcome.pending_work && !hasPending(id, found.revision) };
   };
-  const list = async (session?: string): Promise<PromptSchedule[]> => {
+  // A managed schedule is its owner's to show: every list but the owner's leaves it out.
+  const list = async (session?: string, access: PromptScheduleOwnerAccess = {}): Promise<PromptSchedule[]> => {
     const ids = db.prepare(`SELECT schedule_id FROM chat_prompt_schedules${session ? ' WHERE session_id=?' : ''} ORDER BY rowid DESC`)
       .all(...(session ? [session] : [])) as Array<{ schedule_id: string }>;
-    return Promise.all(ids.map(r => get(r.schedule_id)));
+    const schedules = await Promise.all(ids.map(r => get(r.schedule_id)));
+    return access.managed ? schedules : schedules.filter(schedule => schedule.managed_by === undefined);
   };
   const validate = (raw: unknown, allowPast = false): PromptScheduleInput => {
     const args = object(raw);
-    if (Object.keys(args).some(key => !['title', 'prompt', 'mode', 'time_zone', 'run_at', 'cron_expression', 'creation_id'].includes(key))) return bad('Unknown scheduled prompt field.');
+    if (Object.keys(args).some(key => !['title', 'prompt', 'mode', 'time_zone', 'run_at', 'cron_expression', 'creation_id', 'notify_on_done'].includes(key))) return bad('Unknown scheduled prompt field.');
     const title = text(args.title, 'Title', 160), prompt = text(args.prompt, 'Prompt', 32000);
-    const { title: _title, prompt: _prompt, creation_id: _creation, ...timing } = args;
-    return { title, prompt, ...resolvePromptScheduleTiming(timing, now(), allowPast).timing };
+    const { title: _title, prompt: _prompt, creation_id: _creation, notify_on_done: notify, ...timing } = args;
+    if (notify !== undefined && typeof notify !== 'boolean') return bad('Notify when done must be true or false.');
+    return { title, prompt, ...resolvePromptScheduleTiming(timing, now(), allowPast).timing,
+      ...(notify !== undefined ? { notify_on_done: notify } : {}) };
   };
   const next = (input: PromptScheduleInput): number | null => input.mode === 'one_shot'
     ? Date.parse(input.run_at!) : nextCronMatch(input.cron_expression!.split(' '), Math.floor(now() / 60000) * 60000 + 60000, undefined, input.time_zone);
-  const create = async (raw: unknown, creationId: string, check = false): Promise<PromptSchedule | null> => {
+  const create = async (raw: unknown, creationId: string, check = false,
+    owner: { readonly managed_by?: 'agenda' } = {}): Promise<PromptSchedule | null> => {
     text(creationId, 'Creation ID', 300);
     const id = `ps_${hash(creationId).slice(0, 32)}`;
     const removed = () => !!db.prepare('SELECT 1 FROM chat_prompt_schedule_tombstones WHERE schedule_id=?').get(id);
@@ -124,7 +152,8 @@ export const createPromptSchedules = (deps: {
     const input = validate(raw, !!found);
     const key = deps.getKey ? await deps.getKey() : undefined;
     if (deps.getKey && !key) throw new Error('Chat vault is locked.');
-    const fingerprint = key ? createHmac('sha256', key).update(JSON.stringify(input)).digest('hex') : hash(JSON.stringify(input));
+    const identity = JSON.stringify(owner.managed_by ? { ...input, managed_by: owner.managed_by } : input);
+    const fingerprint = key ? createHmac('sha256', key).update(identity).digest('hex') : hash(identity);
     if (found) {
       if (found.creation_hash !== fingerprint) throw new RpcError('conflict', 'This creation ID already names another scheduled prompt.', 409);
       return get(id);
@@ -134,6 +163,7 @@ export const createPromptSchedules = (deps: {
     const session_id = `scheduled-${randomUUID()}`;
     const { run_at, ...settings } = input;
     const made: PromptSchedule = { ...settings, ...(run_at ? { run_at: Date.parse(run_at) } : {}),
+      notify_on_done: input.notify_on_done === true, ...(owner.managed_by ? { managed_by: owner.managed_by } : {}),
       schedule_id: id, session_id, revision: 1, enabled: true, created_at: now(), next_run_at: next(input),
       last_run_at: null, last_turn_id: null, last_status: null };
     const payload = await encode(made, session_id, id);
@@ -143,6 +173,7 @@ export const createPromptSchedules = (deps: {
       if ((db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_schedules').get() as { n: number }).n >= 200) return bad('At most 200 scheduled prompts can be saved.');
       store.createSession({ id: session_id, title: input.title });
       db.prepare('INSERT INTO chat_prompt_schedules VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, session_id, 1, 1, made.next_run_at, payload, fingerprint);
+      watchDone(id, made.notify_on_done === true, made.created_at);
       return true;
     }).immediate();
     const committed = row(id)!;
@@ -165,21 +196,25 @@ export const createPromptSchedules = (deps: {
     db.prepare(`UPDATE chat_turn_queue SET status='cancelled' WHERE status='queued' AND turn_id IN
       (SELECT turn_id FROM chat_prompt_occurrences WHERE schedule_id=?)`).run(id);
   };
-  const update = async (raw: PromptScheduleUpdate | unknown, check = false): Promise<PromptSchedule | null> => {
+  const update = async (raw: PromptScheduleUpdate | unknown, check = false,
+    access: PromptScheduleOwnerAccess = {}): Promise<PromptSchedule | null> => {
     const args = object(raw);
-    if (Object.keys(args).some(key => !['schedule_id', 'expected_revision', 'title', 'prompt', 'time_zone', 'run_at', 'cron_expression'].includes(key))) return bad('Unknown schedule edit field. Mode cannot be changed.');
+    if (Object.keys(args).some(key => !['schedule_id', 'expected_revision', 'title', 'prompt', 'time_zone', 'run_at', 'cron_expression', 'notify_on_done'].includes(key))) return bad('Unknown schedule edit field. Mode cannot be changed.');
     if (!Number.isSafeInteger(args.expected_revision) || Number(args.expected_revision) < 1) return bad('An expected_revision is required to edit a schedule.');
     const before = target(args), old = await get(before.schedule_id);
+    if (old.managed_by !== undefined && !access.managed) throw new RpcError('forbidden', MANAGED_REFUSAL, 403);
     const keepPastTime = old.mode === 'one_shot' && !old.enabled
       && (args.run_at === undefined || typeof args.run_at === 'string' && Date.parse(args.run_at) === old.run_at);
     const input = validate({ title: old.title, prompt: old.prompt, mode: old.mode, time_zone: old.time_zone,
       ...(old.run_at !== undefined ? { run_at: new Date(old.run_at).toISOString() } : {}),
       ...(old.cron_expression ? { cron_expression: old.cron_expression } : {}),
-      ...Object.fromEntries(Object.entries(args).filter(([key]) => ['title', 'prompt', 'time_zone', 'run_at', 'cron_expression'].includes(key))) }, keepPastTime);
+      notify_on_done: old.notify_on_done === true,
+      ...Object.fromEntries(Object.entries(args).filter(([key]) => ['title', 'prompt', 'time_zone', 'run_at', 'cron_expression', 'notify_on_done'].includes(key))) }, keepPastTime);
     if (check) return null;
     const { last_outcome: _outcome, pending_approvals: _approvals, pending_work: _work,
       run_now_available: _available, run_request_scope: _scope, ...definition } = old;
     const changed: PromptSchedule = { ...definition, title: input.title, prompt: input.prompt, time_zone: input.time_zone,
+      notify_on_done: input.notify_on_done === true,
       ...(input.run_at ? { run_at: Date.parse(input.run_at) } : {}), ...(input.cron_expression ? { cron_expression: input.cron_expression } : {}),
       revision: before.revision + 1, next_run_at: old.enabled ? next(input) : null };
     const payload = await encode(changed, old.session_id, old.schedule_id);
@@ -188,12 +223,15 @@ export const createPromptSchedules = (deps: {
       cancelQueued(old.schedule_id);
       db.prepare('UPDATE chat_prompt_schedules SET revision=?, next_run_at=CASE WHEN enabled=1 THEN ? ELSE NULL END, payload=? WHERE schedule_id=?')
         .run(changed.revision, changed.next_run_at, payload, old.schedule_id);
+      watchDone(old.schedule_id, changed.notify_on_done === true, now());
     }).immediate();
     recordChange('updated', old.schedule_id, changed.revision);
     announce(old.session_id); return get(old.schedule_id);
   };
-  const control = async (action: 'pause' | 'resume' | 'remove', raw: PromptScheduleTarget | unknown, check = false): Promise<PromptSchedule | null> => {
+  const control = async (action: 'pause' | 'resume' | 'remove', raw: PromptScheduleTarget | unknown, check = false,
+    access: PromptScheduleOwnerAccess = {}): Promise<PromptSchedule | null> => {
     const before = target(raw), saved = await get(before.schedule_id);
+    if (saved.managed_by !== undefined && !access.managed) throw new RpcError('forbidden', MANAGED_REFUSAL, 403);
     if (action === 'resume' && before.enabled === 1) return check ? null : saved;
     let nextAt = before.next_run_at;
     if (action === 'resume') {
@@ -311,6 +349,22 @@ export const createPromptSchedules = (deps: {
         if (pending && !admitted) continue;
         try {
         const saved = await get(before.schedule_id);
+        // D-338 — an owned run with nothing to do is not queued: no model call, nothing written in
+        // its conversation. The clock moves on as if it had run. A run already admitted is kept.
+        const gate = !admitted && saved.managed_by !== undefined && saved.mode === 'recurring' ? runGates.get(saved.managed_by) : undefined;
+        if (gate) {
+          let verdict: 'run' | 'skip' = 'run';
+          try { verdict = await gate(saved, before.next_run_at!); } catch { verdict = 'run'; }
+          if (verdict === 'skip') {
+            db.transaction(() => {
+              const current = row(before.schedule_id);
+              if (closed() || !current || current.revision !== before.revision || current.enabled !== 1 || current.next_run_at !== before.next_run_at) return;
+              db.prepare('UPDATE chat_prompt_schedules SET next_run_at=? WHERE schedule_id=?')
+                .run(nextCronMatch(saved.cron_expression!.split(' '), now() + 60000, undefined, saved.time_zone), before.schedule_id);
+            }).immediate();
+            continue;
+          }
+        }
         const at = before.next_run_at!;
         const id = `${before.schedule_id}:${before.revision}:${at}`;
         const payload = await encode(saved, saved.session_id, `occurrence:${id}`);
@@ -350,7 +404,8 @@ export const createPromptSchedules = (deps: {
     return ticking;
   };
   const beforeDeleteSession = async (session: string): Promise<void> => {
-    for (const schedule of await list(session)) await control('remove', { schedule_id: schedule.schedule_id });
+    // Deleting the conversation takes its schedule with it, a managed one too.
+    for (const schedule of await list(session, { managed: true })) await control('remove', { schedule_id: schedule.schedule_id }, false, { managed: true });
     for (const turn of (await queue.snapshot(session)).turns) {
       if (['queued', 'running', 'cancelling'].includes(turn.status)) await queue.cancel(session, turn.turn_id);
     }
@@ -368,7 +423,10 @@ export const createPromptSchedules = (deps: {
       && health.recordTurnFailure(event.session_id, event.turn_id)) announce(event.session_id);
   };
   return { list, get, create, update, control, runNow, tick, beforeDeleteSession, isFailureCurrent, recordFailure,
+    setRunGate: (owner: 'agenda', gate: PromptScheduleRunGate | undefined): void => {
+      if (gate) runGates.set(owner, gate); else runGates.delete(owner);
+    },
     heldNoticeIds: health.heldNoticeIds,
-    preview: (raw: unknown) => previewPromptScheduleTiming(raw, now()) };
+    preview: (raw: unknown) => ({ ...previewPromptScheduleTiming(raw, now()), notify_on_done_available: true as const }) };
 };
 export type PromptSchedules = ReturnType<typeof createPromptSchedules>;

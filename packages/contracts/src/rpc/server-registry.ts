@@ -13,6 +13,7 @@
 
 import type { RpcMethodSpec } from './types.js';
 import type { WriteRuleRow, WriteRuleSuggestionRow } from '../write-approval-rule.js';
+import type { BrowserPassRow, BrowserPassSuggestionRow } from '../browser-pass.js';
 import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget, ArchiveUnattendedSettings, ArchiveUnattendedStatus, ArchiveRestoreDrill, ArchiveBackupHealthPolicy, ArchiveBackupIntegrityPolicy, ArchiveBackupIntegrityStatus, ArchiveBackupHealthStatus } from '../archive-remote.js';
 import type { BackupWatchdogDrillStart, BackupWatchdogDrillUpdate, BackupWatchdogSave, BackupWatchdogStatus } from '../backup-watchdog.js';
 import type {
@@ -4456,6 +4457,40 @@ export type ServerRpcRegistry = {
   'collection.contract.revokeWriteRule': RpcMethodSpec<
     { rule_id: string },
     { rule: WriteRuleRow }
+  >;
+  /** D-335 slice F — the live passes for Browser Toolkit writes, newest first: every "Always
+   *  allow on <site>" pass, and each "for this session" pass until it ends. Owner surface only,
+   *  reserved out of MCP with the rest of `collection.contract.`: an AI never sees, mints or ends
+   *  a pass. Reserved `not_configured` with no store. */
+  'collection.contract.listBrowserPasses': RpcMethodSpec<
+    void,
+    { passes: BrowserPassRow[] }
+  >;
+  /** D-335 slice F — end a pass now. Ending an "Always allow" pass ends its key's suggestions
+   *  too; the ask still offers "Always allow". Audited `browser_pass_revoked`. */
+  'collection.contract.revokeBrowserPass': RpcMethodSpec<
+    { pass_id: string },
+    { pass: BrowserPassRow }
+  >;
+  /** D-335 slice F — the open suggestions to always allow a key (three approvals of one recipe's
+   *  writes on one site, asked by the owner's chats or by one AI app, on three occasions within
+   *  30 days, none refused), each with the elements the approvals were for. */
+  'collection.contract.listBrowserPassSuggestions': RpcMethodSpec<
+    void,
+    { suggestions: BrowserPassSuggestionRow[] }
+  >;
+  /** D-335 slice F — mint the "Always allow" pass an open suggestion names: no end, no use
+   *  limit, as the ask's own "Always allow". A retry returns the pass already minted. Audited
+   *  `browser_pass_minted`. */
+  'collection.contract.acceptBrowserPassSuggestion': RpcMethodSpec<
+    { key_hash: string },
+    { pass: BrowserPassRow; suggestion: BrowserPassSuggestionRow }
+  >;
+  /** D-335 slice F — never suggest this key again (`bad_request` while it is an always pass:
+   *  end the pass instead). Audited `browser_pass_dismissed`. */
+  'collection.contract.dismissBrowserPassSuggestion': RpcMethodSpec<
+    { key_hash: string },
+    { key_hash: string }
   >;
 
   // D-187 slice 5 — the per-contract policy-overlay rpc trio
@@ -9009,6 +9044,12 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.dismissWriteRuleSuggestion',
   'collection.contract.listWriteRules',
   'collection.contract.revokeWriteRule',
+  // D-335 slice F — passes for Browser Toolkit writes (same reserved prefix: owner-only).
+  'collection.contract.listBrowserPasses',
+  'collection.contract.revokeBrowserPass',
+  'collection.contract.listBrowserPassSuggestions',
+  'collection.contract.acceptBrowserPassSuggestion',
+  'collection.contract.dismissBrowserPassSuggestion',
   // D-177 N.11 rule 5 (5.c, slice C) — scoped-grant proposal surface (same
   // reserved prefix — owner-only, never MCP).
   'collection.contract.listScopedGrantSuggestions',

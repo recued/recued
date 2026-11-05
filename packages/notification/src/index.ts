@@ -158,6 +158,8 @@ export {
   type RemoteChannelCredential,
   type RemoteChannelDeps,
   type RemotePromptRecord,
+  type RemoteNoticeHook,
+  type RemoteNoticeDecoration,
 } from './channels/remote.js';
 export {
   createEmailChannel,

@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3';
 import { BRIDGE_COMMAND_DEFAULT_TIMEOUT_MS, BRIDGE_COMMAND_MAX_TIMEOUT_MS, parsePreapprovalJson,
   type PreapprovalJson } from '@recued/contracts';
 import type { PreapprovalCall, PreapprovalRuntimeIdentity } from './preapproval-dispatch-description.js';
-import { describeBridgeDomCall } from './bridges/dom-adapter.js';
+import { describeBridgeDomCall, PICK_NOT_REVIEWABLE_MESSAGE } from './bridges/dom-adapter.js';
 import type { BridgeDispatcher, DispatchRequest, ReviewedBridgeBinding } from './bridges/dispatcher.js';
 import { recordPreapprovalContractRead, PREAPPROVAL_CLIENT_TOKEN_QUERY } from './storage/preapproval-contract-reads.js';
 
@@ -28,6 +28,8 @@ export const describeReviewedDom = (db: Database.Database, dispatcher: BridgeDis
   if (!dispatcher?.describeDocument) throw new Error('This bridge dispatcher cannot describe reviewed documents.');
   const description = describeBridgeDomCall(call.manifest, call);
   if (!description.entries.length) throw new Error('This DOM invocation has no concrete action.');
+  // D-335 slice N — which suggestion it clicks is known only once they show.
+  if (description.entries.some(({ action }) => action === 'pick')) throw new Error(PICK_NOT_REVIEWABLE_MESSAGE);
   const requests = description.entries.map(({ action, args, expects_output_keys }): DispatchRequest => ({
     ingredient: description.ingredient, action, args, expects_output_keys,
     recipe_run_id: 'preparation', step_id: 'preparation', idempotency_key: 'preparation',

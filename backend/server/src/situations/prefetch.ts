@@ -2,6 +2,7 @@ import type { Middleware, TurnContext } from '@recued/middleware';
 import { SITUATION_CONTEXT_MAX_BYTES, type SituationItem } from '@recued/contracts';
 import type { SituationAccess } from './access.js';
 import { situationItemForModel } from './model-projection.js';
+import { chatTurnTimeZoneOf } from '../chat-clock.js';
 import { ASSET_PROJECTION_CITATION_GUIDANCE, ASSET_COMPARISON_READ_GUIDANCE } from '../chat-source-citations.js';
 import { situationPrefetchSourceCapture } from './prefetch-source-citations.js';
 import { situationText } from './query.js';
@@ -102,9 +103,11 @@ export const createSituationPrefetch = (deps: {
       // Round-robin only inside each tier: weaker keyword hits must not push a
       // literal name or a named person's second item out of the three-row block.
       const text = situationText({ text: message, surface: 'prefetch' });
+      // D-338 — each row says when it happens on the turn's clock, as the tool's items do.
+      const zone = chatTurnTimeZoneOf(ctx.state);
       const queues = result.clusters.map(cluster => cluster.items.map(item => ({ cluster_id: cluster.id, floor: item.consequence === 'floor',
         person: ['match', 'near'].includes(item.who.verdict), direct: text.title(item.what.value ?? ''),
-        item: situationItemForModel(item, deps.personName) })));
+        item: situationItemForModel(item, deps.personName, { zone, isPrivate: access.isPrivate }) })));
       const tiers = [true, false].flatMap(floor => [true, false].flatMap(person => [true, false].map(direct =>
         queues.map(queue => queue.filter(entry => entry.floor === floor && entry.person === person && entry.direct === direct)))));
       for (const tier of tiers) for (let depth = 0; payload.length < 3 && tier.some(queue => depth < queue.length); depth += 1) for (const queue of tier) {

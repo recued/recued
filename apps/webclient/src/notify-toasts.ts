@@ -41,6 +41,8 @@
 import { parseReminderLink } from '@recued/contracts';
 
 import type { BroadcastSubscriber } from './realtime/subscriber.js';
+import { safeMentions, setTextWithMentions, type TextMention } from './shell/text-with-mentions.js';
+import { situationRefHref } from './data/situation-ref-href.js';
 
 // ════════════════════════════════════════════════════════════════
 // Public shapes
@@ -56,6 +58,8 @@ export interface NotifyToast {
   link_url?: string;
   ask_id?: string;
   options?: readonly { id: string; label: string }[];
+  /** D-338 §11 — names in `text` that open a record (`text-with-mentions.ts`). */
+  mentions?: readonly TextMention[];
 }
 
 export interface MountNotifyToastsOptions {
@@ -241,7 +245,8 @@ export const mountNotifyToasts = (
     }
     const textEl = doc.createElement('span');
     textEl.className = 'notify-toast-text';
-    textEl.textContent = t.text;
+    // D-338 §11 — an Agenda's birthday names open their contacts.
+    setTextWithMentions(doc, textEl, t.text, t.mentions, situationRefHref);
     body.appendChild(textEl);
     if (t.link_url) {
       const link = doc.createElement('a');
@@ -360,6 +365,7 @@ export const mountNotifyToasts = (
     link_url?: string,
     sticky = false,
     reminder?: { ask_id: string; options: readonly { id: string; label: string }[] },
+    mentions?: readonly TextMention[],
   ): void => {
     if (disposed) return;
     if (reminder && toasts.some(toast => toast.ask_id === reminder.ask_id)) return;
@@ -370,6 +376,7 @@ export const mountNotifyToasts = (
       text,
       ...(link_url ? { link_url } : {}),
       ...(reminder ? { ask_id: reminder.ask_id, options: reminder.options } : {}),
+      ...(mentions ? { mentions } : {}),
       timer: null,
     };
     // Evict oldest beyond the cap BEFORE appending the new one, cancelling
@@ -411,7 +418,8 @@ export const mountNotifyToasts = (
     // card, wedging this default-on overlay. A non-string title degrades to
     // no-title (via `nonBlankTitle`); guarded here too for clarity.
     if (typeof event.text !== 'string') return;
-    push(typeof event.title === 'string' ? event.title : undefined, event.text, safeNotifyLink(event.link_url));
+    push(typeof event.title === 'string' ? event.title : undefined, event.text, safeNotifyLink(event.link_url), false, undefined,
+      safeMentions(event.mentions));
   });
   const reminderSubscriptions = opts.answerReminder ? [
     opts.subscribe('notification.ask', event => {

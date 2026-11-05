@@ -1132,6 +1132,10 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.dom.wait', 'dom', 'dom-wait', 'read', 'browser'),
   op('core.dom.table', 'dom', 'dom-table', 'read', 'browser'),
   op('core.dom.screenshot', 'dom', 'dom-screenshot', 'read', 'browser'),
+  // Slice J (2026-11-04): `core.dom.act(target, page, steps)` runs typing, clicks, sends and
+  // waits on one page in order (`browser-act.ts`), approved once, through the Bridge's own
+  // actions, and stops at the first step that cannot be done or whose check fails.
+  op('core.dom.act', 'dom', 'dom-act', 'write', 'browser'),
 ];
 
 // ────────────────────────────────────────────────────────────────

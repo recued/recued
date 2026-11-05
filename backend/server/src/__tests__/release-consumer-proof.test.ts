@@ -177,6 +177,7 @@ const planFor = async (candidate: Release, live: ReturnType<typeof feed>, overri
     arch: 'arm64',
     fetchBytes: live.fetchBytes,
     hasPlaywright: () => true,
+    hasBrowser: () => true,
     ...overrides,
   });
 
@@ -312,6 +313,8 @@ describe('planConsumerProof', () => {
       [{ version: '26.10.17' }, `it proves the stable channel, and this manifest puts ${VERSION} there, not 26.10.17`],
       [{ repoRoot: fresh('bare') }, /this checkout has no apps\/webclient\/e2e\/live-update-path\.spec\.ts, .*make-e2e-seed\.mjs/],
       [{ hasPlaywright: () => false }, '@playwright/test is not installed in this checkout'],
+      // 2026-11-04 — the browser too, or a Mac without it goes live and fails the proof.
+      [{ hasBrowser: () => false }, "the update drive's browser is not installed here: run `npx playwright install chromium`"],
     ];
     for (const [overrides, reason] of cases) {
       await expect(planFor(candidate, live, overrides), JSON.stringify(Object.keys(overrides))).rejects.toThrow(reason);

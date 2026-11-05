@@ -115,6 +115,8 @@ describe('D-129 P3 — HUBSPOT_CONTACT_PROPERTIES', () => {
       'zip',
       'country',
       'company',
+      // D-338 §10 — the birthday, for a contact Recued knows.
+      'date_of_birth',
     ]);
   });
 

@@ -64,6 +64,8 @@ import {
   detectTornSaga,
   raiseSagaAsk,
   raisePickAsk,
+  type BrowserPassHooks,
+  type BrowserTargetHooks,
   type CommitRunIdentity,
   type PreflightAskContext,
   type PreflightNotifier,
@@ -80,6 +82,7 @@ import type {
   ChunkedUploadAuditInfo,
   ContextConnections,
   GatedActionSettlementMode,
+  HeldBrowserTarget,
   LaneGovernor,
   OpDurationClassifier,
   QualityDelegationMatchContext,
@@ -134,6 +137,8 @@ import {
   isCatalogForm,
   isOwnerDefaultOnlyEntry,
   isOpenProjectionRefusal,
+  isBrowserActionSlug,
+  stripCorePrefix,
   isOutboundSendSlug,
   isRecordsExecutionBinding,
   kernelOpForBackingSlug,
@@ -217,7 +222,8 @@ import { heldSenderValueLabels, mailSenderAudienceOf, settleMailSenders, type Se
 import { heldPeopleValueLabels } from './held-people-labels.js';
 import { heldRecordArgument, heldRecordValueLabels } from './held-record-labels.js';
 import { heldCalendarValueLabels } from './held-calendar-labels.js';
-import { describeHeldBrowserTarget, heldBrowserValueLabels } from './bridges/dom-adapter.js';
+import { describeHeldBrowserTarget, heldBrowserTargetRefusal, heldBrowserValueLabels } from './bridges/dom-adapter.js';
+import { browserPassOfferFor, browserPassSiteFor, useBrowserPass } from './browser-passes.js';
 import {
   buildAuditEntry,
   newRunId,
@@ -1065,6 +1071,11 @@ export interface ExecuteHandlerDeps {
    *  a held Tier-1 write, and the chat's and the MCP door's gates spend a live rule's use
    *  instead of asking. Absent ⇒ every held write asks. */
   writeRules?: import('./storage/write-rule-store.js').WriteRuleStore;
+  /** D-335 slice F — passes for Browser Toolkit writes (who × recipe × site): the commit
+   *  gateway lets a live one stand in for a browser write's ask, a held browser write offers
+   *  one on its site, and the resumer mints the answer's and keeps every answer. Absent ⇒
+   *  every browser write asks, offering allow once and deny. */
+  browserPasses?: import('./storage/browser-pass-store.js').BrowserPassStore;
   /** D-221 — namespaced Records storage and execution authority. Optional for
    * old/dbless harnesses; a Records catalog call fails closed when absent. */
   recordsStore?: RecordsStore;
@@ -5418,6 +5429,97 @@ const handleExecuteInner = async (
         }
       : undefined;
 
+  // D-335 slice F — the Gateway's pass seam for held browser writes. Who is the run's caller,
+  // the recipe is the run's, and the site is the page's origin as the Bridge reads it now (for
+  // opening, the address's). A read that finds no pass is kept for the hold that follows, so
+  // its ask names the element without asking the Bridge twice (`heldBrowserTargetRead`).
+  let lastBrowserTargetRead:
+    | { readonly memo: string; readonly read: Promise<HeldBrowserTarget | undefined> }
+    | undefined;
+  const browserTargetMemo = (slug: string | undefined, input: unknown): string => {
+    const call = input !== null && typeof input === 'object' ? input as Record<string, unknown> : {};
+    // Slice J — a sequence's steps name its elements.
+    return JSON.stringify([slug ?? null, call.page ?? null, call.ref ?? null, call.selector ?? null, call.steps ?? null]);
+  };
+  const describeBrowserTarget = (
+    slug: string | undefined,
+    input: unknown,
+    step_id: string,
+  ): Promise<HeldBrowserTarget | undefined> => describeHeldBrowserTarget({
+    dispatcher: deps.executorConfig.bridgeDispatcherRef?.(),
+    manifests: { get: (manifestSlug) => deps.executorConfig.manifests.get(manifestSlug) ?? null },
+    slug,
+    input,
+    run_id,
+    step_id,
+  });
+  const heldBrowserTargetRead = (
+    slug: string | undefined,
+    input: unknown,
+    step_id: string,
+  ): Promise<HeldBrowserTarget | undefined> => {
+    const memo = browserTargetMemo(slug, input);
+    const kept = lastBrowserTargetRead?.memo === memo ? lastBrowserTargetRead.read : undefined;
+    lastBrowserTargetRead = undefined;
+    return kept ?? describeBrowserTarget(slug, input, step_id);
+  };
+  const browserPasses: BrowserPassHooks | undefined =
+    deps.browserPasses !== undefined && runIdentity !== undefined
+      ? {
+          admit: async ({ slug, input }): Promise<boolean> => {
+            const identity = runIdentity!;
+            let target: HeldBrowserTarget | undefined;
+            if (slug !== 'dom-open') {
+              const read = describeBrowserTarget(slug, input, 'browser-pass');
+              lastBrowserTargetRead = { memo: browserTargetMemo(slug, input), read };
+              target = await read;
+            }
+            const offer = browserPassOfferFor({
+              source: identity.source,
+              recipe_id: recipe.recipe_id,
+              site: browserPassSiteFor(slug, input, target !== undefined && 'origin' in target ? target : undefined),
+              channel_session_id: identity.channel_session_id,
+            });
+            if (offer === undefined) return false;
+            const pass = useBrowserPass(deps.browserPasses, offer.key, identity.channel_session_id);
+            if (pass === undefined) return false;
+            lastBrowserTargetRead = undefined;
+            if (deps.auditLog !== undefined) {
+              const at = Date.now();
+              void deps.auditLog.logActivity({
+                activity_id: `browser_pass_used_${run_id}_${at}_${Math.random().toString(36).slice(2, 8)}`,
+                timestamp: at,
+                action: 'browser_pass_used',
+                target: pass.pass_id,
+                detail: JSON.stringify({
+                  run_id, recipe_id: recipe.recipe_id, site: offer.key.site, kind: pass.kind,
+                  principal: offer.key.principal.kind,
+                }),
+              }).catch(() => {});
+            }
+            return true;
+          },
+        }
+      : undefined;
+
+  // 2026-11-04 — a held browser write whose page or element the Bridge says has gone fails
+  // instead of being asked: the approval could only end in the same error. The read is the one
+  // the ask would show: a pass check's read of this same call is reused, and one made here is
+  // kept for the hold that follows (`heldBrowserTargetRead`).
+  const browserTargets: BrowserTargetHooks = {
+    refusal: async ({ slug, input }): Promise<Error | undefined> => {
+      const memo = browserTargetMemo(slug, input);
+      let read = lastBrowserTargetRead?.memo === memo ? lastBrowserTargetRead.read : undefined;
+      if (read === undefined) {
+        read = describeBrowserTarget(slug, input, 'browser-target');
+        lastBrowserTargetRead = { memo, read };
+      }
+      const refusal = heldBrowserTargetRefusal(slug, await read, input);
+      if (refusal !== undefined) lastBrowserTargetRead = undefined;
+      return refusal;
+    },
+  };
+
   // D-177 catalog-gate session-grant loop — the catalog gate's match / consume
   // / mint seam (engine `CatalogSessionGrantHooks`). A catalog operation holds
   // at the ENGINE catalog gate (before the commit Gateway, whose read-tier
@@ -5886,6 +5988,16 @@ const handleExecuteInner = async (
             const resumeApproved =
               stepMeta?.preflight_admitted === true
               && stepMeta.preflight_approved_target?.ingredient_slug === slug;
+            // 2026-11-04 — as the full Gateway does: a browser write whose page or element
+            // has gone fails now rather than being asked.
+            if (!resumeApproved && isBrowserActionSlug(slug)) {
+              const resolved = manifest ? actionIdentityBasis(manifest, authorityInput,
+                merged => resolveDeep(merged, stores, { deferVault: true }) as Record<string, unknown>,
+                { surfaceDispatch }) : undefined;
+              const refusal = await browserTargets.refusal({ slug, input: resolved ?? authorityInput })
+                .catch(() => undefined);
+              if (refusal !== undefined) throw refusal;
+            }
             if (!resumeApproved) raiseOnAsk(decision, { slug, ...(review ? { resource_review: review } : {}) });
           }
           const dispatch = () => usageAwareFallbackExecutor(slug, input, output, stepOptions, stepMeta);
@@ -6098,6 +6210,8 @@ const handleExecuteInner = async (
           ...(recordDispatchUse ? { recordDispatchUse } : {}),
           ...(sessionGrants ? { sessionGrants } : {}),
           ...(qualityDelegations ? { qualityDelegations } : {}),
+          ...(browserPasses ? { browserPasses } : {}),
+          browserTargets,
         })
       : admissionAwareFallbackExecutor;
 
@@ -7499,13 +7613,31 @@ const handleExecuteInner = async (
           // waits for it (`HELD_BROWSER_DESCRIBE_TIMEOUT_MS`), and says so when
           // the Bridge does not answer.
           const browserTarget = foreachCover === undefined
-            ? await describeHeldBrowserTarget({
-                dispatcher: deps.executorConfig.bridgeDispatcherRef?.(),
-                manifests: { get: (slug) => deps.executorConfig.manifests.get(slug) ?? null },
-                slug: awaitingApproval.tool_slug,
-                input: heldCall.input,
-                run_id,
-                step_id: gated_step_id,
+            ? await heldBrowserTargetRead(awaitingApproval.tool_slug, heldCall.input, gated_step_id)
+            : undefined;
+          // D-335 slice F — what this hold's site answers would mint: who asked, the recipe
+          // and the site as just read (the page's origin, or the address an open names).
+          // Asked only where a pass could stand in for it: a single call (no foreach cover)
+          // whose ask the owner's policy leaves waivable, below destructive, as the gateway
+          // checks before it admits one.
+          const browserPassOffer = deps.browserPasses !== undefined
+            && foreachCover === undefined
+            && awaitingApproval.tool_slug !== undefined
+            && isBrowserActionSlug(awaitingApproval.tool_slug)
+            && awaitingApproval.risk_tier !== 'destructive'
+            && (
+              awaitingApproval.authorization_provenance?.pre_lift_approval === 'never'
+              || awaitingApproval.authorization_provenance?.pre_lift_approval === 'ask'
+            )
+            ? browserPassOfferFor({
+                source: executionSource,
+                recipe_id: recipe.recipe_id,
+                site: browserPassSiteFor(
+                  awaitingApproval.tool_slug,
+                  heldCall.input,
+                  browserTarget !== undefined && 'origin' in browserTarget ? browserTarget : undefined,
+                ),
+                channel_session_id: runIdentity?.channel_session_id,
               })
             : undefined;
           const browserLabels = heldBrowserValueLabels(browserTarget, heldCall.input);
@@ -7548,6 +7680,7 @@ const handleExecuteInner = async (
               : {}),
             ...(heldValueLabels !== undefined ? { value_labels: heldValueLabels } : {}),
             ...(browserTarget !== undefined ? { browser_target: browserTarget } : {}),
+            ...(browserPassOffer !== undefined ? { browser_pass: browserPassOffer } : {}),
             ...(awaitingApproval.egress_bound !== undefined
               ? { egress_bound: awaitingApproval.egress_bound }
               : {}),
@@ -7718,10 +7851,14 @@ const handleExecuteInner = async (
                 // the coordinator mutex, which child registration also needs.
                 const individualWorkflowReview = awaitingApproval.authorization_provenance?.lift_reason === 'review_approval_workflow'
                   || awaitingApproval.authorization_provenance?.lift_reason === 'review_customer_payment';
+                // D-335 slice F — a browser write that offers a pass on its site offers no
+                // D-177 grant: an exact grant pins the page handle and the ref, which change
+                // on every read, so it never covered a second write.
                 const resolvedOffer =
                   deps.sessionGrantResolver !== undefined
                   && awaitingApproval.resource_review === undefined
                   && !individualWorkflowReview
+                  && browserPassOffer === undefined
                   && runIdentity !== undefined
                   && executionSource !== undefined
                     ? resolveSessionGrantOffer({
@@ -7842,6 +7979,13 @@ const handleExecuteInner = async (
                   // A batch member is ONE call; a hold that covers a foreach's
                   // remaining items raises its own ask, which lists them all.
                   && foreachCover === undefined
+                  // D-335 slice F — a browser write that offers a pass asks on its own, so
+                  // its ask can offer the pass (a batch ask offers no site answers).
+                  && browserPassOffer === undefined
+                  // Slice J — a sequence asks on its own too: its ask lists each step as the
+                  // page shows it, hiding what goes into a password field, and a batch ask
+                  // would list its raw steps instead.
+                  && (awaitingApproval.tool_slug === undefined || stripCorePrefix(awaitingApproval.tool_slug) !== 'dom-act')
                   && runIdentity !== undefined
                   && executionSource !== undefined
                   && awaitingApproval.resource_review === undefined

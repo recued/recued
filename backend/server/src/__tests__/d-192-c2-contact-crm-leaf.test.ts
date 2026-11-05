@@ -228,6 +228,8 @@ describe('D-192 C-2 slice 7 — the leaf keeps each vendor’s supplies promise'
       mailing_address: {
         address1: '1 Main St', city: 'Boston', state: 'MA', zip: '02101', country: 'US',
       },
+      // D-338 §10 — as the reconciler keeps it.
+      birthday: '1984-11-05',
     });
 
     const outcome = await callLeaf(HUBSPOT);
@@ -244,6 +246,7 @@ describe('D-192 C-2 slice 7 — the leaf keeps each vendor’s supplies promise'
     // The structured address the RECONCILER composed — the mapping the vendor
     // registry does not have (its `mailing_address` meta-field is a phantom).
     expect(rec.attributes.address).toMatchObject({ zip: '02101', city: 'Boston' });
+    expect(rec.attributes.birthday).toBe('1984-11-05');
   });
 
   it('an absent value is an explicit null / [], NEVER a missing key', async () => {
@@ -261,6 +264,8 @@ describe('D-192 C-2 slice 7 — the leaf keeps each vendor’s supplies promise'
     expect(rec.attributes.org).toBeNull();
     expect('address' in rec.attributes).toBe(true);
     expect(rec.attributes.address).toBeNull();
+    expect('birthday' in rec.attributes).toBe(true);
+    expect(rec.attributes.birthday).toBeNull();
     expect('phone_alias' in rec.aliases).toBe(true);
     expect(rec.aliases.phone_alias).toEqual([]);
     // And the runner accepts it — an explicit absence is a real answer.

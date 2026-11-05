@@ -297,13 +297,15 @@ const harness = (opts: {
     mintId: () => `mint-${(seq += 1)}`,
     ...(opts.contactStore !== undefined ? { getContactStore: () => opts.contactStore as never } : {}),
   });
-  /** `turn_state`: the turn's scratch, as one turn's calls share it (`buildTurnDriver`). */
+  /** `turn_state`: the turn's scratch, as one turn's calls share it (`buildTurnDriver`).
+   *  `time_zone`: the turn's clock, as the turn executor gives every dispatch it makes. */
   const dispatch = (turn_id: string, args: Record<string, unknown> = EVENT, tool: string = writeTool,
-    turn_state?: Map<string, unknown>) =>
+    turn_state?: Map<string, unknown>, time_zone?: string) =>
     orchestrator.dispatch.dispatchTool({
       session_id, turn_id, tool_name: tool, arg_values: args, picker_target: 'self',
       ...(opts.source !== undefined ? { execution_source: opts.source(session_id, turn_id) } : {}),
       ...(turn_state !== undefined ? { turn_state } : {}),
+      ...(time_zone !== undefined ? { time_zone } : {}),
     } as never);
   // One answerer for the server, as `compose-listeners` makes it.
   const answerer = createHeldPlanAskAnswerer(block as never, createHoldExpiredReader({ checkpointStore, gatedActionStore }));
@@ -591,6 +593,39 @@ describe('D-329 B — approving from the card runs it', () => {
     await handlePlanApprove(h.rpcDeps, { plan_id });
     await expect(handlePlanApprove(h.rpcDeps, { plan_id })).rejects.toMatchObject({ code: 'bad_request' });
     expect(h.calls).toHaveLength(1);
+  });
+});
+
+describe('D-338 §13 — a scheduled prompt the model gave no zone is held, shown and run on its turn\'s', () => {
+  const PROMPT = { title: 'Morning summary', prompt: 'Summarise my day.', mode: 'recurring', cron_expression: '30 7 * * 1-5' };
+  const opArgsOf = (checkpoint: Checkpoint | undefined): unknown =>
+    (checkpoint as unknown as { raw_op: { op_args: unknown } }).raw_op.op_args;
+
+  it('the card, the hold and the approved run carry the turn\'s zone, though the run itself is given none', async () => {
+    const h = harness({ tool: 'schedule.run_prompt', result: { session_id: 'scheduled-conversation' } });
+    const plan_id = planIdOf(await h.dispatch('turn-1', PROMPT, undefined, undefined, 'Europe/Dublin'));
+    const zoned = { ...PROMPT, time_zone: 'Europe/Dublin' };
+    // What the owner approves, and what is kept for the run.
+    expect((await h.record(plan_id))!.plan.args).toEqual(zoned);
+    expect(opArgsOf([...h.checkpoints.values()][0])).toEqual(zoned);
+    await handlePlanApprove(h.rpcDeps, { plan_id });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]!.args).toEqual(zoned);
+    // ⛔ Why it is filled before the hold: the approved run has no clock of its own.
+    expect(h.calls[0]!.ctx.time_zone).toBeUndefined();
+  });
+
+  it('keeps a zone the model names, a blank one is the turn\'s, and another tool gets none', async () => {
+    const named = harness({ tool: 'schedule.run_prompt', result: { session_id: 's' } });
+    const newYork = { ...PROMPT, time_zone: 'America/New_York' };
+    expect((await named.record(planIdOf(await named.dispatch('turn-1', newYork, undefined, undefined, 'Europe/Dublin'))))!.plan.args)
+      .toEqual(newYork);
+    const blank = harness({ tool: 'schedule.run_prompt', result: { session_id: 's' } });
+    expect((await blank.record(planIdOf(await blank.dispatch('turn-1', { ...PROMPT, time_zone: ' ' }, undefined, undefined, 'Europe/Dublin'))))!
+      .plan.args).toEqual({ ...PROMPT, time_zone: 'Europe/Dublin' });
+    const other = harness();
+    expect((await other.record(planIdOf(await other.dispatch('turn-1', EVENT, undefined, undefined, 'Europe/Dublin'))))!.plan.args)
+      .toEqual(EVENT);
   });
 });
 

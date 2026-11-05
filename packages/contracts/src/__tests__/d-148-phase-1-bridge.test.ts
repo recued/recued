@@ -53,11 +53,15 @@ describe('D-148 P1 — BRIDGE_ACTIONS closed list', () => {
       'list_tabs',
       'open_tab',
       'os_notification',
+      // D-335 slice L — types into a field that suggests, then picks a suggestion by its text.
+      'pick',
       'read_dom',
       // D-335 slice H, on a page handle: a table, a picture and a wait.
       'read_table',
       'screenshot',
       'screenshot_page',
+      // D-335 slice J — sends the form an element is in.
+      'submit',
       'wait_for_element',
       'wait_for_selector',
     ]);

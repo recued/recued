@@ -23,6 +23,7 @@
  */
 
 import type { ApprovalValueLabels } from './ask-detail-label.js';
+import type { BrowserPassOffer } from './browser-pass.js';
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
 import {
   isOperationApproval,
@@ -161,14 +162,32 @@ export interface PreflightCheckpointContext {
    *  only, like `recipe_title`: an older binary ignores it, and the ask reads
    *  it defensively. */
   browser_target?: HeldBrowserTarget;
+  /** D-335 slice F — the pass this hold's two site answers would mint ("Allow on <site> for
+   *  this session", "Always allow on <site>"): who × recipe × site as the hold read them.
+   *  Present only when all three are known, and then the ask offers those answers; the
+   *  answer mints exactly this. Kept here so a re-raised ask (after a restart) offers the
+   *  same answers. Read defensively, like `browser_target`. */
+  browser_pass?: BrowserPassOffer;
 }
 
 /** D-335 slice B — see `PreflightCheckpointContext.browser_target`. `site` is the page's
  *  host, or the call's target when the page could not be read; empty then when the
- *  target is every site (the Browser Toolkit's), which names none. */
+ *  target is every site (the Browser Toolkit's), which names none. Slice F adds `origin`,
+ *  the page's scheme, host and port, when the page was read. `gone` (2026-11-04): the Bridge
+ *  answered that the page or the element will never read again (`isBridgeTargetGone`), so
+ *  the write fails instead of being asked; `unread` is then the Bridge's own message. */
 export type HeldBrowserTarget =
-  | { site: string; title: string; role: string; label: string; protected: boolean }
-  | { site: string; unread: string };
+  | { site: string; title: string; role: string; label: string; protected: boolean; origin?: string;
+      steps?: HeldBrowserStep[] }
+  | { site: string; unread: string; gone?: true; steps?: HeldBrowserStep[] };
+
+/** D-335 slice J — one step of a held sequence (`core.dom.act`), in order: its element as the
+ *  Bridge read it while the run was held, why it could not be read, or a wait, which names
+ *  none. The target's own fields describe the page, from the first element read. */
+export type HeldBrowserStep =
+  | { role: string; label: string; protected: boolean }
+  | { unread: string; gone?: true }
+  | { wait: true };
 
 /** D-182 §8 (GRANT HALF, Inc B-writes) — the recipe-LESS raw-op door hold.
  *

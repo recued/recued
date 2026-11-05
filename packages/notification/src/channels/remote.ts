@@ -135,6 +135,32 @@ export interface RemoteChannelDeps {
    *  prompt goes out, removed when it closes. Absent ⇒ in memory only, as
    *  before (see the file header). */
   promptRecords?: Collection<RemotePromptRecord>;
+  /** D-338 — a notification sent to a messenger the owner chats with Recued on
+   *  is a notice in that chat. The host decides (it knows the chat), and this
+   *  channel only sends what it is handed and reports the message id the
+   *  messenger gave it. Absent, or answering `undefined` ⇒ sent as before. */
+  notices?: RemoteNoticeHook;
+}
+
+/** D-338 — what the host asks before a notify goes out. `token` identifies the
+ *  bot (the host resolves its account with the vendor); it never leaves the
+ *  process. A throw is treated as `undefined`: the notification still goes. */
+export interface RemoteNoticeHook {
+  prepare(input: {
+    readonly vendor: string;
+    readonly recipient: string;
+    readonly token: string;
+    readonly message: NotificationMessage;
+  }): Promise<RemoteNoticeDecoration | undefined>;
+}
+
+/** D-338 — the notice as it is sent, and the call that records it once the
+ *  messenger accepted it. `sent` is told the vendor's message id when the
+ *  transport returned one. */
+export interface RemoteNoticeDecoration {
+  readonly title: string;
+  readonly text: string;
+  sent(vendor_message_id: string | undefined): Promise<void>;
 }
 
 /** What a later process needs of a prompt this channel sent (D-158 P3): which
@@ -356,14 +382,30 @@ export const createRemoteChannel = (
 
     async deliverNotify(message) {
       const { token, recipient } = await credentialOrThrow('deliverNotify');
+      // D-338 — the host turns it into a notice when this messenger is a chat with
+      // Recued. A hook that fails costs the notice, never the notification.
+      let notice: RemoteNoticeDecoration | undefined;
+      try {
+        notice = await deps.notices?.prepare({ vendor: name, recipient, token, message });
+      } catch {
+        notice = undefined;
+      }
       const result = await transport.send({
         recipient,
         token,
-        text: message.text,
-        ...(message.title !== undefined ? { title: message.title } : {}),
+        text: notice ? notice.text : message.text,
+        ...(notice ? { title: notice.title } : message.title !== undefined ? { title: message.title } : {}),
         ...(message.link_url !== undefined ? { link_url: message.link_url } : {}),
       });
       throwOnFailure(result, 'deliverNotify');
+      if (notice) {
+        try {
+          await notice.sent(result.ok ? result.vendor_message_id : undefined);
+        } catch {
+          // The message went out; only its record in the chat is missing, and a
+          // reply that quotes it is then answered without it.
+        }
+      }
     },
 
     async deliverAsk(ask_id, message, options) {

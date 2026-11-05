@@ -54,9 +54,16 @@ import {
   approvalFieldLabel,
   approvalValueLabel,
   askDetailLabel,
+  BROWSER_PASS_SESSION_TTL_MS,
+  browserPassActsOf,
+  browserPassKindOfOption,
+  browserPassOptions,
   isApprovalWorkflowOperation,
+  isBrowserPassOptionId,
+  readBrowserPassOffer,
   isOperationSpecHash,
   kernelWriteStaysInRecued,
+  parseBrowserActSteps,
   renderBatchItemsBlock,
   tier1CallDetails,
   tier1CallTitle,
@@ -71,6 +78,8 @@ import type {
   OriginUnit,
   OriginUnitKind,
   AuthorizationProvenance,
+  BrowserPassKind,
+  BrowserPassOffer,
   OperationApproval,
   PreflightForeachCover,
   PreflightOverrideOffer,
@@ -295,6 +304,13 @@ export interface PreflightAskContext {
    *  claims the member at the proceed point (the claim IS the consumption
    *  — N.4). Never read at raise time. */
   batch_claim?: { contract_id: string; member_id: string };
+  /** D-335 slice F — answer-time resume context ONLY: the pass a site answer chose
+   *  ("Allow on <site> for this session" ⇒ `session`, "Always allow on <site>" ⇒
+   *  `always`). The resumer mints the offer the checkpoint carries
+   *  (`preflight_context.browser_pass`), never a key read again. Absent on every other
+   *  answer. ⚠ Not `browser_pass`: a re-raise spreads the checkpoint's context, offer and
+   *  all, into this one. */
+  browser_pass_kind?: BrowserPassKind;
 }
 
 /** The narrow notification-block seam this leaf calls — the subset of
@@ -480,6 +496,7 @@ const heldBrowserLine = (
       ? `This opens a new tab in your browser at this address:\n${JSON.stringify(args.address)}`
       : undefined;
   }
+  if (named === 'dom-act') return heldBrowserSteps(target, args);
   const doing = named !== undefined && Object.hasOwn(BROWSER_DOING, named) ? BROWSER_DOING[named] : undefined;
   if (doing === undefined || target === null || typeof target !== 'object') return undefined;
   const read = target as Record<string, unknown>;
@@ -507,7 +524,82 @@ const heldBrowserLine = (
   }
   const submit = typeof args.submit_selector === 'string' && args.submit_selector !== ''
     ? '\nIt then presses Enter to send it.' : '';
-  return `${head} The text:\n${JSON.stringify(args.value)}${submit}`;
+  // D-335 slice N — then the suggestion it picks, by the text the model gave.
+  const picks = typeof args.pick === 'string' && args.pick.trim() !== ''
+    ? `\nIt then picks “${oneLine(args.pick)}” from its suggestions.` : '';
+  return `${head} The text:\n${JSON.stringify(args.value)}${submit}${picks}`;
+};
+
+/** D-335 slice J — what a held sequence (`core.dom.act`) does, step by step, on the page the
+ *  Bridge read while the run was held: each element as the page names it, each typed text in full
+ *  on its own line, quoted, except what goes into a field for a password, a sign-in code or a
+ *  card, which is not shown:
+ *
+ *    On “Sign in” (example.com), this does 3 steps in your browser, in order:
+ *    1. Types into the text box “Email”:
+ *    "me@example.com"
+ *    2. Types into the password box “Password”, then sends its form. The text is not shown here …
+ *    3. …
+ *    A click or a sent form cannot be undone. It stops at the first step that does not work.
+ *
+ *  Undefined when the steps and what was read do not line up, so the ask says nothing it cannot
+ *  stand behind. ⛔ Every name on a line goes through `oneLine`: a selector is the model's, a
+ *  label the page's, and either could otherwise write a line of its own. */
+const heldBrowserSteps = (target: unknown, args: Record<string, unknown> | undefined): string | undefined => {
+  if (target === null || typeof target !== 'object') return undefined;
+  const read = target as Record<string, unknown>;
+  const parsed = parseBrowserActSteps(args?.steps);
+  if (!parsed.ok || typeof read.site !== 'string' || !Array.isArray(read.steps)
+    || read.steps.length !== parsed.steps.length) return undefined;
+  const quoted = (text: string) => `“${oneLine(text)}”`;
+  const lines: string[] = [];
+  let acts = false;
+  for (const [index, step] of parsed.steps.entries()) {
+    const seen = read.steps[index] as Record<string, unknown> | null;
+    if (seen === null || typeof seen !== 'object') return undefined;
+    const n = `${index + 1}.`;
+    if (step.do === 'wait') {
+      const wait = step.selector === undefined ? `Waits ${step.seconds} seconds.`
+        : `Waits for ${quoted(step.selector)} to ${step.until === 'gone' ? 'go' : 'show'}.`;
+      lines.push(`${n} ${wait}`);
+      continue;
+    }
+    let element: string;
+    let shownNot = false;
+    if (typeof seen.unread === 'string') {
+      element = `${step.ref !== undefined ? `ref ${oneLine(step.ref)}` : quoted(step.selector!)}, which could not be shown `
+        + `here (${oneLine(seen.unread).replace(/\.$/, '')})`;
+    } else if (typeof seen.role === 'string' && typeof seen.label === 'string') {
+      element = seen.label !== '' ? `the ${oneLine(seen.role)} ${quoted(seen.label)}` : `a ${oneLine(seen.role)}`;
+      shownNot = seen.protected === true;
+    } else {
+      return undefined;
+    }
+    if (step.do === 'click') {
+      acts = true;
+      lines.push(`${n} Clicks ${element}.`);
+    } else if (step.do === 'submit') {
+      acts = true;
+      lines.push(`${n} Sends the form ${element} is in.`);
+    } else {
+      // Slice L — then the suggestion it picks, by its text, which the ask names as the model gave it.
+      const picks = step.pick !== undefined ? `, then picks ${quoted(step.pick)} from its suggestions` : '';
+      const sends = step.submit === true ? (picks !== '' ? ' and sends its form' : ', then sends its form') : '';
+      acts ||= step.submit === true || step.pick !== undefined;
+      // An element that could not be read may be a password field: its text is not shown.
+      lines.push(shownNot || typeof seen.unread === 'string'
+        ? `${n} Types into ${element}${picks}${sends}. The text is not shown here, `
+          + (shownNot ? 'because the field is for a password, a sign-in code or a card.'
+            : 'because the field could not be read to tell whether it is for a password.')
+        : `${n} Types into ${element}${picks}${sends}:\n${JSON.stringify(step.value)}`);
+    }
+  }
+  const page = typeof read.title === 'string' && read.title !== '' && read.site !== ''
+    ? `${quoted(read.title)} (${read.site})` : read.site;
+  const where = page !== '' ? `On ${page}, this` : 'This';
+  const count = parsed.steps.length;
+  return `${where} does ${count} step${count === 1 ? '' : 's'} in your browser, in order:\n${lines.join('\n')}\n`
+    + `${acts ? 'A click or a sent form cannot be undone. ' : ''}It stops at the first step that does not work.`;
 };
 
 /** D-329 — who proposed a held Tier-1 write, in the owner's words: their own chat in the
@@ -746,6 +838,18 @@ const renderExactGrantBlock = (offer: { ttl_ms: number; max_uses: number }, acto
     + 'but only exactly as it is now, with every detail the same.')
   + '\nAny change asks you again.';
 
+/** D-335 slice F — what the two site answers on a held browser write let happen. Its own
+ *  paragraph right before the question, like the grant blocks, but not one the card takes
+ *  out (`splitSessionGrantTerms` takes only "'Allow this session' lets …"): every surface
+ *  shows it, since "Always allow" does not end by itself. */
+const renderBrowserPassBlock = (offer: BrowserPassOffer): string => {
+  const acts = browserPassActsOf(offer.key);
+  const everywhere = offer.key.principal.kind === 'owner_chat' ? 'in all your chats' : 'for this AI app';
+  return oneLine(`“Allow on ${offer.host} for this session” stops asking about ${acts} in this `
+    + `conversation, for up to ${renderTtl(BROWSER_PASS_SESSION_TTL_MS)}. “Always allow on ${offer.host}” stops `
+    + `asking about them ${everywhere}, until you end it under Contracts.`);
+};
+
 /** Render a byte count as a size a reader can act on.
  *
  *  ⚠ `104857600` is a number the reader has to do arithmetic on before it means
@@ -926,7 +1030,13 @@ export const buildPreflightAsk = (args: {
     || ['core.work-entity.customer-account-payment.correct','customer-account-payment-correct','core-customer-account-payment-correct','core.work-entity.customer-account-payment.apply','customer-account-payment-apply','core-customer-account-payment-apply','core.work-entity.customer-refund.correct','customer-refund-correct','core-customer-refund-correct','core.work-entity.customer-refund.apply','customer-refund-apply','core-customer-refund-apply','core.work-entity.customer-payment.correct','customer-payment-correct','core-customer-payment-correct','core.work-entity.customer-invoice.credit','customer-invoice-credit','core-customer-invoice-credit','core.work-entity.customer-invoice.credit.correct','customer-invoice-credit-correct','core-customer-invoice-credit-correct'].includes(named ?? '')
     || context.authorization_provenance?.lift_reason === 'review_approval_workflow'
     || context.authorization_provenance?.lift_reason === 'review_customer_payment';
-  const sessionGrant = freshReview ? undefined : context.session_grant;
+  // D-335 slice F — a held browser write offers a pass on its site in place of D-177's
+  // "Allow this session", whose exact grant matched the page handle and the ref and so never
+  // covered a second write. One call only: a batch or a foreach cover is many.
+  const browserPass = freshReview || batch !== undefined || cover !== undefined
+    ? undefined
+    : readBrowserPassOffer(checkpoint.preflight_context?.browser_pass);
+  const sessionGrant = freshReview || browserPass !== undefined ? undefined : context.session_grant;
   const overrideOffer = freshReview ? undefined : context.owner_override_offer;
   // WHICH account this lands in — unless the op id already said so.
   const onConnection = connectionPhrase(context.connection_name, named);
@@ -1103,6 +1213,7 @@ export const buildPreflightAsk = (args: {
             },
           )}`
         : `\n\n${renderExactGrantBlock(sessionGrant, grantActor)}`;
+  const passBlock = browserPass === undefined ? '' : `\n\n${renderBrowserPassBlock(browserPass)}`;
 
   // The question goes LAST, always — it is what the buttons answer, and a
   // reader who has to scroll back up past the evidence to find what they
@@ -1148,7 +1259,7 @@ export const buildPreflightAsk = (args: {
     title,
     text:
       `${opening}\n${held}${technicalLine}${startedByLine}${browserBlock}${egressBoundLine}${reasonLine}`
-      + `${resourceBlock}${clampWarning}${itemsBlock}${changeBlock}${grantBlock}\n\n${question}`,
+      + `${resourceBlock}${clampWarning}${itemsBlock}${changeBlock}${grantBlock}${passBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {
     kind: PREFLIGHT_HANDLER_KIND,
@@ -1185,14 +1296,15 @@ export const buildPreflightAsk = (args: {
     },
   };
   const options: readonly AskOption[] =
-    overrideOffer === undefined
+    overrideOffer === undefined && browserPass === undefined
       ? sessionGrant !== undefined
         ? PREFLIGHT_ASK_OPTIONS_WITH_SESSION
         : PREFLIGHT_ASK_OPTIONS
       : [
           PREFLIGHT_ASK_OPTIONS[0],
           ...(sessionGrant !== undefined ? [ALLOW_SESSION_ASK_OPTION] : []),
-          overrideAskOption(overrideOffer),
+          ...(browserPass !== undefined ? browserPassOptions(browserPass.host) : []),
+          ...(overrideOffer !== undefined ? [overrideAskOption(overrideOffer)] : []),
           PREFLIGHT_ASK_OPTIONS[1],
         ];
   return {
@@ -1447,7 +1559,11 @@ export const createPreflightAnswerHandler = (deps: {
       await deps.upsertOverride!(overrideOffer);
       effectiveAnswer = { ...answer, option: 'approve' };
     }
-    if (effectiveAnswer.option === 'approve' || effectiveAnswer.option === 'allow_session') {
+    if (
+      effectiveAnswer.option === 'approve'
+      || effectiveAnswer.option === 'allow_session'
+      || isBrowserPassOptionId(effectiveAnswer.option)
+    ) {
       // D-177 P3 — `allow_session` is approve PLUS a mint instruction: the
       // resume context carries the bounds the ask offered (read back off the
       // persisted payload — the snapshot taken at raise time), and the
@@ -1463,14 +1579,23 @@ export const createPreflightAnswerHandler = (deps: {
         effectiveAnswer.option === 'allow_session'
           ? readSessionGrantPayload(payload.session_grant)
           : undefined;
+      // D-335 slice F — a site answer is approve PLUS the pass the hold offered, which the
+      // resumer reads off the checkpoint, where the hold recorded it. An offer that no longer
+      // reads degrades to a plain approve, as a malformed grant does above.
+      const pass =
+        isBrowserPassOptionId(effectiveAnswer.option)
+        && readBrowserPassOffer(checkpoint.preflight_context?.browser_pass) !== undefined
+          ? browserPassKindOfOption(effectiveAnswer.option)
+          : undefined;
       await deps.resumer.resumeRun(checkpoint, {
         ...context,
         approved_at: effectiveAnswer.answered_at,
         ...(grant !== undefined ? { session_grant: grant } : {}),
+        ...(pass !== undefined ? { browser_pass_kind: pass } : {}),
       });
     } else {
       // Any other answer is treated as deny. The closed option lists
-      // pre-validate to `approve`/`allow_session`/`deny` at the block's
+      // pre-validate to `approve`/`allow_session`/the site answers/`deny` at the block's
       // selection layer; this is a defense-in-depth narrow.
       await deps.resumer.denyRun(checkpoint, context);
     }

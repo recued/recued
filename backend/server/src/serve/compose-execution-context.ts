@@ -179,6 +179,7 @@ export interface ComposeExecutionContextOptions {
     | 'mcpActionStore'
     | 'gatedActionStore'
     | 'writeRuleStore'
+    | 'browserPassStore'
     | 'settledRunResults'
     | 'fileStack'
     | 'workEntityStoreRef'
@@ -218,6 +219,8 @@ export interface ComposeExecutionContextOptions {
     | 'sellerOrderStoreRef'
     | 'sellerClaimStoreRef'
     | 'chatInboundTokenStoreRef'
+    // D-338 — the messenger channels make a notify to a linked chat a notice in it.
+    | 'chatNoticesRef'
     | 'clientTokensRef'
     | 'keys'
     | 'sharedStoreRef'
@@ -279,6 +282,7 @@ export interface ComposeExecutionContextOptions {
     | 'scheduledSituations'
     | 'episodeRuntime'
     | 'querySituation'
+    | 'serverTimeZone'
     | 'spheres'
     | 'assetReminders'
     | 'yours'
@@ -398,7 +402,12 @@ export const composeExecutionContext = async (
         ...(collection.spheres ? { spheres: collection.spheres } : {}),
         ...(factContext ? { factContext, fieldVersion: factContext.fieldVersion } : {}),
         ...(collection.episodeRuntime ? { memoryAllowed: cluster => collection.episodeRuntime!.memoryAllowed(cluster) } : {}),
-        ...(collection.situationStore ? { measure: (name, value, labels) => { collection.situationStore!.measure(name, value, labels, Date.now()); } } : {}), isVaultUnlocked: app.isVaultUnlocked ?? (() => false) }) : undefined;
+        ...(collection.situationStore ? { measure: (name, value, labels) => { collection.situationStore!.measure(name, value, labels, Date.now()); } } : {}),
+        // D-338 — a day a caller names is read on the server's clock unless the chat gives its turn's,
+        // and a model is told which items the Agenda keeps private.
+        ...(collection.serverTimeZone ? { timeZone: collection.serverTimeZone } : {}),
+        ...(collection.scheduledSituations ? { isPrivate: item => collection.scheduledSituations!.isPrivateItem(item) } : {}),
+        isVaultUnlocked: app.isVaultUnlocked ?? (() => false) }) : undefined;
   if (app.situationAccessRef) app.situationAccessRef.current = situationAccess;
   if (situationAccess) collection.scheduledSituations?.bindAccess(situationAccess);
   collection.episodeRuntime?.bindMemory(app.userMemoryStore);
@@ -643,6 +652,8 @@ export const composeExecutionContext = async (
         ...(storage.db ? { plainConnection: (vendor: string) => createOwnerNotificationConnection(storage.db!, app.connectionStoreRef!, vendor) } : {}),
         // D-158 P3 — what each channel sent outlives a restart.
         ...(storage.db ? { db: storage.db } : {}),
+        // D-338 — the chat is composed first, so its notice recorder is ready here.
+        ...(app.chatNoticesRef ? { notices: app.chatNoticesRef } : {}),
       })
     : {};
   // D-158 P2b email-adapter slice — OUTBOUND server-wiring for the
@@ -816,6 +827,7 @@ export const composeExecutionContext = async (
     mcpActionStore: storage.mcpActionStore,
     gatedActionStore: storage.gatedActionStore,
     writeRules: storage.writeRuleStore,
+    browserPasses: storage.browserPassStore,
     annotationStore: app.annotationStoreRef,
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path R1
     // pre-pass builds the merged convention-family vendor registry (built-ins +

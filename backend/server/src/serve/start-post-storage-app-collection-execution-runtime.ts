@@ -540,6 +540,8 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
       // D-315 §4.3 — the mail facts' AI pass calls through the chat's privacy layer,
       // and stops where background work stops on the owner's daily budget.
       privateAiCall: app.privateAiCall,
+      // D-338 slice 3 — the Agenda's AI suggestions run as one of the chat's scheduled prompts.
+      getPromptSchedules: () => app.chatOrchestratorRef?.promptSchedules,
       backgroundAiBudgetSpent: () => app.llmManager?.isScheduleCutoff() ?? false,
     },
     execution: {

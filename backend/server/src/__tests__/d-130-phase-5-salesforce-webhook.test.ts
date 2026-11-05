@@ -46,6 +46,7 @@ import {
 } from '../data/salesforce/webhook-processor.js';
 import { wireSalesforceReconciliation } from '../data/salesforce/boot.js';
 import { buildSalesforceReconcilers } from '../data/salesforce/registration.js';
+import { computeContactHash, projectContactMeta } from '../data/salesforce/contact-reconciler.js';
 import { createWebhookFunnel } from '../housekeeping/reconciliation/webhook-funnel.js';
 import {
   createReconcilerRegistry,
@@ -583,3 +584,67 @@ describe('D-130 P5 — buildSalesforceReconcilers attaches webhookProcessor refs
 // purely for symmetry with the other test files — actual register() use happens
 // via registry.register() above.
 void registerVendorReconciler;
+
+// ────────────────────────────────────────────────────────────────
+// D-338 §10 — a streamed contact keeps the birthday its snapshot had
+// ────────────────────────────────────────────────────────────────
+
+describe('D-338 §10 — through the funnel, a streamed contact keeps the birthday its last snapshot had', () => {
+  const auth = async () => ({
+    type: 'oauth2_refresh' as const, refresh_token: 'rt', client_id: 'c', client_secret: 's',
+    token_endpoint: 'https://login.salesforce.com/services/oauth2/token', current_access_token: 'at',
+    expires_at: Date.now() + 3_600_000,
+  });
+  const idle = { search: { fetcher: (async () => new Response('{}', { status: 200 })) as typeof fetch, refreshAuth: auth } };
+  // What a cycle last read: the event's own fields, and the Birthdate no PushTopic carries.
+  const FIELDS = { Id: '003A0000005XYZAB', Email: 'bob@example.com', LastModifiedDate: '2026-05-01T14:32:18.000Z' };
+  const cycleRaw = { ...FIELDS, Birthdate: '1984-11-05' };
+  const SNAPSHOT = projectContactMeta(cycleRaw, computeContactHash(cycleRaw), 1);
+
+  const stream = async (sobject: Record<string, unknown>, snapshot: Record<string, unknown> | null) => {
+    const registry = createReconcilerRegistry();
+    for (const r of buildSalesforceReconcilers({ opportunity: idle, contact: idle, account: idle,
+      replayIdTracker: createInMemoryReplayIdTracker() })) registry.register(r);
+    const refreshed: Array<Record<string, unknown>> = [];
+    const mirrored: Array<Record<string, unknown>> = [];
+    const emitted: unknown[] = [];
+    const funnel = createWebhookFunnel({
+      registry,
+      lookupConnectionConfig: () => ({ base_url: 'https://acme.my.salesforce.com', vendor: 'salesforce' }),
+      enrichmentStore: {
+        listByTarget: () => (snapshot === null ? [] : [{ meta: snapshot }]),
+        refreshMetaForTarget: (_scope: string, _id: string, meta: Record<string, unknown>) => { refreshed.push(meta); return 1; },
+      } as unknown as EnrichmentStore,
+      crmRecordMirror: {
+        upsert: (row: { meta: Record<string, unknown> }) => { mirrored.push(row.meta); },
+        deleteForSource: () => undefined,
+      } as never,
+      bus: { emit: (e: unknown) => { emitted.push(e); }, subscribe: () => () => undefined } as unknown as WarehouseEventBus,
+    });
+    const payload = sampleContactEvent({ type: 'updated', replayId: 1 }, sobject as never);
+    const result = await funnel.handle({
+      vendor: 'salesforce', connection_name: 'acme', payload, headers: {}, rawBody: Buffer.from(JSON.stringify(payload)),
+    });
+    return { result, refreshed, mirrored, emitted };
+  };
+
+  it('an event that changes nothing the hash reads is steady state, and the mirror keeps the birthday', async () => {
+    const { result, refreshed, mirrored, emitted } = await stream(FIELDS, SNAPSHOT);
+    expect(result).toMatchObject({ ok: true, processed: 1, failed: 0 });
+    expect(refreshed).toEqual([]);
+    expect(emitted).toEqual([]);
+    expect(mirrored).toMatchObject([{ birthday: '1984-11-05' }]);
+  });
+
+  it('a change elsewhere is one update, with the birthday kept', async () => {
+    const { refreshed, emitted } = await stream({ ...FIELDS, Phone: '+1 415 555 0100' }, SNAPSHOT);
+    expect(refreshed).toMatchObject([{ birthday: '1984-11-05', phone: '+14155550100' }]);
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('a contact with no snapshot yet has no birthday to keep, until a cycle reads one', async () => {
+    const { mirrored } = await stream(FIELDS, null);
+    expect(mirrored).toHaveLength(1);
+    expect(mirrored[0]).not.toHaveProperty('birthday');
+  });
+});

@@ -553,6 +553,8 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
           getWorkEntityWriteExecutor: expect.any(Function),
           // D-315 §4.3 — the mail facts' AI pass stops where background work stops.
           backgroundAiBudgetSpent: expect.any(Function),
+          // D-338 slice 3 — the Agenda's AI suggestions run as one of the chat's scheduled prompts.
+          getPromptSchedules: expect.any(Function),
         });
         expect(actualOptions.execution).toEqual({
           ...options.execution,

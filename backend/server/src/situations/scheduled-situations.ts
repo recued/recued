@@ -6,6 +6,9 @@ import { assetDateAt, calendarDayMs, shiftAssetDate, dueSpan, zonedWallClockToEp
   type SituationDeliveryStatus, type SituationDigestLookAhead, type SituationItem, type SituationResult } from '@recued/contracts';
 import type { NotificationSendArgs } from '../notification-handler.js';
 import type { SituationStore } from '../storage/situation-store.js';
+import type { PromptSchedules } from '../prompt-schedules.js';
+import type { PromptSchedule } from '@recued/contracts';
+import { createAgendaSuggestions } from './agenda-suggestions.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
 import { createOccurrenceReminderStore } from '../storage/occurrence-reminder-store.js';
@@ -30,12 +33,20 @@ const isLookAhead = (value: unknown): value is SituationDigestLookAhead => typeo
 const WEEKLY_MIN_LOOK_AHEAD = 7;
 /** §15.7 amendment (2026-11-02, later) — the Agenda, off until the owner turns it on, and daily
  *  until they choose a week (2026-11-03). */
-export const DEFAULT_SITUATION_AGENDA: Required<SituationAgendaSettings> = { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 };
+export const DEFAULT_SITUATION_AGENDA: Required<SituationAgendaSettings> = { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1, suggestions: false };
 /** The Agenda's runs, daily and weekly alike. The Digest's status, send budget and retention
  *  leave them out, and the Agenda keeps its own, so the two never take each other's sends. */
 const AGENDA_MODES = "('agenda','agenda_manual')";
 /** A fuller day ends with a count and a link to Today. A week holds this many for each day. */
 const AGENDA_MAX_LINES = 40;
+/** D-338 — at most this many names on a day's birthdays or anniversaries line, then "and N more". */
+const AGENDA_DATE_NAMES = 5;
+/** "A", "A and B", "A, B and C", …, "A, B, C, D, E and 2 more". */
+const namesLine = (names: readonly string[]): string => {
+  const shown = names.slice(0, AGENDA_DATE_NAMES); const more = names.length - shown.length;
+  const all = more > 0 ? [...shown, `${String(more)} more`] : shown;
+  return all.length === 1 ? all[0]! : `${all.slice(0, -1).join(', ')} and ${all.at(-1)!}`;
+};
 const AGENDA_WEEK_DAYS = 7;
 const HHMM = /^(?:[01]\d|2[0-3]):[0-5]\d$/u;
 const isIsoWeekday = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 7;
@@ -71,7 +82,16 @@ const missedBy = (item: SituationItem, cluster: SituationCluster, named: (anchor
   const side = value.from > span.to ? 'after' : value.to < span.from ? 'before' : null;
   return anchor && side ? ` · ${verdict === 'near' ? 'shortly' : 'well'} ${side} ${named(anchor)}` : '';
 };
-interface RunRow { id: string; mode: string; day: string; at: number; state: string; attempts: number; text: string; delivered_to: string }
+interface RunRow { id: string; mode: string; day: string; at: number; state: string; attempts: number; text: string; delivered_to: string; mentions?: string }
+/** D-338 §11 — a name in an Agenda's text and the record it opens in the app. */
+type AgendaMention = { text: string; ref: { collection: string; id: string } };
+/** The names a run kept, for its Settings preview; none for a run before them or with none. */
+const mentionsOf = (row: RunRow): { mentions?: AgendaMention[] } => {
+  try {
+    const list: unknown = JSON.parse(row.mentions ?? '[]');
+    return Array.isArray(list) && list.length ? { mentions: list as AgendaMention[] } : {};
+  } catch { return {}; }
+};
 /** The Digest's mailbox lines: each mail account that mirrors a mailbox, with its
  *  last good sync and whether it needs attention. An SMTP-only account syncs
  *  nothing, so it is not listed (`isMirroredCollection`). */
@@ -97,6 +117,9 @@ export const createScheduledSituations = (deps: {
   /** Whether a calendar event (by its record id) has fresh Meeting preparation notes, for the
    *  Agenda's "prep notes ready". Absent ⇒ the Agenda never says so. */
   prepNotesReady?: (calendarRecordId: string) => boolean;
+  /** D-338 slice 3 — the scheduled prompts the Agenda's AI suggestions run as. Late, because the
+   *  chat is composed first; absent ⇒ the suggestions are never set up. */
+  promptSchedules?: () => PromptSchedules | undefined;
   now?: () => number;
 }) => {
   const now = deps.now ?? Date.now; let access: SituationAccess | undefined; let active: Promise<unknown> | undefined; let stopped = false;
@@ -116,7 +139,9 @@ export const createScheduledSituations = (deps: {
   };
   /** An item is private when it, or a record it cites, is: a trip check cites the visas it lists. */
   const privateItem = (item: SituationItem, gone = false): boolean => privateRecord(item.ref, gone) || item.evidence.some(ref => privateRecord(ref, gone));
-  const named = (item: SituationItem): string => privateItem(item) ? 'a private reminder' : `“${item.what.value}”`;
+  // D-338 — what the owner's notifications call a private item: the menu that holds it (the owner,
+  // asked whether "Private reminder" told them anything: "Reminder in Yours", to match the menu).
+  const named = (item: SituationItem): string => privateItem(item) ? 'a reminder in Yours' : `“${item.what.value}”`;
   const dayOfAllowed =(cluster: SituationCluster): boolean => shouldSendDayOfCluster(cluster,
     id => deps.work.readCommitment(id)?.derivation === 'rule_emitted');
   deps.db.exec(`CREATE TABLE IF NOT EXISTS scheduled_situation_runs (
@@ -126,6 +151,10 @@ export const createScheduledSituations = (deps: {
     CREATE TABLE IF NOT EXISTS scheduled_situation_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id TEXT NOT NULL, day TEXT NOT NULL, at INTEGER NOT NULL, mode TEXT NOT NULL, outcome TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS scheduled_situation_summaries (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, summary TEXT NOT NULL);`);
+  // D-338 §11 — the names an Agenda's text links in the app, kept with its run for Settings.
+  if (!(deps.db.prepare('PRAGMA table_info(scheduled_situation_runs)').all() as { name: string }[]).some(column => column.name === 'mentions')) {
+    deps.db.exec("ALTER TABLE scheduled_situation_runs ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'");
+  }
   // When the overview last listed each of its clusters. Only a trip's resolves, so
   // this is how retention tells a cluster that is over from one still shown. A
   // cluster from before the record began counts as listed then.
@@ -166,31 +195,58 @@ export const createScheduledSituations = (deps: {
       time: typeof stored.time === 'string' && HHMM.test(stored.time) ? stored.time : DEFAULT_SITUATION_AGENDA.time,
       day: stored.day === 'today' || stored.day === 'tomorrow' ? stored.day : DEFAULT_SITUATION_AGENDA.day,
       frequency: stored.frequency === 'daily' || stored.frequency === 'weekly' ? stored.frequency : DEFAULT_SITUATION_AGENDA.frequency,
-      weekday: isIsoWeekday(stored.weekday) ? stored.weekday : DEFAULT_SITUATION_AGENDA.weekday };
+      weekday: isIsoWeekday(stored.weekday) ? stored.weekday : DEFAULT_SITUATION_AGENDA.weekday,
+      suggestions: typeof stored.suggestions === 'boolean' ? stored.suggestions : DEFAULT_SITUATION_AGENDA.suggestions };
+  };
+  /** D-338 — whether the Agenda lists `day` that morning or the evening before: a daily one lists
+   *  every day so, and a weekly one the first day of its week (its weekday, or the day after when
+   *  its week starts tomorrow). The "Due today" note leaves such a day to it. A weekly Agenda's
+   *  other days keep their note: it listed them days before. */
+  const agendaListsDay = (day: string): boolean => {
+    const agenda = agendaSettings();
+    if (!agenda.enabled) return false;
+    if (agenda.frequency !== 'weekly') return true;
+    const sent = agenda.day === 'today' ? day : shiftDays(day, -1);
+    return ((new Date(`${sent}T00:00:00Z`).getUTCDay() + 6) % 7) + 1 === agenda.weekday;
   };
   // A save that names only some fields keeps the rest: a client from before the weekly choice
   // sends three, and a weekly agenda stays weekly.
   const setAgenda = (patch: Partial<SituationAgendaSettings>): void => {
     const next = { ...agendaSettings(), ...patch };
     if (typeof next.enabled !== 'boolean' || typeof next.time !== 'string' || !HHMM.test(next.time) || (next.day !== 'today' && next.day !== 'tomorrow')
-      || (next.frequency !== 'daily' && next.frequency !== 'weekly') || !isIsoWeekday(next.weekday))
+      || (next.frequency !== 'daily' && next.frequency !== 'weekly') || !isIsoWeekday(next.weekday) || typeof next.suggestions !== 'boolean')
       throw new Error('Choose a valid agenda schedule');
-    deps.store.writeSetting('situations.agenda', { enabled: next.enabled, time: next.time, day: next.day, frequency: next.frequency, weekday: next.weekday });
+    deps.store.writeSetting('situations.agenda', { enabled: next.enabled, time: next.time, day: next.day, frequency: next.frequency,
+      weekday: next.weekday, suggestions: next.suggestions });
     deps.store.writeSetting('situations.agenda_changed_at', now());
   };
+  // D-338 slice 3 — the state of the Agenda's own scheduled run at or after an instant: what its
+  // suggestions wait on, and say nothing after when it sent nothing. A Send now is not one.
+  const agendaRunSince = (at: number): 'sent' | 'skipped' | 'pending' | undefined => {
+    const row = deps.db.prepare("SELECT state FROM scheduled_situation_runs WHERE mode='agenda' AND at>=? ORDER BY at DESC,rowid DESC LIMIT 1")
+      .get(at) as { state: string } | undefined;
+    if (!row) return undefined;
+    return row.state === 'sent' || row.state === 'uncertain' ? 'sent' : row.state === 'pending' || row.state === 'sending' ? 'pending' : 'skipped';
+  };
+  const agendaSuggestions = createAgendaSuggestions({ db: deps.db, schedules: deps.promptSchedules ?? (() => undefined),
+    readSetting: (key, fallback) => deps.store.readSetting(key, fallback),
+    writeSetting: (key, value) => { deps.store.writeSetting(key, value); },
+    timeZone: deps.timeZone, agendaRunSince });
   // One feature's runs: the Digest's (its due-day notes and Send now included) or the Agenda's.
   const runsOf = (agenda: boolean) => `mode ${agenda ? '' : 'NOT '}IN ${AGENDA_MODES}`;
   const receipts = (agenda: boolean) => {
     const row = deps.db.prepare(`SELECT * FROM scheduled_situation_runs WHERE ${runsOf(agenda)} ORDER BY at DESC,rowid DESC LIMIT 1`).get() as RunRow | undefined;
     const sent = deps.db.prepare(`SELECT * FROM scheduled_situation_runs WHERE ${runsOf(agenda)} AND state='sent' ORDER BY at DESC,rowid DESC LIMIT 1`).get() as RunRow | undefined;
-    return { last_run: row ? { at: row.at, mode: row.mode, state: row.state, text: row.text, delivered_to: JSON.parse(row.delivered_to) as string[] } : null,
-      last_sent: sent ? { at: sent.at, mode: sent.mode, text: sent.text, delivered_to: JSON.parse(sent.delivered_to) as string[] } : null,
+    return { last_run: row ? { at: row.at, mode: row.mode, state: row.state, text: row.text, delivered_to: JSON.parse(row.delivered_to) as string[], ...(agenda ? mentionsOf(row) : {}) } : null,
+      last_sent: sent ? { at: sent.at, mode: sent.mode, text: sent.text, delivered_to: JSON.parse(sent.delivered_to) as string[], ...(agenda ? mentionsOf(sent) : {}) } : null,
       pending: (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_runs WHERE ${runsOf(agenda)} AND state IN ('pending','sending')`).get() as { n: number }).n,
       uncertain: (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_runs WHERE ${runsOf(agenda)} AND state='uncertain'`).get() as { n: number }).n };
   };
   const agendaStatus = (): SituationAgendaStatus => {
     const next = nextAgenda();
-    return { settings: agendaSettings(), ...receipts(true), ...(next === null ? {} : { next_at: next, time_zone: deps.timeZone() }) };
+    const conversation = agendaSuggestions.conversation();
+    return { settings: agendaSettings(), ...receipts(true), ...(next === null ? {} : { next_at: next, time_zone: deps.timeZone() }),
+      ...(conversation !== undefined ? { suggestions_session_id: conversation } : {}) };
   };
   const status = (): SituationDeliveryStatus => {
     const next = nextDigest();
@@ -378,6 +434,9 @@ export const createScheduledSituations = (deps: {
     }
     for (const { mode, id } of tasks) {
       if (stopped || !deps.isVaultUnlocked() || (!manual && deps.isQuiet(now()))) return;
+      // D-338 — a day the Agenda lists that morning or the evening before is left to it: the note
+      // would repeat what the Agenda already lists.
+      if (mode === 'day_of' && agendaListsDay(day)) continue;
       const previous = deps.db.prepare('SELECT * FROM scheduled_situation_runs WHERE id=?').get(id) as RunRow | undefined;
       if (previous && ['sent', 'skipped', 'uncertain'].includes(previous.state)) continue;
       const budget = (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_attempts WHERE day=? AND mode!='manual' AND mode NOT IN ${AGENDA_MODES}`).get(day) as { n: number }).n;
@@ -467,12 +526,12 @@ export const createScheduledSituations = (deps: {
         }
         // A model's summary of a group may name what its lines keep private.
         if (summary && !cluster.items.some(item => privateItem(item))) lines.push(summary);
-        for (const item of cluster.items) lines.push(privateItem(item) ? 'Private reminder · open Today for the details'
+        for (const item of cluster.items) lines.push(privateItem(item) ? 'Reminder in Yours'
           : `${item.what.value} · ${item.when_day ?? (item.when.value ? assetDateAt(item.when.value.from, zone) : 'date unknown')}${missedBy(item, cluster, named)}${item.basis === 'inferred' ? ' · Recued’s guess' : ''}`);
       }
       for (const revision of resolved) {
         const first = revision.after.cluster.items[0];
-        lines.push(`Resolved · ${first && privateItem(first, true) ? 'a private reminder' : first?.what.value ?? 'Situation'}`);
+        lines.push(`Resolved · ${first && privateItem(first, true) ? 'a reminder in Yours' : first?.what.value ?? 'Situation'}`);
       }
       const open = result.omitted + result.clusters.filter(cluster => !shown.includes(cluster)).reduce((sum, cluster) => sum + cluster.items.length, 0);
       if (open) lines.push(`Still open: ${open} more items. Open Today for the rest.`);
@@ -505,7 +564,8 @@ export const createScheduledSituations = (deps: {
       })();
       if (attempt === null) continue;
       let delivered: readonly string[] = [];
-      try { delivered = (await deps.send({ title: mode === 'day_of' ? 'Today' : 'Coming up', text, ui_link_url: '#today' })).delivered_to; }
+      // D-338 — "Due today", not "Today": that is the screen's name.
+      try { delivered = (await deps.send({ title: mode === 'day_of' ? 'Due today' : 'Coming up', text, ui_link_url: '#today' })).delivered_to; }
       catch { deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='uncertain' WHERE id=?").run(attempt); continue; }
       if (!delivered.length) {
         deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='not_delivered' WHERE id=?").run(attempt);
@@ -530,12 +590,12 @@ export const createScheduledSituations = (deps: {
    *  included, and repeated whether or not it changed. Read through the same gated query as the
    *  Digest, whole: every group and every item (`everyItem`). What the owner dismissed stays off,
    *  as it does on every surface that interrupts them, and what an item's own reminder keeps
-   *  private reads "Private reminder". On the day it goes, what has already ended is left out:
+   *  private reads "Reminder in Yours". On the day it goes, what has already ended is left out:
    *  the query drops what is over (`valid_until`) before anything relates to it. An open task
    *  whose time has passed is not over, so it stays. Amended 2026-11-03: a week goes a day at a
    *  time, each under its date, and a day with nothing on is left out. Something that lasts
    *  several days is on each of them. */
-  const agendaLines = async (from: string, end: string, context: SituationReadContext): Promise<string[]> => {
+  const agendaLines = async (from: string, end: string, context: SituationReadContext): Promise<{ lines: string[]; mentions: AgendaMention[] }> => {
     const zone = deps.timeZone(); const at = now();
     const startOf = (day: string) => dueSpan(calendarDayMs(day)!, zone).start;
     const result = await deps.query({ time: { from: startOf(from), to: startOf(end) - 1 }, surface: 'today' }, { ...context, everyItem: true });
@@ -543,10 +603,15 @@ export const createScheduledSituations = (deps: {
     const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     const items = result.clusters.flatMap(cluster => deps.memoryAllowed?.(cluster) === false ? [] : cluster.items)
       .filter(item => item.when.value && !questions.has(item.ref.id) && !dismissals.hides(item, at));
-    const several = shiftDays(from, 1) < end; const lines: string[] = [];
+    const several = shiftDays(from, 1) < end; const lines: string[] = []; const mentions: AgendaMention[] = [];
     for (let day = from; day < end; day = shiftDays(day, 1)) {
       const start = startOf(day); const stop = startOf(shiftDays(day, 1));
-      const seen = new Set<string>(); const rows: Array<{ allDay: boolean; at: number; line: string; title: string }> = [];
+      const seen = new Set<string>(); const rows: Array<{ allDay: boolean; at: number; line: string; title: string; rank?: number; mentions?: AgendaMention[] }> = [];
+      // D-338 — the day's birthdays and anniversaries from the owner's contacts go on one line each
+      // (the owner: "one line for two pieces: birthday: ... anniversaries: ...(only if have)"). Every
+      // contact's dates are in the Agenda, and a line each opened the day with them.
+      // In the app each name opens its contact (D-338 §11: "make the names clickable").
+      const dates = { birthday: [] as AgendaMention[], anniversary: [] as AgendaMention[] };
       for (const item of items) {
         const when = item.when.value!; const key = JSON.stringify([item.ref.collection, item.ref.id, item.ref.field ?? null]);
         // On the day: a point inside it, or a span that overlaps it. The query's own window
@@ -555,20 +620,34 @@ export const createScheduledSituations = (deps: {
         if (seen.has(key) || (point ? when.from < start || when.from >= stop : when.from >= stop || when.to <= start)) continue;
         seen.add(key);
         const allDay = item.when_day !== undefined || (!point && when.from <= start && when.to >= stop);
+        if (item.ref.collection === 'contact' && (item.kind === 'birthday' || item.kind === 'anniversary') && !privateItem(item)) {
+          // The contact source titles it `<name> · <kind>`.
+          const title = item.what.value ?? ''; const suffix = ` · ${item.kind}`;
+          dates[item.kind].push({ text: title.endsWith(suffix) ? title.slice(0, -suffix.length) : title,
+            ref: { collection: 'contact', id: item.ref.id } }); continue;
+        }
         const label = allDay ? 'All day ·' : when.from < start ? `Until ${clock.format(when.to)} ·` : clock.format(when.from);
         // A calendar item's id is `<calendar>:<record id>`; its prep notes are keyed by the record id.
         const prepared = item.ref.collection === 'calendar' && deps.prepNotesReady?.(item.ref.id.slice(item.ref.id.indexOf(':') + 1)) === true;
-        const title = privateItem(item) ? 'Private reminder'
+        const title = privateItem(item) ? 'Reminder in Yours'
           : `${item.what.value}${prepared ? ' · prep notes ready' : ''}${item.basis === 'inferred' ? ' · Recued’s guess' : ''}`;
         rows.push({ allDay, at: allDay ? start : when.from, line: `${label} ${title}`, title });
       }
+      for (const [rank, kind, one, many] of [[0, 'birthday', 'Birthday', 'Birthdays'], [1, 'anniversary', 'Anniversary', 'Anniversaries']] as const) {
+        // One a person: two people of one name are both there.
+        const people = [...new Map(dates[kind].map(person => [person.ref.id, person])).values()].sort((a, b) => a.text.localeCompare(b.text));
+        if (people.length) rows.push({ allDay: true, at: start, rank, title: many, mentions: people.slice(0, AGENDA_DATE_NAMES),
+          line: `${people.length === 1 ? one : many}: ${namesLine(people.map(person => person.text))}` });
+      }
       if (!rows.length) continue;
-      rows.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.at - b.at || a.title.localeCompare(b.title));
+      // All-day first, the day's birthdays and anniversaries leading them.
+      rows.sort((a, b) => Number(b.allDay) - Number(a.allDay) || (a.rank ?? 2) - (b.rank ?? 2) || a.at - b.at || a.title.localeCompare(b.title));
       if (several) lines.push(...lines.length ? [''] : [], dayTitle(day));
       lines.push(...rows.slice(0, AGENDA_MAX_LINES).map(row => row.line));
+      mentions.push(...rows.slice(0, AGENDA_MAX_LINES).flatMap(row => row.mentions ?? []));
       if (rows.length > AGENDA_MAX_LINES) lines.push(`And ${rows.length - AGENDA_MAX_LINES} more${several ? ' that day' : ''}. Open Today for the rest.`);
     }
-    return lines;
+    return { lines, mentions };
   };
   /** One Agenda run: built, then sent with the Digest's receipts — a run marked `sending` with its
    *  attempt counted before the send, one marked repeat after a send cut short, then uncertain —
@@ -583,7 +662,7 @@ export const createScheduledSituations = (deps: {
     if (previous?.state === 'sending' && previous.attempts >= 2) {
       deps.db.prepare("UPDATE scheduled_situation_runs SET state='uncertain' WHERE id=?").run(id); return;
     }
-    const lines = await agendaLines(from, end, access!.context(ownerSource, null));
+    const { lines, mentions } = await agendaLines(from, end, access!.context(ownerSource, null));
     if (stopped || !deps.isVaultUnlocked() || (!manual && deps.isQuiet(now()))) return;
     if (!lines.length) {
       deps.db.prepare("INSERT INTO scheduled_situation_runs(id,mode,day,at,state) VALUES(?,?,?,?,'skipped') ON CONFLICT(id) DO UPDATE SET state='skipped',at=excluded.at,day=excluded.day")
@@ -594,14 +673,14 @@ export const createScheduledSituations = (deps: {
     const sendAt = now(); const sendDay = assetDateAt(sendAt, zone);
     const attempt = deps.db.transaction(() => {
       if (!manual && used(sendDay) >= 2) return null;
-      deps.db.prepare("INSERT INTO scheduled_situation_runs(id,mode,day,at,state,text,attempts) VALUES(?,?,?,?,'sending',?,1) ON CONFLICT(id) DO UPDATE SET state='sending',text=excluded.text,attempts=attempts+1,at=excluded.at,day=excluded.day")
-        .run(id, mode, sendDay, sendAt, text);
+      deps.db.prepare("INSERT INTO scheduled_situation_runs(id,mode,day,at,state,text,attempts,mentions) VALUES(?,?,?,?,'sending',?,1,?) ON CONFLICT(id) DO UPDATE SET state='sending',text=excluded.text,mentions=excluded.mentions,attempts=attempts+1,at=excluded.at,day=excluded.day")
+        .run(id, mode, sendDay, sendAt, text, JSON.stringify(mentions));
       return Number(deps.db.prepare("INSERT INTO scheduled_situation_attempts(run_id,day,at,mode,outcome) VALUES(?,?,?,?,'sending')").run(id, sendDay, sendAt, mode).lastInsertRowid);
     })();
     if (attempt === null) return;
     let delivered: readonly string[] = []; const last = shiftDays(end, -1);
     const title = `Agenda · ${last === from ? dayTitle(from) : `${dayTitle(from)} to ${dayTitle(last)}`}`;
-    try { delivered = (await deps.send({ title, text, ui_link_url: '#today' })).delivered_to; }
+    try { delivered = (await deps.send({ title, text, ui_link_url: '#today', ...(mentions.length ? { mentions } : {}) })).delivered_to; }
     catch { deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='uncertain' WHERE id=?").run(attempt); return; }
     if (!delivered.length) {
       deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='not_delivered' WHERE id=?").run(attempt);
@@ -633,7 +712,36 @@ export const createScheduledSituations = (deps: {
     if (!current || clock.format(at) < due || deps.isQuiet(at)) return;
     await sendAgenda(current.id, 'agenda', current.from, current.end);
   };
+  /** D-338 — whether the Agenda's AI suggestions have anything to look at: the Agenda's own run for
+   *  the time they fall due, and what it lists. A day it would send nothing for gets no run at all
+   *  (no model call, nothing in their conversation); a run whose time came before the owner last
+   *  changed the Agenda, or with the Agenda off, neither. Without the vault or the owner's access it
+   *  cannot tell, and the run goes as before: its notice still waits on the Agenda (`agendaDoneGate`). */
+  const agendaRunGate = async (schedule: PromptSchedule, due_at: number): Promise<'run' | 'skip'> => {
+    if (schedule.managed_by !== 'agenda') return 'run';
+    if (stopped || !access || !deps.isVaultUnlocked()) return 'run';
+    const agenda = agendaSettings();
+    if (!agenda.enabled) return 'skip';
+    const zone = deps.timeZone(); const { late } = dueTime(agenda);
+    // A time quiet hours carry past midnight goes the morning after, as the Agenda's tick has it.
+    const day = assetDateAt(due_at, zone); const run = agendaRun(late ? shiftDays(day, 1) : day, late, zone);
+    if (!run) return 'skip';
+    const settled = (deps.db.prepare('SELECT state FROM scheduled_situation_runs WHERE id=?').get(run.id) as { state: string } | undefined)?.state;
+    if (settled === 'sent' || settled === 'uncertain') return 'run';
+    if (settled === 'skipped' || settled === 'superseded') return 'skip';
+    return (await agendaLines(run.from, run.end, access.context(ownerSource, null))).lines.length > 0 ? 'run' : 'skip';
+  };
+  /** D-338 — the suggestions' schedule follows what it should be on the Agenda's own clock, with no
+   *  save: a request a Recued update reworded, a server zone that moved. Its failure holds neither
+   *  run; it is counted once a day (`agenda_suggestions.refresh_failed`) and tried again next tick. */
+  const refreshSuggestions = async (): Promise<void> => {
+    if (stopped || !deps.isVaultUnlocked()) return;
+    try { await agendaSuggestions.refresh(agendaSettings()); } catch {
+      deps.store.measure('agenda_suggestions.refresh_failed', 1, {}, now(), `agenda-suggestions-refresh-failed:${assetDateAt(now(), deps.timeZone())}`);
+    }
+  };
   const tickOnce = async (kind: 'tick' | 'digest' | 'agenda'): Promise<void> => {
+    if (kind === 'tick') await refreshSuggestions();
     // Each feature runs on its own: a Digest that fails does not hold the day's Agenda.
     try { if (kind !== 'agenda') await digestTick(kind === 'digest'); }
     finally { if (kind !== 'digest') await agendaTick(kind === 'agenda'); }
@@ -687,6 +795,12 @@ export const createScheduledSituations = (deps: {
     return releasedAtStop(run(), stops.signal, undefined);
   };
   return { bindAccess(value: SituationAccess) { access = value; }, today, status, settings, setSettings, agendaStatus, agendaSettings, setAgenda, prune, tick,
+    // D-338 — the rule the Agenda and the digest hide a title by, lent to what a model reads.
+    isPrivateItem: (item: SituationItem): boolean => privateItem(item),
+    // D-338 slice 3 — after a save: the suggestions' schedule follows the Agenda's settings.
+    syncAgendaSuggestions: () => agendaSuggestions.sync(agendaSettings()),
+    agendaDoneGate: agendaSuggestions.doneGate,
+    agendaRunGate,
     sendNow: () => run('digest'), sendAgendaNow: () => run('agenda'), async stop() {
       stopped = true; stops.abort();
       if (active) await settleWithin(active, STOP_GRACE_MS);

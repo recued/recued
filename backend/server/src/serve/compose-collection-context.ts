@@ -200,6 +200,9 @@ export interface ComposeCollectionContextOptions {
   /** D-315 §4.3 — one model call through the chat's privacy layer. Absent ⇒
    *  the mail facts' AI pass cannot call a model, and says so on each fact. */
   privateAiCall?: ExecuteChatAiCall;
+  /** D-338 slice 3 — the chat's scheduled prompts, which the Agenda's AI suggestions run as. Late:
+   *  read when the owner saves the Agenda. */
+  getPromptSchedules?: () => import('../prompt-schedules.js').PromptSchedules | undefined;
   /** D-315 §4.3 — the owner's daily token budget has reached the point where
    *  background work stops. Absent ⇒ never. */
   backgroundAiBudgetSpent?: () => boolean;
@@ -296,6 +299,8 @@ export interface CollectionContext extends ConnectionNotificationBundle {
   proactiveRetention?: ProactiveRetention;
   situationStore?: SituationStore;
   querySituation?: ReturnType<typeof createSituationQuery>;
+  /** D-338 — the server's zone, read per call: the clock a day a caller names is read on. */
+  serverTimeZone?: () => string;
   spheres?: ReturnType<typeof createSphereStore>;
   oauthClientConfigDeps: OAuthClientConfigDeps;
   /** BYO OAuth app config rpc deps (get/set/clear). Absent on a db-less boot. */
@@ -936,8 +941,12 @@ export const composeCollectionContext = (
         ...(contactStore ? { personName: (id: string) => { const contact = contactStore.getByContactIdResolved(id) ?? contactStore.get(id); return contact ? contact.name ?? contact.email : undefined; } } : {}),
         mailHealth: () => mailboxHealthOf(collectionRegistry.list(), Date.now()),
         ...(enrichmentStore ? { prepNotesReady: preparationNotesReady(enrichmentStore) } : {}),
+        ...(options.getPromptSchedules ? { promptSchedules: options.getPromptSchedules } : {}),
       }) : undefined;
   if (scheduledSituations) yours!.bindScheduled(scheduledSituations);
+  // D-338 — the Agenda's AI suggestions skip a day the Agenda has nothing on: no model call. The
+  // chat is composed first, so its schedules are ready here.
+  if (scheduledSituations) options.getPromptSchedules?.()?.setRunGate('agenda', (schedule, due_at) => scheduledSituations.agendaRunGate(schedule, due_at));
   let feedSubscribers: EventTriggersStore | undefined;
   const proactiveRetention = db && situationStore ? createProactiveRetention({ db, situations: situationStore, isVaultUnlocked,
     subscribers: () => (feedSubscribers ??= createEventTriggersStore(db)).list().map(trigger => situationSubscriberId(trigger.trigger_id)),
@@ -1091,6 +1100,7 @@ export const composeCollectionContext = (
     ...(situationStore ? { situationStore } : {}),
     ...(spheres ? { spheres } : {}),
     ...(querySituation ? { querySituation } : {}),
+    serverTimeZone,
     oauthClientConfigDeps,
     ...(oauthAppConfigDeps ? { oauthAppConfigDeps } : {}),
     startCollectionAdapters,

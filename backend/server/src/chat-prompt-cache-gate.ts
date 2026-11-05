@@ -99,6 +99,7 @@ import {
   readOwnerOperationOverride,
   resolveTrustCeiling,
   type CanonicalEvent,
+  type ChatAnswerSource,
   type ContactAliasPlatform,
   type ExecutionSource,
   type ScanFn,
@@ -1121,6 +1122,7 @@ export const createPromptCacheGateDeps = (
     // the composer renders this declared template for the declared hash and
     // rejects any other override fail-closed.
     overrideTemplates: Object.values(CONTACT_HAS_NO_EMAIL_TEMPLATES_BY_LOCALE),
+    source: 'contacts' satisfies ChatAnswerSource,
   };
   const contactAttributeFamily: ShortCircuitFamily = {
     match: matchContactAttributeTemplate,
@@ -1129,6 +1131,7 @@ export const createPromptCacheGateDeps = (
       Object.values(CONTACT_ATTRIBUTE_TEMPLATES_BY_LOCALE)
         .flatMap((templates) => Object.values(templates).map((t) => t.template_hash)),
     ),
+    source: 'contacts' satisfies ChatAnswerSource,
   };
   const contactAttributeListFamily: ShortCircuitFamily = {
     match: matchContactAttributeListTemplate,
@@ -1141,6 +1144,7 @@ export const createPromptCacheGateDeps = (
         .flatMap((templates) => Object.values(templates))
         .flatMap((byCount) => Object.values(byCount).map((t) => t.template_hash)),
     ),
+    source: 'contacts' satisfies ChatAnswerSource,
   };
   const calendarNextMeetingFamily: ShortCircuitFamily = {
     match: matchCalendarNextMeetingTemplate,
@@ -1148,6 +1152,7 @@ export const createPromptCacheGateDeps = (
     templateHashes: new Set(
       Object.values(CALENDAR_NEXT_MEETING_TEMPLATES_BY_LOCALE).map((t) => t.template_hash),
     ),
+    source: 'calendar' satisfies ChatAnswerSource,
   };
   const mailFromCountFamily: ShortCircuitFamily = {
     match: matchMailFromCountTemplate,
@@ -1155,9 +1160,10 @@ export const createPromptCacheGateDeps = (
     templateHashes: new Set(
       Object.values(MAIL_FROM_COUNT_TEMPLATES_BY_LOCALE).map((t) => t.template_hash),
     ),
+    source: 'mail' satisfies ChatAnswerSource,
   };
 
-  const { matchTemplate, probeData } = composeShortCircuitFamilies([
+  const { matchTemplate, probeData, sourceOf } = composeShortCircuitFamilies([
     contactHasEmailFamily,
     contactAttributeFamily,
     contactAttributeListFamily,
@@ -1168,6 +1174,7 @@ export const createPromptCacheGateDeps = (
   return {
     matchTemplate,
     probeData,
+    sourceOf,
     renderTemplate: createTemplateRenderer(),
     lookupKnownEntityNames: createKnownEntityNameLookup(getContactStore),
     authorizeShortCircuitRead: createShortCircuitReadAuthorization(getContractScan),

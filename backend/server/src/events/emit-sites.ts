@@ -311,7 +311,7 @@ export const emitEntitlement = (
  *  the next reader concludes the channel is selectable here. */
 export const emitNotification = (
   bus: EventBus | undefined,
-  args: { body: { text: string; title?: string; link_url?: string } },
+  args: { body: { text: string; title?: string; link_url?: string; mentions?: readonly { text: string; ref: { collection: string; id: string } }[] } },
 ): void => {
   if (!bus) return;
   try {
@@ -320,6 +320,8 @@ export const emitNotification = (
       ...(args.body.title !== undefined ? { title: args.body.title } : {}),
       text: args.body.text,
       ...(args.body.link_url !== undefined ? { link_url: args.body.link_url } : {}),
+      // D-338 §11 — words that open a record in the app.
+      ...(args.body.mentions?.length ? { mentions: args.body.mentions } : {}),
     });
   } catch { /* swallow */ }
 };

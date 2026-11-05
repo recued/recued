@@ -760,6 +760,13 @@ export type ActivityAction =
   // (`target` = the rule id, or the key hash). Reserve-class: each stands in for an
   // approval answer, and "did I approve that?" is a months-later question.
   | 'write_rule_used' | 'write_rule_minted' | 'write_rule_dismissed' | 'write_rule_revoked'
+  // D-335 slice F — passes for Browser Toolkit writes. `browser_pass_used`: a held browser
+  // write ran on a pass instead of an ask (`target` = the pass id; `detail` carries
+  // `{run_id, recipe_id, site, kind, principal}`). `browser_pass_minted` (an accepted
+  // suggestion; a pass minted by an ask's answer is the answer's own `approval_allow` row) /
+  // `browser_pass_dismissed` / `browser_pass_revoked`: the owner's decisions on Contracts.
+  // Reserve-class, as the write rules' are.
+  | 'browser_pass_used' | 'browser_pass_minted' | 'browser_pass_dismissed' | 'browser_pass_revoked'
   | 'chat_export'
   // D-137 W2.2 § A.1.1 — Mary toggled her per-kind chat catalog scope.
   // `target` = `'chat_tool_catalog_scope'` (singleton); `detail`
@@ -1208,6 +1215,11 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'write_rule_minted',
   'write_rule_dismissed',
   'write_rule_revoked',
+  // D-335 slice F — a browser write a pass let through, and the owner's pass decisions.
+  'browser_pass_used',
+  'browser_pass_minted',
+  'browser_pass_dismissed',
+  'browser_pass_revoked',
   // Phase C: lifecycle events must persist past retention so the
   // ledger of boot / shutdown / restart / crash / drain / crash-loop
   // always survives eviction. These are low-volume but forensically

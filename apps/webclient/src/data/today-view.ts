@@ -8,6 +8,7 @@ import { isDateOnlyDue, resolveTaskListFilter } from '@recued/contracts';
 import { e, renderActionLabel, renderTaskDueActions, TASK_DUE_STYLES } from '@recued/ui-shared';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { situationRefHref } from './situation-ref-href.js';
 import type { BootstrapDataRouteOptions } from './bootstrap-data-route.js';
 
 type TodayKind = 'task' | 'commitment' | 'calendar' | 'situation';
@@ -408,17 +409,8 @@ export const loadToday = async (
   return result;
 };
 
-export const situationRefHref = (ref: SituationRef): string => {
-  if (ref.collection === 'asset') return serializeShellRoute('yours', 'asset', ref.id);
-  // Yours selects one at `#yours/occasions/occasion/<id>` and `#yours/episodes/episode/<id>`.
-  if (ref.collection === 'episode') return serializeShellRoute('yours', 'episodes', 'episode', ref.id);
-  if (ref.collection === 'occasion') return serializeShellRoute('yours', 'occasions', 'occasion', ref.id);
-  if (ref.collection === 'calendar' && ref.id.includes(':')) return serializeSourceRecordAddress({ tab: 'calendar', collectionSlug: ref.id.slice(0, ref.id.indexOf(':')), recordId: ref.id.slice(ref.id.indexOf(':') + 1) });
-  if (ref.collection === 'reminder') return '#data/reminder';
-  // A bill or delivery opens as itself: the facts list alone left the owner to find it.
-  if (ref.collection === 'mail_fact') return serializeShellRoute('data', 'mail_fact', 'thing', ref.id);
-  return serializeShellRoute('data', ref.collection, ref.id);
-};
+/** Moved to `situation-ref-href.ts` (D-338 §11), where the toast and Settings reach it too. */
+export { situationRefHref };
 /** The four coded answers (§15.4) go on what Recued computed or inferred. A
  * record the owner keeps has its own actions (Done, Cancel), not these. */
 export const SITUATION_DISMISSALS = [['not_now', 'Not now'], ['not_this_one', 'Not this one'], ['never_this_kind', 'Never this kind'], ['wrong', 'That’s wrong']] as const;

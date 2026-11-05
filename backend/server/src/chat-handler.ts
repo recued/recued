@@ -977,7 +977,7 @@ export const handleSend = async (
   if (reply_to_message_id !== undefined && !deps.orchestrator.turnQueue) {
     const target = await deps.store.listMessagePage(session_id, 1, undefined, { around_message_id: reply_to_message_id });
     if (!target.messages.some((message) => message.id === reply_to_message_id
-      && (message.role === 'user' || message.role === 'assistant'))) {
+      && (message.role === 'user' || message.role === 'assistant' || message.role === 'notice'))) {
       throw new RpcError('not_found', 'The reply target is no longer available in this conversation. Clear the reply or choose another message.', 404);
     }
   }

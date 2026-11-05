@@ -106,9 +106,10 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // mail / file / calendar / webhook / recipe retired 2026-10-05.
   watch: 3,
   // + D-335 slice A `core.dom.inspect`, the page read for an AI, slice B
-  // `core.dom.click`, slice C `core.dom.tabs` and `core.dom.open`, and slice H
-  // `core.dom.wait`, `core.dom.table` and `core.dom.screenshot`.
-  dom: 9,
+  // `core.dom.click`, slice C `core.dom.tabs` and `core.dom.open`, slice H
+  // `core.dom.wait`, `core.dom.table` and `core.dom.screenshot`, and slice J
+  // `core.dom.act`, a sequence of steps approved once.
+  dom: 10,
 };
 
 describe('D-182 slice 3a — kernel op registry', () => {
@@ -247,6 +248,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.data.form-response.set-state|data|form-response-set-state|write',
       // `core.data.webhook.get` / `.list` went 2026-10-10 with the Phase D
       // webhook collection they read.
+      // D-335 slice J — a sequence of steps on one page, approved once.
+      'core.dom.act|dom|dom-act|write',
       'core.dom.click|dom|dom-click|write',
       'core.dom.inspect|dom|dom-inspect|read',
       'core.dom.open|dom|dom-open|write',

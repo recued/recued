@@ -2,6 +2,9 @@ import { createPromptSchedules, type PromptSchedules } from '../../prompt-schedu
 import { withQueuedChatTurns } from '../../chat-turn-queue.js';
 import { createProjectionVersionProbe } from '../../chat-projection-refresh.js';
 import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
+import { createChatNotices, conversationHoldsNotices } from '../../chat-notices.js';
+import { createMessengerAccountResolver } from './messenger-account-identity.js';
+import type { RemoteNoticeHook } from '@recued/notification';
 /** D-137 — boot composer for the AI Chat substrate.
  *
  *  Wires the per-pair chat surface end-to-end:
@@ -418,6 +421,9 @@ export interface ChatOrchestratorBundle {
   readonly onHeldResultTurnEnded: (listener: HeldResultTurnEndedListener) => () => void;
 
   chatStore: ChatStore;
+  /** D-338 — turns a notification to a linked messenger into a notice in that chat. Handed to the
+   *  messenger channels, which are composed after the chat. */
+  readonly chatNotices: RemoteNoticeHook;
   connectionMcpStore: ChatConnectionMcpStore;
   inboundTokenStore: ChatInboundTokenStore;
   internalRegistry: InternalToolRegistry;
@@ -1851,6 +1857,9 @@ export const composeChatOrchestrator = (
     // its own channel as where to answer them while they go there. The notification block is
     // composed after the chat, so it is read through the execution deps.
     approvalChannels: async () => (await getExecuteDeps()?.approvalChannelsNow?.()) ?? [],
+    // D-338 — a conversation linked to Telegram, Slack or Discord holds notices the model cannot
+    // see; its prompt says so, wherever the owner types in it.
+    noticesHere: (sid: string) => conversationHoldsNotices(db, sid),
     broadcast,
     ...(auditLog ? { auditLog } : {}),
     selfSignature,
@@ -1923,6 +1932,18 @@ export const composeChatOrchestrator = (
     ...(deps.publicBaseUrl !== undefined ? { publicBaseUrl: deps.publicBaseUrl } : {}),
   });
   const orchestrator = withQueuedChatTurns(executionOrchestrator, { db, store: chatStore, getKey: chatKeyProvider, broadcast, messengerBridge });
+  // D-338 — after the bridge, which owns the bindings a notice is matched against.
+  const chatNotices = createChatNotices({
+    db,
+    chatStore,
+    accountFor: createMessengerAccountResolver(),
+    keyReady: () => {
+      if (!chatKeyProvider) return true;
+      try { return chatKeyProvider() !== null; } catch { return false; }
+    },
+    signature: selfSignature,
+    broadcast,
+  });
 
   promptSchedules = createPromptSchedules({ db, store: chatStore, queue: orchestrator.turnQueue!,
     instanceId: selfSignature.instance_id,
@@ -2581,6 +2602,7 @@ export const composeChatOrchestrator = (
   return {
     ownerDocumentSearch,
     chatStore,
+    chatNotices,
     runSettledSink: async (settled) => {
       ownerDocumentSearch.settled(settled);
       // D-337 — the chat settles first, the listeners after. A run whose conversation carries on

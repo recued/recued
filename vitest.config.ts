@@ -103,28 +103,41 @@ const PACKAGES_KEPT_ISOLATED = memo.__recuedPackagesKeptIsolated ??= keptIsolate
 const BACKEND_KEPT_ISOLATED = memo.__recuedBackendKeptIsolated ??= keptIsolatedUnder('backend');
 const APPS_KEPT_ISOLATED = memo.__recuedAppsKeptIsolated ??= keptIsolatedUnder('apps');
 
-/** ⛔ THE CODING-AGENT LIVE DRIVES RUN ONLY WHEN ASKED FOR: `npm run test:live-drives`.
+/** ⛔ THE LIVE DRIVES RUN ONLY WHEN ASKED FOR: `npm run test:live-drives`.
  *
- *  Each drives a REAL installed agent CLI (opencode, pi, claude, codex) through its pack, so
- *  what it tests is this machine's copy of that CLI as much as the commit: the opencode upgrade
- *  1.15 → 1.18 turned them red on 2026-10-08 with no commit at all. And they were the heaviest
- *  tests per case in the suite, ~209 s of a sweep's 2,117 s of test time. Owner decision
- *  2026-10-09: out of the full suite (the sweeps, `npm test`, and so the release, which runs
- *  `npm test`), into a command of their own. ⇒ Run it after changing one of these packs or
- *  `cli-invocation-executor.ts`; one file: `RECUED_LIVE_DRIVES=1 npx vitest run <file>`, and all of
- *  them `RECUED_LIVE_DRIVES=1 npx vitest run live-drive` (the script is not in the public tree's
- *  package.json, which is generated).
- *  Each still skips itself when its CLI is not installed.
+ *  Each drives REAL installed programs through a pack, so what it tests is this machine's copy
+ *  of them as much as the commit. Out of the full suite (the sweeps, `npm test`, and so the
+ *  release, which runs `npm test`), into a command of their own:
+ *    - THE CODING-AGENT DRIVES (opencode, pi, claude, codex), owner decision 2026-10-09. The
+ *      opencode upgrade 1.15 → 1.18 turned them red on 2026-10-08 with no commit at all, and
+ *      they were the heaviest tests per case in the suite, ~209 s of a sweep's 2,117 s of test
+ *      time. Each skips itself when its CLI is not installed.
+ *    - THE LOCAL-TOOL DRIVES (pdfgrep, poppler, exiftool, vips, tesseract, ImageMagick,
+ *      minisign, ripgrep, officecli, face_recognition), owner decision 2026-11-04. Cheap (~11 s),
+ *      so they first stayed in, until the first sweep on the owner's M1 Max ran a commit green
+ *      here and got 6 failures and 27 skips from the programs that Mac had (and where). The
+ *      suite's verdict should be the commit's, not the machine's. `local-cli-pack-live-drive`
+ *      FAILS for a missing program; the other three skip.
+ *  ⇒ Run them after changing one of their packs or `cli-invocation-executor.ts`, or after
+ *  upgrading their programs; the commit hook names the drives a commit touches
+ *  (`scripts/live-drive-reminder.mjs`). One file: `RECUED_LIVE_DRIVES=1 npx vitest run <file>`;
+ *  all of them: `RECUED_LIVE_DRIVES=1 npx vitest run live-drive` (the script is not in the
+ *  public tree's package.json, which is generated).
  *
- *  ⚠ A NAMED LIST: a new drive of this kind runs in the full suite until it is added here,
- *  which is the safe way round. The local-tool live drives (tesseract, ripgrep, officecli,
- *  face_recognition) are cheap and stay in. */
+ *  ⚠ NAMED LISTS: a new drive of either kind runs in the full suite until it is added to one,
+ *  which is the safe way round. */
 const AGENT_CLI_LIVE_DRIVES = [
   'backend/server/src/__tests__/opencode-pack-live-drive.test.ts',
   'backend/server/src/__tests__/issue-pipeline-agents-live-drive.test.ts',
   'backend/server/src/__tests__/claude-code-pack-live-drive.test.ts',
   'backend/server/src/__tests__/codex-pack-live-drive.test.ts',
   'backend/server/src/__tests__/pi-agent-pack-live-drive.test.ts',
+];
+const LOCAL_TOOL_LIVE_DRIVES = [
+  'backend/server/src/__tests__/local-cli-pack-live-drive.test.ts',
+  'backend/server/src/__tests__/ripgrep-find-live-drive.test.ts',
+  'backend/server/src/__tests__/officecli-template-live-drive.test.ts',
+  'backend/server/src/__tests__/photo-attribution-live-drive.test.ts',
 ];
 const LIVE_DRIVES_ASKED_FOR = process.env.RECUED_LIVE_DRIVES === '1';
 
@@ -225,7 +238,7 @@ export default defineConfig({
        *  is covered on the day it appears rather than after it has cost someone a run. */
       '**/.cache/**',
       // Unless asked for — see `AGENT_CLI_LIVE_DRIVES`.
-      ...(LIVE_DRIVES_ASKED_FOR ? [] : AGENT_CLI_LIVE_DRIVES),
+      ...(LIVE_DRIVES_ASKED_FOR ? [] : [...AGENT_CLI_LIVE_DRIVES, ...LOCAL_TOOL_LIVE_DRIVES]),
     ],
     // ⛔⛔⛔ FORKS, AND THIS IS NOT A PREFERENCE. The threads pool DIES on the
     // backend suite: SIGSEGV (exit 139) with zero test failures, reproducible

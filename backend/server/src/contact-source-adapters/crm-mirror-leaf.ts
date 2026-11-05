@@ -169,12 +169,17 @@ const attributesFrom = (
         out[kind] = raw !== null && typeof raw === 'object' ? raw : null;
         break;
       }
+      case 'birthday':
+        // D-338 §10 — HubSpot's `date_of_birth` and Salesforce's `Birthdate`, as their
+        // reconcilers keep them (YYYY-MM-DD or --MM-DD). Salesforce's only where the org
+        // shows it; its stream's events keep the one the last snapshot had.
+        out[kind] = metaString(meta, 'birthday');
+        break;
       default:
-        // `title` / `photo` / `birthday` — no CRM entity carries them (HubSpot's
-        // `jobtitle` and Salesforce's `Title` exist in the vendor APIs but are
-        // neither declared as meta-fields nor requested by the reconcilers). No
-        // declaration promises them; if one ever did without the meta-field landing
-        // first, `null` is the honest answer.
+        // `title` / `photo` — no CRM mirror carries them (HubSpot's `jobtitle` and
+        // Salesforce's `Title` are declared on the canonical op path, not requested by
+        // the reconcilers). No declaration promises them; if one ever did without the
+        // mirror landing first, `null` is the honest answer.
         out[kind] = null;
     }
   }

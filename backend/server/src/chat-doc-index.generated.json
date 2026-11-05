@@ -661,7 +661,7 @@
     "section": "How chat answers a question",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/ai-chat-and-mcp#how-chat-answers-a-question",
-    "body": "Chat looks in your saved records first. Some lookups need no AI at all.\nAsk \"What is Maya's email?\" and the answer comes straight from your contacts.\n\nOther questions need AI. Then Recued swaps the personal details it knows\nfor stand-ins. It does this before the question leaves your server. It also\nbrings along the facts that matter, so the model has them before it starts.\nDoes the model need more? It asks Recued's tools, then goes on. See\n[What an AI source sees](../concepts/security-and-privacy.md#what-an-ai-source-sees)\nfor what gets swapped.\n\n[![How chat answers a question. A quick lookup, like Maya's email, comes straight from saved records with no AI. Another question needs AI: will Maya's car insurance end before her trip? Maya's name becomes Person 1. Her insurance ends on 18 November, and her trip starts on 20 November. Both facts go along with the question. AI answers yes, two days before she leaves. Her name goes back in on your server.](/docs/assets/recued-chat-flow.svg)](/docs/assets/recued-chat-flow.svg)\n\nOpen the picture to see it full size.\n[Replay Maya's questions](https://demo.recued.com/app/?example=maya-answers)\nin the demo. The people and data there are made up."
+    "body": "Chat looks in your saved records first. Some lookups need no AI at all.\nAsk \"What is Maya's email?\" and the answer comes straight from your contacts.\nThe app marks such an answer \"without AI\", and says where it came from.\n\nOther questions need AI. Then Recued swaps the personal details it knows\nfor stand-ins. It does this before the question leaves your server. It also\nbrings along the facts that matter, so the model has them before it starts.\nDoes the model need more? It asks Recued's tools, then goes on. See\n[What an AI source sees](../concepts/security-and-privacy.md#what-an-ai-source-sees)\nfor what gets swapped.\n\n[![How chat answers a question. A quick lookup, like Maya's email, comes straight from saved records with no AI. Another question needs AI: will Maya's car insurance end before her trip? Maya's name becomes Person 1. Her insurance ends on 18 November, and her trip starts on 20 November. Both facts go along with the question. AI answers yes, two days before she leaves. Her name goes back in on your server.](/docs/assets/recued-chat-flow.svg)](/docs/assets/recued-chat-flow.svg)\n\nOpen the picture to see it full size.\n[Replay Maya's questions](https://demo.recued.com/app/?example=maya-answers)\nin the demo. The people and data there are made up."
   },
   {
     "id": "guides/ai-chat-and-mcp#search-inside-saved-documents",
@@ -693,7 +693,7 @@
     "section": "Chat platforms",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/ai-chat-and-mcp#chat-platforms",
-    "body": "Slack and Telegram connect as messenger doors. Messages and slash commands\n(commands that start with /) POST straight to your server. They never go through Recued's cloud. Replies,\nnotifications, and approvals can reach you in the same channel.\n\nYou can also chat by email, from your own mailbox. See\n[Chat by email](email-chat.md)."
+    "body": "Slack and Telegram connect as messenger doors. Messages and slash commands\n(commands that start with /) POST straight to your server. They never go through Recued's cloud. Replies,\nnotifications, and approvals can reach you in the same channel.\n\nWhen you chat with Recued there, its notifications arrive as notices. A notice\nstarts with \"Notice\" and ends by telling you how to ask about it. Recued keeps\nit in that conversation, but the AI does not see it. To ask about a notice,\nreply to that message: use Reply in Telegram, or reply in its thread in Slack.\nYour reply brings the notice with it. In the app, a notice is a card with a\nReply button.\n\nYou can also chat by email, from your own mailbox. See\n[Chat by email](email-chat.md)."
   },
   {
     "id": "guides/ai-chat-and-mcp#why-this-stays-safe-in-one-paragraph",
@@ -829,7 +829,7 @@
     "section": "Authoring ingredient packs",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-ingredient-packs",
-    "body": "Use an ingredient pack when a recipe needs an action on an outside system.\nYou will want to use that action again and again. The action can be an API\nrequest or a GraphQL query. It can be a method on a connector you have set\nup. It can be a local command, or a live subscription. An ingredient is one\naction a recipe can use. It says how that one action works. The pack is the\nbox around it. The pack handles install, connection, grants, and uninstall.\n\nIs the work only computing? Use a\n[transform](../reference/transforms.md). Does it chain actions into a result?\nWrite a [recipe](authoring-recipes.md). Keep secret keys out of both. They\nbelong in a named [connection](connections.md)."
+    "body": "Use an ingredient pack when a recipe needs an action on an outside system.\nYou will want to use that action again and again. The action can be an API\nrequest or a GraphQL query. It can be a method on a connector you have set\nup. It can be a local command, or a live subscription. An ingredient is one\naction a recipe can use. It says how that one action works. The pack is the\nbox around it. The pack handles install, connection, grants, and uninstall.\n\nIs the work only computing? Use a\n[transform](../reference/transforms.md). Does it chain actions into a result?\nWrite a [recipe](authoring-recipes.md). Keep secret keys out of both. They\nbelong in a named [connection](connections.md).\n\nFor local text files, use [Recued Kitchen for VS Code](vscode-kitchen.md).\nIt checks recipe and pack source as you type."
   },
   {
     "id": "guides/authoring-ingredient-packs#start-in-the-pack-editor",
@@ -933,7 +933,7 @@
     "section": "Authoring recipes",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-recipes",
-    "body": "A recipe is a list of steps written in JSON. It says what to fetch, what to\nwork out, and what to show or do. There is no code in a recipe. Transforms\nare small safe tools that always give the same answer. Ingredients are\nactions that are declared ahead of time. You can look at what goes into\nevery step and what comes out. You write and test recipes in the Kitchen.\nStart one with **Kitchen → New recipe**. It is kept as you type, and listed\nunder **In progress**, until you save it. Changes to a saved recipe are kept\nthe same way. Then you keep it for yourself, or you publish it."
+    "body": "A recipe is a list of steps written in JSON. It says what to fetch, what to\nwork out, and what to show or do. There is no code in a recipe. Transforms\nare small safe tools that always give the same answer. Ingredients are\nactions that are declared ahead of time. You can look at what goes into\nevery step and what comes out. You write and test recipes in the Kitchen.\nStart one with **Kitchen → New recipe**. It is kept as you type, and listed\nunder **In progress**, until you save it. Changes to a saved recipe are kept\nthe same way. Then you keep it for yourself, or you publish it.\n\nYou can also [write source in VS Code](vscode-kitchen.md). Recued Kitchen\nchecks it as you edit. Send it to your server's Kitchen when ready."
   },
   {
     "id": "guides/authoring-recipes#anatomy",
@@ -1174,6 +1174,14 @@
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connect-to-recued#mcp-agents",
     "body": "MCP is a shared language that AI apps use to call your server's tools.\nClaude Desktop, Cursor, a custom agent, or a peer Recued can connect over\nMCP:\n\n1. Open the MCP door. Choose the tools it may show. The door makes its own\n   secret key.\n2. Give the agent your server's MCP address and that secret key.\n3. The agent's calls arrive marked with its name. They pass your grants.\n   They land in the audit diary.\n\nThe agent sees only what the door grants: warehouse reads, timelines, and\nrecipes as tools. Close the door, and its secret key stops working.\n\nChange what a door grants, and some apps notice on their own. Claude Code,\nGemini CLI, OpenCode, OpenClaw, and DeepSeek Harness hear about it within\nabout ten seconds. They use the new tools from your next message. Cursor,\nCline, Codex, and Claude Desktop keep the tools they saw when they\nconnected, until you restart them. Either way, a tool you take away stops\nworking at once, because the gate checks every call. This was checked in\nOctober 2026, with Recued 26.10.27.\n\nA peer Recued connects the same way, with one extra. Its owner can put a\nquestion to you and hold their own run until you answer. See\n[Ask a peer](asking-a-peer.md)."
+  },
+  {
+    "id": "guides/connect-to-recued#recued-kitchen-for-vs-code",
+    "doc": "Connect to Recued",
+    "section": "Recued Kitchen for VS Code",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connect-to-recued#recued-kitchen-for-vs-code",
+    "body": "The VS Code add-on can open and save Kitchen drafts. Its contract needs\nfour Kitchen tool grants. It can also edit and check local source without\na server or key. Follow the [Recued Kitchen guide](vscode-kitchen.md) for\nsetup and use."
   },
   {
     "id": "guides/connect-to-recued#an-app-on-the-same-computer",
@@ -3333,7 +3341,23 @@
     "section": "Today: what needs you now",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/today-and-yours#today-what-needs-you-now",
-    "body": "**Today** puts your day in one list. It shows tasks, promises and calendar\nevents. It also shows reminders from your assets.\n\n- **Overdue** holds what is late.\n- **Today** holds what is due today.\n- **Next seven days** holds what comes after.\n\nRecued can also send you a **digest**. It lists what is coming up. It comes\nonce a week unless you change it. A private reminder, such as a passport's\nor a birthday's, shows there only as **Private reminder**. Open Today to see\nit.\n\nYou can have the digest each day instead. You can also choose how far ahead\nit looks. A daily digest can look at just today and tomorrow. A weekly one\nlooks at least a week ahead. Find these in **Settings**, then\n**Approval & notifications**, then **Digest**.\n\nThe **agenda** is a separate message. It lists one day in time order:\nevents, tasks and reminders. Events that repeat are in it every day. Pick\ntoday, sent in the morning, or tomorrow, sent the evening before. When\nnothing is on, no agenda is sent.\n\nYou can also have the agenda once a week. It then lists seven days, one\nday at a time, and leaves out a day with nothing on. Pick the day it comes,\nand whether its week starts that day or the next.\n\nA meeting says **prep notes ready** when its notes are written. Turn the\nagenda on in **Settings**, then **Approval & notifications**, then\n**Agenda**."
+    "body": "**Today** puts your day in one list. It shows tasks, promises and calendar\nevents. It also shows reminders from your assets.\n\n- **Overdue** holds what is late.\n- **Today** holds what is due today.\n- **Next seven days** holds what comes after."
+  },
+  {
+    "id": "guides/today-and-yours#messages-about-your-days",
+    "doc": "Today and Yours",
+    "section": "Messages about your days",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#messages-about-your-days",
+    "body": "Recued can send you messages about your days. Find them in\n**Settings**, then **Approval & notifications**.\n\nThe **Agenda** lists one day in time order: events, tasks and reminders.\nRepeating events are in it every day. Pick today, sent in the morning, or\ntomorrow, sent the evening before. If nothing is on, no agenda is sent.\nThe day's birthdays from your contacts share one line, and so do its\nanniversaries. HubSpot and Salesforce birthdays count too, for people Recued\nknows. In the app, a name opens that person.\n\nYou can also have the agenda once a week. It then lists seven days, one\nday at a time, and leaves out a day with nothing on. Pick the day it comes,\nand whether its week starts that day or the next.\n\nA meeting says **prep notes ready** when its notes are written.\n\nTick **Add AI suggestions** to have the AI look over each agenda. Once\nthe agenda goes out, it sends tips, such as clashes, travel time and what\nto bring. These come as a separate message, and a day with nothing on gets\nnone. Its chat is in your chat list as **Agenda suggestions**, and you can\nreply there.\n\n**Coming up** tells you what changed in the days ahead. It comes once a\nweek unless you change it. If nothing changed, nothing is sent. You can\nhave it each day instead, and choose how far ahead it looks. A daily one\ncan look at just today and tomorrow. A weekly one looks at least a week\nahead.\n\n**Due today** is a short note on the day something is due. It goes at the\nsame time as Coming up, even when Coming up is off. It skips a day your\nagenda lists that morning or the evening before."
+  },
+  {
+    "id": "guides/today-and-yours#reminder-in-yours",
+    "doc": "Today and Yours",
+    "section": "Reminder in Yours",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#reminder-in-yours",
+    "body": "Some reminders are private, such as a passport's, or a date you keep in\nYours with someone in it. The\n[messages about your days](#messages-about-your-days) show them only as\n**Reminder in Yours**. The AI writes them the same way. Open Yours to see\nthem."
   },
   {
     "id": "guides/today-and-yours#occasions-what-comes-back-each-year",
@@ -3368,6 +3392,134 @@
     "body": "Recued's chat and the AI apps you connect can add things you own and change\nthem. Each change asks you first, unless you let that kind of change run\nwithout asking.\n\n- A **reading** you give it, such as a car's mileage, becomes your own entry\n  once you approve it. It replaces the reading you last typed.\n- It can add **details**, fill in an empty date and say where a thing is\n  kept. It can also change what an AI wrote before.\n- It can say what a thing is **part of**, such as the car a policy covers.\n  The thing is then kept where that one is. When that one is sold, the part\n  goes with it, and a policy reminds you to cancel or transfer it.\n- It never changes what you typed yourself, such as a name or a detail. It\n  tells you so before it asks, and you can change it in Yours."
   },
   {
+    "id": "guides/vscode-kitchen",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Recued Kitchen for VS Code",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen",
+    "body": "Recued Kitchen is the VS Code add-on for Recued source. It edits recipes,\npacks and compositions. A recipe is a list of steps. A pack is a box you\ncan install. A composition sets out its parts and actions.\n\nThe add-on checks source as you type. It can show errors, fill in keys and\nfind names. It can also use your VS Code AI tools. You can send drafts to\nthe Kitchen on your server.\n\nLocal edits and checks need no account or server. You can read the built-in\nguides offline, too."
+  },
+  {
+    "id": "guides/vscode-kitchen#get-recued-first",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Get Recued first",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#get-recued-first",
+    "body": "To run your work, first [get Recued](https://recued.com/).\n[Install the server](../getting-started.md) and start it on your computer.\nPair the [webclient](https://app.recued.com/) with the code your server shows.\nThe webclient is the app in your browser.\n\nKeep your server running when you use connected drafts. You can skip this\nsetup for local edits and checks."
+  },
+  {
+    "id": "guides/vscode-kitchen#install-the-add-on",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Install the add-on",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#install-the-add-on",
+    "body": "Install [Recued Kitchen from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=recued.recued-kitchen).\nCheck that the publisher is **recued**. You need VS Code **1.102.0 or later**.\n\nOpen a folder for your source. Run **Recued: Open Documentation** from the\nCommand Palette. Choose a built-in guide to read it offline."
+  },
+  {
+    "id": "guides/vscode-kitchen#make-your-first-recipe-and-pack",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Make your first recipe and pack",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#make-your-first-recipe-and-pack",
+    "body": "1. Run **Recued: New Recipe**.\n2. Save it as `greeting.recipe.json`.\n3. Change the greeting, then run **Recued: Validate Current Source**.\n4. Open the Problems panel. Select a problem to jump to its source.\n5. Run **Recued: New Pack**. Save it as `example.pack.json` and check it, too.\n\nEach new file starts with a full example. Replace the pack's example names\nand API URL with your own. It does not call that API as you edit.\n\nUse **Recued: New Composition** for a composition on its own."
+  },
+  {
+    "id": "guides/vscode-kitchen#name-your-source-files",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Name your source files",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#name-your-source-files",
+    "body": "The add-on knows these file names:\n\n| Source | File name |\n| --- | --- |\n| Recipe | `greeting.recipe.json` |\n| Pack | `example.pack.json` |\n| Composition | `example.composition.json` |\n\nThe source is JSON, a text format for data. Names ending in `.jsonc` work,\ntoo. But the source must still be strict JSON. Comments and trailing commas\nare errors. For another file name, run **Recued: Set Document Type**."
+  },
+  {
+    "id": "guides/vscode-kitchen#check-and-explore-your-source",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Check and explore your source",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#check-and-explore-your-source",
+    "body": "Use the Problems panel to find errors. Try changing `version` from `1` to\n`\"bad\"`. Check the file and select that problem. Then restore `1` and check\nagain.\n\nUse Outline to move between parts of a file. Hover over a key for help.\nUse completion to fill in known keys. F12 follows names to local source.\nQuick Fixes offer edits where a known fix is safe.\n\n**Recued: Validate Folder** and **Recued: Validate Workspace** check files\nthat are not open, too. A source check does not run your recipe. It does\nnot test the API you plan to call."
+  },
+  {
+    "id": "guides/vscode-kitchen#set-up-your-editor-s-ai",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Set up your editor's AI",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#set-up-your-editor-s-ai",
+    "body": "Use the AI model you set in VS Code. Its own sign-in or provider key still\napplies. To add one, run **Chat: Manage Language Models**. See\n[VS Code's model guide](https://code.visualstudio.com/docs/agent-customization/language-models).\n\nOpen a folder you trust. In Chat's tool picker, switch on these tools:\n\n- **Recued Authoring Reference**: read the guide built into this release.\n- **Recued Workspace Operations**: find actions declared in local packs.\n- **Recued Validate Source**: check the latest text in the editor.\n\nKeep the usual file-editing tools on, too. This local AI flow needs no\nRecued MCP key. Your chosen AI provider handles prompts, source and tool\nresults."
+  },
+  {
+    "id": "guides/vscode-kitchen#ask-ai-to-write-or-improve-source",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Ask AI to write or improve source",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#ask-ai-to-write-or-improve-source",
+    "body": "Run **Recued: Author with AI** and choose a source type. Review the prompt.\nChoose **Copy Prompt and Open New Chat**. Paste it, add your goal and send\nit.\n\nUse **Recued: Improve with AI** for a saved file. Problems can also offer\n**Explain Problem with AI** or **Fix Problem with AI**. Review each edit\nand check the result.\n\n**Recued: Enable AI Authoring for This Workspace** can add scoped guide\nfiles and a prompt. It shows you the proposed files first. It keeps files\nthat already exist. VS Code's own tool prompts still apply."
+  },
+  {
+    "id": "guides/vscode-kitchen#make-an-mcp-contract",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Make an MCP contract",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#make-an-mcp-contract",
+    "body": "Do this when you want to open and save server drafts. MCP is a shared\nlanguage that apps use to call your server's tools. A contract is the saved\nlist of what one app may do.\n\n1. In the paired webclient, open **Contracts → Others → + New contract**.\n2. Name it, such as `VS Code Kitchen`.\n3. Switch on **MCP tools** and choose **Create contract**.\n4. Keep this contract active and its MCP tools door on.\n\nA door is a way in that you open on purpose. Closing it takes that access\naway. Creating the contract does not grant tools by itself."
+  },
+  {
+    "id": "guides/vscode-kitchen#grant-the-four-kitchen-tools",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Grant the four Kitchen tools",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#grant-the-four-kitchen-tools",
+    "body": "A grant is a yes you give ahead of time. Open the contract's **Ops** tab.\nUse **Find an operation** to search for `Kitchen`. Switch on these four\ngrants:\n\n| Operation | What it lets this connection do |\n| --- | --- |\n| `core.kitchen.draft.import` | Send source to a new Kitchen draft |\n| `core.kitchen.draft.list` | List drafts made through this connection |\n| `core.kitchen.draft.get` | Read source from those drafts |\n| `core.kitchen.draft.update` | Save edits after checking the draft's revision |\n\nEach grant is separate. New contracts grant nothing by default. These tools\ndo not install packs or run recipes. Other actions need their own grants."
+  },
+  {
+    "id": "guides/vscode-kitchen#connect-vs-code-to-your-server",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Connect VS Code to your server",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#connect-vs-code-to-your-server",
+    "body": "1. Open the contract's **Connect** tab. Choose **Create a key**.\n2. Copy the key while it is shown. Recued shows its value only once.\n3. Find the full MCP URL in that tab's connection examples.\n4. In a trusted VS Code folder, run **Recued: Set Up MCP Connection**.\n5. Enter that URL, then the contract's key.\n6. Check that setup reports **4 of 4 Kitchen tools are granted**.\n\nYour server must be reachable from VS Code. Use the full URL, such as\n`https://your-server.example/mcp`. HTTPS is required outside localhost.\nHTTP works for `localhost`, `127.0.0.1` and `[::1]`.\n\nSetup also adds the server to VS Code's native MCP support. The four server\ntools are separate from the three local AI tools above. The draft commands\nwork without an AI model."
+  },
+  {
+    "id": "guides/vscode-kitchen#open-and-save-kitchen-drafts",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Open and save Kitchen drafts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#open-and-save-kitchen-drafts",
+    "body": "Run **Recued: Send to Kitchen** with your local source open. Review the\ndraft name, then send it. Open **Recued: Show Kitchen** or use the Kitchen\nicon in the Activity Bar.\n\nThe view lists drafts made through this connection. An empty list can be\nnormal before your first send. Select a draft to open its source.\n\nEdit it, then run **Recued: Save to Kitchen**. A normal file Save only saves\nyour local file. It does not send a Kitchen write. For an unlinked local\nfile, Save to Kitchen first lets you pick a draft and compare it. A second\nSave to Kitchen sends the source.\n\nInstalling a pack or running a recipe is a separate action in Recued."
+  },
+  {
+    "id": "guides/vscode-kitchen#review-approvals-and-conflicts",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Review approvals and conflicts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#review-approvals-and-conflicts",
+    "body": "Recued's write rules still apply. If it asks you first, review the action\non your paired device. Cancelling the wait in VS Code does not cancel an\naction already sent.\n\n**Recued: Compare with Kitchen** shows local and server source. If someone\nchanges the server draft, the add-on refuses to overwrite it silently.\nUse **Recued: Resolve Kitchen Conflict** to review the versions and edit\nthe result. Then choose **Recued: Save Reviewed Resolution**.\n\n**Recued: Open Latest Kitchen Source** opens the newer source on its own.\nIt keeps your current buffer."
+  },
+  {
+    "id": "guides/vscode-kitchen#recover-an-uncertain-transfer",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Recover an uncertain transfer",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#recover-an-uncertain-transfer",
+    "body": "If a reply was lost, run **Recued: Resume Kitchen Transfer**. It checks\nwhat happened or resumes waiting. Pending writes do not replay by\nthemselves after a restart.\n\n**Recued: Recover Kitchen Transfer Source** opens the stored source without\nsending a write. Pending transfers may keep source in local workspace\nstate. **Recued: Forget Kitchen Transfer Tracking** stops local tracking.\nIt does not cancel a server action."
+  },
+  {
+    "id": "guides/vscode-kitchen#keys-access-and-disconnecting",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "Keys, access and disconnecting",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#keys-access-and-disconnecting",
+    "body": "VS Code keeps the connection key in its secret store. The add-on does not\nput it in your project files or change the server's grants.\n\nRun **Recued: Disconnect** to remove the saved connection. Local buffers\nand recovery records stay. To take back server access, turn off the key\non the contract's Connect tab. Other apps using that key lose access, too.\n\nA new key does not gain access to drafts from the old key. Use a current,\ncontract-owned key. If an old key still lacks the tools, make a new\ncontract with the four grants. Check the grants again if setup reports\nfewer than four tools."
+  },
+  {
+    "id": "guides/vscode-kitchen#more-help",
+    "doc": "Recued Kitchen for VS Code",
+    "section": "More help",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/vscode-kitchen#more-help",
+    "body": "- [Recipe authoring](authoring-recipes.md): steps, inputs and output.\n- [Pack authoring](authoring-ingredient-packs.md): actions and pack source.\n- [Composition reference](../reference/composition.md): the fields for its parts.\n- [Connect to Recued](connect-to-recued.md): other ways apps can connect.\n\nThe built-in guides match the add-on release you installed. Online pages\ncan describe a newer release. Keep service keys in named connections.\nReview source before sending, installing or running it."
+  },
+  {
     "id": "index",
     "doc": "Recued documentation",
     "section": "Recued documentation",
@@ -3381,7 +3533,7 @@
     "section": "Start here",
     "eyebrow": "Documentation",
     "url": "https://recued.com/docs/index#start-here",
-    "body": "- [Set up Recued](getting-started.md) and pair your first device.\n- See [how the four parts of Recued fit together](concepts/how-recued-works.md).\n- See [what stays on your server and what can leave](concepts/security-and-privacy.md).\n- Learn why [you browse recipes one by one, but install packs as one box](guides/recipes-and-packs.md).\n- Follow [customer jobs from quote to closeout](guides/customer-jobs.md) in Reception."
+    "body": "- [Set up Recued](getting-started.md) and pair your first device.\n- [Write recipes and packs in VS Code](guides/vscode-kitchen.md) with Recued Kitchen.\n- See [how the four parts of Recued fit together](concepts/how-recued-works.md).\n- See [what stays on your server and what can leave](concepts/security-and-privacy.md).\n- Learn why [you browse recipes one by one, but install packs as one box](guides/recipes-and-packs.md).\n- Follow [customer jobs from quote to closeout](guides/customer-jobs.md) in Reception."
   },
   {
     "id": "index#what-the-documentation-covers",
@@ -3973,7 +4125,15 @@
     "section": "Browser",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#browser",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.click` | **Click on a web page.** Clicks a link or a button on a web page open in your browser, through the Browser Bridge. A click can send, post or delete, and cannot be undone. |\n| `core.dom.inspect` | **See a whole web page.** Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.open` | **Open a web page.** Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site. |\n| `core.dom.read` | **Read from a web page.** Reads text from a web page open in your browser, through the Browser Bridge. |\n| `core.dom.screenshot` | **Take a screenshot of a web page.** Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs \"Allow screenshots\" in the Bridge's side panel. |\n| `core.dom.table` | **Read a table on a web page.** Reads a table on a web page open in your browser as rows of text, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.tabs` | **See your open tabs.** Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge. |\n| `core.dom.wait` | **Wait for a web page.** Waits until part of a web page open in your browser shows or goes, through the Browser Bridge. Changes nothing on the page. |\n| `core.dom.write` | **Type into a web page.** Types into a web page open in your browser, through the Browser Bridge. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.act` | **Act on a web page.** Types, clicks and sends forms on a web page in your browser, several steps at once, through the Browser Bridge. A click or a sent form cannot be undone. |\n| `core.dom.click` | **Click on a web page.** Clicks a link or a button on a web page open in your browser, through the Browser Bridge. A click can send, post or delete, and cannot be undone. |\n| `core.dom.inspect` | **See a whole web page.** Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.open` | **Open a web page.** Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site. |\n| `core.dom.read` | **Read from a web page.** Reads text from a web page open in your browser, through the Browser Bridge. |\n| `core.dom.screenshot` | **Take a screenshot of a web page.** Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs \"Allow screenshots\" in the Bridge's side panel. |\n| `core.dom.table` | **Read a table on a web page.** Reads a table on a web page open in your browser as rows of text, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.tabs` | **See your open tabs.** Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge. |"
+  },
+  {
+    "id": "reference/grant-switches#browser-part-2",
+    "doc": "Grant switches",
+    "section": "Browser, part 2",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#browser-part-2",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.wait` | **Wait for a web page.** Waits until part of a web page open in your browser shows or goes, through the Browser Bridge. Changes nothing on the page. |\n| `core.dom.write` | **Type into a web page.** Types into a web page open in your browser, through the Browser Bridge. |"
   },
   {
     "id": "reference/grant-switches#schedules",

@@ -69,6 +69,7 @@ import {
   type RawOpResumeOutcome,
 } from './raw-op-dispatch.js';
 import { recordWriteRuleAnswer } from './write-rules.js';
+import { recordBrowserPassAnswer } from './browser-passes.js';
 import { projectRunResultForAgent } from './run-result-agent-projection.js';
 import { finishResumedRun } from './resumed-run-finishers.js';
 import { MCP_ACTION_NEXT_GATE_STATUS_MESSAGE, type McpActionStore } from './mcp-action-store.js';
@@ -1201,6 +1202,12 @@ export const createPreflightResumer = (
           `[preflight-resumer] resumeRun: executeDeps not yet published — run_id=${checkpoint.run_id} (transient; next boot will retry)`,
         );
       }
+      // D-335 slice F — the owner said yes to a held browser write: a site answer mints the
+      // pass its hold offered, and the key learns the approval (once per run, however often
+      // the answer is told).
+      recordBrowserPassAnswer(executeDeps, checkpoint, 'approved', {
+        ...(context.browser_pass_kind !== undefined ? { pass: context.browser_pass_kind } : {}),
+      });
       await updateMcpAction(
         actionStoreFor(executeDeps),
         checkpoint.run_id,
@@ -1843,6 +1850,8 @@ export const createPreflightResumer = (
       const runtime = deps.getExecuteDeps()?.preapprovalRuntime;
       if ((checkpoint.preapproval_execution_ref || checkpoint.preapproval_candidate_ref) && !runtime) throw new Error('Pre-approval runtime is unavailable.');
       runtime?.cancelCheckpoint(checkpoint);
+      // D-335 slice F — a refusal holds back its key's suggestion for the window.
+      recordBrowserPassAnswer(deps.getExecuteDeps(), checkpoint, 'refused');
       // D-202 Slice 1b — record the owner's DENY as a `quality_bad` verdict for
       // the reject-driven learner (only when this was a quality-relevant ask,
       // gated inside the helper). A reject knocks the (recipe, op)'s quality

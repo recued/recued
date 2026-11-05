@@ -178,6 +178,13 @@ export const MULTI_TURN_TERMINATION_REASONS = [
   /** Repeated successful re-reads lost their results again while fitting the
    *  next prompt to the context window, so further rounds cannot progress. */
   'context_trim_livelock',
+  /** D-337 (2026-11-04) — a call of the turn waits for the owner's approval,
+   *  and the model, having read once that a further call that would ask them
+   *  is not asked until they answer (`not_asked_yet`), made another. The turn
+   *  ends there: the conversation carries on by itself once they answer.
+   *  ⛔ Measured: in a browser search the model sent the same click 8 more times
+   *  over 4½ minutes while its first click waited, each one not asked. */
+  'waiting_for_approval',
 ] as const;
 export type MultiTurnTerminationReason =
   (typeof MULTI_TURN_TERMINATION_REASONS)[number];

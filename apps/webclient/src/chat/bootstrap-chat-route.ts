@@ -37,6 +37,7 @@ import { formatChatMarkdownExport, type ChatExportFormat } from './transcript-ex
 import { createAnswerCodeCopy } from './answer-code-copy.js';
 import { createAnswerCopy, ANSWER_COPY_STYLES } from './answer-copy.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
+import { NOTICE_RULE_TEXT, noticeHeading, withoutAiLabel } from './message-labels.js';
 import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
 /** D-174 P2 — top-level Chat route.
  *
@@ -1244,6 +1245,19 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   [${CHAT_ROUTE_MESSAGE_ATTR}]:focus-within .chat-message-reply { opacity: 1; }
 }
 @media (pointer: coarse) { [${CHAT_ROUTE_MESSAGE_ATTR}] .chat-message-reply { min-width: 44px; min-height: 44px; } }
+/* D-338 — a notice is a card, not a chat turn: it is outside the chat, and quoting it is the way in. */
+[${CHAT_ROUTE_MESSAGE_ATTR}][data-role="notice"] {
+  border: 1px solid var(--border, rgba(127,127,127,.35));
+  border-inline-start: 3px solid var(--accent, #888);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--surface-subtle, rgba(127,127,127,.06));
+}
+[${CHAT_ROUTE_MESSAGE_ATTR}][data-role="notice"] .chat-message-role { font-weight: 600; }
+[${CHAT_ROUTE_MESSAGE_ATTR}] .chat-notice-rule { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+@media (hover: hover) and (pointer: fine) {
+  [${CHAT_ROUTE_MESSAGE_ATTR}][data-role="notice"] .chat-message-reply { opacity: 1; }
+}
 [${CHAT_ROUTE_LATE_RESULT_ATTR}],
 [${CHAT_ROUTE_TOOL_DETAILS_ATTR}] {
   min-width: 0;
@@ -3148,6 +3162,7 @@ const messageRoleLabel = (role: ChatMessage['role']): string => {
   if (role === 'user') return 'You';
   if (role === 'assistant') return 'Assistant';
   if (role === 'tool') return 'Tool';
+  if (role === 'notice') return 'Notice';
   return 'System';
 };
 
@@ -4111,7 +4126,8 @@ export const bootstrapChatRoute = (
       const snapshot = await opts.conn('chat.session.get', { session_id: draft.session_id,
         around_message_id: targetId }).catch(() => null);
       const target = snapshot?.messages.find(message => message.id === targetId
-        && message.session_id === draft.session_id && (message.role === 'user' || message.role === 'assistant'));
+        && message.session_id === draft.session_id
+        && (message.role === 'user' || message.role === 'assistant' || message.role === 'notice'));
       reply = target ? replyDraftForMessage(target) : { sessionId: draft.session_id, messageId: targetId };
     }
     // Check AFTER every await. Typing, uploading, recording, navigation and a
@@ -5369,7 +5385,7 @@ export const bootstrapChatRoute = (
 
   const renderMessage = (
     host: HTMLElement,
-    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'turn_id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations' | 'execution_source'>,
+    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'turn_id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations' | 'execution_source' | 'notice' | 'answered_without_model'>,
     activity: ReadonlyArray<ChatActivityRow> = [],
     pendingText?: string,
   ): HTMLElement => {
@@ -5382,8 +5398,13 @@ export const bootstrapChatRoute = (
     }
     const role = doc.createElement('span');
     role.className = 'chat-message-role';
+    // D-338 — a notice names itself and its title; a reply no model wrote says so.
+    const withoutAi = message.role === 'assistant' ? withoutAiLabel(message.answered_without_model) : undefined;
     role.textContent = message.role === 'user' && message.execution_source?.channel === 'schedule' && message.execution_source.prompt_schedule
-      ? `Scheduled request · revision ${message.execution_source.prompt_schedule.revision}` : messageRoleLabel(message.role);
+      ? `Scheduled request · revision ${message.execution_source.prompt_schedule.revision}`
+      : message.role === 'notice' ? noticeHeading(message.notice?.title)
+        : withoutAi !== undefined ? `${messageRoleLabel(message.role)} · ${withoutAi}` : messageRoleLabel(message.role);
+    if (withoutAi !== undefined) row.setAttribute('data-chat-without-ai', '');
     if (message.tool_call) {
       const labels = {
         running: 'Running', held: 'Waiting to hear back', succeeded: 'Completed',
@@ -5461,6 +5482,14 @@ export const bootstrapChatRoute = (
       }
     }
     row.appendChild(content);
+    if (message.role === 'notice') {
+      // D-338 — the rule, where the owner reads the notice: it is outside the chat.
+      const rule = doc.createElement('p');
+      rule.className = 'chat-notice-rule';
+      rule.setAttribute('data-chat-notice-rule', '');
+      rule.textContent = NOTICE_RULE_TEXT;
+      row.appendChild(rule);
+    }
     const sources = buildAnswerSources(doc, message, quoteSession, { open: expandedSourceDetails.has(message.id),
       changed(open) { if (open) expandedSourceDetails.add(message.id); else expandedSourceDetails.delete(message.id); } });
     if (sources) row.appendChild(sources);
@@ -10383,11 +10412,14 @@ export const bootstrapChatRoute = (
         for (const late of toolRows.late_results.get(message.id) ?? []) {
           messageRow.appendChild(renderLateResult(late));
         }
-        if (state.thread.session && (message.role === 'user' || message.role === 'assistant')) {
-          const deliveryHost = doc.createElement('div'); deliveryHost.setAttribute('data-chat-message-delivery', message.id);
-          const detail = deliveryView.renderMessage(doc, state.thread.session.id, message.id);
-          if (detail) deliveryHost.appendChild(detail);
-          messageRow.appendChild(deliveryHost);
+        if (state.thread.session && (message.role === 'user' || message.role === 'assistant' || message.role === 'notice')) {
+          // A notice went out through the notification channels, so it has no chat delivery to show.
+          if (message.role !== 'notice') {
+            const deliveryHost = doc.createElement('div'); deliveryHost.setAttribute('data-chat-message-delivery', message.id);
+            const detail = deliveryView.renderMessage(doc, state.thread.session.id, message.id);
+            if (detail) deliveryHost.appendChild(detail);
+            messageRow.appendChild(deliveryHost);
+          }
           if (state.thread.quoted_replies_available === true) {
             const reply = doc.createElement('button'); reply.type = 'button'; reply.textContent = 'Reply'; reply.className = 'chat-message-reply';
             reply.setAttribute('data-chat-reply-action', message.id);

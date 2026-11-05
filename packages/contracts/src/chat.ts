@@ -1209,14 +1209,21 @@ export interface ChatSession {
  *  (user / assistant) + one per tool result (`role: 'tool'`). The
  *  `target_server` + `picker_at_send` snapshot the picker state at
  *  send time so history reasoning across mixed-picker conversations
- *  resolves correctly without re-querying live state. */
-export type ChatMessageRole = 'user' | 'assistant' | 'tool' | 'system';
+ *  resolves correctly without re-querying live state.
+ *
+ *  D-338 — `notice`: something Recued sent the owner on a linked messenger
+ *  without being asked (a reminder, the Agenda, an alert), kept in that
+ *  messenger's conversation so a reply that quotes it can reach it. The model
+ *  never sees one unless the owner quotes it: every reader of the model's
+ *  history selects `user` / `assistant` only. */
+export type ChatMessageRole = 'user' | 'assistant' | 'tool' | 'system' | 'notice';
 
 export const CHAT_MESSAGE_ROLES: ReadonlyArray<ChatMessageRole> = [
   'user',
   'assistant',
   'tool',
   'system',
+  'notice',
 ] as const;
 
 export const CHAT_MESSAGE_ROLE_SET: ReadonlySet<ChatMessageRole> =
@@ -1643,10 +1650,24 @@ export type ChatReplyReference =
   | { vendor: string; native_message_id: string };
 
 /** Preview is resolved from retained text at read time, never supplied by a
- * client or copied into message content. Absent preview means unavailable. */
+ * client or copied into message content. Absent preview means unavailable.
+ * D-338 — a quoted notice previews as `notice`, with its title when it had one;
+ * a server before D-338 never names it. */
 export type ChatMessageReply = ChatReplyReference & {
-  preview?: { role: 'user' | 'assistant'; text: string };
+  preview?: { role: 'user' | 'assistant' | 'notice'; text: string; title?: string };
 };
+
+/** D-338 — what a `notice` row was: the notification's own title and the
+ *  messenger it went to. Stored encrypted with the row. */
+export interface ChatNotice {
+  title?: string;
+  vendor: string;
+  link_url?: string;
+}
+
+/** D-338 — where an answer given without a model came from: the deterministic
+ *  gate's contact, calendar or mail families. Absent `from` is a fixed reply. */
+export type ChatAnswerSource = 'contacts' | 'calendar' | 'mail';
 
 export interface ChatMessage {
   /** Host provenance for a scheduled occurrence; never supplied by chat.send. */
@@ -1685,6 +1706,13 @@ export interface ChatMessage {
    * Present only on a `data_diagnosis.intent === 'safe_check'` answer. This is
    * workflow state, not proof that an external effect did or did not occur. */
   data_diagnosis_resolution?: ChatDataDiagnosisResolution;
+  /** D-338 — present only on a `notice` row. */
+  notice?: ChatNotice;
+  /** D-338 — an assistant row Recued wrote without calling a model: the
+   *  deterministic gate's answer (with the family it read) or a fixed reply.
+   *  The app labels it "without AI". Absent on every model-written answer, and
+   *  on every row from a server before D-338. */
+  answered_without_model?: { from?: ChatAnswerSource };
   /** D-177 5.f — server-stamped contributor (see
    *  {@link ChatSessionContributor}). Attachments inherit the row's stamp
    *  (an attachment on a user turn is user-contributed). Stamped by the
@@ -2845,7 +2873,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   },
   'situation.query': {
     name: 'situation.query',
-    description: 'For owner Chat comparisons of a saved reading with a declared rule target, request context: it returns host-calculated comparison facts with both input citations. Attribute text is not a rule target. What is due or coming up for the owner in a `time`, a Unix ms instant or span `{from, to}`: trips with each traveller\'s passport check and visas on file, renewals and expiries of what the owner holds (passport, visa, insurance, vehicle) with its recorded fields, birthdays, bookings, events, reminders, tasks, promises, and bills and reservations from email. `text`, `people`, `place` and `subjects` add matches from outside the span; a past span also returns what ended in it. Returns values, verdicts, reasons and source references for every match, up to ' + SITUATION_TOOL_MAX_ITEMS + ' items a call; `omitted` counts any past that, so narrow `time`, `people` or `text`. Or copy a returned item’s context as the only argument to inspect its rule input, supporting evidence and registered enabled writers. writer_check reports enabled_count, disabled_count when the registry was checked, coverage and manual priority. Disabled registrations remain on file. A missing disabled_count is unknown; zero enabled writers alone does not prove no registrations. Restricted, unavailable or partial checks cannot prove absence. A registered writer does not prove scheduling or execution. execution_status=not_checked leaves current running/stopped state and scheduling unknown. Writer delivery receipts cover only settled admitted field submissions, not whole-recipe success or continuous operation. Missing receipts do not prove no execution; receipt at is settlement time, observation_at dates the sample, and older acceptance does not establish the current entry’s source. Observation age is not activity evidence. Use the returned context citation for rule, relationship and writer-state claims, and field citations only for saved values. reaction.emit publishes rule events; it does not write readings. Unknown is not outside. Limited to this contract\'s sources and spheres. Several matches for one name need clarification first. A refusal does not mean no records exist.',
+    description: 'For owner Chat comparisons of a saved reading with a declared rule target, request context: it returns host-calculated comparison facts with both input citations. Attribute text is not a rule target. What is due or coming up for the owner in a `time`: a day `"2026-11-05"`, or days `{"first_day":"2026-11-05","last_day":"2026-11-11"}` with both included, on the owner\'s clock (Unix ms only for an exact moment: an instant, or `{from, to}`): trips with each traveller\'s passport check and visas on file, renewals and expiries of what the owner holds (passport, visa, insurance, vehicle) with its recorded fields, birthdays, bookings, events, reminders, tasks, promises, and bills and reservations from email. `text`, `people`, `place` and `subjects` add matches from outside the span; a past span also returns what ended in it. Returns values, verdicts, reasons and source references for every match, up to ' + SITUATION_TOOL_MAX_ITEMS + ' items a call; `omitted` counts any past that, so narrow `time`, `people` or `text`. Or copy a returned item’s context as the only argument to inspect its rule input, supporting evidence and registered enabled writers. writer_check reports enabled_count, disabled_count when the registry was checked, coverage and manual priority. Disabled registrations remain on file. A missing disabled_count is unknown; zero enabled writers alone does not prove no registrations. Restricted, unavailable or partial checks cannot prove absence. A registered writer does not prove scheduling or execution. execution_status=not_checked leaves current running/stopped state and scheduling unknown. Writer delivery receipts cover only settled admitted field submissions, not whole-recipe success or continuous operation. Missing receipts do not prove no execution; receipt at is settlement time, observation_at dates the sample, and older acceptance does not establish the current entry’s source. Observation age is not activity evidence. Use the returned context citation for rule, relationship and writer-state claims, and field citations only for saved values. reaction.emit publishes rule events; it does not write readings. Unknown is not outside. Limited to this contract\'s sources and spheres. Several matches for one name need clarification first. A refusal does not mean no records exist. `private: true` marks an item the owner\'s notifications call only "a reminder in Yours": text meant for a notification writes that, never its title; any other answer names it as usual.',
     arg_schema: SITUATION_QUERY_SCHEMA,
     classification: TIER1_CLASSIFICATIONS['situation.query'],
     topic_tags: TIER1_TOPIC_TAGS['situation.query'],
@@ -3156,7 +3184,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.schedule'],
   },
   'schedule.run_prompt': {
-    name: 'schedule.run_prompt', description: "Schedule an AI request for later: one-off or recurring. Creates a dedicated conversation, reused on later occurrences. Uses current tool grants and normal write approvals. Supply a complete prompt; the current conversation is not copied. The user can chat in the new conversation without changing its schedule.",
+    name: 'schedule.run_prompt', description: "Schedule an AI request for later: one-off or recurring. Creates a dedicated conversation, reused on later occurrences. Uses current tool grants and normal write approvals. Supply a complete prompt; the current conversation is not copied. The user can chat in the new conversation without changing its schedule. Each run's answer stays in that conversation. notify_on_done also sends it to their notifications: set it only when the user asks to be told or sent it ('let me know', 'notify me', 'send me'), not when they only ask for something written.",
     arg_schema: {
     "type": "object",
     "properties": {
@@ -3169,7 +3197,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         },
         "time_zone": {
             "type": "string",
-            "description": "IANA timezone, e.g. America/Los_Angeles."
+            "description": "IANA timezone. Leave it out to use the user's own; set it only for another zone they name. Required from an external MCP client."
         },
         "run_at": {
             "type": "string",
@@ -3186,6 +3214,10 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
                 "recurring"
             ]
         },
+        "notify_on_done": {
+            "type": "boolean",
+            "description": "Also send each finished run's answer to the user's notifications. Off unless they ask to be told or sent it."
+        },
         "creation_id": {
             "type": "string",
             "description": "Stable unique ID for this creation request; required from an external MCP client."
@@ -3194,8 +3226,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     "required": [
         "title",
         "prompt",
-        "mode",
-        "time_zone"
+        "mode"
     ],
     "additionalProperties": false
 },
@@ -3220,7 +3251,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     concurrency_safe: TIER1_CONCURRENCY_SAFE['schedule.list'],
   },
   'schedule.update': {
-    name: 'schedule.update', description: "Explicitly change a saved scheduled prompt or its timing. Withdraws queued occurrences of the old revision. Ordinary conversation never changes the saved request.",
+    name: 'schedule.update', description: "Explicitly change a saved scheduled prompt, its timing, or whether it notifies when done (notify_on_done). Withdraws queued occurrences of the old revision. Ordinary conversation never changes the saved request.",
     arg_schema: {
     "type": "object",
     "properties": {
@@ -3249,6 +3280,10 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         "cron_expression": {
             "type": "string",
             "description": "Recurring five-field cron, at least five minutes between runs."
+        },
+        "notify_on_done": {
+            "type": "boolean",
+            "description": "Send each finished run's answer to the user's notifications."
         }
     },
     "required": [

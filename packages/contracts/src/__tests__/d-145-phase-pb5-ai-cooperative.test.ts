@@ -65,12 +65,13 @@ describe('D-145 PB5 — closed-list pins', () => {
     expect(MULTI_TURN_EVENT_KIND_SET.size).toBe(MULTI_TURN_EVENT_KINDS.length);
   });
 
-  it('MULTI_TURN_TERMINATION_REASONS is exactly 5 entries', () => {
+  it('MULTI_TURN_TERMINATION_REASONS is exactly 6 entries', () => {
     // `output_unreadable` added deliberately: a turn whose last packet could
     // not be parsed used to report `completed`, so a stalled turn and a
     // finished one were indistinguishable downstream.
     // Repeated loss of re-read results is a separate context-limit stop.
-    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(5);
+    // `waiting_for_approval` (D-337): the rest of the turn waits for the owner.
+    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(6);
     expect(new Set(MULTI_TURN_TERMINATION_REASONS)).toEqual(
       new Set([
         'completed',
@@ -78,6 +79,7 @@ describe('D-145 PB5 — closed-list pins', () => {
         'context_trim_livelock',
         'max_rounds_exhausted',
         'aborted',
+        'waiting_for_approval',
       ]),
     );
   });

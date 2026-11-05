@@ -112,6 +112,9 @@ export const ENVIRONMENT_RETRY_POLICY: Readonly<Record<string, 'retry' | 'stop'>
   MCP_TOOL_ERROR: 'retry',
   NOTIFICATION_SEND_FAILED: 'retry',
   DOM_WRITE_FAILED: 'retry',
+  // D-335 slice J — a CAPTCHA, an error on the page or a page that did not move on: the same
+  // attempt meets the same page until a person looks.
+  DOM_CHECK_FAILED: 'stop',
   CHECKPOINT_STORE_UNAVAILABLE: 'retry',
   CHECKPOINT_WRITE_FAILED: 'retry',
   ARCHIVE_IMPORT_IN_PROGRESS: 'retry',

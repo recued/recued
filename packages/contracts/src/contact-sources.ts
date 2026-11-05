@@ -774,7 +774,9 @@ export const CONTACT_SOURCE_DECLARATIONS: ReadonlyArray<ContactSourceDeclaration
       //           the leaf must reuse is `projectHubSpotMailingAddress` in
       //           `data/hubspot/contact-reconciler.ts` — flat `properties.{address,
       //           address2,city,state,zip,country}` → `canonicalizeMailingAddress`.
-      attributes: ['name', 'org', 'address'],
+      // `birthday` — `properties.date_of_birth` (D-338 §10), as the reconciler keeps it:
+      //           YYYY-MM-DD or --MM-DD, else none.
+      attributes: ['name', 'org', 'address', 'birthday'],
     },
     match_on: ['email_alias'],
   }),
@@ -798,7 +800,10 @@ export const CONTACT_SOURCE_DECLARATIONS: ReadonlyArray<ContactSourceDeclaration
       // `source_path` can express, since a path reads ONE record. Resolving it needs
       // a join the contact family does not do today. Declaring `org` here would
       // quietly project an empty column.
-      attributes: ['name', 'address'],
+      //
+      // `birthday` — D-338 §10: `Birthdate`, where the org shows it to the connected user
+      // (the reconciler reads it then, and keeps it through the stream's events).
+      attributes: ['name', 'address', 'birthday'],
     },
     match_on: ['email_alias'],
   }),

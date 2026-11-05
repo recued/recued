@@ -73,13 +73,14 @@ const seedContact = (email: string, name = 'Seed'): string => {
 };
 
 /** A well-formed HubSpot record: every promised kind present, `null`/`[]` for
- *  "the leaf looked and found none". Overrides merge shallowly. */
+ *  "the leaf looked and found none". Overrides merge shallowly. HubSpot promises a
+ *  `birthday` too since D-338 §10. */
 const record = (over: Partial<ContactSourceRecord> = {}): ContactSourceRecord => ({
   remote_id: 'hs_1',
   as_of: 5_000,
   raw: { properties: { email: 'bob@example.com' } },
   aliases: { email_alias: ['bob@example.com'], phone_alias: [] },
-  attributes: { name: 'Robert Smith', org: 'Acme', address: null },
+  attributes: { name: 'Robert Smith', org: 'Acme', address: null, birthday: null },
   ...over,
 });
 
@@ -107,7 +108,7 @@ describe('D-192 C-2 slice 6 — the supplies promise (the anti-silence device)',
     // match rather than a wrong one, so the merge detector silently stops seeing
     // duplicates. Nobody would get an exception. So we manufacture one.
     seedContact('bob@example.com');
-    const noAddress = record({ attributes: { name: 'Robert', org: 'Acme' } });
+    const noAddress = record({ attributes: { name: 'Robert', org: 'Acme', birthday: null } });
 
     const res = await run(leafOf([noAddress]));
 
@@ -126,7 +127,7 @@ describe('D-192 C-2 slice 6 — the supplies promise (the anti-silence device)',
     // addresses" are the same observation.
     seedContact('bob@example.com');
 
-    const res = await run(leafOf([record({ attributes: { name: 'R', org: 'Acme', address: null } })]));
+    const res = await run(leafOf([record({ attributes: { name: 'R', org: 'Acme', address: null, birthday: null } })]));
 
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -155,7 +156,7 @@ describe('D-192 C-2 slice 6 — the supplies promise (the anti-silence device)',
     seedContact('ann@example.com');
     const broken = (id: string, email: string): ContactSourceRecord =>
       record({ remote_id: id, aliases: { email_alias: [email], phone_alias: [] },
-        attributes: { name: 'X', org: 'Y' } }); // no `address` key
+        attributes: { name: 'X', org: 'Y', birthday: null } }); // no `address` key
 
     const res = await run(leafOf([broken('a', 'bob@example.com'), broken('b', 'ann@example.com')]));
 
@@ -192,7 +193,7 @@ describe('D-192 C-2 slice 6 — hydrate_on_match', () => {
 
     const res = await run(leafOf([record({
       aliases: { email_alias: ['bob@work.com'], phone_alias: [] },
-      attributes: { name: 'Robert Smith', org: 'Acme', address: null },
+      attributes: { name: 'Robert Smith', org: 'Acme', address: null, birthday: null },
     })]));
 
     expect(res.ok).toBe(true);
@@ -215,6 +216,21 @@ describe('D-192 C-2 slice 6 — hydrate_on_match', () => {
     const org = attrs.find((a) => a.kind === 'org');
     expect(org?.source).toBe('vendor_meta');
     expect(org?.source_id).toBe(SOURCE_ID);
+  });
+
+  it('gives a contact Recued knows the CRM\'s birthday, with its provenance (D-338 §10)', async () => {
+    // The Agenda's birthdays line reads a contact's own `birthday`; HubSpot's now reaches it.
+    seedContact('bob@example.com');
+
+    const res = await run(leafOf([record({ attributes: { name: 'Robert Smith', org: 'Acme', address: null, birthday: '1984-11-05' } })]));
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.failed_rows).toBe(0);
+    const bob = store.get('bob@example.com')!;
+    expect(bob.birthday).toBe('1984-11-05');
+    const birthday = store.listContactAttributes(bob.contact_id!).find((a) => a.kind === 'birthday');
+    expect(birthday).toMatchObject({ source: 'vendor_meta', source_id: SOURCE_ID });
   });
 
   it('a CRM import NEVER outranks a hand edit', async () => {
@@ -254,7 +270,7 @@ describe('D-192 C-2 slice 6 — the incremental seam', () => {
     seedContact('bob@example.com');
     await run(leafOf([record()]));
 
-    const moved = record({ attributes: { name: 'Robert Smith', org: 'Globex', address: null } });
+    const moved = record({ attributes: { name: 'Robert Smith', org: 'Globex', address: null, birthday: null } });
     const second = await run(leafOf([moved]));
 
     expect(second.ok).toBe(true);
@@ -416,11 +432,11 @@ describe('D-205 §1 — a vendor delete DISCONNECTS; it withdraws nothing', () =
     seedContact('bob@example.com');
     const older = record({
       remote_id: 'hs_old', as_of: 1_000,
-      attributes: { name: 'Bob Smith', org: 'OldCo', address: null },
+      attributes: { name: 'Bob Smith', org: 'OldCo', address: null, birthday: null },
     });
     const fresher = record({
       remote_id: 'hs_new', as_of: 9_000,
-      attributes: { name: 'Robert Smith', org: 'NewCo', address: null },
+      attributes: { name: 'Robert Smith', org: 'NewCo', address: null, birthday: null },
     });
 
     const first = await run(leafOf([older, fresher]));
@@ -447,9 +463,9 @@ describe('D-192 C-2 slice 6 — duplicate remote records for one person', () => 
     // worse than being wrong: a wrong value is at least reproducible.
     seedContact('bob@example.com');
     const a = record({ remote_id: 'hs_a', as_of: 1_000,
-      attributes: { name: 'A', org: 'AlphaCo', address: null } });
+      attributes: { name: 'A', org: 'AlphaCo', address: null, birthday: null } });
     const b = record({ remote_id: 'hs_b', as_of: 9_000,
-      attributes: { name: 'B', org: 'BetaCo', address: null } });
+      attributes: { name: 'B', org: 'BetaCo', address: null, birthday: null } });
 
     await run(leafOf([a, b]));
     expect(store.get('bob@example.com')?.company).toBe('BetaCo');
@@ -621,7 +637,7 @@ describe('D-192 C-2 slice 6 — a failed write is RETRIED, not buried', () => {
     cyclic.self = cyclic;
 
     const res = await run(leafOf([
-      record({ remote_id: 'bad', attributes: { name: 'X', org: cyclic, address: null } }),
+      record({ remote_id: 'bad', attributes: { name: 'X', org: cyclic, address: null, birthday: null } }),
       record({ remote_id: 'good', aliases: { email_alias: ['ann@example.com'], phone_alias: [] } }),
     ]));
 
@@ -654,7 +670,7 @@ describe('D-205 §1 — a re-pointed record: connect the new, keep the old', () 
     // Someone re-assigns hs_1 to Ann upstream. SAME remote_id.
     const moved = record({
       aliases: { email_alias: ['ann@example.com'], phone_alias: [] },
-      attributes: { name: 'Ann Smith', org: 'Globex', address: null },
+      attributes: { name: 'Ann Smith', org: 'Globex', address: null, birthday: null },
     });
     const res = await run(leafOf([moved]));
 

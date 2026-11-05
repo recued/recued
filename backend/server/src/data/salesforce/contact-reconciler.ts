@@ -16,7 +16,8 @@
  *      falling back to the email local-part when both are absent.
  *      Empty strings + null are treated identically (Salesforce returns
  *      `null` for unset properties).
- *    - Hash tuple is `email / lifecycle_stage / owner / account_id`.
+ *    - Hash tuple is `email / lifecycle_stage / owner / account_id`
+ *      (D-338 §10: and the birthday, when there is one).
  *      `LastActivityDate` is intentionally excluded — Salesforce bumps
  *      it on any logged activity (call / meeting / email open) including
  *      ones that don't change anything semantically interesting about
@@ -37,6 +38,7 @@
 import {
   canonicalizeMailingAddress,
   canonicalizePhone,
+  isContactAnnualDate,
   PLATFORM_REFERENCE_BATCH_SIZE,
   SALESFORCE_CONTACT_FIELDS,
   SALESFORCE_DEFAULT_RECONCILIATION_CADENCE,
@@ -55,10 +57,15 @@ import type {
 
 import { fnv1aHex } from './_fnv1a.js';
 import {
+  SalesforceSearchError,
   searchSalesforceObjects,
   type RawSalesforceRecord,
   type SalesforceSearchDeps,
 } from './_salesforce-search.js';
+
+/** D-338 §10 — how long an org's hidden `Birthdate` is believed before it is asked for
+ *  again, so a profile changed to show it is read within a day. */
+const BIRTHDATE_RECHECK_MS = 24 * 60 * 60 * 1000;
 
 // ────────────────────────────────────────────────────────────────
 // Public types
@@ -99,6 +106,8 @@ export class SalesforceContactReconciler implements VendorReconciler {
   readonly webhookProcessor?: WebhookProcessor;
 
   private readonly deps: SalesforceContactReconcilerDeps;
+  /** D-338 §10 — when each connection's query was last refused for `Birthdate`. */
+  private readonly birthdateHidden = new Map<string, number>();
 
   constructor(deps: SalesforceContactReconcilerDeps) {
     this.deps = deps;
@@ -111,7 +120,50 @@ export class SalesforceContactReconciler implements VendorReconciler {
     limit: number,
   ): AsyncIterable<SalesforceContactSlimRecord> {
     const pageLimit = Math.min(limit, PLATFORM_REFERENCE_BATCH_SIZE);
-    const soql = buildContactSoql(cursor, pageLimit);
+    const hiddenAt = this.birthdateHidden.get(connection.name);
+    const birthdate = hiddenAt === undefined || this.now() - hiddenAt >= BIRTHDATE_RECHECK_MS;
+    let yielded = false;
+    try {
+      for await (const record of this.walk(connection, buildContactSoql(cursor, pageLimit, { birthdate }))) {
+        yielded = true;
+        yield record;
+      }
+    } catch (error) {
+      // D-338 §10 — `Birthdate` is a standard Contact field, but a profile can hide it from
+      // the connected user, and SOQL then refuses the whole query (a 400). Asked again
+      // without it: answered, `Birthdate` was why, and the org is read without it, as
+      // before, and not asked for it again for a day. Refused again, the second refusal is
+      // the cycle's, as it was. ⛔ Never decided from the error's words: SOQL echoes the query
+      // first, which names `Birthdate` whenever it was asked for.
+      if (!birthdate || yielded || !(error instanceof SalesforceSearchError) || error.status !== 400) throw error;
+      let answered = false;
+      for await (const record of this.walk(connection, buildContactSoql(cursor, pageLimit, { birthdate: false }))) {
+        if (!answered) this.birthdateHidden.set(connection.name, this.now());
+        answered = true;
+        yield record;
+      }
+      if (!answered) this.birthdateHidden.set(connection.name, this.now());
+    }
+  }
+
+  /** D-338 §10 — a PushTopic event carries only its Query's fields, and none has
+   *  `Birthdate` (nor is one ever updated: `pushtopic-soap.ts`). A streamed contact keeps the
+   *  birthday its last snapshot had, so the change is hashed as a cycle would hash it. A
+   *  birthday edited in Salesforce fires no event (the Query does not name the field) and
+   *  arrives with the next cycle. */
+  fillStreamGaps(
+    record: SalesforceContactSlimRecord,
+    previous: EnrichmentMeta | null,
+  ): SalesforceContactSlimRecord {
+    if (Object.hasOwn(record._raw, 'Birthdate')) return record;
+    const kept = previous?.birthday;
+    return typeof kept === 'string' ? { ...record, _raw: { ...record._raw, Birthdate: kept } } : record;
+  }
+
+  private async *walk(
+    connection: ConnectionRecord,
+    soql: string,
+  ): AsyncIterable<SalesforceContactSlimRecord> {
     for await (const raw of searchSalesforceObjects(
       connection,
       { soql },
@@ -150,8 +202,14 @@ export class SalesforceContactReconciler implements VendorReconciler {
  *  The `ORDER BY LastModifiedDate ASC` sort matches the cursor-advance
  *  invariant — the harness records `max(modified_at)` seen so the next
  *  run picks up where this one left off. */
-export const buildContactSoql = (cursor: number, limit: number): string => {
-  const fields = SALESFORCE_CONTACT_FIELDS.join(', ');
+export const buildContactSoql = (
+  cursor: number,
+  limit: number,
+  options: { readonly birthdate?: boolean } = {},
+): string => {
+  // D-338 §10 — `Birthdate` only where the org shows it (`listUpdatedSince`), so it is not in
+  // `SALESFORCE_CONTACT_FIELDS`, which the PushTopic's Query is made from too.
+  const fields = [...SALESFORCE_CONTACT_FIELDS, ...(options.birthdate === true ? ['Birthdate'] : [])].join(', ');
   const baseClauses = [
     `SELECT ${fields}`,
     `FROM Contact`,
@@ -188,6 +246,7 @@ export const computeContactHash = (raw: RawSalesforceRecord): string => {
   // calls `canonicalizePhone(_, 'US')`; the hash must agree.)
   const phone = canonicalizePhone(readString(raw.Phone), 'US') ?? '';
   const address = projectSalesforceMailingAddress(raw);
+  const birthday = contactBirthdayOf(raw.Birthdate);
   const fields = [
     canonicalizeContactEmail(raw.Email) ?? '',
     stringify(raw.LeadSource),
@@ -195,6 +254,9 @@ export const computeContactHash = (raw: RawSalesforceRecord): string => {
     stringify(raw.AccountId),
     phone,
     address ? mailingAddressHashKey(address) : '',
+    // D-338 §10 — only when present, so a record without a birthday keeps its hash and
+    // nothing re-materialises for it.
+    ...(birthday !== null ? [birthday] : []),
   ];
   return `fnv1a:${fnv1aHex(fields.join('\x1f'))}`;
 };
@@ -253,7 +315,18 @@ export const projectContactMeta = (
   const mailing = projectSalesforceMailingAddress(raw);
   if (mailing) meta.mailing_address = mailing;
 
+  // D-338 §10 — the birthday a contact Recued knows takes (`crm-mirror-leaf`).
+  const birthday = contactBirthdayOf(raw.Birthdate);
+  if (birthday !== null) meta.birthday = birthday;
+
   return meta;
+};
+
+/** `Birthdate` is a date field, so SOQL writes it YYYY-MM-DD; kept only in a contact's own
+ *  forms (`isContactAnnualDate`). */
+const contactBirthdayOf = (value: unknown): string | null => {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return isContactAnnualDate(text) ? text : null;
 };
 
 /** Project Salesforce's `MailingStreet` / `MailingCity` /

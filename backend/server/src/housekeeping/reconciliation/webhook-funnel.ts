@@ -498,7 +498,11 @@ export const createWebhookFunnel = (deps: WebhookFunnelDeps): {
             continue;
           }
 
-          const slim = event.record;
+          const existing = deps.enrichmentStore.listByTarget(scope, event.record.id, { limit: 1 });
+          const prevMeta = pickSnapshotMeta(existing);
+          // D-338 §10 — what the stream cannot carry, kept from the last snapshot before
+          // anything is hashed (a Salesforce contact's `Birthdate`, which no PushTopic has).
+          const slim = reconciler.fillStreamGaps?.(event.record, prevMeta) ?? event.record;
           // D-184 — `hashOf`/`toMeta` are present here: the loop-top guard
           // skipped any `selfIngest` reconciler (which lacks both), so only
           // default-write RECORD reconcilers reach this write path.
@@ -510,8 +514,6 @@ export const createWebhookFunnel = (deps: WebhookFunnelDeps): {
           // deal.search's mirror fresh (Salesforce CometD is the live driver).
           // Idempotent — preserves created_at. Skips when no mirror is wired.
           deps.crmRecordMirror?.upsert({ scope, target_id: slim.id, meta: newMeta, now: tNow });
-          const existing = deps.enrichmentStore.listByTarget(scope, slim.id, { limit: 1 });
-          const prevMeta = pickSnapshotMeta(existing);
           const oldHash = prevMeta?.snapshot_hash ?? null;
 
           if (oldHash === newHash) {

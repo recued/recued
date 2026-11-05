@@ -90,6 +90,9 @@ export const mountPromptSchedulesPanel = (options: {
       [data-prompt-schedules] form{box-sizing:border-box;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 20px;max-width:760px;margin:16px 0 0}
       [data-prompt-schedules] form>p,[data-prompt-schedules] form>[data-prompt-schedule-actions],[data-prompt-schedules] .prompt-schedule-field-wide{grid-column:1/-1}
       [data-prompt-schedules] label{display:grid;align-content:start;gap:7px;min-width:0;font-size:12px;font-weight:600}
+      [data-prompt-schedules] label.prompt-schedule-check{display:flex;align-items:center;gap:8px;justify-content:flex-start}
+      [data-prompt-schedules] label.prompt-schedule-check input{width:auto;min-height:0;padding:0;margin:0;flex:none}
+      [data-prompt-schedules] label.prompt-schedule-check[hidden]{display:none}
       [data-prompt-schedules] input,[data-prompt-schedules] textarea,[data-prompt-schedules] select{font:inherit;font-size:14px;font-weight:400;color:inherit;background:var(--surface,#fff);border:1px solid var(--border,#dfe3e8);border-radius:8px;padding:10px 12px;box-sizing:border-box;width:100%;min-width:0;min-height:42px}
       [data-prompt-schedules] textarea{min-height:112px;resize:vertical;line-height:1.6}
       [data-prompt-schedules] form>p{margin:0}
@@ -187,6 +190,7 @@ export const mountPromptSchedulesPanel = (options: {
       const facts = doc.createElement('dl'); facts.className = 'prompt-schedule-facts';
       const fact = (label: string, value: string) => { const item = doc.createElement('div'); item.append(node('dt', label), node('dd', value)); facts.append(item); };
       if (row.next_run_at !== null) fact('Next run', format(row.next_run_at, row.time_zone));
+      if (row.notify_on_done === true) fact('When done', 'Notifies you');
       const outcome = row.last_outcome;
       const lastStatus = outcome?.status ?? (row.last_status === 'completed' ? 'finished' : row.last_status);
       if (lastStatus) fact('Last run', `${outcomeLabels[lastStatus]}${row.last_run_at === null ? '' : ` · ${format(row.last_run_at, row.time_zone)}`}`);
@@ -336,6 +340,18 @@ export const mountPromptSchedulesPanel = (options: {
     const cron = doc.createElement('input'); cron.value = row?.cron_expression ?? '0 9 * * *'; field('Custom schedule (cron)', cron);
     const cronHelp = node('p', 'Use five cron fields, with at least five minutes between occurrences.'); form.append(cronHelp);
     const timezone = doc.createElement('input'); timezone.value = row?.time_zone ?? zone; field('Recurring timezone', timezone);
+    // D-338 slice 2 — offered once the server says it can notify: a schedule it sent names the
+    // field, or the timing preview says so. A server before it refuses the field in a save.
+    let notifyNamed = typeof row?.notify_on_done === 'boolean' || rows.some(saved => typeof saved.notify_on_done === 'boolean');
+    const notifyLabel = doc.createElement('label'); notifyLabel.className = 'prompt-schedule-check prompt-schedule-field-wide';
+    notifyLabel.dataset.promptScheduleNotify = '';
+    const notify = doc.createElement('input'); notify.type = 'checkbox'; notify.checked = row?.notify_on_done === true;
+    notifyLabel.append(notify, node('span', 'Notify me when it’s done'));
+    const notifyHelp = node('p', 'Sends its answer to your notification channels, such as Telegram or email, each time a run finishes.');
+    notifyHelp.className = 'prompt-schedule-note';
+    form.append(notifyLabel, notifyHelp);
+    const showNotify = () => { notifyLabel.hidden = !notifyNamed; notifyHelp.hidden = !notifyNamed; };
+    showNotify();
     const showTiming = () => {
       const recurring = mode.value === 'recurring';
       time.parentElement!.hidden = recurring; frequency.parentElement!.hidden = !recurring;
@@ -361,7 +377,11 @@ export const mountPromptSchedulesPanel = (options: {
     const previewHost = doc.createElement('section'); form.append(previewHost);
     const preview = mountPromptSchedulePreview({ host: previewHost, readTiming, paused: row?.enabled === false,
       ...(row?.mode === 'one_shot' && !row.enabled ? { inactiveOneOffAt: row.run_at! } : {}),
-      calculate: timing => call('chat.schedule.preview', timing) }); editorPreview = preview;
+      calculate: async timing => {
+        const result = await call('chat.schedule.preview', timing);
+        if (result.notify_on_done_available === true && !notifyNamed) { notifyNamed = true; showNotify(); }
+        return result;
+      } }); editorPreview = preview;
     for (const field of [mode, time, frequency, clock, weekday, cron, timezone]) {
       field.addEventListener('input', () => preview.refresh()); field.addEventListener('change', () => preview.refresh());
     }
@@ -377,7 +397,7 @@ export const mountPromptSchedulesPanel = (options: {
     form.addEventListener('submit', (event) => {
       event.preventDefault(); if (busy || disposed || scope !== scopeVersion) return;
       let input: PromptScheduleInput;
-      try { input = { title: title.value, prompt: prompt.value, ...readTiming() }; }
+      try { input = { title: title.value, prompt: prompt.value, ...readTiming(), ...(notifyNamed ? { notify_on_done: notify.checked } : {}) }; }
       catch (failure) { feedback.textContent = humanizeRpcError(failure); return; }
       busy = true; save.disabled = true; cancel.disabled = true; feedback.textContent = '';
       form.setAttribute('aria-busy', 'true'); save.innerHTML = renderActionLabel(saveIcon, row ? 'Saving changes…' : 'Creating schedule…');

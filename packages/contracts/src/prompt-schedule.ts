@@ -33,6 +33,13 @@ export interface PromptSchedule {
   pending_work?: PromptScheduleRunOutcome | null;
   /** Absent on servers without Run now. Availability is checked again at admission. */
   run_now_available?: boolean;
+  /** D-338 slice 2 — a finished run sends its answer to the owner's notification channels. A
+   *  server since D-338 always names it; one before names nothing, and refuses it in a save. */
+  notify_on_done?: boolean;
+  /** D-338 slice 3 — the feature that owns this schedule. A managed schedule is left out of every
+   *  list and refuses edits from the scheduled-prompt screens and chat's schedule tools; its owner
+   *  (the Agenda card) keeps it in step. */
+  managed_by?: 'agenda';
   /** Stable server identity used only to scope a client's unanswered run requests. */
   run_request_scope?: string;
   /** A current clock-driven admission failure. Cleared by a successful admission or timing/control change. */
@@ -50,6 +57,8 @@ export interface PromptScheduleTiming {
 export interface PromptScheduleInput extends PromptScheduleTiming {
   title: string;
   prompt: string;
+  /** D-338 slice 2 — send only to a server whose schedules name it (a preview says so too). */
+  notify_on_done?: boolean;
 }
 
 /** Read-only times calculated with the server clock and the save-time rules. */
@@ -62,6 +71,8 @@ export interface PromptSchedulePreview {
   window_ends_at?: number;
   /** A one-off instant that has already passed; no upcoming run is implied. */
   past_run_at?: number;
+  /** D-338 slice 2 — this server can notify when a run is done. Absent on servers before it. */
+  notify_on_done_available?: true;
 }
 
 export interface PromptScheduleUpdate {
@@ -72,6 +83,8 @@ export interface PromptScheduleUpdate {
   time_zone?: string;
   run_at?: string;
   cron_expression?: string;
+  /** D-338 slice 2 — only to a server whose schedules name it. */
+  notify_on_done?: boolean;
 }
 
 export interface PromptScheduleTarget {

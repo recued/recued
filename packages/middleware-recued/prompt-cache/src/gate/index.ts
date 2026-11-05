@@ -174,6 +174,13 @@ export interface GateDeps {
   readonly matchTemplate: TemplateMatcher;
   readonly probeData: DataPresenceProbe;
   readonly renderTemplate: TemplateRenderer;
+  /** D-338 — which store a matched template's family reads (`ShortCircuitFamily.source`),
+   *  so the host can say where an answer given without a model came from. Absent ⇒ none. */
+  readonly sourceOf?: (template_hash: string) => string | undefined;
+  /** D-338 — told once a turn short-circuits, with the matched template and its family's source.
+   *  The adapter supplies it per turn to record the answer in turn state; `runGate` itself still
+   *  never writes state, and a throw here never changes the answer. */
+  readonly onShortCircuit?: (record: { readonly template_hash: string; readonly source?: string }) => void;
   /** Optional local-index seam for names typography alone cannot certify
    *  (lowercase, single-token, initialed/compound, or Latin inside CJK prose).
    *  Absent, throwing, malformed, or over-cap results simply disable recovery;
@@ -258,6 +265,9 @@ export interface ShortCircuitFamily {
   readonly probe: DataPresenceProbe;
   readonly templateHashes: ReadonlySet<string>;
   readonly overrideTemplates?: readonly RenderTemplate[];
+  /** D-338 — the store this family answers from, named by the host (contacts, calendar,
+   *  mail). Reported with a short-circuit; the gate never reads it. */
+  readonly source?: string;
 }
 
 /** Compose N families into the `{ matchTemplate, probeData }` half of
@@ -277,7 +287,7 @@ export interface ShortCircuitFamily {
  *  must never allow — fail closed. */
 export const composeShortCircuitFamilies = (
   families: readonly ShortCircuitFamily[],
-): Pick<GateDeps, 'matchTemplate' | 'probeData'> => {
+): Pick<GateDeps, 'matchTemplate' | 'probeData' | 'sourceOf'> => {
   const canonicalOverrides = families.map(
     (family) =>
       new Map((family.overrideTemplates ?? []).map((t) => [t.template_hash, t])),
@@ -306,7 +316,10 @@ export const composeShortCircuitFamilies = (
     }
     return null;
   };
-  return { matchTemplate, probeData };
+  // D-338 — routed the way the probe is: by the MATCHED template's hash.
+  const sourceOf = (template_hash: string): string | undefined =>
+    families.find((family) => family.templateHashes.has(template_hash))?.source;
+  return { matchTemplate, probeData, sourceOf };
 };
 
 // ── Outcome discriminator ──────────────────────────────────────────
@@ -504,5 +517,11 @@ export const runGate = async (
     });
   }
   ctx.resolve(text);
+  try {
+    const source = deps.sourceOf?.(template.template_hash);
+    deps.onShortCircuit?.({ template_hash: template.template_hash, ...(source !== undefined ? { source } : {}) });
+  } catch {
+    // Reporting what answered never changes the answer.
+  }
   return { kind: 'short-circuit', text };
 };

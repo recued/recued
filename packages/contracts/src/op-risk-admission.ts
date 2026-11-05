@@ -154,6 +154,8 @@ export const BROWSER_ACTION_INGREDIENT_SLUGS: ReadonlySet<string> = new Set([
   // Slice C — opening a page asks for its address as the owner, and an
   // address can carry data out.
   'dom-open',
+  // Slice J — a sequence of typing, clicks and sends, asked once for all of them.
+  'dom-act',
 ]);
 
 export const isBrowserActionSlug = (slug: string): boolean =>

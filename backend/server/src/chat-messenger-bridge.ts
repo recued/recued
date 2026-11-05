@@ -8,6 +8,7 @@ import { RpcError, type ChatDeliverySnapshot, type ChatDeliveryListRequest, type
 import type { OutboundAttachment, OutboundMessage, TransportSendResult } from '@recued/transport';
 import { MessengerAttachmentError, parseMessengerAttachmentPlan, type MessengerAttachmentSource } from './chat-messenger-attachments.js';
 import { readChatDeliveries } from './chat-delivery-read.js';
+import { ensureChatNoticeTables, noticeQuoteText } from './chat-notices.js';
 import type { ChatBroadcastEmitter } from './chat-orchestrator.js';
 import { createChatTurnQueueStore } from './storage/chat-turn-queue-store.js';
 import { decodeChatContentFromStorage, encodeChatContentForStorage, type ChatKeyProvider, type ChatStore } from './storage/chat-store.js';
@@ -106,6 +107,7 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
           ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1;
       END;
   `);
+  ensureChatNoticeTables(db);
   // Additive migration: existing receipts remain text parts. Pending legacy
   // plans acquire their attachments once; completed historical sends stay put.
   for (const [table, column, definition] of [
@@ -157,9 +159,15 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
       JOIN chat_messenger_bindings b ON b.binding_id = d.binding_id WHERE d.session_id = ? AND d.message_id = ?
       AND c.state = 'sent' AND c.vendor_message_id IS NOT NULL ORDER BY c.chunk_index LIMIT 1`).get(session, id) as { message_id: string; thread_id: string | null } | undefined;
     if (sent) return sent;
-    return db.prepare(`SELECT r.message_id, r.thread_id FROM chat_native_receipts r JOIN chat_messages m
+    const native = db.prepare(`SELECT r.message_id, r.thread_id FROM chat_native_receipts r JOIN chat_messages m
       ON m.session_id = r.session_id AND m.turn_id = r.turn_id AND m.role = 'user'
       WHERE m.session_id = ? AND m.message_id = ? LIMIT 1`).get(session, id) as { message_id: string; thread_id: string | null } | undefined;
+    if (native) return native;
+    // D-338 — a notice went out through the notification channels, so its id is
+    // its own receipt. On Slack its thread is itself.
+    const notice = db.prepare(`SELECT n.vendor_message_id AS message_id, n.vendor FROM chat_notice_receipts n
+      WHERE n.session_id = ? AND n.message_id = ? LIMIT 1`).get(session, id) as { message_id: string; vendor: string } | undefined;
+    return notice ? { message_id: notice.message_id, thread_id: notice.vendor === 'slack' ? notice.message_id : null } : undefined;
   };
   const compile = async (job: Delivery, bound: Binding, adapter: MessengerDeliveryAdapter): Promise<void> => {
     if (job.attachments_compiled) return;
@@ -539,7 +547,13 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
         JOIN chat_messenger_bindings b ON b.binding_id = d.binding_id WHERE d.session_id = ? AND b.vendor = ?
         AND c.vendor_message_id = ? AND c.state = 'sent' LIMIT 1`).get(session, vendor, id) as { message_id: string } | undefined;
       const row = target ? await readMessage(session, target.message_id) : undefined;
-      return row ? { message_id: row.id, role: row.role, text: row.content } : undefined;
+      if (row) return { message_id: row.id, role: row.role, text: row.content };
+      // D-338 — quoting a notice is the one way it reaches the model: the reply
+      // carries what the owner saw (its title and text).
+      const notice = db.prepare(`SELECT message_id FROM chat_notice_receipts
+        WHERE session_id = ? AND vendor = ? AND vendor_message_id = ? LIMIT 1`).get(session, vendor, id) as { message_id: string } | undefined;
+      const noticed = notice ? await readMessage(session, notice.message_id) : undefined;
+      return noticed?.role === 'notice' ? { message_id: noticed.id, role: noticed.role, text: noticeQuoteText(noticed) } : undefined;
     },
     kick: pump,
     close() { closed = true; clearInterval(timer); },

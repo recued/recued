@@ -31,6 +31,7 @@ import {
   HUBSPOT_DEFAULT_RECONCILIATION_CADENCE,
   PLATFORM_REFERENCE_BATCH_SIZE,
   composePlatformRecordTargetId,
+  isContactAnnualDate,
   type ConnectionRecord,
   type EnrichmentMeta,
   type MailingAddress,
@@ -158,6 +159,7 @@ export const computeContactHash = (raw: RawHubSpotRecord): string => {
   // reconciliation would skip refreshing `meta.phone`.
   const phone = canonicalizePhone(raw.properties.phone, 'US') ?? '';
   const address = projectHubSpotMailingAddress(raw);
+  const birthday = contactBirthdayOf(raw.properties.date_of_birth);
   const fields = [
     canonicalizeEmail(raw.properties.email) ?? '',
     raw.properties.lifecyclestage ?? '',
@@ -166,6 +168,9 @@ export const computeContactHash = (raw: RawHubSpotRecord): string => {
     phone,
     address ? mailingAddressHashKey(address) : '',
     nullIfEmpty(raw.properties.company) ?? '',
+    // D-338 §10 — only when present, so a record without a birthday keeps its hash and
+    // the fetch's widening refreshes only the records that have one.
+    ...(birthday !== null ? [birthday] : []),
   ];
   return `fnv1a:${fnv1aHex(fields.join('\x1f'))}`;
 };
@@ -239,7 +244,19 @@ export const projectContactMeta = (
   const company = nullIfEmpty(raw.properties.company);
   if (company !== null) meta.company = company;
 
+  // D-338 §10 — the birthday a contact Recued knows takes (`crm-mirror-leaf`).
+  const birthday = contactBirthdayOf(raw.properties.date_of_birth);
+  if (birthday !== null) meta.birthday = birthday;
+
   return meta;
+};
+
+/** D-338 §10 — HubSpot's "Date of birth" is a TEXT property, so it holds what was typed.
+ *  Kept only as a contact's own forms are (`isContactAnnualDate`): YYYY-MM-DD, or --MM-DD
+ *  without a year. "15/05/1990" could be either order, so it is left out, never guessed. */
+const contactBirthdayOf = (value: unknown): string | null => {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return isContactAnnualDate(text) ? text : null;
 };
 
 /** Project HubSpot's flat `address` / `city` / `state` / `zip` /

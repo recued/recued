@@ -318,6 +318,19 @@ describe('D-164 P6 composeShortCircuitFamilies', () => {
     expect(contactMatch?.template_hash).toBe(CONTACT_ATTRIBUTE_TEMPLATES.email.template_hash);
   });
 
+  it('D-338 — names the store a matched template\'s family reads, by the same hash the probe routes by', () => {
+    const { sourceOf } = composeShortCircuitFamilies([
+      { ...contactFamily, source: 'contacts' },
+      { ...calendarFamily, source: 'calendar' },
+    ]);
+    expect(sourceOf?.(CONTACT_ATTRIBUTE_TEMPLATES.email.template_hash)).toBe('contacts');
+    expect(sourceOf?.(CALENDAR_NEXT_MEETING_TEMPLATE.template_hash)).toBe('calendar');
+    expect(sourceOf?.('a hash no family claims')).toBeUndefined();
+    // A family the host did not name has no source.
+    expect(composeShortCircuitFamilies([contactFamily]).sourceOf?.(CONTACT_ATTRIBUTE_TEMPLATES.email.template_hash))
+      .toBeUndefined();
+  });
+
   it('probe routes a matched template to its owning family by hash', async () => {
     const { probeData } = composeShortCircuitFamilies([contactFamily, calendarFamily]);
     const calSnap = await probeData({

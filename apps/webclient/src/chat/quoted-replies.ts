@@ -1,9 +1,11 @@
 import type { ChatMessage, ChatMessageReply } from '@recued/contracts';
+import { quoteLabel } from './message-labels.js';
 
 export interface ChatReplyDraft {
   sessionId: string;
   messageId: string;
-  preview?: { role: 'user' | 'assistant'; text: string };
+  /** D-338 — a notice previews as `notice`, with its title. */
+  preview?: { role: 'user' | 'assistant' | 'notice'; text: string; title?: string };
 }
 
 export const replyDraftForMessage = (message: ChatMessage): ChatReplyDraft => {
@@ -11,8 +13,9 @@ export const replyDraftForMessage = (message: ChatMessage): ChatReplyDraft => {
     || (message.attachments?.length ? 'Attachment' : 'Recued cannot show this message');
   const chars = Array.from(text);
   return { sessionId: message.session_id, messageId: message.id, preview: {
-    role: message.role === 'user' ? 'user' : 'assistant',
+    role: message.role === 'user' ? 'user' : message.role === 'notice' ? 'notice' : 'assistant',
     text: chars.slice(0, 240).join('') + (chars.length > 240 ? '…' : ''),
+    ...(message.role === 'notice' && message.notice?.title ? { title: message.notice.title } : {}),
   } };
 };
 
@@ -31,7 +34,7 @@ export const buildChatQuote = (
     root.setAttribute('data-chat-reply-control', `quote:${id}`);
     root.setAttribute('aria-label', `See the message being replied to: ${reply.preview.text}`);
     const label = doc.createElement('strong');
-    label.textContent = `${draft ? 'Replying to ' : ''}${reply.preview.role === 'user' ? 'You' : 'Recued'}`;
+    label.textContent = quoteLabel(reply.preview, draft);
     const text = doc.createElement('span'); text.textContent = reply.preview.text;
     root.appendChild(label); root.appendChild(text);
     root.addEventListener('click', () => open(id));

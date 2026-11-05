@@ -62,6 +62,16 @@ import {
   type PrefetchDeps,
 } from './prefetch/index.js';
 
+/** D-338 — the turn-state key a short-circuit is recorded under, for the host. */
+export const GATE_SHORT_CIRCUIT_STATE_KEY = 'prompt-cache:short-circuit';
+
+/** D-338 — what a short-circuited turn records: the template that answered, and the store its
+ *  family reads when the host named it. */
+export interface GateShortCircuitRecord {
+  readonly template_hash: string;
+  readonly source?: string;
+}
+
 export {
   DEFAULT_GATE_DEPS,
   runGate,
@@ -196,8 +206,13 @@ export const createPromptCacheMiddleware = (
     } catch {
       surfaceAuthorized = false;
     }
+    // D-338 — the adapter, not the gate (which never writes state), records what answered, so the
+    // host can mark the reply "without AI" and say which store it came from.
+    const record = (answered: GateShortCircuitRecord): void => {
+      ctx.state.set(GATE_SHORT_CIRCUIT_STATE_KEY, answered);
+    };
     const shortCircuited =
-      surfaceAuthorized && (await runGate(ctx, deps)).kind === 'short-circuit';
+      surfaceAuthorized && (await runGate(ctx, { ...deps, onShortCircuit: record })).kind === 'short-circuit';
     // Prefetch only matters when the gate didn't short-circuit (a
     // short-circuited turn makes no AI call, so injected context is moot).
     // Zero-harm + behavior-preserving with the default no-op search.

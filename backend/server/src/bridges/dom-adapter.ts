@@ -62,7 +62,21 @@ import { captureProviderHandoffFence } from '../execution/provider-handoff.js';
 import { currentRunAbortContext } from '../execution/run-abort-context.js';
 
 import {
+  BRIDGE_CLICK_LOAD_MAX_MS,
+  BRIDGE_CLICK_OUTPUT_KEYS,
   BRIDGE_COMMAND_MAX_TIMEOUT_MS,
+  BRIDGE_FILL_OUTPUT_KEYS,
+  BRIDGE_PICK_OUTPUT_KEYS,
+  BRIDGE_SUBMIT_OUTPUT_KEYS,
+  BROWSER_ACT_CHECK_SECONDS,
+  BROWSER_ACT_PICK_SECONDS,
+  browserActStepCheckSeconds,
+  browserActStepMayMove,
+  browserActStepSubmits,
+  browserActStepWatchSeconds,
+  browserActWaitsForElement,
+  parseBrowserActSteps,
+  stripCorePrefix,
   BRIDGE_DESCRIBE_OUTPUT_KEYS,
   BRIDGE_INSPECT_OUTPUT_KEYS,
   BRIDGE_OPEN_OUTPUT_KEYS,
@@ -74,9 +88,13 @@ import {
   BRIDGE_WAIT_DEFAULT_MS,
   BRIDGE_WAIT_MAX_MS,
   BRIDGE_WAIT_OUTPUT_KEYS,
+  browserPassSiteOf,
+  isBridgeTargetGone,
   isPatternWithinGrantedOrigins,
   type ApprovalValueLabels,
   type HeldBrowserTarget,
+  type HeldBrowserStep,
+  type BrowserActFailure,
   type BridgeAction,
   type BridgeIngredientRef,
   type BridgeResult,
@@ -145,6 +163,8 @@ const CORE_DOM_WRITE_SLUG = 'dom-write';
  *  (`buildArgsForEntry` reads `input[<marker after "dom.">]`). Underscore-fenced
  *  so it never collides with a real recipe field. */
 const CORE_DOM_VALUE_FIELD = '__core_dom_value';
+/** D-335 slice N — the suggestion a `core.dom.write` picks, in its call's input. */
+const CORE_DOM_PICK_FIELD = '__core_dom_pick';
 
 /** D-335 — `core.dom.inspect` is one `inspect` command, and `core.dom.click`
  *  one `click`, built from their args. */
@@ -160,6 +180,12 @@ const CORE_DOM_OPEN_SLUG = 'dom-open';
 const CORE_DOM_WAIT_SLUG = 'dom-wait';
 const CORE_DOM_TABLE_SLUG = 'dom-table';
 const CORE_DOM_SCREENSHOT_SLUG = 'dom-screenshot';
+/** D-335 slice J — a sequence of steps on one page, approved once (`runBrowserActSteps`). */
+const CORE_DOM_ACT_SLUG = 'dom-act';
+
+/** D-335 slices L and N — how long a `pick` command may take: its wait for the suggestion, then the
+ *  click and the page it may load. */
+const PICK_COMMAND_TIMEOUT_MS = Math.min(BRIDGE_COMMAND_MAX_TIMEOUT_MS, BROWSER_ACT_PICK_SECONDS * 1000 + 20_000);
 
 /** The ops whose one command's answer is the step's whole output. */
 const WHOLE_ANSWER_SLUGS: ReadonlySet<string> = new Set([CORE_DOM_INSPECT_SLUG, CORE_DOM_TABS_SLUG, CORE_DOM_OPEN_SLUG,
@@ -349,6 +375,23 @@ const buildCoreDomCall = (
   // the write is bound to one. The fill marker is `dom.<CORE_DOM_VALUE_FIELD>`,
   // so `buildArgsForEntry` pulls the value from the synthetic input below.
   const value = reqDomArg(input, 'value', slug);
+  // D-335 slice N — then the field's suggestion with this text: the Bridge's `pick`, by page only.
+  const pick = typeof input.pick === 'string' && input.pick.trim() !== '' ? input.pick : undefined;
+  if (pick !== undefined) {
+    if (!bound) {
+      throw new IngredientError('DOM_SELECTOR_MISSING',
+        `core.dom op '${slug}' picks a suggestion only on a page named by its handle: give 'page' with the 'ref'`, { slug });
+    }
+    if (typeof input.submit_selector === 'string' && input.submit_selector !== '') {
+      throw new IngredientError('DOM_WRITE_FAILED',
+        `core.dom op '${slug}' cannot pick a suggestion and press Enter on another element in one call`, { slug });
+    }
+    return {
+      domain_allowlist: [target],
+      entries: [{ selector: label, marker: `${DOM_WRITE_PREFIX}${CORE_DOM_VALUE_FIELD}`, index: 1, action: 'pick', element }],
+      input: { [CORE_DOM_VALUE_FIELD]: value, [CORE_DOM_PICK_FIELD]: pick, __core_dom_target: target, __core_dom_element: element },
+    };
+  }
   const entries: DomEntry[] = [
     { selector: label, marker: `${DOM_WRITE_PREFIX}${CORE_DOM_VALUE_FIELD}`, index: 1,
       ...(bound ? { element } : {}) },
@@ -399,6 +442,8 @@ interface PerEntryOutcome {
 export const describeBridgeDomCall = (
   manifest: IngredientManifest, resolved: Pick<ResolvedCall, 'slug' | 'input' | 'output'>,
 ) => {
+  // D-335 slice J — a sequence has no commands to describe before it runs.
+  if (resolved.slug === CORE_DOM_ACT_SLUG) throw sequenceNotReviewable();
   // core.dom.{read,write}: arg-driven — synthesize the allowlist + entries from
   // the op args (no manifest selector map). Otherwise derive them from the DOM
   // ingredient's manifest `output` map as before. `callInput` is what
@@ -440,7 +485,9 @@ export const describeBridgeDomCall = (
   return { ingredient, callInput, entries: entries.map(entry => {
     const action = classifyEntryAction(entry);
     return { entry, action, args: buildArgsForEntry(entry, action, callInput, resolved.slug),
-      expects_output_keys: expectsKeysForAction(action) } as {
+      expects_output_keys: expectsKeysForAction(action),
+      // D-335 slice N — a pick waits for its suggestion inside its command.
+      ...(action === 'pick' ? { timeout_ms: PICK_COMMAND_TIMEOUT_MS } : {}) } as {
       entry: DomEntry; action: BridgeAction; args: Record<string, unknown>; expects_output_keys: string[]; timeout_ms?: number };
   }) };
 };
@@ -475,7 +522,15 @@ export const createBridgeDomAdapter = (
       );
     }
 
+    // D-335 slice J — a sequence decides its commands as it goes.
+    if (resolved.slug === CORE_DOM_ACT_SLUG) {
+      return runBrowserActSteps({ resolved, dispatcher, manifest, assertHandoff,
+        ...(options.defaultTimeoutMs !== undefined ? { defaultTimeoutMs: options.defaultTimeoutMs } : {}) });
+    }
     const { ingredient, callInput, entries } = describeBridgeDomCall(manifest, resolved);
+    // D-335 slice N — which suggestion a pick clicks is known only once they show: a run reviewed
+    // before it starts cannot hold it, as it cannot hold a sequence.
+    if (currentPreapprovalIo() && entries.some(({ action }) => action === 'pick')) throw pickNotReviewable();
     const recipe_run_id = buildRecipeRunId(resolved);
     const step_id = resolved.stepMeta?.step_id ?? resolved.slug;
 
@@ -519,6 +574,266 @@ export const createBridgeDomAdapter = (
   };
 };
 
+/** D-335 slice N — why a write that picks a suggestion cannot run in a reviewed run (D-261). */
+export const PICK_NOT_REVIEWABLE_MESSAGE =
+  'A write that picks a suggestion cannot be reviewed before it runs: which one it clicks is known only once they show.';
+const pickNotReviewable = (): IngredientError => new IngredientError('ROLE_RESTRICTION', PICK_NOT_REVIEWABLE_MESSAGE,
+  { slug: CORE_DOM_WRITE_SLUG });
+
+/** D-335 slice J — why a sequence cannot run in a reviewed run (D-261), which prepares every
+ *  command it will send before it starts: a sequence decides each once the last has answered. */
+const sequenceNotReviewable = (): IngredientError => new IngredientError('ROLE_RESTRICTION',
+  'core.dom.act cannot run in a reviewed run: its steps are sent one at a time, as each is reached',
+  { slug: CORE_DOM_ACT_SLUG });
+
+/** D-335 slice J (2026-11-04) — a `core.dom.act`: its steps, in order, each through the Bridge's
+ *  own action (`fill`, `click`, `submit`, `wait_for_element`) with its own idempotency cell, so a
+ *  retried run replays what was done rather than doing it again. After each step Recued checks:
+ *  a typed value must be in its field (the Bridge confirms it), a page that then shows a CAPTCHA
+ *  nobody has solved stops the sequence, and a sent form must move the page on unless the step's
+ *  `success_when` says what to look for instead. The first step that fails, or whose check does
+ *  not hold, ends it with an error saying how far it got and where the tab is: DOM_CHECK_FAILED
+ *  for a check, the step's own code for a step. A sequence that runs through answers
+ *  `{ done, of, steps, page, url, title }`.
+ *
+ *  Slice K — failure as it happens. A click or a send asks the Bridge to watch, alongside the
+ *  page moving, for the step's `fail_when` and for an error message the step led to
+ *  (`page-problems.ts`), and a wait for what `success_when` says shows races both. What decides,
+ *  in order: a CAPTCHA; the step's `fail_when`; the step's `success_when`, when it holds; an error
+ *  message, quoted; then whether the step did what its checks say. A click on a form's send button
+ *  counts as sending it (`sent`), so it is checked as a sent form is.
+ *
+ *  ⚠ A step after one that loaded a new page cannot use a ref: refs belong to the page the model
+ *  inspected. It is refused before it is sent, naming the step that moved the page; a step by
+ *  selector goes on, on the new page. */
+const runBrowserActSteps = async ({ resolved, dispatcher, manifest, assertHandoff, defaultTimeoutMs }: {
+  resolved: ResolvedCall;
+  dispatcher: BridgeDispatcher;
+  manifest: IngredientManifest;
+  assertHandoff: () => void;
+  defaultTimeoutMs?: number;
+}): Promise<Record<string, unknown>> => {
+  const slug = CORE_DOM_ACT_SLUG;
+  const target = reqDomArg(resolved.input, 'target', slug);
+  let page = reqDomArg(resolved.input, 'page', slug);
+  const parsed = parseBrowserActSteps(resolved.input.steps);
+  if (!parsed.ok) throw new IngredientError('DOM_SELECTOR_MISSING', `core.dom.act: ${parsed.error}`, { slug });
+  if (currentPreapprovalIo()) throw sequenceNotReviewable();
+  const steps = parsed.steps;
+  const ingredient = buildIngredientRef(manifest, [target]);
+  const recipe_run_id = buildRecipeRunId(resolved);
+  const step_id = resolved.stepMeta?.step_id ?? slug;
+  let url: string | undefined;
+  let title: string | undefined;
+  /** The step that loaded a new page, after which a ref names nothing. */
+  let movedAt: number | undefined;
+  /** A page that started loading and was never answered: still loading at the end of the
+   *  Bridge's wait, or on a site the owner listed. Nothing more can be done on it. */
+  let unanswered = false;
+  /** Slice K — whether the page's messages were noted before a click or a send on this same
+   *  page, so a later wait can tell an error message the steps led to from one already there. */
+  let noted = false;
+  const done: string[] = [];
+  const trimmed = (message: string) => message.trim().replace(/\.$/, '');
+
+  const signal = currentRunAbortContext()?.signal;
+  const send = async (n: number, phase: number, action: BridgeAction, args: Record<string, unknown>,
+    label: string, timeout_ms?: number): Promise<Record<string, unknown>> => {
+    // A run stopped between two steps sends nothing more.
+    signal?.throwIfAborted();
+    assertHandoff();
+    const entry: DomEntry = { selector: label, marker: action, index: n * 10 + phase, action };
+    const request: DispatchRequest = {
+      recipe_run_id,
+      step_id,
+      ingredient,
+      action,
+      args,
+      expects_output_keys: expectsKeysForAction(action),
+      idempotency_key: buildIdempotencyKey({ recipe_run_id, step_id, slug, entry,
+        input: { __core_dom_target: target, ...args } }),
+      ...(timeout_ms !== undefined ? { timeout_ms } : defaultTimeoutMs !== undefined ? { timeout_ms: defaultTimeoutMs } : {}),
+    };
+    const outputs = translateDispatchOutcome(await dispatcher.dispatch(request), slug, entry) ?? {};
+    if (typeof outputs.page === 'string') page = outputs.page;
+    if (typeof outputs.url === 'string') url = outputs.url;
+    if (typeof outputs.title === 'string') title = outputs.title;
+    return outputs;
+  };
+  const stop = (n: number, reason: string, code: IngredientError['code'] = 'DOM_CHECK_FAILED'): never => {
+    const sofar = done.length === 0 ? 'Nothing was done.'
+      : `Done: ${done.map((line, i) => `${i + 1}. ${line}`).join('; ')}.`;
+    const where = unanswered ? 'The tab was loading a new page.'
+      : title !== undefined && url !== undefined ? `The tab shows “${title}” (${url}), page ${page}.`
+        : `The tab's page is ${page}.`;
+    throw new IngredientError(code, `Stopped at step ${n} of ${steps.length}: ${reason}. ${sofar} ${where}`,
+      { slug, step: n, done: done.length, page });
+  };
+  /** A step's own failure, as the sequence reports it. */
+  const failed = (n: number, error: unknown): never => {
+    if (error instanceof IngredientError) return stop(n, trimmed(error.message), error.code);
+    throw error;
+  };
+  /** Slice K — the step's `fail_when` on the page, as the Bridge watches for it. */
+  const failOnPage = (fail: BrowserActFailure | undefined): { selector: string; text?: string } | undefined =>
+    fail === undefined || (fail.shows === undefined && fail.text === undefined) ? undefined
+      : { selector: fail.shows ?? 'body', ...(fail.text !== undefined ? { text: fail.text } : {}) };
+  /** What the step's `fail_when` saw, in the stop's words. */
+  const failSaw = (fail: BrowserActFailure, problem: unknown): string => {
+    const saw = fail.shows !== undefined
+      ? `“${fail.shows}”${fail.text !== undefined ? ` holding “${fail.text}”` : ''} shows`
+      : `the text “${fail.text!}” shows`;
+    return `the step's fail_when holds: ${saw}${typeof problem === 'string' ? `, and the page says “${problem}”` : ''}`;
+  };
+  const problemSaid = (problem: string) => `the page shows an error message: “${problem}”`;
+  const checkFailUrl = (n: number, fail: BrowserActFailure | undefined) => {
+    if (fail?.url_includes !== undefined && url !== undefined && url.includes(fail.url_includes)) {
+      stop(n, `the step's fail_when holds: the address is ${url}, which contains “${fail.url_includes}”`);
+    }
+  };
+  /** Waits in the page until `selector` shows (or goes), holding `text` when given; with `fail`, as
+   *  long as that does not show first, and with `problems`, as long as no error message does. */
+  const waitFor = async (n: number, phase: number, check: { selector: string; until: 'shown' | 'gone'; text?: string },
+    seconds: number, fail: { selector: string; text?: string } | undefined, problems: boolean,
+  ): Promise<Record<string, unknown>> => send(n, phase, 'wait_for_element',
+    { page, selector: check.selector, until: check.until, ...(check.text !== undefined ? { text: check.text } : {}),
+      timeout_ms: seconds * 1000, ...(fail !== undefined ? { fail } : {}), ...(problems ? { problems: true } : {}) },
+    check.selector, Math.min(BRIDGE_COMMAND_MAX_TIMEOUT_MS, seconds * 1000 + 10_000)).catch((error: unknown) => failed(n, error));
+  const waitedFor = (check: { selector: string; until: 'shown' | 'gone'; text?: string }, seconds: number) =>
+    `within ${seconds} seconds “${check.selector}”${check.text !== undefined ? ` holding “${check.text}”` : ''} `
+      + `did not ${check.until === 'gone' ? 'go' : 'show'}`;
+
+  for (const [index, step] of steps.entries()) {
+    const n = index + 1;
+    if (step.do === 'wait') {
+      if (step.selector === undefined) {
+        // A pause a stopped run cuts short.
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) return reject(signal.reason);
+          const stopped = () => { clearTimeout(timer); reject(signal!.reason); };
+          const timer = setTimeout(() => { signal?.removeEventListener('abort', stopped); resolve(); }, step.seconds! * 1000);
+          signal?.addEventListener('abort', stopped, { once: true });
+        });
+        done.push(`waited ${step.seconds} s`);
+        continue;
+      }
+      const seconds = browserActStepCheckSeconds(step);
+      const check = { selector: step.selector, until: step.until ?? 'shown' as const,
+        ...(step.text !== undefined ? { text: step.text } : {}) };
+      const out = await waitFor(n, 0, check, seconds, failOnPage(step.fail_when), noted);
+      if (out.failed === true) stop(n, failSaw(step.fail_when!, out.problem));
+      checkFailUrl(n, step.fail_when);
+      if (out.found !== true) stop(n, typeof out.problem === 'string' ? problemSaid(out.problem) : waitedFor(check, seconds));
+      done.push(`waited for “${step.selector}” to ${check.until === 'gone' ? 'go' : 'show'}`);
+      continue;
+    }
+
+    const what = step.ref ?? `“${step.selector!}”`;
+    if (step.ref !== undefined && movedAt !== undefined) {
+      stop(n, `it names ${step.ref}, a ref from the page before step ${movedAt} loaded a new one: inspect the page it `
+        + 'loaded to name its elements', 'DOM_SELECTOR_NOT_FOUND');
+    }
+    const sends = browserActStepSubmits(step);
+    // Slice L — typing that picks one of the field's suggestions: the Bridge types, waits for it,
+    // clicks it and checks the field took it, as one action; a send the step asks for comes after.
+    const picks = step.do === 'type' && step.pick !== undefined;
+    const action: BridgeAction = picks ? 'pick' : sends ? 'submit' : step.do === 'click' ? 'click' : 'fill';
+    const success = step.success_when;
+    const fail = action === 'fill' || action === 'pick' ? undefined : failOnPage(step.fail_when);
+    // How long a click or a sent form watches for the page to move on, when its checks need it;
+    // and (slice K) a click with no success_when watches as a send does if it turns out to send.
+    const watch = browserActStepWatchSeconds(step);
+    const sendWatch = action === 'click' && success === undefined ? browserActStepCheckSeconds(step) : undefined;
+    const before = page;
+    const element = step.ref !== undefined ? { ref: step.ref } : { selector: step.selector! };
+    let out = await send(n, 0, action, {
+      page,
+      ...element,
+      ...(step.do === 'type' ? { value: step.value } : {}),
+      ...(picks ? { pick: step.pick, pick_ms: BROWSER_ACT_PICK_SECONDS * 1000 }
+        : { ...(watch !== undefined ? { watch_ms: watch * 1000 } : {}),
+          ...(sendWatch !== undefined ? { send_watch_ms: sendWatch * 1000 } : {}),
+          ...(fail !== undefined ? { fail } : {}) }),
+    }, step.ref ?? step.selector!, picks ? PICK_COMMAND_TIMEOUT_MS : undefined).catch((error: unknown) => failed(n, error));
+    const picked = picks ? `picked “${typeof out.picked === 'string' ? out.picked : step.pick!}”` : '';
+    // A pick whose suggestion loaded a new page has gone where the form would have: nothing is sent.
+    const pickMoved = picks && (out.moved === true || page !== before);
+    if (picks && sends && !pickMoved) {
+      const sendFail = failOnPage(step.fail_when);
+      const after = await send(n, 2, 'submit', { page, ...element,
+        ...(watch !== undefined ? { watch_ms: watch * 1000 } : {}),
+        ...(sendFail !== undefined ? { fail: sendFail } : {}) }, step.ref ?? step.selector!)
+        .catch((error: unknown) => failed(n, error));
+      out = { ...out, ...after };
+    }
+    const sent = (sends && !pickMoved) || out.sent === true;
+    done.push(step.do === 'type'
+      ? `typed into ${what}${picks ? (sends && !pickMoved ? `, ${picked} and sent its form` : ` and ${picked}`
+        + (sends ? ', which loaded a new page, so its form was not sent' : '')) : sends ? ' and sent its form' : ''}`
+      : step.do === 'click' ? `clicked ${what}${out.sent === true ? ', which sent its form' : ''}`
+        : `sent the form ${what} is in`);
+    if (page !== before) movedAt = n;
+    const moved = out.moved === true || page !== before;
+    if (out.moved === true && typeof out.page !== 'string') {
+      unanswered = true;
+      movedAt = n;
+    }
+    // Messages noted before this click or send are this page's while it stays. A pick notes none;
+    // the send after it does.
+    if (action === 'pick') noted = sent && page === before && !unanswered;
+    else if (action !== 'fill') noted = page === before && !unanswered;
+
+    // What decides: a CAPTCHA, the step's fail_when, its success_when when it holds, an error
+    // message, then whether the step did what its checks say.
+    if (typeof out.challenge === 'string') {
+      stop(n, `the page now shows a ${out.challenge} CAPTCHA that nobody has solved: the owner can solve it in `
+        + 'their browser, then ask again');
+    }
+    if (out.failed === true) stop(n, failSaw(step.fail_when!, out.problem));
+    checkFailUrl(n, step.fail_when);
+    const pageOk = success?.page_changes === undefined || success.page_changes === moved;
+    const urlOk = success?.url_includes === undefined || (url ?? '').includes(success.url_includes);
+    const succeeded = success !== undefined && !browserActWaitsForElement(success) && pageOk && urlOk;
+    if (typeof out.problem === 'string' && !succeeded) stop(n, problemSaid(out.problem));
+    if (success === undefined && sent && !moved) {
+      stop(n, `${out.sent === true ? 'the click sent its form' : 'the form was sent'}, but within `
+        + `${watch ?? sendWatch ?? BROWSER_ACT_CHECK_SECONDS} seconds the page did not move on: it may be showing an `
+        + 'error, so inspect it. For a form that answers where it is, give the step a success_when, such as '
+        + '{ "shows": "…" }');
+    }
+    if (!pageOk) {
+      stop(n, success!.page_changes ? `within ${watch ?? BROWSER_ACT_CHECK_SECONDS} seconds the page did not move on, and `
+        + 'the step expected it to' : 'the page moved on, and the step expected it to stay');
+    }
+    if (unanswered) {
+      // The page it loaded cannot be read: fine at the end, and nothing after it can be done.
+      const reads = success !== undefined && (success.url_includes !== undefined || browserActWaitsForElement(success));
+      if (n < steps.length || reads) {
+        stop(n, `the page started loading and was not ready within ${BRIDGE_CLICK_LOAD_MAX_MS / 1000} seconds, so `
+          + `${reads ? 'its check' : 'the next step'} could not be done: list the tabs for its page handle, then inspect it`);
+      }
+      continue;
+    }
+    if (!urlOk) stop(n, `the address is ${url ?? 'unknown'}, which does not contain “${success!.url_includes}”`);
+    if (!browserActWaitsForElement(success)) continue;
+    // The step's own check, racing its failure and (after a click or a send) an error message.
+    const seconds = browserActStepCheckSeconds(step);
+    const check = success!.shows === undefined && success!.gone === undefined
+      ? { selector: 'body', until: 'shown' as const, text: success!.text! }
+      : { selector: success!.gone ?? success!.shows!, until: success!.gone !== undefined ? 'gone' as const : 'shown' as const,
+        ...(success!.text !== undefined ? { text: success!.text } : {}) };
+    const checked = await waitFor(n, 1, check, seconds, failOnPage(step.fail_when), action !== 'fill' && noted);
+    if (checked.failed === true) stop(n, failSaw(step.fail_when!, checked.problem));
+    if (checked.found !== true) {
+      stop(n, typeof checked.problem === 'string' ? problemSaid(checked.problem)
+        : check.selector === 'body' ? `within ${seconds} seconds the text “${check.text!}” did not show` : waitedFor(check, seconds));
+    }
+  }
+  // A page still loading at the end has no handle yet: the model lists the tabs for it.
+  return { done: done.length, of: steps.length, steps: done, ...(unanswered ? {} : { page,
+    ...(url !== undefined ? { url } : {}), ...(title !== undefined ? { title } : {}) }) };
+};
+
 /** The host a URL or a match pattern names: `*://mail.google.com/*` →
  *  `mail.google.com`. Empty for a pattern on every host (the Browser
  *  Toolkit's), which names no site. */
@@ -548,6 +863,7 @@ export const describeHeldBrowserTarget = async (options: {
   timeoutMs?: number;
 }): Promise<HeldBrowserTarget | undefined> => {
   const { slug, input } = options;
+  if (slug === CORE_DOM_ACT_SLUG) return describeHeldBrowserSteps(options);
   if ((slug !== CORE_DOM_WRITE_SLUG && slug !== CORE_DOM_CLICK_SLUG)
     || input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
   const manifest = options.manifests.get(slug);
@@ -563,8 +879,8 @@ export const describeHeldBrowserTarget = async (options: {
   if (first === undefined) return undefined;
   const site = siteOf(target);
   if (!options.dispatcher) return { site, unread: 'no Browser Bridge is connected' };
-  // The element the write names, without the text it would type.
-  const { value: _value, ...element } = first.args;
+  // The element the write names, without the text it would type or the suggestion it would pick.
+  const { value: _value, pick: _pick, pick_ms: _pickMs, ...element } = first.args;
   const timeoutMs = options.timeoutMs ?? HELD_BROWSER_DESCRIBE_TIMEOUT_MS;
   const request: DispatchRequest = {
     recipe_run_id: options.run_id,
@@ -601,9 +917,105 @@ export const describeHeldBrowserTarget = async (options: {
   const out = outcome.result.outputs;
   if (outcome.result.status !== 'ok' || !out || typeof out.url !== 'string' || typeof out.title !== 'string'
     || typeof out.role !== 'string' || typeof out.label !== 'string' || typeof out.protected !== 'boolean') {
-    return { site, unread: outcome.result.error?.message ?? 'the Browser Bridge could not read it' };
+    // 2026-11-04 — a page or an element the Bridge says will never read again: no answer to
+    // the ask could make the write work, so it fails instead (`BrowserTargetHooks`).
+    const gone = outcome.result.status === 'error' && isBridgeTargetGone(outcome.result.error);
+    return { site, unread: outcome.result.error?.message ?? 'the Browser Bridge could not read it',
+      ...(gone ? { gone: true as const } : {}) };
   }
-  return { site: siteOf(out.url), title: out.title, role: out.role, label: out.label, protected: out.protected };
+  // Slice F — the page's origin too, which a pass on this site names.
+  const origin = browserPassSiteOf(out.url);
+  return {
+    site: siteOf(out.url), title: out.title, role: out.role, label: out.label, protected: out.protected,
+    ...(origin !== undefined ? { origin } : {}),
+  };
+};
+
+/** D-335 slice J — what a held sequence acts on: each element it names, read live as a held click
+ *  or typing is (`describeHeldBrowserTarget`), in order, a wait naming none. The target is the
+ *  page, from the first element read; the first element the Bridge found gone makes the whole
+ *  read `gone`, naming the step, so the sequence fails rather than being asked.
+ *
+ *  ⛔ Only the page as it is now can be read. After a click or a sent form, which may load a new
+ *  page, a step named by selector acts on whatever that page has, so it is not read here: read on
+ *  this page, the ask could name another element than the one it acts on, and show the password
+ *  a sign-in's second page takes as text typed into the first page's box. A step by ref is read:
+ *  a ref names an element of this page, and the run refuses one once the page has moved. */
+const describeHeldBrowserSteps = async (options: {
+  dispatcher: BridgeDispatcher | undefined;
+  manifests: DomBridgeManifestSource;
+  input: unknown;
+  run_id: string;
+  step_id: string;
+  timeoutMs?: number;
+}): Promise<HeldBrowserTarget | undefined> => {
+  const input = options.input;
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const call = input as Record<string, unknown>;
+  const parsed = parseBrowserActSteps(call.steps);
+  if (!parsed.ok || typeof call.target !== 'string' || typeof call.page !== 'string') return undefined;
+  // What each step's element is, in order: read on this page, or not before the page it is on.
+  let mayMove: number | undefined;
+  const planned = parsed.steps.map((step, index): HeldBrowserStep | { read: Record<string, string> } => {
+    if (step.do === 'wait') return { wait: true };
+    // The first step that may load a new page.
+    if (browserActStepMayMove(step)) mayMove ??= index + 1;
+    if (step.selector !== undefined && mayMove !== undefined && mayMove <= index) {
+      return { unread: `it is on the page as step ${mayMove} leaves it, which cannot be read before then` };
+    }
+    return { read: step.ref !== undefined ? { ref: step.ref } : { selector: step.selector! } };
+  });
+  // All read at once, as a held click by ref or selector is: a Bridge that does not answer costs
+  // one wait, not one a step.
+  const reads = await Promise.all(planned.map((plan, index) => ('read' in plan
+    ? describeHeldBrowserTarget({ ...options, slug: CORE_DOM_CLICK_SLUG,
+      input: { target: call.target, page: call.page, ...plan.read }, step_id: `${options.step_id}:${index + 1}` })
+    : plan)));
+  const steps: HeldBrowserStep[] = [];
+  let page: Exclude<HeldBrowserTarget, { unread: string }> | undefined;
+  let unread: string | undefined;
+  for (const [index, read] of reads.entries()) {
+    if (read === undefined) return undefined;
+    if ('wait' in read || !('site' in read)) {
+      steps.push(read);
+      continue;
+    }
+    if ('unread' in read) {
+      if (read.gone === true) return { site: read.site, unread: `Step ${index + 1}: ${read.unread}`, gone: true };
+      unread ??= read.unread;
+      steps.push({ unread: read.unread });
+      continue;
+    }
+    page ??= read;
+    steps.push({ role: read.role, label: read.label, protected: read.protected });
+  }
+  if (page !== undefined) return { ...page, steps };
+  return { site: siteOf(call.target), unread: unread ?? 'nothing on the page was read', steps };
+};
+
+/** 2026-11-04 — the error a held browser write fails with, instead of being asked, when its
+ *  hold's read found its page or its element gone for good (`gone`). It is the one the write
+ *  would fail with once approved (`translateDispatchOutcome`), so the model reads the same
+ *  words either way. Undefined for any other read, which leaves the ask.
+ *
+ *  Slice J — and a sequence whose steps cannot run (`parseBrowserActSteps`), with the error the
+ *  run would fail with: its ask could list no steps, and an approval could only end there. */
+export const heldBrowserTargetRefusal = (
+  slug: string,
+  target: HeldBrowserTarget | undefined,
+  input?: unknown,
+): IngredientError | undefined => {
+  if (stripCorePrefix(slug) === CORE_DOM_ACT_SLUG) {
+    const steps = input !== null && typeof input === 'object' ? (input as Record<string, unknown>).steps : undefined;
+    const parsed = parseBrowserActSteps(steps);
+    if (!parsed.ok) {
+      return new IngredientError('DOM_SELECTOR_MISSING', `core.dom.act: ${parsed.error}`, { slug, refused_before_asking: true });
+    }
+  }
+  return target !== undefined && 'unread' in target && target.gone === true
+    ? new IngredientError(mapBridgeErrorCode('selector_not_found'), target.unread,
+      { slug, bridge_error_code: 'selector_not_found', refused_before_asking: true })
+    : undefined;
 };
 
 /** D-335 slice B — how a held browser call's arguments read on the approval's
@@ -699,9 +1111,17 @@ const expectsKeysForAction = (action: BridgeAction): string[] => {
     case 'read_dom':
       return ['text'];
     case 'fill':
-      return ['filled'];
+      // Slice J — and a CAPTCHA the page then shows that nobody has solved.
+      return [...BRIDGE_FILL_OUTPUT_KEYS];
+    case 'submit':
+      return [...BRIDGE_SUBMIT_OUTPUT_KEYS];
+    case 'pick':
+      // Slice L — the option it clicked, and the page as a click answers it.
+      return [...BRIDGE_PICK_OUTPUT_KEYS];
     case 'click':
-      return ['clicked'];
+      // 2026-11-04 — and the page its tab shows once the click settles; an older Bridge answers
+      // `clicked` alone, which these allow.
+      return [...BRIDGE_CLICK_OUTPUT_KEYS];
     case 'wait_for_selector':
       return ['present'];
     case 'extract_table':
@@ -743,6 +1163,11 @@ const buildArgsForEntry = (
   input: Record<string, unknown>,
   slug: string,
 ): Record<string, unknown> => {
+  // D-335 slice N — the text, and the suggestion to pick once it shows.
+  if (action === 'pick') {
+    return { ...entry.element, value: String(input[CORE_DOM_VALUE_FIELD]), pick: String(input[CORE_DOM_PICK_FIELD]),
+      pick_ms: BROWSER_ACT_PICK_SECONDS * 1000 };
+  }
   if (action === 'fill') {
     const field = entry.marker.slice(DOM_WRITE_PREFIX.length);
     const raw = field.length > 0 ? input[field] : undefined;
@@ -1076,6 +1501,17 @@ const assembleStepOutput = (
   // D-335 — an inspect, a tab list or an opened page is one command, and its
   // answer is the step's output.
   if (outcomes.length === 1 && WHOLE_ANSWER_ACTIONS.has(outcomes[0]!.action)) return outcomes[0]!.outputs ?? {};
+  // D-335 slice N — a write that picked a suggestion: what it typed and picked, and the page its tab
+  // shows, as a click answers it (a suggestion can be a link).
+  if (outcomes.length === 1 && outcomes[0]!.action === 'pick') {
+    const out = outcomes[0]!.outputs ?? {};
+    const field = outcomes[0]!.entry.marker.slice(DOM_WRITE_PREFIX.length);
+    return { written: out.filled === true ? 1 : 0, fields: out.filled === true ? [field] : [], failed: out.filled === true ? [] : [field],
+      ...(typeof out.picked === 'string' ? { picked: out.picked } : {}),
+      ...(typeof out.page === 'string' ? { page: out.page } : {}), ...(typeof out.url === 'string' ? { url: out.url } : {}),
+      ...(typeof out.title === 'string' ? { title: out.title } : {}),
+      ...(typeof out.challenge === 'string' ? { challenge: out.challenge } : {}) };
+  }
   const reads: Record<string, string | null> = {};
   let readsCount = 0;
   const writtenFields: string[] = [];
@@ -1109,6 +1545,11 @@ const assembleStepOutput = (
       continue;
     }
   }
+  // D-335 slice J — a CAPTCHA the page shows after a write or a click, which nobody has solved;
+  // slice K — and an error message a click led to.
+  const challenge = outcomes.map((o) => o.outputs?.challenge).find((value) => typeof value === 'string');
+  const problem = outcomes.map((o) => o.outputs?.problem).find((value) => typeof value === 'string');
+  const challenged = { ...(typeof challenge === 'string' ? { challenge } : {}), ...(typeof problem === 'string' ? { problem } : {}) };
 
   // Match executeDOM's return-shape branching exactly so recipes that
   // referenced legacy step outputs don't need to re-author.
@@ -1120,8 +1561,16 @@ const assembleStepOutput = (
     : null;
 
   if (hasReads && !hasWrites && !hasClicks) return reads;
-  if (!hasReads && hasWrites && !hasClicks) return writeResult;
-  if (!hasReads && !hasWrites && hasClicks) return { clicked: clickCount };
+  if (!hasReads && hasWrites && !hasClicks) return { ...writeResult, ...challenged };
+  if (!hasReads && !hasWrites && hasClicks) {
+    // 2026-11-04 — one click by page handle answers the page its tab then shows, as opening a
+    // page does: a new handle when the click loaded a page.
+    const landed = outcomes.length === 1 ? outcomes[0]!.outputs : undefined;
+    return landed !== undefined && typeof landed.page === 'string' && typeof landed.url === 'string'
+      && typeof landed.title === 'string'
+      ? { clicked: clickCount, page: landed.page, url: landed.url, title: landed.title, ...challenged }
+      : { clicked: clickCount, ...challenged };
+  }
 
   return {
     ...(hasReads ? { reads } : {}),

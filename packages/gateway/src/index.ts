@@ -49,6 +49,12 @@ export {
   // a quality delegation is standing).
   type QualityDelegationGateCall,
   type QualityGateHooks,
+  // D-335 slice F — passes for Browser Toolkit writes (who × recipe × site): the host
+  // reads the page's site and finds a live pass; the Gateway asks in its ask-branch.
+  type BrowserPassHooks,
+  // 2026-11-04 — a held browser write whose page or element has gone fails instead of
+  // being asked: the host reads the element, the Gateway asks it just before raising.
+  type BrowserTargetHooks,
 } from './commit-gateway.js';
 export { deriveCommitKind } from './commit-kind.js';
 

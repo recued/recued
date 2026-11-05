@@ -1,6 +1,7 @@
 import type { AssetEvidence, AssetStatus, Sphere } from './assets.js';
 import type { Commitment } from './work-entities.js';
 import { ASSET_FACT_CONTEXT_REQUEST_SCHEMA, type AssetFactContext, type AssetFactContextRequest } from './asset-fact-context.js';
+import { calendarDayMs, dueSpan } from './due-day.js';
 
 export const SITUATION_CONTEXT_MAX_BYTES = 6000;
 /** At most this many items in one `situation.query` result. The tool returns every match up to
@@ -103,8 +104,16 @@ export interface SituationFact {
 export interface SituationItem {
   ref: SituationRef;
   kind: string;
+  /** The owner's notifications name it only as "a reminder in Yours": an occasion with people
+   * in it, a sensitive asset, or an item that cites one (the Agenda's rule). Set only on the
+   * copy a model reads, beside its title. */
+  private?: true;
   what: SituationDimension<string>;
   when: SituationDimension<SituationWindow>;
+  /** When it happens, written for a model on the turn's clock (`2026-10-20 09:00–10:00
+   * (UTC-07:00)`, `2026-10-20, all day`). Set only on the copy a model reads, from the
+   * chat's tool or its lookup, and only when the turn names a zone. */
+  when_text?: string;
   when_day?: string;
   where: SituationDimension<SituationPlace>;
   who: SituationDimension<string[]>;
@@ -144,13 +153,21 @@ export interface SituationResult {
 }
 
 /** The public tool and recipe input. Surface, owner, spheres and recall opt-in
- * are supplied by the host and cannot be requested through this shape. */
+ * are supplied by the host and cannot be requested through this shape. Parsed, its `time`
+ * is instants: a day the caller named is resolved to its whole span (`parseSituationQueryInput`). */
 export type SituationQueryInput = Omit<SituationQuery, 'surface' | 'include_last_time'>;
+/** D-338 — a whole day, `YYYY-MM-DD`, read on the owner's clock.
+ *  ⛔ Not under `from` / `to`: the chat's argument check reads a field named `from` or `to` as an
+ *  identifier the model must have read (`tool-argument-grounding.ts`, for mail's addresses), and
+ *  tomorrow's date is in no packet. `first_day` / `last_day` also say that both ends count. */
+const SITUATION_DAY_SCHEMA = { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' } as const;
 export const SITUATION_QUERY_SCHEMA = {
   type: 'object', additionalProperties: false, oneOf: [{ required: ['time'], not: { required: ['context'] } }, { required: ['context'], maxProperties: 1 }],
   properties: {
     context: ASSET_FACT_CONTEXT_REQUEST_SCHEMA,
-    time: { anyOf: [{ type: 'integer' }, { type: 'object', additionalProperties: false,
+    time: { anyOf: [SITUATION_DAY_SCHEMA, { type: 'object', additionalProperties: false,
+      required: ['first_day', 'last_day'], properties: { first_day: SITUATION_DAY_SCHEMA, last_day: SITUATION_DAY_SCHEMA } },
+    { type: 'integer' }, { type: 'object', additionalProperties: false,
       required: ['from', 'to'], properties: { from: { type: 'integer' }, to: { type: 'integer' } } }] },
     place: { type: 'object', additionalProperties: false, required: ['key', 'name'],
       properties: { key: { type: 'string', maxLength: 500 }, name: { type: 'string', maxLength: 500 } } },
@@ -165,15 +182,35 @@ export const SITUATION_QUERY_SCHEMA = {
   },
 } as const;
 
-export const parseSituationQueryInput = (raw: unknown): SituationQueryInput => {
+/** `timeZone` is the clock a day is read on: the turn's in chat, else the server's. Without one
+ *  a day is a UTC day, as a date-only due is (`dueSpan`). */
+export const parseSituationQueryInput = (raw: unknown, timeZone?: string): SituationQueryInput => {
   const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
-  const refuse = (): never => { throw new Error('Invalid situation query; use time, place, people, subjects, text, changed_since and positive whole-number limits only'); };
+  const refuse = (): never => { throw new Error('Invalid situation query; give time as a day "YYYY-MM-DD", days {"first_day","last_day"} or Unix ms, and use place, people, subjects, text, changed_since and positive whole-number limits only'); };
   const string = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
   const instant = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && Math.abs(value) <= 8.64e15;
   if (!object(raw) || Object.keys(raw).some(key => key === 'context' || !Object.hasOwn(SITUATION_QUERY_SCHEMA.properties, key))) return refuse();
+  // A day spans its midnight on that clock to the instant before the next one, so a span of
+  // days ends where the Agenda's does (`agendaLines`).
+  const day = (value: unknown): { start: number; end: number } | undefined => {
+    const ms = typeof value === 'string' ? calendarDayMs(value) : null;
+    if (ms === null) return undefined;
+    const span = dueSpan(ms, timeZone);
+    return { start: span.start, end: span.end - 1 };
+  };
   const time = raw.time;
-  if (!instant(time) && !(object(time) && Object.keys(time).every(key => key === 'from' || key === 'to')
-    && instant(time.from) && instant(time.to) && time.from <= time.to)) return refuse();
+  const keys = (value: Record<string, unknown>, ...names: string[]): boolean =>
+    Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name));
+  let window: SituationQueryInput['time'];
+  if (instant(time)) window = time;
+  else if (typeof time === 'string') { const one = day(time); if (!one) return refuse(); window = { from: one.start, to: one.end }; }
+  else if (object(time) && keys(time, 'first_day', 'last_day')) {
+    const first = day(time.first_day), last = day(time.last_day);
+    if (!first || !last || first.start > last.end) return refuse();
+    window = { from: first.start, to: last.end };
+  } else if (object(time) && keys(time, 'from', 'to') && instant(time.from) && instant(time.to) && time.from <= time.to) {
+    window = { from: time.from, to: time.to };
+  } else return refuse();
   if (raw.place !== undefined && !(object(raw.place) && Object.keys(raw.place).every(key => key === 'key' || key === 'name')
     && string(raw.place.key, 500) && string(raw.place.name, 500))) return refuse();
   if (raw.people !== undefined && !(Array.isArray(raw.people) && raw.people.length <= 20 && raw.people.every(value => string(value, 500)))) return refuse();
@@ -185,7 +222,7 @@ export const parseSituationQueryInput = (raw: unknown): SituationQueryInput => {
   for (const key of ['limit_clusters', 'limit_items'] as const) {
     if (raw[key] !== undefined && !(Number.isSafeInteger(raw[key]) && (raw[key] as number) >= 1)) return refuse();
   }
-  return structuredClone(raw) as unknown as SituationQueryInput;
+  return { ...(structuredClone(raw) as unknown as SituationQueryInput), time: window };
 };
 export type SituationState = 'new' | 'proposed' | 'accepted' | 'dismissed' | 'resolved';
 export type SituationDismissal = 'not_now' | 'not_this_one' | 'never_this_kind' | 'wrong';
@@ -236,11 +273,19 @@ export interface SituationAgendaSettings {
   frequency?: 'daily' | 'weekly';
   /** ISO weekday a weekly agenda goes on, Monday=1. */
   weekday?: number;
+  /** D-338 slice 3 — after the agenda goes out, Recued's AI looks it over and sends suggestions,
+   *  as a scheduled prompt the Agenda keeps in step. A server before it names none and drops it
+   *  from a save, so a client offers it only to a server that named it. */
+  suggestions?: boolean;
 }
 export interface SituationAgendaStatus {
   settings: SituationAgendaSettings;
-  last_run: { at: number; mode: string; state: string; text: string; delivered_to: string[] } | null;
-  last_sent: { at: number; mode: string; text: string; delivered_to: string[] } | null;
+  /** D-338 §11 — `mentions`: the names the text links in the app, each with the record it opens
+   *  (a birthday's name opens the contact). A server before it sends none. */
+  last_run: { at: number; mode: string; state: string; text: string; delivered_to: string[];
+    mentions?: Array<{ text: string; ref: { collection: string; id: string } }> } | null;
+  last_sent: { at: number; mode: string; text: string; delivered_to: string[];
+    mentions?: Array<{ text: string; ref: { collection: string; id: string } }> } | null;
   pending: number;
   uncertain: number;
   /** When the next agenda goes, quiet hours included, and the server's zone to say it in.
@@ -248,6 +293,8 @@ export interface SituationAgendaStatus {
    *  later that week, so this can name a day that is not its weekday. */
   next_at?: number;
   time_zone?: string;
+  /** D-338 slice 3 — the conversation the AI suggestions run in, once they have one. */
+  suggestions_session_id?: string;
 }
 export interface SituationDeliveryStatus {
   settings: SituationDeliverySettings;

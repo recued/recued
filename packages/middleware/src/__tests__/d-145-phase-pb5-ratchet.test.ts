@@ -3,7 +3,7 @@
  *  Pins:
  *    - FIXED_SLOT_INVARIANT_VIOLATION_KINDS = exactly 2 entries
  *    - MULTI_TURN_EVENT_KINDS = exactly 3 entries (recued.multi_turn.* prefix)
- *    - MULTI_TURN_TERMINATION_REASONS = exactly 5 entries
+ *    - MULTI_TURN_TERMINATION_REASONS = exactly 6 entries
  *    - AI_COOPERATIVE_VALIDATOR_ISSUE_KINDS = exactly 4 entries
  *    - enforceFixedSlots invariant: drops alternatives that drift from
  *      `fixed_slots` exactly + emits one violation per dropped slot
@@ -44,13 +44,14 @@ describe('D-145 PB5 — closed-list ratchets', () => {
     }
   });
 
-  it('MULTI_TURN_TERMINATION_REASONS pinned at 5 entries', () => {
+  it('MULTI_TURN_TERMINATION_REASONS pinned at 6 entries', () => {
     // ⚠ SECOND ratchet over this one list — the contracts package pins it too.
     // Widening the list reds BOTH, and updating only one leaves a live pin
     // asserting the old size. `output_unreadable` was added deliberately: a
     // turn whose last packet could not be parsed used to report `completed`.
     // `context_trim_livelock` also distinguishes a context-limit stop.
-    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(5);
+    // `waiting_for_approval` (D-337): the rest of the turn waits for the owner.
+    expect(MULTI_TURN_TERMINATION_REASONS.length).toBe(6);
     expect(new Set(MULTI_TURN_TERMINATION_REASONS)).toEqual(
       new Set([
         'completed',
@@ -58,6 +59,7 @@ describe('D-145 PB5 — closed-list ratchets', () => {
         'context_trim_livelock',
         'max_rounds_exhausted',
         'aborted',
+        'waiting_for_approval',
       ]),
     );
   });

@@ -87,7 +87,29 @@ export type BridgeAction =
    *  § A.3.4): `<all_urls>` is an optional grant the owner asks for with "Allow
    *  screenshots" in the side panel, never in the manifest's host permissions.
    *  Without it the Bridge refuses before any tab moves, naming the switch. */
-  | 'screenshot_page';
+  | 'screenshot_page'
+  /** D-335 slice J (2026-11-04) — sends the form an element is in, as pressing
+   *  Enter in it would: its default button is clicked, else the form is
+   *  submitted with its own handlers and checks. With `args.value`, types it into
+   *  the element first, in the same script, so a page that rebuilds its form
+   *  once the field has focus (Wikipedia's search does) is sent before it can.
+   *  Named like a write by ref: `args.page` with `args.ref`, or `args.selector`.
+   *  `{ submitted, filled?, page, url, title, moved, challenge? }`, the page as
+   *  the tab shows it once it settles, as a click answers; `args.watch_ms` is
+   *  how long to watch for the page to move on, as for a click.
+   *  `apps/bridge/src/actions/page-fields.ts`. */
+  | 'submit'
+  /** D-335 slice L (2026-11-04) — types `args.value` into a field that suggests as you type, then
+   *  picks the suggestion whose text is `args.pick`: it waits up to `args.pick_ms` for the field's
+   *  own list (the one its `aria-controls` or `aria-owns` names, else one that showed just below it
+   *  since the typing), types again a key at a time when none shows within a second (a picker
+   *  that reads keys rather than the value), clicks the option that matches as a person would, and
+   *  checks the field took it (a hidden value of its form changed, or the field or its chips show
+   *  it). None or several matching answer the suggestions instead, and nothing is clicked. Named
+   *  like a write by ref. `{ filled, picked, page, url, title, moved, challenge? }`: the option's
+   *  text, and the page as a click answers it, since a suggestion can be a link.
+   *  `apps/bridge/src/actions/page-pick.ts`. */
+  | 'pick';
 
 export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'read_dom',
@@ -104,6 +126,8 @@ export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'wait_for_element',
   'read_table',
   'screenshot_page',
+  'submit',
+  'pick',
 ] as const;
 
 /** The actions every Bridge has run since D-148. A Bridge whose capability
@@ -155,13 +179,72 @@ export const BRIDGE_TABS_OUTPUT_KEYS = ['tabs', 'truncated'] as const;
 export const BRIDGE_TABS_MAX = 50;
 /** The keys of an `open_tab` answer. */
 export const BRIDGE_OPEN_OUTPUT_KEYS = ['page', 'url', 'title'] as const;
+/** The keys of a `click` answer. Since 2026-11-04 a click by page handle also answers the page the
+ *  tab shows once the click has settled, as `open_tab` does: a new handle when the click loaded a
+ *  new page, so the model need not list the tabs to find it. A Bridge adds them only when the
+ *  server lists them here, and a server takes `clicked` alone from an older Bridge. Slice J adds
+ *  `moved`, whether a page started loading or the address changed, and `challenge`: the CAPTCHA
+ *  that page shows and nobody has solved, named by its maker; and `args.watch_ms`, how long to
+ *  watch for the page to start moving, up to {@link BRIDGE_WATCH_MAX_MS}.
+ *
+ *  Slice K adds `problem`: the text of an error message the click led to, one the page did not
+ *  show before it (or, on a page it loaded, one a form's answer shows). `failed`: `args.fail`
+ *  (`{ selector, text? }`, the step's `fail_when` on the page) showed while the Bridge watched.
+ *  And `sent`: the element was a form's send button, so the click sent the form; with
+ *  `args.send_watch_ms` the Bridge then watches that long for the page to move on, as for a
+ *  sent form. A watch ends as soon as a CAPTCHA, a problem or the failure shows. */
+export const BRIDGE_CLICK_OUTPUT_KEYS = ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed',
+  'sent'] as const;
+/** D-335 slice J — the keys of a `fill` answer: `filled`, and `challenge` when the page shows a
+ *  CAPTCHA nobody has solved once the text is in (a sign-in form with one cannot be sent). */
+export const BRIDGE_FILL_OUTPUT_KEYS = ['filled', 'challenge'] as const;
+/** D-335 slice J — the keys of a `submit` answer: `submitted` (and `filled` when it typed first),
+ *  and the page the tab shows once it settles, as a click answers (slice K: with `problem` and
+ *  `failed`). */
+export const BRIDGE_SUBMIT_OUTPUT_KEYS = ['submitted', 'filled', 'page', 'url', 'title', 'moved', 'challenge', 'problem',
+  'failed'] as const;
+/** D-335 slice L — the keys of a `pick` answer: `filled`, `picked` (the text of the option it
+ *  clicked), and the page the tab shows once the click settles, as a click answers it. */
+export const BRIDGE_PICK_OUTPUT_KEYS = ['filled', 'picked', 'page', 'url', 'title', 'moved', 'challenge'] as const;
+/** D-335 slice L — the longest a `pick` waits for its suggestion (`args.pick_ms`). */
+export const BRIDGE_PICK_MAX_MS = 10_000;
+/** How long a click by page handle watches its tab for a page to start loading, and the longest
+ *  it then waits for that page to finish. A click that loads nothing costs the first. */
+export const BRIDGE_CLICK_SETTLE_MS = 800;
+export const BRIDGE_CLICK_LOAD_MAX_MS = 10_000;
+/** D-335 slice J — the longest a click or a sent form watches for its page to start moving, when
+ *  the command asks for longer than {@link BRIDGE_CLICK_SETTLE_MS} (`args.watch_ms`): a sign-in
+ *  form that checks the password with the site before it loads the next page moves on only once
+ *  the site has answered. A Bridge asked for a CAPTCHA (`challenge`) stops watching as soon as one
+ *  shows, and one that predates the argument watches for the usual time. */
+export const BRIDGE_WATCH_MAX_MS = 10_000;
+
+/** D-335 — the Bridge's answer (`selector_not_found`) for a ref whose element has gone from a
+ *  page still open. */
+export const BRIDGE_PAGE_CHANGED_MESSAGE = 'The page changed since it was inspected: inspect it again.';
+/** D-335 — the Bridge's answer (`selector_not_found`) for a page handle whose document Chrome no
+ *  longer has: it navigated, reloaded or closed. Inspecting the same handle again can only fail
+ *  again, so the AI is sent to the tabs for the page's current one (slice D). */
+export const BRIDGE_PAGE_GONE_MESSAGE = 'The page has reloaded, gone to another address or closed since it was read: '
+  + 'list the tabs for its current page handle, then inspect it.';
+
+/** 2026-11-04 — whether a Bridge error says a page handle or a ref will never read again. Neither
+ *  comes back, so a held write whose element reads as one fails then instead of being asked (an
+ *  approval could only end in the same error). Matched on the message, which a 0.0.6 Bridge
+ *  already sends; a selector that matches nothing is not one, since its element may yet appear. */
+export const isBridgeTargetGone = (error: { readonly code?: string; readonly message?: string } | undefined): boolean =>
+  error?.code === 'selector_not_found'
+  && (error.message === BRIDGE_PAGE_CHANGED_MESSAGE || error.message === BRIDGE_PAGE_GONE_MESSAGE);
 
 /** D-335 slice H — how long `wait_for_element` waits when no time is given,
  *  and the longest it waits. The command's own budget stays above it. */
 export const BRIDGE_WAIT_DEFAULT_MS = 10_000;
 export const BRIDGE_WAIT_MAX_MS = 30_000;
-/** The keys of a `wait_for_element` answer. */
-export const BRIDGE_WAIT_OUTPUT_KEYS = ['page', 'url', 'title', 'found', 'waited_ms'] as const;
+/** The keys of a `wait_for_element` answer. Slice K: with `args.fail` (`{ selector, text? }`) it
+ *  also watches for that, and ends `found: false, failed: true` as soon as it shows; with
+ *  `args.problems`, for an error message the step before led to (`problem`, its text). A Bridge
+ *  answers them only when asked. */
+export const BRIDGE_WAIT_OUTPUT_KEYS = ['page', 'url', 'title', 'found', 'waited_ms', 'failed', 'problem'] as const;
 /** D-335 slice H — the most rows one `read_table` answers. Its cells share
  *  inspect's budget: at most {@link BRIDGE_INSPECT_MAX_CHARS} characters in all,
  *  and at most {@link BRIDGE_INSPECT_MAX_VALUE_CHARS} in one cell. A table that

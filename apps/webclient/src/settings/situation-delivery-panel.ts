@@ -12,10 +12,10 @@ export interface SituationDeliveryPanelOptions {
 }
 
 // A run's mode and state as the owner reads them; an unknown value is shown as the server wrote it.
-const RUN_MODE: Readonly<Record<string, string>> = { overview: 'Digest', day_of: 'Due-day note', manual: 'Manual check' };
+const RUN_MODE: Readonly<Record<string, string>> = { overview: 'Coming up', day_of: 'Due today', manual: 'Manual check' };
 const RUN_STATE: Readonly<Record<string, string>> = {
   sent: 'Sent', skipped: 'Nothing new to send', pending: 'Waiting to retry', sending: 'Sending',
-  uncertain: 'Delivery not confirmed', superseded: 'Replaced by a newer digest',
+  uncertain: 'Delivery not confirmed', superseded: 'Replaced by a newer one',
 };
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 /** §15.7 amendment (2026-11-02) — how far ahead a digest looks, counted from the day it goes,
@@ -56,12 +56,12 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
     parent.appendChild(element);
     return element;
   };
-  // "Digest" is the setting's own word (`digest.frequency`). The server titles
-  // a digest "Coming up" and a due-day note "Today"; the copy names both, so the
-  // owner can match a message to this setting.
-  node('h3', 'Digest');
-  node('p', 'A summary of the days ahead, sent to your notification channels as “Coming up”. It lists what changed '
-    + 'since the last digest and counts the rest as still open. If nothing changed, nothing is sent.', root, 'sd-lede');
+  // D-338 §9 — the card is named as its message is ("Coming up"), and the due-day note it also
+  // holds as that is ("Due today"), so the owner matches a message to its setting. Its settings
+  // keep their stored names (`digest.frequency`, `situations.delivery`).
+  node('h3', 'Coming up');
+  node('p', 'What changed in the days ahead, sent to your notification channels as “Coming up”. It lists what '
+    + 'changed since the last one and counts the rest as still open. If nothing changed, nothing is sent.', root, 'sd-lede');
   const editor = node('div');
   editor.setAttribute('data-overview-editor', '');
   editor.hidden = true;
@@ -92,17 +92,19 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   const lookAhead = select('look_ahead_days', 'How far ahead', []);
   const lookAheadField = lookAhead.parentElement!;
   lookAheadField.hidden = true;
-  const weeklyHint = node('p', 'A weekly digest looks at least a week ahead, so nothing falls between two.', form, 'sd-hint');
+  const weeklyHint = node('p', 'Weekly looks at least a week ahead, so nothing falls between two.', form, 'sd-hint');
   weeklyHint.setAttribute('data-look-ahead-hint', '');
   weeklyHint.hidden = true;
   const dayLabel = node('label', undefined, form, 'sd-check');
   const dayOf = node('input', undefined, dayLabel);
   dayOf.type = 'checkbox';
   dayOf.name = 'day_of';
-  dayOf.setAttribute('aria-label', 'Also send a note on the day something is due');
-  node('span', 'Also send a note on the day something is due', dayLabel);
-  // Both go at the set time, and due-day notes go whatever the frequency.
-  node('p', 'It goes at the same time, titled “Today”, even when the digest is off.', form, 'sd-hint');
+  dayOf.setAttribute('aria-label', 'Also send “Due today” on the day something is due');
+  node('span', 'Also send “Due today” on the day something is due', dayLabel);
+  // Both go at the set time, and "Due today" goes whatever the frequency, except on a day the
+  // Agenda lists that morning or the evening before (D-338 §9: it would repeat it).
+  node('p', 'It goes at the same time, even with “Coming up” off. It skips a day your Agenda lists that morning '
+    + 'or the evening before.', form, 'sd-hint');
   const timezone = node('p', 'Times use your ', form, 'sd-hint');
   node('a', 'server timezone', timezone).href = '#settings/server/timezone';
   // Send now ignores quiet hours (`tickOnce(manual)`); only the schedule waits,
@@ -110,7 +112,7 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   node('span', '. A time inside quiet hours waits until they end. Reminders for your assets and occasions don’t '
     + 'depend on this: each rule sends its own.', timezone);
   const actions = node('div', undefined, form, 'sd-actions');
-  const saveButton = node('button', 'Save digest settings', actions, 'rx-btn rx-btn-secondary rx-btn-sm');
+  const saveButton = node('button', 'Save “Coming up” settings', actions, 'rx-btn rx-btn-secondary rx-btn-sm');
   saveButton.type = 'submit';
   const sendButton = node('button', 'Send now', actions, 'rx-btn rx-btn-secondary rx-btn-sm');
   sendButton.type = 'button';
@@ -119,7 +121,7 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
   notice.setAttribute('data-situation-delivery-message', '');
   notice.setAttribute('role', 'status');
   notice.setAttribute('tabindex', '-1');
-  const retry = node('button', 'Retry digest settings', root, 'rx-btn rx-btn-secondary rx-btn-sm');
+  const retry = node('button', 'Retry “Coming up” settings', root, 'rx-btn rx-btn-secondary rx-btn-sm');
   retry.type = 'button';
   retry.setAttribute('data-overview-retry', '');
   retry.hidden = true;
@@ -198,8 +200,8 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
     const open = priorDetails?.open ?? false;
     const heldSummary = doc.activeElement === priorDetails?.querySelector('summary');
     const { pending = 0, uncertain = 0, last_run: run, last_sent: sent } = status;
-    results.innerHTML = `${status.next_at !== undefined ? `<p data-situation-next>Next digest: ${e(nextDigestText(status.next_at, status.time_zone))}</p>` : ''}
-      ${pending ? `<p>${count(pending, 'digest is', 'digests are')} waiting to be sent. Recued retries ${pending === 1 ? 'it' : 'them'}.</p>` : ''}
+    results.innerHTML = `${status.next_at !== undefined ? `<p data-situation-next>Next “Coming up”: ${e(nextDigestText(status.next_at, status.time_zone))}</p>` : ''}
+      ${pending ? `<p>${count(pending, 'message is', 'messages are')} waiting to be sent. Recued retries ${pending === 1 ? 'it' : 'them'}.</p>` : ''}
       ${uncertain ? `<p>${count(uncertain, 'delivery', 'deliveries')} could not be confirmed, even after one repeat. Open Today to see what is current.</p>` : ''}
       ${run ? `<p>Last checked ${e(new Date(run.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))} · ${e(RUN_MODE[run.mode] ?? run.mode)} · ${e(RUN_STATE[run.state] ?? run.state)}</p>${sent?.text ? `<details><summary>What it sent</summary><p class="sd-sent">${e(sent.text)}</p></details>` : ''}` : '<p>Nothing has been sent yet.</p>'}`;
     const details = results.querySelector('details');
@@ -230,11 +232,11 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
       unconfirmedSave = false;
       if (wanted && !sameSettings(wanted, next.settings)) {
         paint();
-        throw new Error('The digest settings could not be confirmed. Your edits are still here. Try saving again.');
+        throw new Error('The “Coming up” settings could not be confirmed. Your edits are still here. Try saving again.');
       }
       if (wanted) dirty = false;
       paint();
-      message(kind === 'save' ? 'Digest settings saved.' : 'Checked. A digest is sent only when something changed.');
+      message(kind === 'save' ? '“Coming up” settings saved.' : 'Checked. “Coming up” is sent only when something changed.');
     } catch (error) {
       if (!disposed) {
         message(error instanceof Error ? error.message : String(error), true);
@@ -267,7 +269,7 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
     const hadStatus = status !== undefined;
     const retryOwned = doc.activeElement === retry;
     retry.hidden = true;
-    message(hadStatus ? 'Refreshing digest settings…' : 'Loading digest settings…');
+    message(hadStatus ? 'Refreshing “Coming up” settings…' : 'Loading “Coming up” settings…');
     if (retryOwned) notice.focus({ preventScroll: true });
     try {
       const next = await opts.read();
@@ -275,7 +277,7 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
       status = next;
       unconfirmedSave = false;
       paint();
-      message(hadStatus ? 'Digest settings updated.' : '');
+      message(hadStatus ? '“Coming up” settings updated.' : '');
     } catch (error) {
       if (disposed || ownGeneration !== generation) return;
       // An old server omits this feature. A later read failure retains a draft

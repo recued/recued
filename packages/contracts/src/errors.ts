@@ -165,6 +165,10 @@ export type RecipeErrorCode =
   | 'DOM_SELECTOR_NOT_FOUND'
   | 'DOM_CROSS_ORIGIN'
   | 'DOM_WRITE_FAILED'
+  // D-335 slice J — a step on a page was done, and its check did not hold: the page showed a
+  // CAPTCHA nobody had solved, did not move on after a form was sent, or did not show what the
+  // step expected.
+  | 'DOM_CHECK_FAILED'
   | 'DOM_PAGE_NOT_MATCHING'
   // Cache / Context
   | 'CACHE_MISS'
@@ -591,6 +595,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   DOM_SELECTOR_NOT_FOUND: 'warn',
   DOM_CROSS_ORIGIN: 'fatal',
   DOM_WRITE_FAILED: 'error',
+  DOM_CHECK_FAILED: 'warn',
   DOM_PAGE_NOT_MATCHING: 'warn',
   CACHE_MISS: 'warn',
   CONTEXT_SIZE_EXCEEDED: 'error',
@@ -774,6 +779,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   DOM_SELECTOR_NOT_FOUND: 'The page changed and Recued could not find an expected element. The ingredient author needs an update.',
   DOM_CROSS_ORIGIN: 'Recued cannot read this element from another origin. Open the page directly to use the recipe.',
   DOM_WRITE_FAILED: 'Recued could not write to the page. Refresh and try again, or report the broken selector.',
+  DOM_CHECK_FAILED: 'A step on a web page did not lead where it should: the page showed a CAPTCHA or an error, or did not move on. Look at the page in your browser.',
   DOM_PAGE_NOT_MATCHING: 'This page does not match the recipe’s trigger. Open a matching page first.',
   CACHE_MISS: 'A cached value was missing. Recued fetched it fresh and continued.',
   CONTEXT_SIZE_EXCEEDED: 'A step produced more data than Recued can carry to the next step. Filter the upstream output.',
@@ -977,6 +983,7 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   DOM_SELECTOR_NOT_FOUND: 'choice',
   DOM_CROSS_ORIGIN: 'choice',
   DOM_WRITE_FAILED: 'environment',
+  DOM_CHECK_FAILED: 'environment',
   DOM_PAGE_NOT_MATCHING: 'choice',
   CACHE_MISS: 'environment',
   CONTEXT_SIZE_EXCEEDED: 'choice',

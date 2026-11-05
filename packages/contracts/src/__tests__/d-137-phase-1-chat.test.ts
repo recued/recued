@@ -397,14 +397,17 @@ describe('D-137 P1 — CHAT_PICKER_SELF sentinel (§ A.7)', () => {
 });
 
 describe('D-137 P1 — CHAT_MESSAGE_ROLES closed list (§ Contract Tightening)', () => {
-  it('lists exactly four roles', () => {
+  it('lists exactly five roles', () => {
     expect(CHAT_MESSAGE_ROLES).toEqual([
       'user',
       'assistant',
       'tool',
       'system',
+      // D-338 — what Recued sent the owner on a linked messenger unasked; never in the model's
+      // history, which every reader selects as `user` / `assistant` only.
+      'notice',
     ]);
-    expect(CHAT_MESSAGE_ROLE_SET.size).toBe(4);
+    expect(CHAT_MESSAGE_ROLE_SET.size).toBe(5);
   });
 
   it('isChatMessageRole accepts every role + rejects unknown', () => {

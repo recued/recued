@@ -116,6 +116,8 @@ export declare const planConsumerProof: (options: {
   arch?: string;
   fetchBytes?: ConsumerProofFetchBytes;
   hasPlaywright?: (repoRoot: string) => boolean;
+  /** Whether the update drive's browser is installed for this checkout's Playwright. */
+  hasBrowser?: (repoRoot: string) => boolean;
 }) => Promise<ConsumerProofPlan>;
 
 export declare const describeConsumerProofPlan: (plan: ConsumerProofPlan) => string;

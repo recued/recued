@@ -241,6 +241,12 @@ export interface VendorReconciler {
    *  rejected when over `PLATFORM_REFERENCE_META_MAX_BYTES`. D-184 —
    *  OPTIONAL (see `hashOf`); a `selfIngest` reconciler omits it. */
   toMeta?(record: SlimRecord): EnrichmentMeta;
+  /** D-338 §10 — OPTIONAL. A webhook record that carries fewer fields than the
+   *  reconciliation cycle reads (a Salesforce PushTopic event: only its Query's fields),
+   *  with what it cannot carry taken from the record's last snapshot. The funnel calls it
+   *  before `hashOf` + `toMeta`; without it, every streamed change would drop such a
+   *  field and the next cycle would put it back, two hash changes for none. */
+  fillStreamGaps?(record: SlimRecord, previous: EnrichmentMeta | null): SlimRecord;
   /** Detect deletions. Vendors with explicit delete events use the
    *  webhook channel (P3); vendors without (most CRMs) implement a
    *  periodic existence-check pass and yield deleted target_ids

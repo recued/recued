@@ -2864,7 +2864,7 @@ const MANIFESTS = [
   {
     "slug": "dom-write",
     "name": "DOM Write",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a `value`, and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the write to it (D-335) — types the value into the element on the page actuated by the paired Browser Bridge — an input or textarea (focused, and set through its own value setter, so a React-built form hears it), a list (the option whose value or text matches), a checkbox or radio button (`true`/`false`), or a rich-text editor — and fails DOM_WRITE_FAILED when the element does not end up holding it; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a `value`, and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the write to it (D-335) — types the value into the element on the page actuated by the paired Browser Bridge — an input or textarea (focused, and set through its own value setter, so a React-built form hears it), a list (the option whose value or text matches), a checkbox or radio button (`true`/`false`), or a rich-text editor — and fails DOM_WRITE_FAILED when the element does not end up holding it; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). With `pick` (D-335 slice N, a page handle only), it then picks the field's suggestion whose text that is, as a person clicks one in the list that shows as they type, and checks the field took it, answering `picked` and the page the tab shows; none or several matching fail DOM_WRITE_FAILED listing the suggestions. Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "authoring",
@@ -2884,7 +2884,8 @@ const MANIFESTS = [
       "page": null,
       "ref": null,
       "value": null,
-      "submit_selector": null
+      "submit_selector": null,
+      "pick": null
     },
     "output": {
       "written": "written"
@@ -2946,6 +2947,37 @@ const MANIFESTS = [
     },
     "output": {
       "clicked": "clicked"
+    }
+  },
+  {
+    "slug": "dom-act",
+    "name": "DOM Act",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.act` op (D-335 slice J). Given a `target` URL pattern, a `page` (the handle `core.dom.inspect` answered) and `steps` (at most 20, `browser-act.ts`), does each step on that page in order through the paired Browser Bridge, approved once for all of them: `type` (a value into a field by ref or selector, a list taking an option and a checkbox true or false; with `submit`, then sends its form in the same script; with `pick`, then picks the field's suggestion with that text, as a person clicks one in the list that shows as they type, and checks the field took it), `click`, `submit` (sends the form the element is in, as Enter would) and `wait` (a pause, or until a selector shows or goes). Recued checks every step: a typed value must be in its field, a step whose page then shows a CAPTCHA nobody has solved stops the sequence, and a sent form (or a click on a form's send button) must load a page or change the address within 5 seconds unless the step's `success_when` says what to look for instead (`page_changes`, `url_includes`, `shows`, `gone`, `text`, within `seconds`), and an error message a click or a send leads to stops the sequence, quoted. A step's `fail_when` (`shows`, `text`, `url_includes`) is watched for while it waits; whichever holds first decides. Stops at the first step that fails or whose check does not hold, with DOM_CHECK_FAILED or the step's own error, saying how far it got and where the tab is. Returns `{ done, of, steps, page, url, title }`, the page the tab shows at the end, with no page while it is still loading. write-tier: approval-gated, the ask naming every step as the page shows it; a click or a send cannot be undone.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "authoring",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "write"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "steps": null
+    },
+    "output": {
+      "done": "done",
+      "of": "of",
+      "steps": "steps",
+      "page": "page",
+      "url": "url",
+      "title": "title"
     }
   },
   {

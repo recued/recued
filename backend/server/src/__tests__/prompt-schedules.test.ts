@@ -1,11 +1,12 @@
 import { resolveOwnerRecallCorpusScope } from '../chat-recall-scope.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { buildChatToolRegistryInputs, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
+import { withTurnZone } from '../chat-clock.js';
 import Database from 'better-sqlite3';
 import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OWNER_CONTRACT_ID, opGrantEntry, isExecutionSource, CHAT_RPC_METHODS, SERVER_RPC_METHODS, isReservedLocalRpc,
-  type InternalToolRegistry, type ExecutionSource, type PromptSchedule } from '@recued/contracts';
+  TIER1_TOOL_DESCRIPTORS, type InternalToolRegistry, type ExecutionSource, type PromptSchedule } from '@recued/contracts';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createSqliteChatPlanStore } from '../storage/chat-plan-store.js';
 import { planApproval } from '@recued/gateway';
@@ -775,6 +776,65 @@ it('model schedule tools check owner authority and the grant before asking or wr
   expect(await f.service.list()).toHaveLength(1);
 });
 
+
+it('a model can ask to be told when a scheduled prompt is done, and turn it off again (D-338 §12)', async () => {
+  const f = fixture();
+  const contracts = createContractStore(f.db), grants = createContractGrantEntryStore(contracts);
+  const gate = createOpAdmissionGate({ grantEntryStore: grants, definitionStore: createContractDefinitionStore(contracts) });
+  const deps: ChatToolHandlerDeps = {
+    getContactStore: () => undefined, getCollectionRegistry: () => undefined, getAuditLog: () => undefined,
+    getEnrichmentStore: () => undefined, getRecipeStore: () => { throw new Error('unused'); },
+    getExecutorConfig: () => { throw new Error('unused'); }, getExecuteRecipe: () => undefined,
+    getOpAdmissionGate: () => gate, getPromptSchedules: () => f.service,
+  };
+  const tools = buildChatToolRegistryInputs(deps);
+  const ctx = { channel: 'internal_function_call' as const, session_id: 'owner', turn_id: 'notify-turn',
+    execution_source: { channel: 'chat' as const, actor: 'user_self' as const, chat_session_id: 'owner', user_id: 'owner', turn_id: 'notify-turn' } };
+  // The schema offers it, so a closed-schema caller (an MCP client) can send it, and the model reads when to.
+  for (const name of ['schedule.run_prompt', 'schedule.update'] as const) {
+    expect((TIER1_TOOL_DESCRIPTORS[name].arg_schema as { properties: Record<string, unknown> }).properties.notify_on_done).toMatchObject({ type: 'boolean' });
+  }
+  // D-338 §12 — and that the answer is kept either way, so a request for a summary is not one to be told.
+  expect(TIER1_TOOL_DESCRIPTORS['schedule.run_prompt'].description).toContain("Each run's answer stays in that conversation. "
+    + "notify_on_done also sends it to their notifications: set it only when the user asks to be told or sent it ('let me know', "
+    + "'notify me', 'send me'), not when they only ask for something written.");
+  expect(await tools.tier1Handlers['schedule.run_prompt']!({ ...once, notify_on_done: true }, ctx)).toMatchObject({ ok: true });
+  const [made] = await f.service.list();
+  expect(made).toMatchObject({ notify_on_done: true });
+  expect(await tools.tier1Handlers['schedule.update']!({ schedule_id: made!.schedule_id, expected_revision: made!.revision, notify_on_done: false },
+    { ...ctx, turn_id: 'notify-off' })).toMatchObject({ ok: true });
+  expect((await f.service.list())[0]).toMatchObject({ notify_on_done: false });
+});
+
+
+it('a model may leave the zone out, and the turn\'s is the one stored; a call still without one is refused (D-338 §13)', async () => {
+  const f = fixture();
+  const contracts = createContractStore(f.db), grants = createContractGrantEntryStore(contracts);
+  const gate = createOpAdmissionGate({ grantEntryStore: grants, definitionStore: createContractDefinitionStore(contracts) });
+  const deps: ChatToolHandlerDeps = {
+    getContactStore: () => undefined, getCollectionRegistry: () => undefined, getAuditLog: () => undefined,
+    getEnrichmentStore: () => undefined, getRecipeStore: () => { throw new Error('unused'); },
+    getExecutorConfig: () => { throw new Error('unused'); }, getExecuteRecipe: () => undefined,
+    getOpAdmissionGate: () => gate, getPromptSchedules: () => f.service,
+  };
+  const tools = buildChatToolRegistryInputs(deps);
+  const ctx = { channel: 'internal_function_call' as const, session_id: 'owner', turn_id: 'zone-turn',
+    execution_source: { channel: 'chat' as const, actor: 'user_self' as const, chat_session_id: 'owner', user_id: 'owner', turn_id: 'zone-turn' } };
+  // The model is told it may, and a closed-schema caller is not made to.
+  const schema = TIER1_TOOL_DESCRIPTORS['schedule.run_prompt'].arg_schema as { required: string[]; properties: Record<string, { description?: string }> };
+  expect(schema.required).not.toContain('time_zone');
+  expect(schema.properties.time_zone!.description).toContain("Leave it out to use the user's own");
+  const { time_zone: _zone, ...unzoned } = recurring;
+  // As the chat's dispatch hands it on (`withTurnZone`): stored in the turn's zone.
+  expect(await tools.tier1Handlers['schedule.run_prompt']!(withTurnZone('schedule.run_prompt', unzoned, 'Europe/Dublin'), ctx))
+    .toMatchObject({ ok: true });
+  expect(await f.service.list()).toMatchObject([{ time_zone: 'Europe/Dublin', cron_expression: recurring.cron_expression }]);
+  // Without a turn (an external MCP client), nothing fills it, and the refusal says what to send.
+  expect(withTurnZone('schedule.run_prompt', unzoned, undefined)).toBe(unzoned);
+  expect(await tools.tier1Handlers['schedule.run_prompt']!({ ...unzoned, title: 'Other' }, { ...ctx, turn_id: 'zone-mcp' }))
+    .toMatchObject({ ok: false, detail: 'An external MCP client must supply time_zone, an IANA zone such as America/New_York.' });
+  expect(await f.service.list()).toHaveLength(1);
+});
 
 it('chat.send cannot forge scheduled provenance', async () => {
   const f = fixture(); f.store.createSession({ id: 'owner-session' });

@@ -17,6 +17,7 @@ import { sourceIdConnectionName } from '../work-entity-source-boot.js';
 import { collectionOAuthSourceName } from '../collection-oauth-sources.js';
 import { createAuthenticationAlertRuntime } from '../authentication-alert-runtime.js';
 import { createPromptScheduleAlertRuntime } from '../prompt-schedule-alert-runtime.js';
+import { createPromptScheduleDoneRuntime } from '../prompt-schedule-done.js';
 import { shouldSuppressForQuietHours, defaultQuietHoursPolicy } from '@recued/contracts';
 import { createFormDefinitionReader } from '../form-contract-gate.js';
 import { join, dirname } from 'node:path';
@@ -410,6 +411,7 @@ export interface ComposeListenersOptions {
     | 'ipBlockStoreRef'
     // D-329 §3.4 — the owner's write-rule rpc.
     | 'writeRuleStore'
+    | 'browserPassStore'
   >;
   app: Pick<
     AppContext,
@@ -557,6 +559,8 @@ export interface ComposeListenersOptions {
     // M4b.1 archive upload — backs `server.archive.upload.*` + the binary
     // `/ws/archive-upload` socket.
     | 'archiveUploadService'
+    // D-338 slice 3 — the Agenda decides whether its AI suggestions' done notice goes.
+    | 'scheduledSituations'
   >;
   execution: Pick<
     ExecutionContext,
@@ -3285,6 +3289,20 @@ export const composeListeners = async (
       isQuiet: at => shouldSuppressForQuietHours({ policy: storage.quietHoursStore?.read() ?? defaultQuietHoursPolicy(), instant: at,
         timeZone: resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
       getPublicBaseUrl: () => storage.publicAddress.baseUrl('root') }) : undefined;
+  // D-338 slice 2 — a schedule that notifies when it is done sends its answer; the Agenda's
+  // suggestions only on a day the Agenda itself went.
+  const promptScheduleDone = storage.db && promptSchedules && execution.notificationBlock && storage.auditLog && app.chatStoreRef
+    ? createPromptScheduleDoneRuntime({ db: storage.db, schedules: promptSchedules,
+      readAnswer: async (session_id, message_id) => {
+        const page = await app.chatStoreRef!.listMessagePage(session_id, 1, undefined, { around_message_id: message_id });
+        return page.messages.find(message => message.id === message_id);
+      },
+      auditLog: storage.auditLog, notifier: execution.notificationBlock,
+      canRun: () => (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
+      isQuiet: at => shouldSuppressForQuietHours({ policy: storage.quietHoursStore?.read() ?? defaultQuietHoursPolicy(), instant: at,
+        timeZone: resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+      getPublicBaseUrl: () => storage.publicAddress.baseUrl('root'),
+      ...(collection.scheduledSituations ? { gate: collection.scheduledSituations.agendaDoneGate } : {}) }) : undefined;
 
   // D-174 #22 + slice 1 — built ONCE, used TWICE: the `work_entity.{upsert,
   // delete}` pair-RPC below and the Tier-1 `work.create` chat tool both
@@ -3898,6 +3916,8 @@ export const composeListeners = async (
             store: app.contractStoreRef,
             // D-329 §3.4 — the write rules an AI's approvals teach.
             writeRules: storage.writeRuleStore,
+            // D-335 slice F — passes for Browser Toolkit writes.
+            browserPasses: storage.browserPassStore,
             // D-247 D11 — the recipe roster for the op row's STATIC half. Without
             // it `could` is empty everywhere and the row silently degrades to the
             // usage half alone, which is the shape that cannot tell "no recipe
@@ -5279,6 +5299,7 @@ export const composeListeners = async (
   savedDataViewAlerts?.start();
   authenticationAlerts?.start();
   promptScheduleAlerts?.start();
+  promptScheduleDone?.start();
 
   // ⛔ What would otherwise START work during a restart is told to stop the
   // moment the server begins stopping, before any drain step waits on anything:
@@ -5292,12 +5313,13 @@ export const composeListeners = async (
   //    (`NotificationBlock.beginStopping`, `recoverPendingAsksOnceRunning`).
   const turnQueue = app.chatOrchestratorRef?.turnQueue;
   const answers = execution.notificationBlock;
-  if (lifecycle && (turnQueue || answers || promptScheduleAlerts)) {
+  if (lifecycle && (turnQueue || answers || promptScheduleAlerts || promptScheduleDone)) {
     lifecycle.machine.onStateChange((_prev, next) => {
       if (next !== 'draining') return;
       turnQueue?.close();
       answers?.beginStopping();
       void promptScheduleAlerts?.stop();
+      void promptScheduleDone?.stop();
     });
   }
 
@@ -5318,6 +5340,7 @@ export const composeListeners = async (
       ...(savedDataViewAlerts ? [begin(() => savedDataViewAlerts.stop())] : []),
       ...(authenticationAlerts ? [begin(() => authenticationAlerts.stop())] : []),
       ...(promptScheduleAlerts ? [begin(() => promptScheduleAlerts.stop())] : []),
+      ...(promptScheduleDone ? [begin(() => promptScheduleDone.stop())] : []),
       ...(webhookOutboxRuntime ? [begin(() => webhookOutboxRuntime.stop())] : []),
       ...(messengerIngressSupervisor
         ? [begin(() => messengerIngressSupervisor.stop())]

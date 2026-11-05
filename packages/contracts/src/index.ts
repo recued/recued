@@ -2,6 +2,10 @@ export * from './customer-refunds.js';
 export { isLlmRetryTime, formatLlmRetryTime } from './llm-retry-time.js';
 // D-329 §3.4 — the write rules an AI's approvals teach.
 export * from './write-approval-rule.js';
+// D-335 slice F — passes for Browser Toolkit writes, and what their approvals teach.
+export * from './browser-pass.js';
+// D-335 slice J — a sequence of steps on one web page, approved once (`core.dom.act`).
+export * from './browser-act.js';
 export type { LocalUpdateUndoReview, LocalUpdateUndoDecision, LocalUpdateUndoResult } from './local-update-undo.js';
 export { hasLocalUpdateResources, LOCAL_CHANGE_SET_LIMITS } from './local-change-sets.js';
 export type { LocalChangeSetPrepare, LocalChangeSetUndoPrepare, LocalChangeSetDecision, LocalChangeSetReview, LocalChangeSetInspection } from './local-change-sets.js';
@@ -2088,6 +2092,7 @@ export { isCheckpoint, TIER1_HOLD_CATALOG_SLUG } from './checkpoint.js';
 export type {
   Checkpoint,
   HeldBrowserTarget,
+  HeldBrowserStep,
   PreflightApprovedTarget,
   PreflightCheckpointContext,
   PreflightForeachCover,
@@ -4891,6 +4896,8 @@ export type {
   ChatMessage,
   ChatReplyReference,
   ChatMessageReply,
+  ChatNotice,
+  ChatAnswerSource,
   ChatEgressPacket,
   ChatSessionSummary,
   ChatSessionListCursor,
@@ -5030,6 +5037,17 @@ export {
   BRIDGE_TABS_OUTPUT_KEYS,
   BRIDGE_TABS_MAX,
   BRIDGE_OPEN_OUTPUT_KEYS,
+  BRIDGE_CLICK_OUTPUT_KEYS,
+  BRIDGE_FILL_OUTPUT_KEYS,
+  BRIDGE_SUBMIT_OUTPUT_KEYS,
+  BRIDGE_PICK_OUTPUT_KEYS,
+  BRIDGE_PICK_MAX_MS,
+  BRIDGE_CLICK_SETTLE_MS,
+  BRIDGE_CLICK_LOAD_MAX_MS,
+  BRIDGE_WATCH_MAX_MS,
+  BRIDGE_PAGE_CHANGED_MESSAGE,
+  BRIDGE_PAGE_GONE_MESSAGE,
+  isBridgeTargetGone,
   BRIDGE_WAIT_DEFAULT_MS,
   BRIDGE_WAIT_MAX_MS,
   BRIDGE_WAIT_OUTPUT_KEYS,

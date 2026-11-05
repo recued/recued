@@ -325,6 +325,19 @@ const playwrightInstalled = (repoRoot) => {
   }
 };
 
+/** Whether the browser the update drive runs is installed for this checkout's
+ *  Playwright: its own Chromium, as the drive's config names it. It lives in a
+ *  per-user cache outside the folder, so a release folder copied to another Mac
+ *  does not carry it. */
+const playwrightBrowserInstalled = (repoRoot) => {
+  try {
+    const { chromium } = createRequire(join(repoRoot, 'package.json'))('@playwright/test');
+    return existsSync(chromium.executablePath());
+  } catch {
+    return false;
+  }
+};
+
 /** Everything the proof needs, decided before the first upload. Throws a
  *  ConsumerProofError naming what is missing; the publisher fails on it while
  *  nothing is live. */
@@ -340,6 +353,7 @@ export const planConsumerProof = async ({
   arch = process.arch,
   fetchBytes = curlFetchBytes,
   hasPlaywright = playwrightInstalled,
+  hasBrowser = playwrightBrowserInstalled,
 }) => {
   if (origin !== CONSUMER_PROOF_ORIGIN || prefix !== '') {
     throw new ConsumerProofError(
@@ -374,6 +388,17 @@ export const planConsumerProof = async ({
   }
   if (!hasPlaywright(repoRoot)) {
     throw new ConsumerProofError('@playwright/test is not installed in this checkout (run `npm ci` at its root)');
+  }
+  // ⛔ 2026-11-04 — and its browser. This plan checked the package alone, so a Mac
+  // without the browser uploaded, went live, and failed only in the proof: live but
+  // unproven. Checked here, it stops the publish while nothing is live, so the publish
+  // needs no separate check run before it (the owner: "why do we need
+  // `node step8-check.mjs --install` if the last step is just … release:publish").
+  if (!hasBrowser(repoRoot)) {
+    throw new ConsumerProofError(
+      "the update drive's browser is not installed here: run `npx playwright install chromium` at the "
+        + 'checkout\'s root, or `node step8-check.mjs --install` in a release folder',
+    );
   }
   const webclient = release.artifacts?.webclient;
   const previous = await findPreviousRelease({

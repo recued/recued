@@ -39,6 +39,7 @@ import {
   canonicalArgHash,
   captureResourceReview,
   extractScopedDestinationEmails,
+  isBrowserActionSlug,
   isTempFileRef,
   projectResolvedArgs,
   resolveQualityGateDecision,
@@ -250,6 +251,39 @@ export interface QualityGateHooks {
    *  consume site so a pause takes effect instantly (Switch B suppresses the
    *  quality skip; Switch A suppresses both axes). */
   getSwitches: () => QualityGateSwitches;
+}
+
+/** D-335 slice F — a pass for a held Browser Toolkit write: who × recipe × site, minted by
+ *  the owner's "Allow on <site> for this session" or "Always allow on <site>" answer (or an
+ *  accepted suggestion). Consulted in the ask-branch only, after no D-177 grant matched, for
+ *  a browser write (`isBrowserActionSlug`) whose ask the owner's policy could waive. The host
+ *  completes the key: who from the run's source, the recipe from the run, and the site the
+ *  page's origin as the Bridge reads it now (for opening, the address's), never a value the
+ *  model supplied; it counts the use and audits it. A pass has no use limit, so nothing is
+ *  consumed at the proceed point. Async: reading the page's origin asks the Bridge. A throw
+ *  or `false` leaves the ask standing (fail closed). Absent dep ⇒ every browser write asks,
+ *  as before slice F. */
+export interface BrowserPassHooks {
+  admit: (call: {
+    readonly slug: string;
+    /** The resolved arguments (`address`, or `page` and `ref`). */
+    readonly input: Record<string, unknown>;
+  }) => Promise<boolean>;
+}
+
+/** 2026-11-04 — a held browser write whose page or element has gone is not asked. Just
+ *  before the ask is raised for a browser write (`isBrowserActionSlug`), the host reads the
+ *  element the call names, the read the ask shows anyway. When the Bridge answers that the
+ *  page handle or the ref will never read again, the host returns the error the write would
+ *  fail with once approved, and the call fails with it now: the model reads it in the same
+ *  turn, and the owner is not asked to approve a call that cannot work. Undefined ⇒ ask as
+ *  before; a throw ⇒ ask as before. Absent dep ⇒ every held browser write asks. */
+export interface BrowserTargetHooks {
+  refusal: (call: {
+    readonly slug: string;
+    /** The resolved arguments (`page` and `ref`, or `address`). */
+    readonly input: Record<string, unknown>;
+  }) => Promise<Error | undefined>;
 }
 
 /** Adapt a plain executor (no cache-hit reporting) to a `GatewayInner`.
@@ -568,6 +602,12 @@ export interface CommitGatewayDeps {
    *  (§12.1). Absent dep ⇒ no quality check; every `ask` holds exactly as
    *  pre-D-202 (additive — inert until the owner mints a quality delegation). */
   qualityDelegations?: QualityGateHooks;
+  /** D-335 slice F — passes for Browser Toolkit writes ({@link BrowserPassHooks}). Absent ⇒
+   *  every browser write asks. */
+  browserPasses?: BrowserPassHooks;
+  /** 2026-11-04 — a held browser write whose page or element has gone fails instead of
+   *  being asked ({@link BrowserTargetHooks}). Absent ⇒ it asks. */
+  browserTargets?: BrowserTargetHooks;
   /** Injectable commit-id minter — a deterministic-test hook. Defaults
    *  to a prefixed UUID. */
   genCommitId?: () => string;
@@ -1359,7 +1399,32 @@ export const wrapWithCommitGateway = (
                 grantId = null;
               }
             }
-            if (grantId === null) {
+            // D-335 slice F — a browser write the owner allowed on its site goes ahead
+            // without asking: a pass names who asked, the recipe and the page's origin, which
+            // the host reads now. Only where the owner's own policy leaves the ask waivable
+            // (as a D-177 grant: `never` or `ask` before the lift) and below destructive.
+            let browserPassAdmitted = false;
+            if (
+              grantId === null
+              && deps.browserPasses !== undefined
+              && identity !== undefined
+              && isBrowserActionSlug(slug)
+              && decision.risk_tier !== 'destructive'
+              && (
+                decision.authorization_provenance.pre_lift_approval === 'never'
+                || decision.authorization_provenance.pre_lift_approval === 'ask'
+              )
+            ) {
+              try {
+                browserPassAdmitted = await deps.browserPasses.admit({
+                  slug,
+                  input: resolvedArgsForScoped ?? input,
+                });
+              } catch {
+                browserPassAdmitted = false; // fail closed — the ask stands
+              }
+            }
+            if (grantId === null && !browserPassAdmitted) {
               // D-202 task 4a — the second gate axis. No authorization session
               // grant matched, so today this holds for approval. Before raising,
               // consult a QUALITY delegation: the owner can, per `(recipe, op)`,
@@ -1419,6 +1484,18 @@ export const wrapWithCommitGateway = (
               // delegation is standing (§5), not use-bounded, so no
               // `sessionGrantAdmit` is set and the proceed point burns nothing.
               if (!qualitySkip) {
+                // 2026-11-04 — a browser write whose page or element the Bridge says has
+                // gone fails now, with the error it would fail with once approved: no answer
+                // to the ask could make it work. The host's own failure leaves the ask.
+                if (deps.browserTargets !== undefined && isBrowserActionSlug(slug)) {
+                  let refusal: Error | undefined;
+                  try {
+                    refusal = await deps.browserTargets.refusal({ slug, input: resolvedArgsForScoped ?? input });
+                  } catch {
+                    refusal = undefined;
+                  }
+                  if (refusal !== undefined) throw refusal;
+                }
                 raiseOnAsk(decision, {
                   ...raiseContextWithOpen(),
                   // Mark the ask quality-relevant so the answer path records the
@@ -1427,7 +1504,7 @@ export const wrapWithCommitGateway = (
                   ...(qualityRelevant ? { quality_relevant: true } : {}),
                 });
               }
-            } else {
+            } else if (grantId !== null) {
               sessionGrantAdmit = {
                 contract_id: grantId,
                 decision,

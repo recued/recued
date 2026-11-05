@@ -171,7 +171,8 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
   const ask = (item: Context, ask_id: string, mode: Mode): AskDeliveryInput['asks'][number] => {
     const route = item.route ?? `#yours/asset/${encodeURIComponent(item.asset.id)}`;
     const sensitive = item.asset.settings.sensitive === true;
-    const title = sensitive ? 'Private reminder' : item.asset.name;
+    // D-338 — named by the menu that holds it, as the Agenda and the digest name a private item.
+    const title = sensitive ? 'Reminder in Yours' : item.asset.name;
     const clock = item.rule.when;
     const fact = clock.kind === 'expiry' ? `${clock.field.replaceAll('_', ' ')}: ${item.asset.dates[clock.field] ?? 'unknown'}`
       : clock.kind === 'interval' ? `last ${clock.field.replaceAll('_', ' ')}: ${item.asset.dates[clock.field] ?? 'unknown'}`

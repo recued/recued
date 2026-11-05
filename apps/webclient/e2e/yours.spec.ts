@@ -1938,8 +1938,8 @@ test('Today links a bill to its own facts and reports opening it from Today', as
 
 const overviewPanel = (page: Page) => page.locator('[data-situation-delivery]');
 const overviewTime = (page: Page) => overviewPanel(page).getByLabel('Time', { exact: true });
-const overviewDraftPrompt = 'Discard the unsaved digest settings?';
-const overviewWorkPrompt = 'A digest action is still in progress. Leave Settings anyway?';
+const overviewDraftPrompt = 'Discard the unsaved “Coming up” settings?';
+const overviewWorkPrompt = 'A “Coming up” action is still in progress. Leave Settings anyway?';
 const openOverviewSettings = async (page: Page, width: number) => {
   await page.setViewportSize({ width, height: 900 });
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
@@ -2031,7 +2031,7 @@ for (const width of [390, 1280]) {
         await page.evaluate(() => window.__app.holdRpcResponses?.('yours.change'));
         if (phase === 'confirmation') await page.evaluate(() => window.__app.holdRpcResponses?.('yours.delivery'));
         const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
-        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
+        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save “Coming up” settings' : 'Send now', exact: true }).press('Enter');
         await expect(overviewTime(page)).toBeDisabled(); const original = await overviewTime(page).elementHandle();
         if (phase === 'confirmation') {
           expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
@@ -2058,7 +2058,7 @@ for (const width of [390, 1280]) {
       await openOverviewTimezone(page, width); if (kind === 'save') await overviewTime(page).fill('10:30');
       await page.evaluate(() => { window.__app.holdRpcResponses?.('yours.change'); window.__app.holdRpcResponses?.('yours.delivery'); });
       const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
-      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
+      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save “Coming up” settings' : 'Send now', exact: true }).press('Enter');
       const original = await overviewTime(page).elementHandle();
       const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
       for (const phase of ['write', 'confirmation'] as const) {
@@ -2071,14 +2071,14 @@ for (const width of [390, 1280]) {
         }
       }
       expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery'))).toBe(1);
-      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Digest settings saved.' : 'Checked.');
+      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? '“Coming up” settings saved.' : 'Checked.');
       expect(await overviewWouldBlockUnload(page)).toBe(false); await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page);
       expect(dialogs).toEqual([overviewWorkPrompt, overviewWorkPrompt]);
       expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(1);
     });
   }
 
-  for (const field of ['How often', 'Day', 'Time', 'How far ahead', 'Also send a note on the day something is due'] as const) {
+  for (const field of ['How often', 'Day', 'Time', 'How far ahead', 'Also send “Due today” on the day something is due'] as const) {
     test(`Coming up reverted ${field} leaves without an unsaved warning at ${width}px`, async ({ page }) => {
       await openOverviewSettings(page, width); const control = overviewPanel(page).getByLabel(field, { exact: true });
       const original = await control.elementHandle();
@@ -2105,15 +2105,15 @@ for (const width of [390, 1280]) {
     await openOverviewSettings(page, width); const panel = overviewPanel(page);
     await panel.getByLabel('Day', { exact: true }).selectOption('4');
     await panel.getByLabel('How often', { exact: true }).selectOption('daily');
-    await overviewTime(page).fill('10:30'); await panel.getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
+    await overviewTime(page).fill('10:30'); await panel.getByLabel('Also send “Due today” on the day something is due', { exact: true }).uncheck();
     await panel.getByLabel('How often', { exact: true }).selectOption('weekly');
     await panel.getByLabel('Day', { exact: true }).selectOption('1'); await overviewTime(page).fill('08:00');
     expect(await overviewWouldBlockUnload(page)).toBe(true);
     const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
     await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
     await expect(page).toHaveURL(/#settings\/notifications$/u);
-    await expect(panel.getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
-    await panel.getByLabel('Also send a note on the day something is due', { exact: true }).check(); expect(await overviewWouldBlockUnload(page)).toBe(false);
+    await expect(panel.getByLabel('Also send “Due today” on the day something is due', { exact: true })).not.toBeChecked();
+    await panel.getByLabel('Also send “Due today” on the day something is due', { exact: true }).check(); expect(await overviewWouldBlockUnload(page)).toBe(false);
     expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
     await page.reload(); await page.waitForFunction(() => window.__app?.ready === true); await expect(overviewTime(page)).toHaveValue('08:00');
     expect(dialogs).toEqual([overviewDraftPrompt]); expect(await overviewWouldBlockUnload(page)).toBe(false);
@@ -2183,8 +2183,8 @@ for (const width of [390, 1280]) {
     await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
     await expect(page).toHaveURL(/#settings\/notifications$/u);
     expect(await original!.evaluate(node => node.isConnected)).toBe(true);
-    await overviewPanel(page).getByRole('button', { name: 'Save digest settings', exact: true }).press('Enter');
-    await expect(overviewPanel(page).getByRole('status')).toHaveText('Digest settings saved.');
+    await overviewPanel(page).getByRole('button', { name: 'Save “Coming up” settings', exact: true }).press('Enter');
+    await expect(overviewPanel(page).getByRole('status')).toHaveText('“Coming up” settings saved.');
     await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     expect(dialogs).toEqual([overviewDraftPrompt]);
   });
@@ -2194,7 +2194,7 @@ for (const width of [390, 1280]) {
     const panel = overviewPanel(page), field = overviewTime(page);
     await panel.getByLabel('Day', { exact: true }).selectOption('4');
     await panel.getByLabel('How often', { exact: true }).selectOption('daily');
-    await panel.getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
+    await panel.getByLabel('Also send “Due today” on the day something is due', { exact: true }).uncheck();
     await field.fill('10:30'); await field.focus(); const original = await field.elementHandle();
     const dialogs: string[] = []; let accept = false;
     page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
@@ -2204,7 +2204,7 @@ for (const width of [390, 1280]) {
     await expect(field).toHaveValue('10:30');
     await expect(panel.getByLabel('How often', { exact: true })).toHaveValue('daily');
     await expect(panel.getByLabel('Day', { exact: true })).toHaveValue('4');
-    await expect(panel.getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
+    await expect(panel.getByLabel('Also send “Due today” on the day something is due', { exact: true })).not.toBeChecked();
     expect(await original!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
     accept = true; await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     expect(dialogs).toEqual([overviewDraftPrompt, overviewDraftPrompt]);
@@ -2218,8 +2218,8 @@ for (const width of [390, 1280]) {
     await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     await page.evaluate(() => window.__app.setHash('#settings/notifications')); await expect(overviewTime(page)).toHaveValue('08:00');
     await overviewTime(page).fill('10:30');
-    await overviewPanel(page).getByRole('button', { name: 'Save digest settings', exact: true }).press('Enter');
-    await expect(overviewPanel(page).getByRole('status')).toHaveText('Digest settings saved.');
+    await overviewPanel(page).getByRole('button', { name: 'Save “Coming up” settings', exact: true }).press('Enter');
+    await expect(overviewPanel(page).getByRole('status')).toHaveText('“Coming up” settings saved.');
     expect(await overviewWouldBlockUnload(page)).toBe(false);
     await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
     expect(dialogs).toEqual([]);
@@ -2233,7 +2233,7 @@ for (const width of [390, 1280]) {
       const before = await page.evaluate(() => ({ writes: window.__app.rpcCallCount('yours.change'), reads: window.__app.rpcCallCount('yours.delivery') }));
       const original = await overviewTime(page).elementHandle();
       const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
-      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
+      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save “Coming up” settings' : 'Send now', exact: true }).press('Enter');
       await expect(overviewTime(page)).toBeDisabled(); expect(await overviewWouldBlockUnload(page)).toBe(true);
       await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewWorkPrompt]);
       await expect(page).toHaveURL(/#settings\/notifications$/u);
@@ -2244,7 +2244,7 @@ for (const width of [390, 1280]) {
       await expect(page).toHaveURL(/#settings\/notifications$/u);
       expect(await original!.evaluate(node => node.isConnected && node === document.querySelector('[data-situation-delivery] input[name="time"]'))).toBe(true);
       expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery'))).toBe(1);
-      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Digest settings saved.' : 'Checked.');
+      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? '“Coming up” settings saved.' : 'Checked.');
       expect(await overviewWouldBlockUnload(page)).toBe(false);
       expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(before.writes + 1);
       await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
@@ -2259,7 +2259,7 @@ for (const width of [390, 1280]) {
         const original = await overviewTime(page).elementHandle();
         const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
         if (phase === 'confirmation') await page.evaluate(() => window.__app.holdRpcResponses?.('yours.delivery'));
-        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save digest settings' : 'Send now', exact: true }).press('Enter');
+        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save “Coming up” settings' : 'Send now', exact: true }).press('Enter');
         await expect(overviewTime(page)).toBeDisabled();
         if (phase === 'confirmation') {
           expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
@@ -2314,8 +2314,9 @@ test('Approval & notifications reads as channels, what you are told about, its t
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   await page.waitForFunction(() => window.__app?.ready === true);
   const section = page.locator('[data-recued-settings-section="notifications"]');
-  // §15.7 amendment (2026-11-02, later): the Agenda answers the same question for one day, under the Digest.
-  await expect(section.locator('h3')).toHaveText(['Channels', 'Your secret phrase', 'What you are notified about', 'Digest', 'Agenda', 'Quiet hours', 'Reminders for shared assets']);
+  // §15.7 amendment (2026-11-02, later): the Agenda answers the same question for one day. D-338 §9: it comes first,
+  // then "Coming up", the card named as its message is.
+  await expect(section.locator('h3')).toHaveText(['Channels', 'Your secret phrase', 'What you are notified about', 'Agenda', 'Coming up', 'Quiet hours', 'Reminders for shared assets']);
   await expect(section.locator('[data-household-delivery] h4')).toHaveText(['Post them in a Telegram group', 'Show their tasks on a Home Assistant to-do list']);
   // The card names its assets and links to them, so it reads as the assets' setting.
   const shared = section.locator('[data-household-shared]');
@@ -2363,37 +2364,37 @@ test('Approval & notifications names the shared assets, each opening its asset',
   await expect(page.locator('[data-recued-yours]').getByRole('heading', { name: 'House', exact: true, level: 2 })).toBeVisible();
 });
 
-test('Approval & notifications saves the digest settings and shows its last sent values', async ({ page }) => {
+test('Approval & notifications saves the “Coming up” settings and shows its last sent values', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   const panel = page.locator('[data-situation-delivery]');
   await panel.getByLabel('Day', { exact: true }).selectOption('4');
   await panel.getByLabel('How often', { exact: true }).selectOption('daily');
   await panel.getByLabel('Time', { exact: true }).fill('10:30');
-  await panel.getByLabel('Also send a note on the day something is due', { exact: true }).uncheck();
+  await panel.getByLabel('Also send “Due today” on the day something is due', { exact: true }).uncheck();
   await panel.getByRole('button', { name: 'Send now', exact: true }).focus(); await page.keyboard.press('Enter');
   await expect(panel.getByRole('status')).toContainText('Checked.');
   await expect(panel.getByLabel('How often', { exact: true })).toHaveValue('daily');
   await expect(panel.getByLabel('Day', { exact: true })).toHaveValue('4');
   await expect(panel.getByLabel('Time', { exact: true })).toHaveValue('10:30');
-  await expect(panel.getByLabel('Also send a note on the day something is due', { exact: true })).not.toBeChecked();
-  await panel.getByRole('button', { name: 'Save digest settings', exact: true }).focus(); await page.keyboard.press('Enter');
-  await expect(panel.getByRole('status')).toHaveText('Digest settings saved.');
-  await expect(panel.getByRole('button', { name: 'Save digest settings', exact: true })).toBeFocused();
+  await expect(panel.getByLabel('Also send “Due today” on the day something is due', { exact: true })).not.toBeChecked();
+  await panel.getByRole('button', { name: 'Save “Coming up” settings', exact: true }).focus(); await page.keyboard.press('Enter');
+  await expect(panel.getByRole('status')).toHaveText('“Coming up” settings saved.');
+  await expect(panel.getByRole('button', { name: 'Save “Coming up” settings', exact: true })).toBeFocused();
   await expect(panel.getByLabel('Time', { exact: true })).toHaveValue('10:30');
   await expect(panel.getByLabel('How often', { exact: true })).toHaveValue('daily');
   await panel.getByRole('button', { name: 'Send now', exact: true }).click();
   await panel.getByText('What it sent', { exact: true }).click(); await expect(panel).toContainText('Lisbon trip · Passport expiry');
 });
 
-test('Approval & notifications shows the Agenda under the Digest, guards it while unsaved, and saves and sends it', async ({ page }) => {
+test('Approval & notifications shows the Agenda above “Coming up”, guards it while unsaved, and saves and sends it', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   await page.waitForFunction(() => window.__app?.ready === true);
   const agenda = page.locator('[data-situation-agenda]');
   await expect(agenda.getByLabel('Time', { exact: true })).toHaveValue('07:00');
-  // A card of its own, right under the Digest's.
+  // A card of its own, right above "Coming up" (D-338 §9: your day first, then what changed).
   expect(await page.evaluate(() => {
-    const digest = document.querySelector('[data-situation-delivery]')!; const own = document.querySelector('[data-situation-agenda]')!;
-    return digest.parentElement!.nextElementSibling === own.parentElement;
+    const comingUp = document.querySelector('[data-situation-delivery]')!; const own = document.querySelector('[data-situation-agenda]')!;
+    return own.parentElement!.nextElementSibling === comingUp.parentElement;
   })).toBe(true);
   await agenda.getByLabel('Send me an agenda', { exact: true }).check();
   await agenda.getByLabel('Which day', { exact: true }).selectOption('tomorrow');

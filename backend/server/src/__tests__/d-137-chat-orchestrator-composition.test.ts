@@ -155,6 +155,9 @@ const composeHarness = (
 
 const expectedBundleKeys = [
   'chatStore',
+  // D-338 — makes a notification to a linked messenger a notice in that chat. The messenger
+  // channels are composed after the chat, so the app context hands it to them.
+  'chatNotices',
   'connectionMcpStore',
   'inboundTokenStore',
   'internalRegistry',

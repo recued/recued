@@ -133,6 +133,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
 interface FakeDocument {
   activeElement: FakeElement | null;
   createElement(tagName: string): FakeElement;
+  createTextNode(text: string): FakeElement;
 }
 
 const makeFakeDocument = (): FakeDocument => {
@@ -142,6 +143,12 @@ const makeFakeDocument = (): FakeDocument => {
       const element = makeFakeElement(tagName);
       element.focus = () => { document.activeElement = element; };
       return element;
+    },
+    // D-338 §11 — a text node beside a mention's link.
+    createTextNode(text) {
+      const node = makeFakeElement('#text');
+      node.textContent = text;
+      return node;
     },
   };
   return document;
@@ -274,6 +281,28 @@ const mount = (
 // ════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════
+
+describe('D-338 §11 — the names a notice links open their records', () => {
+  it('links each name the frame names to where its record opens, and keeps the rest as text', () => {
+    const { host, fake } = mount();
+    notifyListener(fake)({ ...notifyEvent('Birthdays: Ilsa Varga and Sam Park\n09:00 Dentist', 'Agenda · Tue 20 Oct'),
+      mentions: [{ text: 'Ilsa Varga', ref: { collection: 'contact', id: 'contact-ilsa' } },
+        { text: 'Sam Park', ref: { collection: 'contact', id: 'contact-sam' } }] });
+    const links = findAllByAttr(host, 'data-recued-mention', 'contact');
+    expect(links.map(link => [link.textContent, link.getAttribute('href')]))
+      .toEqual([['Ilsa Varga', '#data/contact/contact-ilsa'], ['Sam Park', '#data/contact/contact-sam']]);
+    expect(textOf(findAllByAttr(host, NOTIFY_TOAST_ATTR)[0]!)).toContain('Birthdays: Ilsa Varga and Sam Park\n09:00 Dentist');
+  });
+
+  it('shows the text alone for mentions it cannot use, and for a frame from a server before them', () => {
+    const { host, fake } = mount();
+    notifyListener(fake)({ ...notifyEvent('Birthday: Ivy Jones'),
+      mentions: [{ text: 'Ivy Jones', ref: { collection: 'Contact; DROP', id: 'x' } }, { text: '', ref: { collection: 'contact', id: 'y' } }] as never });
+    notifyListener(fake)(notifyEvent('Birthday: Ivy Jones'));
+    expect(findAllByAttr(host, 'data-recued-mention')).toEqual([]);
+    expect(findAllByAttr(host, NOTIFY_TOAST_ATTR).map(textOf).every(text => text.includes('Birthday: Ivy Jones'))).toBe(true);
+  });
+});
 
 describe('D-169 P2 Slice 5 notify toasts', () => {
   it.each([

@@ -39,7 +39,7 @@ const fixture = (initial = [fact()], zone = 'UTC', nativeSources = false, person
   const overBound = new Set<string>();
   const send = vi.fn(async (_message: import('../notification-handler.js').NotificationSendArgs) => ({ delivered_to: fail ? [] : ['in_app', 'telegram'] }));
   const sources = nativeSources ? buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [],
-    timeZone: () => zone, now: () => at }) : ['booking', 'asset', 'occasion', 'commitment', 'episode', 'calendar', 'task'].map(collection => ({
+    timeZone: () => zone, now: () => at }) : ['booking', 'asset', 'occasion', 'commitment', 'episode', 'calendar', 'task', 'contact'].map(collection => ({
     id: collection, collection, verb_op: 'core.work-entity.read', read: vi.fn(() => {
       if (overBound.has(collection)) throw new SituationScanBoundError('Situation source exceeds its scan bound');
       return facts.filter(row => row.ref.collection === collection);
@@ -316,12 +316,52 @@ describe('D-325 scheduled overview through the shared query', () => {
       f.time(on(1, '06:00')); agendaOnly(f, { time: '07:00', day: 'today' }); f.time(on(1, '08:10')); await f.service().tick();
       expect(texts(f).map(message => message.text)).toEqual(['12:00 Send the run report']);
     });
-    it('keeps what a reminder keeps private as "Private reminder", at its own time', async () => {
+    it('keeps what a reminder keeps private as "Reminder in Yours", at its own time', async () => {
       const f = fixture([]); const history = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db));
       const birthday = history.saveOccasion({ title: 'Ana’s birthday', month_day: '10-20', people: ['ana'], muted: false, rules: [], sphere: 'personal' }, monday);
       f.facts([allDay(birthday.id, 'Ana’s birthday', 1), event('dentist-1', 'Dentist', 1, '18:30', '19:00')]);
       f.time(on(0, '20:00')); agendaOnly(f, { time: '20:00', day: 'tomorrow' }); await f.service().tick();
-      expect(texts(f)[0]?.text).toBe('All day · Private reminder\n18:30 Dentist');
+      expect(texts(f)[0]?.text).toBe('All day · Reminder in Yours\n18:30 Dentist');
+    });
+    // D-338 — the owner: "one line for two pieces: birthday: ... anniversaries: ...(only if have)".
+    // Every contact's dates are in the Agenda, and a line each opened the day with them.
+    const dateOf = (id: string, name: string, kind: 'birthday' | 'anniversary', day: number) => fact(id, {
+      ref: { collection: 'contact', id, field: kind }, kind, title: `${name} · ${kind}`, people: [id],
+      when: { from: on(day, '00:00'), to: on(day + 1, '00:00') }, when_day: `2026-10-${19 + day}`, act_by: on(day, '00:00'),
+      evidence: [{ collection: 'contact', id, field: kind }] });
+    it('puts a day\'s birthdays and anniversaries from the owner\'s contacts on one line each, before the rest', async () => {
+      const f = fixture([]); const history = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db));
+      const ana = history.saveOccasion({ title: 'Ana’s birthday', month_day: '10-20', people: ['ana'], muted: false, rules: [], sphere: 'personal' }, monday);
+      f.facts([dateOf('sam', 'Sam Park', 'birthday', 1), dateOf('ilsa', 'Ilsa Varga', 'birthday', 1), dateOf('mia', 'Mia Lee', 'anniversary', 1),
+        // Kept as they were: a date saved in Yours, private or not, and a calendar's own event.
+        allDay(ana.id, 'Ana’s birthday', 1), allDay('mum', 'Mum’s birthday', 1), event('dentist-1', 'Dentist', 1, '18:30', '19:00')]);
+      f.time(on(0, '20:00')); agendaOnly(f, { time: '20:00', day: 'tomorrow' }); await f.service().tick();
+      expect(texts(f)[0]?.text).toBe(['Birthdays: Ilsa Varga and Sam Park', 'Anniversary: Mia Lee', 'All day · Mum’s birthday',
+        'All day · Reminder in Yours', '18:30 Dentist'].join('\n'));
+      // In the app each name opens its contact (D-338 §11), and Settings keeps them with the run.
+      const mentions = [{ text: 'Ilsa Varga', ref: { collection: 'contact', id: 'ilsa' } }, { text: 'Sam Park', ref: { collection: 'contact', id: 'sam' } },
+        { text: 'Mia Lee', ref: { collection: 'contact', id: 'mia' } }];
+      expect(texts(f)[0]).toMatchObject({ mentions });
+      expect(f.service().agendaStatus().last_sent).toMatchObject({ mentions });
+      // A private one never names its contact: there is no name to link.
+      expect(JSON.stringify(texts(f)[0])).not.toContain(ana.id);
+    });
+    it('names five on a line and counts the rest, a day at a time, and adds no line on a day with none', async () => {
+      const names = ['Ada Ball', 'Ben Cole', 'Cy Dunn', 'Di Eyre', 'Ed Ford', 'Fay Gale', 'Gus Hart'];
+      const f = fixture([...names.map((name, n) => dateOf(`p${String(n)}`, name, 'birthday', 1)), dateOf('ivy', 'Ivy Jones', 'birthday', 2),
+        event('brunch', 'Brunch', 3, '11:00', '12:00')]);
+      f.time(on(-1, '12:00')); agendaOnly(f, { frequency: 'weekly', weekday: 7, time: '18:00', day: 'tomorrow' });
+      f.time(on(-1, '18:00')); await f.service().tick();
+      expect(texts(f)[0]?.text).toBe(['Tue 20 Oct', 'Birthdays: Ada Ball, Ben Cole, Cy Dunn, Di Eyre, Ed Ford and 2 more', '',
+        'Wed 21 Oct', 'Birthday: Ivy Jones', '', 'Thu 22 Oct', '11:00 Brunch'].join('\n'));
+      // A link for each name shown, none for the two counted.
+      expect(texts(f)[0]?.mentions?.map(mention => mention.text)).toEqual(['Ada Ball', 'Ben Cole', 'Cy Dunn', 'Di Eyre', 'Ed Ford', 'Ivy Jones']);
+    });
+    it('keeps two people of one name apart, each with a link to their own contact', async () => {
+      const f = fixture([dateOf('sam-1', 'Sam Park', 'birthday', 1), dateOf('sam-2', 'Sam Park', 'birthday', 1)]);
+      f.time(on(0, '20:00')); agendaOnly(f, { time: '20:00', day: 'tomorrow' }); await f.service().tick();
+      expect(texts(f)[0]?.text).toBe('Birthdays: Sam Park and Sam Park');
+      expect(texts(f)[0]?.mentions?.map(mention => mention.ref.id)).toEqual(['sam-1', 'sam-2']);
     });
     it('goes at its own time on its own two sends a day, so it never takes the Digest’s', async () => {
       const f = fixture([...routine(1), task('bill', 'Pay electricity bill', 1, '12:00')]);
@@ -341,7 +381,7 @@ describe('D-325 scheduled overview through the shared query', () => {
     });
     it('names the next agenda only while it is on, and sends a held-over agenda no later than its own day', async () => {
       const f = fixture([...routine(1), ...routine(2)]); f.time(on(1, '06:00'));
-      expect(f.service().agendaStatus()).toEqual({ settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 },
+      expect(f.service().agendaStatus()).toEqual({ settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1, suggestions: false },
         last_run: null, last_sent: null, pending: 0, uncertain: 0 });
       agendaOnly(f, { time: '07:00', day: 'today' }); f.fail(true); f.time(on(1, '07:00')); await f.service().tick();
       expect(f.service().agendaStatus().pending).toBe(1);
@@ -384,14 +424,14 @@ describe('D-325 scheduled overview through the shared query', () => {
         { weekday: 0 }, { weekday: 8 }, { weekday: 1.5 }, { weekday: '1' }]) {
         expect(() => f.service().setAgenda(patch as never)).toThrow('Choose a valid agenda schedule');
       }
-      expect(f.service().agendaSettings()).toEqual({ enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 });
+      expect(f.service().agendaSettings()).toEqual({ enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1, suggestions: false });
     });
     it('reads settings saved before the weekly choice as daily, and a save that names neither keeps them', () => {
       const f = fixture(); f.store.writeSetting('situations.agenda', { enabled: true, time: '06:30', day: 'tomorrow' });
-      expect(f.service().agendaSettings()).toEqual({ enabled: true, time: '06:30', day: 'tomorrow', frequency: 'daily', weekday: 1 });
+      expect(f.service().agendaSettings()).toEqual({ enabled: true, time: '06:30', day: 'tomorrow', frequency: 'daily', weekday: 1, suggestions: false });
       // A client from before the weekly choice saves the three fields it knows.
       f.service().setAgenda({ frequency: 'weekly', weekday: 5 }); f.service().setAgenda({ enabled: true, time: '07:15', day: 'today' });
-      expect(f.service().agendaSettings()).toEqual({ enabled: true, time: '07:15', day: 'today', frequency: 'weekly', weekday: 5 });
+      expect(f.service().agendaSettings()).toEqual({ enabled: true, time: '07:15', day: 'today', frequency: 'weekly', weekday: 5, suggestions: false });
     });
     it('keeps each card’s last run and last sent through retention', async () => {
       const f = fixture([...routine(1), task('bill', 'Pay electricity bill', 1, '12:00')]);
@@ -653,6 +693,28 @@ describe('D-325 day-of notification ownership', () => {
     expect(f.send.mock.calls[0]?.[0].text).toContain('Independent event');
   });
 
+  it('titles the due-day note "Due today", and leaves a day the Agenda lists that morning or the evening before to it (D-338)', async () => {
+    // Monday 19 October. The owner: "Today" is the screen's name; the note repeated what the Agenda lists.
+    const event = fact('independent', { title: 'Independent event', when: { from: monday, to: monday + 3_600_000 }, act_by: monday });
+    const notes = async (agenda?: Partial<import('@recued/contracts').SituationAgendaSettings>) => {
+      const f = fixture([event]); dayOfOnly(f);
+      // At 23:00 it has not gone yet at 08:30: what decides is what it lists.
+      if (agenda) f.service().setAgenda({ enabled: true, time: '23:00', ...agenda });
+      await f.service().tick();
+      return f.send.mock.calls.map(([message]) => message.title);
+    };
+    expect(await notes()).toEqual(['Due today']);
+    // A daily Agenda lists every day, that morning or the evening before.
+    expect(await notes({ frequency: 'daily', day: 'today' })).toEqual([]);
+    expect(await notes({ frequency: 'daily', day: 'tomorrow' })).toEqual([]);
+    // A weekly one lists the first day of its week so: Monday's own, or Sunday evening's for a week from Monday.
+    expect(await notes({ frequency: 'weekly', weekday: 1, day: 'today' })).toEqual([]);
+    expect(await notes({ frequency: 'weekly', weekday: 7, day: 'tomorrow' })).toEqual([]);
+    // Its other days keep their note: it listed them days before.
+    expect(await notes({ frequency: 'weekly', weekday: 2, day: 'today' })).toEqual(['Due today']);
+    expect(await notes({ frequency: 'weekly', weekday: 1, day: 'tomorrow' })).toEqual(['Due today']);
+  });
+
   it('retains an independent reason inside a cluster crowded by higher-ranked clocks', async () => {
     const clocks = ['a', 'b', 'c'].map(id => clockFact('asset', { ref: { collection: 'asset', id, field: 'rules.renew' },
       title: `Clock ${id}`, subjects: [{ collection: 'asset', id: 'home' }] }));
@@ -705,7 +767,7 @@ describe('D-325 day-of notification ownership', () => {
     await f.service().sendNow(); expect(f.send).toHaveBeenCalledTimes(1);
     const text = f.send.mock.calls[0]![0].text;
     expect(text).not.toContain('Ana’s passport'); expect(text).not.toContain('2026-10-19');
-    expect(text).toContain('Private reminder');
+    expect(text).toContain('Reminder in Yours');
     // Today, inside the app, still names it.
     const today = (await f.service().today({ now: monday, before: monday + 86_400_000 })).situations.clusters.flatMap(cluster => cluster.items);
     expect(JSON.stringify(today)).toContain('Ana’s passport');
@@ -751,8 +813,8 @@ describe('D-325 day-of notification ownership', () => {
     await f.service().tick(); expect(f.send).toHaveBeenCalledTimes(1);
     const lines = f.send.mock.calls[0]![0].text.split('\n');
     expect(lines.join('\n')).not.toMatch(/Ana’s|Tokyo trip/u);
-    expect(lines.filter(line => line === 'Private reminder · open Today for the details')).toHaveLength(2);
-    expect(lines).toContain('Order flowers · 2026-10-16 · shortly before a private reminder');
+    expect(lines.filter(line => line === 'Reminder in Yours')).toHaveLength(2);
+    expect(lines).toContain('Order flowers · 2026-10-16 · shortly before a reminder in Yours');
     // The rest is named as before, its group's summary included.
     expect(lines).toEqual(expect.arrayContaining(['Shop opening · 2026-10-22', 'Summary: Shop opening']));
   });
@@ -775,7 +837,7 @@ describe('D-325 day-of notification ownership', () => {
     f.facts([alone(commitment, 'Renew passport · Ana’s passport'), alone('gift-commitment', 'Buy a gift for Ana’s birthday')]);
     await f.service().tick();
     const text = f.send.mock.calls[0]![0].text;
-    expect(text.split('\n').filter(line => line === 'Private reminder · open Today for the details')).toHaveLength(2); expect(text).not.toContain('Ana’s');
+    expect(text.split('\n').filter(line => line === 'Reminder in Yours')).toHaveLength(2); expect(text).not.toContain('Ana’s');
   });
   it('says a resolution is private where its item’s own reminder would be, though its record is gone', async () => {
     const f = fixture([]);
@@ -792,7 +854,7 @@ describe('D-325 day-of notification ownership', () => {
     history.deleteOccasion(birthday.id);
     f.facts([]); await f.service().tick();
     const text = f.send.mock.calls[0]![0].text;
-    expect(text.split('\n').filter(line => line === 'Resolved · a private reminder')).toHaveLength(2);
+    expect(text.split('\n').filter(line => line === 'Resolved · a reminder in Yours')).toHaveLength(2);
     expect(text).not.toContain('Ana’s');
   });
   it.each(['asset', 'occasion'])('leaves a lone %s clock to its own reminder schedule, without spending the push budget', async collection => {

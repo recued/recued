@@ -221,6 +221,8 @@ export interface ComposeExecuteDepsDeps {
   gatedActionStore?: GatedActionStore;
   /** D-329 §3.4 — see `ExecuteHandlerDeps.writeRules`. */
   writeRules?: ExecuteHandlerDeps['writeRules'];
+  /** D-335 slice F — see `ExecuteHandlerDeps.browserPasses`. */
+  browserPasses?: ExecuteHandlerDeps['browserPasses'];
   /** Notification-block prereq beyond the four executeDeps shares above
    *  (db / auditLog / checkpointStore). Helper composes the block only
    *  when all four are present together. ALSO forwarded onto
@@ -1097,6 +1099,7 @@ export const composeExecuteDeps = (
     ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
     ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
     ...(deps.writeRules ? { writeRules: deps.writeRules } : {}),
+    ...(deps.browserPasses ? { browserPasses: deps.browserPasses } : {}),
     // D-157 server-wiring — the D-158 notification block, threaded as
     // the preflight notifier. `execute-handler` calls `raisePreflightAsk`
     // on this dep when the engine pauses on a policy `ask`; the

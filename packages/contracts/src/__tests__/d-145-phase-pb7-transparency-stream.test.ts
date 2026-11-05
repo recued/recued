@@ -675,6 +675,16 @@ describe('D-145 PB7 — § B.8.4 Recued voice templates', () => {
     );
   });
 
+  it('D-337 — a turn that stops for an approval says the rest waits for it', () => {
+    const event = {
+      kind: 'recued.multi_turn.loop_terminated',
+      total_rounds: 4,
+      termination_reason: 'waiting_for_approval',
+    } as const;
+    expect(validateTransparencyEvent(event)).toEqual([]);
+    expect(renderTransparencyTemplate(event)).toBe('stopped after 4 rounds — the rest waits for an approval');
+  });
+
   it('fixed_slot_drift renders with slot + alternative_index', () => {
     const event: TransparencyEvent = {
       kind: 'fixed_slot_drift',

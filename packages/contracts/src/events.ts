@@ -361,6 +361,9 @@ export type ServerEvent =
       title?: string;
       text: string;
       link_url?: string;
+      /** D-338 §11 — words in `text` that name a record: the app links each to it (a
+       *  birthday's name opens the contact). A client before it shows the text alone. */
+      mentions?: ReadonlyArray<{ text: string; ref: { collection: string; id: string } }>;
       cursor: number;
     }
   | {

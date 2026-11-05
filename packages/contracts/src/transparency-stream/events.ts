@@ -413,13 +413,16 @@ export type TransparencyMultiTurnTerminationReason =
    *  by a set-equality test in the PB5 contracts suite. */
   | 'output_unreadable'
   /** Repeated re-read results were lost again to context trimming. */
-  | 'context_trim_livelock';
+  | 'context_trim_livelock'
+  /** The rest of the turn waits for an approval the owner has not answered. */
+  | 'waiting_for_approval';
 export const TRANSPARENCY_MULTI_TURN_TERMINATION_REASONS: ReadonlyArray<TransparencyMultiTurnTerminationReason> = [
   'completed',
   'max_rounds_exhausted',
   'aborted',
   'output_unreadable',
   'context_trim_livelock',
+  'waiting_for_approval',
 ];
 
 type TransparencyStandingInstructionAppliedActionKind =
