@@ -215,6 +215,7 @@ import {
 } from '@recued/ui-shared/action-dispatcher';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { serializeShellRoute } from '../shell/route.js';
 import type {
   CredentialRotationContinuityStore,
 } from '../connections/credential-rotation-continuity.js';
@@ -1700,6 +1701,8 @@ export const mountConnectionsEnrollPanel = (
     void opts.runManagedOAuth?.({ action: 'retire_direct_authentication', auth: review.auth }).catch(() => {});
   };
   let hasPackEnrollmentContext = false;
+  /** D-321 P8 — the pack the form was opened from, so its save offers the way back. */
+  let packEnrollmentSource: { slug: string; slot?: string } | undefined;
   let activePermissionRepair: ConnectionPermissionRepair | undefined;
   // D-322 — the module owns its short-lived claims and broker key draft.
   const managedOAuthPanel = createManagedOAuthPanel({
@@ -3100,6 +3103,7 @@ export const mountConnectionsEnrollPanel = (
   const beginDialogNavigation = (): void => {
     if (activePermissionRepair) resetDialog();
     hasPackEnrollmentContext = false;
+    packEnrollmentSource = undefined;
     releaseCredentialRotationOwnership(true);
     retireProviderSetupContinuity();
     cancelPendingOAuth();
@@ -4921,7 +4925,8 @@ export const mountConnectionsEnrollPanel = (
           // Surface to the renderer so each api connection row can show its
           // "Used by packs" coverage, and re-render — the connection list
           // typically painted before this best-effort fetch resolved.
-          state.installedPacks = installedPacks;
+          // D-321 P8 — each pack named there links to its page.
+          state.installedPacks = installedPacks.map((pack) => ({ ...pack, href: serializeShellRoute('packs', pack.slug) }));
           const reclaimFocus = packRetryOwnsFocus();
           delete state.packInventoryRecovery;
           if (reclaimFocus) {
@@ -5114,6 +5119,7 @@ export const mountConnectionsEnrollPanel = (
   const openVendorEnrollForm = (vendor: string, source?: import('../connections/connections-navigation.js').ConnectionEnrollmentPack): void => {
     beginDialogNavigation();
     hasPackEnrollmentContext = source !== undefined;
+    packEnrollmentSource = source;
     const seed = vendorEnrollSeed(vendor);
     const pack = source === undefined ? undefined : availablePacks.find((p) => p.slug === source.slug);
     const requirements = pack?.connection_requirements?.filter((r) => r.vendor === vendor) ?? [];
@@ -7330,6 +7336,13 @@ export const mountConnectionsEnrollPanel = (
       }
       const reconnectCollections = switching ? (managedOAuthPanel.impactPreview() ?? dialog.directAuthenticationReview?.impact)?.connections
         .filter(c => c.name === savedName).flatMap(c => c.uses.filter(u => u.kind === 'mail' || u.kind === 'calendar')) : undefined;
+      // D-321 P8 — a connection set up from a pack offers the way back to it.
+      const returnTo = !isEdit && packEnrollmentSource !== undefined
+        ? {
+          href: serializeShellRoute('packs', packEnrollmentSource.slug),
+          label: availablePacks.find((pack) => pack.slug === packEnrollmentSource!.slug)?.name ?? packEnrollmentSource.slug,
+        }
+        : undefined;
       resetDialog();
       const postSaveDialogGen = dialogGen;
       if (credentialVerification !== undefined) {
@@ -7351,6 +7364,7 @@ export const mountConnectionsEnrollPanel = (
           kind: payload.kind,
           name: savedName,
           status: probeStatus ?? 'unknown',
+          ...(returnTo !== undefined ? { return_to: returnTo } : {}),
           ...(probeDetail ? { last_error: probeDetail } : {}),
           ...(probedAt !== undefined ? { checked_at: probedAt } : {}),
         };

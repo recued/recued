@@ -54,7 +54,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-221 added the list/get backing ingredients for pack-owned Records
   // reachability (19 → 21).
   'work-entity': 36,
-  situation: 2,
+  situation: 3,
   // D-198 follow-on — `core.memory.audit.read` moved OUT of `memory` (13→12)
   // into its own `audit` domain: run history is not the knowledge pool.
   // 12 → 10 on 2026-09-23: `core.memory.annotate` / `core.memory.link` retired
@@ -107,9 +107,12 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   watch: 3,
   // + D-335 slice A `core.dom.inspect`, the page read for an AI, slice B
   // `core.dom.click`, slice C `core.dom.tabs` and `core.dom.open`, slice H
-  // `core.dom.wait`, `core.dom.table` and `core.dom.screenshot`, and slice J
-  // `core.dom.act`, a sequence of steps approved once.
-  dom: 10,
+  // `core.dom.wait`, `core.dom.table` and `core.dom.screenshot`, slice J
+  // `core.dom.act`, a sequence of steps approved once, slice U `core.dom.scroll`, and slice AP
+  // `core.dom.download`, a file a page links to kept among the owner's files.
+  dom: 12,
+  // D-345 — the server's own fetch of a public web address: `core.http.get`, `.read`, `.download`.
+  http: 3,
 };
 
 describe('D-182 slice 3a — kernel op registry', () => {
@@ -251,14 +254,22 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // D-335 slice J — a sequence of steps on one page, approved once.
       'core.dom.act|dom|dom-act|write',
       'core.dom.click|dom|dom-click|write',
+      // D-335 slice AP — a file a page links to, kept among the owner's files.
+      'core.dom.download|dom|dom-download|read',
       'core.dom.inspect|dom|dom-inspect|read',
       'core.dom.open|dom|dom-open|write',
       'core.dom.read|dom|dom-read|read',
       'core.dom.screenshot|dom|dom-screenshot|read',
+      // D-335 slice U — a page scrolled a screen at a time.
+      'core.dom.scroll|dom|dom-scroll|read',
       'core.dom.table|dom|dom-table|read',
       'core.dom.tabs|dom|dom-tabs|read',
       'core.dom.wait|dom|dom-wait|read',
       'core.dom.write|dom|dom-write|write',
+      // D-345 — the HTTP Toolkit, the server's own fetch of a public web address.
+      'core.http.download|http|http-download|read',
+      'core.http.get|http|http-get|read',
+      'core.http.read|http|http-read|read',
       'core.kitchen.draft.get|kitchen|kitchen-draft-get|read',
       'core.kitchen.draft.import|kitchen|kitchen-draft-import|write',
       'core.kitchen.draft.list|kitchen|kitchen-draft-list|read',
@@ -364,6 +375,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // list is too common to have its search silently absent on a fresh box.
       'core.situation.prefetch|situation|(native)|read',
       'core.situation.read|situation|situation-query|read',
+      // D-343 slice 2 — the owner's closing records (`episode.record`), owner-on / door-off.
+      'core.situation.record|situation|(native)|write',
       'core.storage.csv.columns|storage|csv-columns|read',
       // ⛔ csv.filter SAVES a new file record per run, so it is a write; csv.rows
       // returns the same matches as a value and saves nothing.

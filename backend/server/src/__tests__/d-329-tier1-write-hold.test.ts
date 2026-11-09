@@ -68,6 +68,8 @@ const harness = (opts: {
   fanout?: readonly string[];
   /** D-336 (spec §41) — the contacts the hold names people by. */
   contactStore?: unknown;
+  /** D-188 — the owner paused the server, which stops the caller. */
+  paused?: boolean;
 } = {}) => {
   let clock = NOW;
   const calls: Array<{ name: string; args: unknown; ctx: ChatDispatchContext }> = [];
@@ -124,7 +126,7 @@ const harness = (opts: {
       resolve: ({ execution_source }: { execution_source: ExecutionSource }) =>
         opts.resolve?.(execution_source) ?? { admitted: true, execution_source },
     },
-    opAdmissionGate: { isOpGranted: (_s: ExecutionSource, op?: string) => op === undefined || (opts.granted?.(op) ?? true), isFrozenByPause: () => false },
+    opAdmissionGate: { isOpGranted: (_s: ExecutionSource, op?: string) => op === undefined || (opts.granted?.(op) ?? true), isFrozenByPause: () => opts.paused === true },
     newId: () => `id-${(seq += 1)}`,
     now: () => clock,
     ...(opts.writeRules !== undefined ? { writeRules: opts.writeRules } : {}),
@@ -592,3 +594,33 @@ describe('D-329 §3.4 — an AI app\'s approvals teach it a rule', () => {
   });
 });
 
+
+// D-188 — the owner's ruling of 2026-11-08: nothing new is asked during a pause. An app's Tier-1
+// write was held for an approval nobody could give until Resume (found live, 2026-11-08: a second
+// `memory.write` during the pause raised a second ask). Refused before its hold instead, in the
+// words that say it is the pause, not a grant.
+describe('D-188 — a paused server refuses an app\'s Tier-1 write before holding it', () => {
+  it('answers the app with the pause: no checkpoint, no ask, nothing run', async () => {
+    const h = harness({ paused: true });
+    const res = await h.call('calendar.create', EVENT);
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("'calendar.create' did not run (server_paused): server is paused");
+    expect(res.content[0]!.text).toContain('do not retry until the owner resumes');
+    expect(h.checkpoints.size).toBe(0);
+    expect(h.asks).toEqual([]);
+    expect(h.calls).toEqual([]);
+  });
+
+  it('refuses a held chat write the same way, and holds as before once resumed', async () => {
+    const paused = harness({ paused: true });
+    const source: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_session_id: 's1', user_id: 'owner-1' };
+    const refused = await holdTier1Call(paused.deps as unknown as Parameters<typeof holdTier1Call>[0],
+      { tool: 'calendar.create', args: EVENT, executionSource: source, sessionId: 's1' });
+    expect(refused).toMatchObject({ kind: 'refused' });
+    expect(paused.checkpoints.size).toBe(0);
+    const running = harness();
+    const held = await holdTier1Call(running.deps as unknown as Parameters<typeof holdTier1Call>[0],
+      { tool: 'calendar.create', args: EVENT, executionSource: source, sessionId: 's1' });
+    expect(held).toMatchObject({ kind: 'held' });
+  });
+});

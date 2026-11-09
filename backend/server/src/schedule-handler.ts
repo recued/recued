@@ -241,7 +241,7 @@ const scheduleWithConfig = (
     ...(reschedule ? { reschedule_identity: reschedule.identity,
       ...(reschedule.revision ? { reschedule_revision: reschedule.revision } : {}) } : {}),
     ...(overlay !== undefined ? { config_overlay: overlay } : {}),
-    ...(behind ? { missed_cycles: countMissedCycles(s, now) } : {}),
+    ...(behind ? { missed_cycles: countMissedCycles(s, now, deps.serverTimeZone?.()) } : {}),
   };
 };
 
@@ -589,14 +589,14 @@ export const updateSchedule = (
  *  where "this function later reads `instanceId`" becomes a runtime
  *  failure with no red. Declaring what is actually read makes that a
  *  compile error at both call sites instead. */
-export type MissedRunDeps = Pick<ScheduleHandlerDeps, 'store' | 'now' | 'recipeStore'>;
-export type AnswerMissedDeps = Pick<ScheduleHandlerDeps, 'store' | 'now' | 'eventBus'>;
+export type MissedRunDeps = Pick<ScheduleHandlerDeps, 'store' | 'now' | 'recipeStore' | 'serverTimeZone'>;
+export type AnswerMissedDeps = Pick<ScheduleHandlerDeps, 'store' | 'now' | 'eventBus' | 'serverTimeZone'>;
 
 export const missedRuns = (
   deps: MissedRunDeps,
 ): ServerMissedRunReport => {
   const now = deps.now?.() ?? Date.now();
-  const report = buildMissedRunReport(deps.store.list(), now);
+  const report = buildMissedRunReport(deps.store.list(), now, deps.serverTimeZone?.());
   return {
     outage_from: report.outage_from,
     outage_to: report.outage_to,
@@ -659,7 +659,7 @@ export const answerMissed = (
     || wantedRecipes?.includes(entry.recipe_id) === true
     || (entry.dish_id !== undefined && wantedDishes?.includes(entry.dish_id) === true);
   const now = deps.now?.() ?? Date.now();
-  const report = buildMissedRunReport(deps.store.list(), now);
+  const report = buildMissedRunReport(deps.store.list(), now, deps.serverTimeZone?.());
 
   // ⛔ FLOOR THE ANSWER TO ITS MINUTE, OR IT OUTLIVES THE FIRE IT
   // AUTHORISES. The scheduler stamps a catch-up's `last_run_at` with

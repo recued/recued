@@ -85,12 +85,12 @@ describe('chat activity projections', () => {
       },
       {
         kind: 'tool',
-        text: 'couldn\'t run mail.search: connection unavailable',
+        text: 'couldn\'t run mail.search: its connection is not available',
         status: 'error',
       },
       {
         kind: 'tool',
-        text: 'couldn\'t run mail.search: execution error',
+        text: 'couldn\'t run mail.search: it failed',
         status: 'error',
       },
     ]);
@@ -220,7 +220,7 @@ describe('chat activity projections', () => {
       { kind: 'tool', text: 'running mail.search...', status: 'started' },
       {
         kind: 'tool',
-        text: 'couldn\'t run calendar.create: execution error',
+        text: 'couldn\'t run calendar.create: it failed',
         status: 'error',
       },
     ]);

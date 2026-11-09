@@ -67,6 +67,8 @@ export interface StartPostHousekeepingTailOptions {
   readonly dbPath: string;
   readonly runtimeConfig: RuntimeConfigStore;
   readonly backgroundServices: BackgroundServiceRegistry;
+  /** D-188 — the owner's pause, for the services started here that act outside on their own. */
+  readonly isServerPaused?: () => boolean;
   readonly storage: PostHousekeepingTailStorageContext;
   readonly app: PostHousekeepingTailAppContext;
   readonly collection: PostHousekeepingTailCollectionContext;
@@ -125,6 +127,7 @@ export const startPostHousekeepingTail = (
 
   startRetentionPruners({
     backgroundServices: options.backgroundServices,
+    ...(options.isServerPaused ? { isPaused: options.isServerPaused } : {}),
     runtimeConfig: options.runtimeConfig,
     auditRetention: storage.auditRetention,
     s2sPreviewStore: storage.s2sPreviewStoreRef,

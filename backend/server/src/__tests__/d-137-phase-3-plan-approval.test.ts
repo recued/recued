@@ -551,3 +551,36 @@ describe('D-137 P3 § A.11 — orchestrator dispatchTool plan-approval gate', ()
     expect(shape.pattern).toBe(1);
   });
 });
+
+// D-188 — the owner's ruling of 2026-11-08: a plan's writes run as the owner's AI, which the pause
+// stops, so while the server is paused a plan cannot be approved. It waits for Resume, untouched;
+// cancelling still works.
+describe('D-188 — a plan while the server is paused', () => {
+  it('refuses approving it, leaving it proposed, unannounced and unaudited', async () => {
+    const deps = { ...setupHandlerDeps(), isServerPaused: () => true };
+    seedProposal(deps.planApprovalStore);
+    await expect(handlePlanApprove(deps, { plan_id: 'plan-1' })).rejects.toMatchObject({
+      code: 'server_paused',
+      message: 'The server is paused. Resume it to approve this plan; you can still cancel it.',
+      status: 409,
+    });
+    expect((await deps.planApprovalStore.get('plan-1'))?.status).toBe('proposed');
+    expect(deps.broadcasted).toEqual([]);
+    expect(deps.auditRows).toEqual([]);
+  });
+
+  it('…still cancels it', async () => {
+    const deps = { ...setupHandlerDeps(), isServerPaused: () => true };
+    seedProposal(deps.planApprovalStore);
+    expect((await handlePlanCancel(deps, { plan_id: 'plan-1' })).plan.status).toBe('cancelled');
+  });
+
+  it('…and approves it once resumed', async () => {
+    let paused = true;
+    const deps = { ...setupHandlerDeps(), isServerPaused: () => paused };
+    seedProposal(deps.planApprovalStore);
+    await expect(handlePlanApprove(deps, { plan_id: 'plan-1' })).rejects.toMatchObject({ code: 'server_paused' });
+    paused = false;
+    expect((await handlePlanApprove(deps, { plan_id: 'plan-1' })).plan.status).toBe('approved');
+  });
+});

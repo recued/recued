@@ -185,12 +185,13 @@ describe('`done` takes the mark-done path, never the field-edit path', () => {
     expect(d.__taskUpdate).not.toHaveBeenCalled();
   });
 
-  it('refuses `done` on a non-task kind', async () => {
+  it('refuses `done` on a kind that is neither a task nor a commitment', async () => {
     const d = deps();
     const h = buildChatTier1Handlers(d);
     const res = await h['work.update']!({ kind: 'note', id: 'n1', done: true }, ctx());
     expect(res.ok).toBe(false);
-    expect((res as { detail: string }).detail).toMatch(/task only/i);
+    // D-343 slice 1 — a commitment is kept by `done` too (`d-343-commitment-close.test.ts`).
+    expect((res as { detail: string }).detail).toMatch(/applies to a task or a commitment/i);
   });
 
   it('gates the completion on its OWN op, not the update op', async () => {
@@ -364,7 +365,8 @@ describe('every field goes where its kind keeps it, or is refused', () => {
 
   it.each([
     ['a commitment\'s body', { kind: 'commitment', body: 'x' }, /a commitment has no `body` — what was promised is its `title`/u],
-    ['a commitment\'s state', { kind: 'commitment', state: 'blocked' }, /a commitment has no `state`/u],
+    // D-343 slice 1 — `cancelled` is a commitment's one state: it cancels it (`d-343-commitment-close.test.ts`).
+    ['a commitment\'s state', { kind: 'commitment', state: 'blocked' }, /a commitment's only `state` is `cancelled`/u],
     ['a note\'s state', { kind: 'note', state: 'blocked' }, /a note has no `state`/u],
     ['a promise date on a task', { kind: 'task', promised_for_at: '2026-10-02' }, /commitment only — a task's date is `due_at`/u],
     ['a task deadline on a commitment', { kind: 'commitment', due_at: 99_000 }, /task only — a commitment's date is `promised_for_at`/u],

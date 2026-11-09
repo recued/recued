@@ -1,6 +1,6 @@
 /** D-182 — the chat activity row surfaces a failed run's concise error line
- *  (e.g. the cli "not found" message) for an `execution_error`, while other
- *  reasons keep their bare slug. */
+ *  (e.g. the cli "not found" message) for an `execution_error`; other reasons read in
+ *  words (D-346 follow-up), and a switched-off call in its own first sentence. */
 
 import { describe, expect, it } from 'vitest';
 
@@ -20,17 +20,29 @@ describe('D-182 — chat activity error line', () => {
     })).toBe("couldn't run recipe.run: cli tool 'whisper' was not found");
   });
 
-  it('a non-execution_error reason keeps its slug (the detail is not surfaced)', () => {
+  it('another reason reads in words, not its slug (the detail is not surfaced)', () => {
     expect(toolText({
       tool_name: 'recipe.run', tier: 2, args: {}, status: 'error',
       reason: 'run_cancelled', detail: 'a long do-not-retry posture message …',
-    })).toBe("couldn't run recipe.run: run cancelled");
+    })).toBe("couldn't run recipe.run: it was cancelled");
+  });
+
+  // D-346 follow-up (2026-11-08) — a switched-off call reads its own first sentence, which
+  // says what is off; it read "couldn't run mail.search: classification blocked".
+  it('a switched-off call says what is off, in its own words', () => {
+    expect(toolText({
+      tool_name: 'mail.search', tier: 1, args: {}, status: 'error', reason: 'classification_blocked',
+      detail: "'mail.search' is turned off for you, so it did not run. To use it, turn it on under Self (you) → Ops on the Contracts page.",
+    })).toBe("'mail.search' is turned off for you, so it did not run");
+    expect(toolText({
+      tool_name: 'mail.search', tier: 1, args: {}, status: 'error', reason: 'classification_blocked',
+    })).toBe("couldn't run mail.search: it is switched off");
   });
 
   it('an execution_error without a detail falls back to the slug', () => {
     expect(toolText({
       tool_name: 'recipe.run', tier: 2, args: {}, status: 'error', reason: 'execution_error',
-    })).toBe("couldn't run recipe.run: execution error");
+    })).toBe("couldn't run recipe.run: it failed");
   });
 
   it('a very long detail is truncated to one capped line', () => {

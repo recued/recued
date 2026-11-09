@@ -624,6 +624,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
         connectionCatalogBindingStore: createConnectionCatalogBindingStore(contractStore) },
       clientTokens, definitions: executeDepsBundle.contractDefinitionStore, inboundTokens: chatBundle.inboundTokenStore,
       notifications: executeDepsBundle.notificationBlock, keys,
+      serverTimeZone: () => resolveServerTimeZone(serverZoneStore.read(), Intl.DateTimeFormat().resolvedOptions().timeZone),
       reviewLink: proposalId => {
         const base = publicAddress.baseUrl('root');
         return base ? `${base}/#approvals/preapproval/${encodeURIComponent(proposalId)}` : null;

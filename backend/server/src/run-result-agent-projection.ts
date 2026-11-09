@@ -54,6 +54,16 @@ export const TRIGGER_SKIPPED_MESSAGE =
   + 'recipe looks for, and do not retry: the trigger will skip again. Tell the '
   + 'user the recipe did not run because its trigger condition was not met.';
 
+/** D-341 slice A — what a run whose browser writes the owner's chat let through without asking
+ *  ("Don't ask about browser actions", its request pass) says of it, as `ran_without_asking`: the
+ *  run's answer names it, so the answer the model writes can. Said once a run, whatever its count:
+ *  a batch of steps is one write, and a run held at a later step did not run that step.
+ *
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const RAN_WITHOUT_ASKING_MESSAGE =
+  'What this did in the browser ran without asking the user, since “Don’t ask about browser actions” '
+  + 'is on in this chat.';
+
 /** ⚠ WHERE, NOT ONLY THAT. Until 2026-10-04 this said the action needs approval
  *  and never where it is given, so the model supplied a place: "your Contracts
  *  view" (whose only source is the grant-proposal sentence in
@@ -628,6 +638,22 @@ const collectItemRefusals = (result: object): AgentItemsRefusedAnnotation | null
  *  extension-delegated MCP path, whose result is opaquely typed — a non-object
  *  or a plain result is returned by reference, so it is always safe to wrap
  *  any agent-facing recipe result through here. Pure. */
+/** D-335 slice Q — a run's output as an AI reads it: once. The engine writes every section twice,
+ *  `output.render` and `output.sidebar` (the same array: `renderOutput` in
+ *  `packages/engine/src/execute.ts`, the old name kept for clients that still read it, such as the
+ *  web app's result panel). Serialized for a model, the second copy doubled every recipe result it
+ *  read: a page's outline, a mail list, a table. Only what a model is sent drops it, and only when
+ *  it is the same as `render`; the result itself, its row and every client keep both. */
+export const withoutRenderAlias = (result: unknown): unknown => {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+  const output = (result as { output?: unknown }).output;
+  if (output === null || typeof output !== 'object' || Array.isArray(output)) return result;
+  const { render, sidebar, ...rest } = output as { render?: unknown; sidebar?: unknown };
+  if (!Array.isArray(render) || !Array.isArray(sidebar)
+    || (sidebar !== render && JSON.stringify(sidebar) !== JSON.stringify(render))) return result;
+  return { ...(result as Record<string, unknown>), output: { ...rest, render } };
+};
+
 export const projectRunResultForAgent = (
   result: unknown,
   /** The conversation the run was asked from (its `execution_source`), when a chat projects
@@ -635,6 +661,23 @@ export const projectRunResultForAgent = (
   options: { readonly conversation?: unknown } = {},
 ): unknown => {
   if (typeof result !== 'object' || result === null) return result;
+  // D-341 slice A — the count is the server's; the model reads it as a sentence, on whatever
+  // this run's result says (a run held at a later step still did the steps before it). First, so
+  // a long result (a page's outline) that is cut for the model still carries it.
+  if (Object.hasOwn(result, 'request_pass_writes')) {
+    const { request_pass_writes: writes, ...rest } = result as Record<string, unknown>;
+    const projected = projectRunResultForAgent(rest, options);
+    return typeof writes === 'number' && writes > 0 && projected !== null && typeof projected === 'object'
+      ? { ran_without_asking: RAN_WITHOUT_ASKING_MESSAGE, ...(projected as Record<string, unknown>) }
+      : projected;
+  }
+  // D-321 P2 / C2 — `run_needs` is for the owner's run surfaces (contracts
+  // `run-needs.ts`): a model reads a run as it did before it existed, its errors
+  // saying what failed. Dropped here, where every agent path projects a run.
+  if (Object.hasOwn(result, 'run_needs')) {
+    const { run_needs: _needs, ...rest } = result as Record<string, unknown>;
+    return projectRunResultForAgent(rest, options);
+  }
   const terminated = (result as { run_terminated?: RunControlTermination }).run_terminated;
   if (terminated !== undefined) {
     const cancelled = result as ExecuteResponse;

@@ -123,13 +123,31 @@ export const TOOLS_SEARCH_NO_MATCH_GUIDANCE =
  *  shown to the owner as links under the answer (ruling P3), and installing is
  *  the owner's, through the consent dialog; the model's part is to say which
  *  one fits and what it would do. A model that "helpfully" claims it set
- *  something up is the failure this copy exists to prevent. */
+ *  something up is the failure this copy exists to prevent.
+ *
+ *  The owner's ruling (2026-11-08), until a chat can resume after an install (D-323 P6,
+ *  not built): the model asks the owner to let it know when it is installed and switched
+ *  on, so the owner knows to come back and say so. */
 const TOOLS_SEARCH_INSTALLABLE_ADDENDUM =
   'The "installable" list names packs and recipes from the Recued marketplace that would do it. '
   + 'They are NOT installed: you cannot call them and you cannot install them. The owner sees each '
   + 'one as a link under your answer and installs it from there. In one or two sentences, name the '
-  + 'one that fits the request and say what it would do. Never say you installed or ran it. If none '
-  + 'fits, say that nothing installed does this.';
+  + 'one that fits the request and say what it would do, then ask the owner to let you know when '
+  + 'they have it installed and switched on, so you can carry on. Never say you installed or ran '
+  + 'it. If none fits, say that nothing installed does this.';
+/** D-346 follow-up (2026-11-08) — something installed does it, but it is switched off for
+ *  the owner (Self (you) → Recipes or Ops on the Contracts page). The owner asked that their
+ *  own turns know everything: before, an installed recipe they had switched off was simply
+ *  absent from the search, and the model told them nothing installed could do it. */
+const TOOLS_SEARCH_TURNED_OFF_GUIDANCE =
+  'No recipe or action you can call matches this request, but the installed ones in "turned_off" '
+  + 'do. They are switched off for the owner, so you cannot call them. Name the one that fits, say '
+  + 'what it would do, and tell the owner to turn it on where its "turn_on_under" says and to let you '
+  + 'know once it is on, so you can carry on. Do NOT retry tools.search with reworded queries.';
+const TOOLS_SEARCH_TURNED_OFF_ADDENDUM =
+  ' The installed ones in "turned_off" match too, but are switched off for the owner: if one fits '
+  + 'better, name it and tell the owner to turn it on where its "turn_on_under" says and to let you '
+  + 'know once it is on.';
 const TOOLS_SEARCH_INSTALLABLE_GUIDANCE =
   'No installed recipe tool or action matches this request. ' + TOOLS_SEARCH_INSTALLABLE_ADDENDUM
   + ' Do NOT retry tools.search with reworded queries.';
@@ -175,7 +193,17 @@ export interface ToolsSearchWrapOptions {
    *  what it found installed. Absent ⇒ no offers, and every result reads as
    *  before. */
   installOffers?: ToolsSearchInstallOffers;
+  /** D-346 follow-up — see `ToolsSearchTurnedOffSource`. */
+  ownerTurnedOff?: ToolsSearchTurnedOffSource;
 }
+
+/** D-346 follow-up — what is installed but switched off for the OWNER, with the tab of their
+ *  row on the Contracts page that holds its switch. Empty for any other source. */
+export interface ToolsSearchTurnedOffEntry {
+  entry: ToolEntry;
+  tab: 'Ops' | 'Recipes';
+}
+export type ToolsSearchTurnedOffSource = (source?: ExecutionSource) => ReadonlyArray<ToolsSearchTurnedOffEntry>;
 
 /** Dispatch the search over the registry's OWN exposed Tier-2 set (so the
  *  corpus is identical to the main-turn projection — same exposure filter,
@@ -211,6 +239,8 @@ const dispatchToolsSearch = (
   rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry>,
   /** D-323 — see `ToolsSearchWrapOptions.installOffers`. */
   installOffers?: ToolsSearchInstallOffers,
+  /** D-346 follow-up — see `ToolsSearchTurnedOffSource`. */
+  ownerTurnedOff?: ToolsSearchTurnedOffSource,
 ): ((raw: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>) =>
   async (raw, ctx) => {
     // ⛔ FIRST, before the query is even parsed — a door must not learn what a
@@ -244,6 +274,14 @@ const dispatchToolsSearch = (
     const visible = reachable === undefined ? tier2 : tier2.filter((entry) => reachable(entry.name));
     const rawOps = rawOpSource?.(ctx?.execution_source) ?? [];
     const matches = searchToolCatalog([...visible, ...rawOps], args.query, limit);
+    // D-346 follow-up — for the owner, what is installed but switched off for them, so the
+    // answer is "turn it on", not "nothing installed does it". The source answers nothing for
+    // any other caller, and a door never reaches here (`ownerCatalogGuard`).
+    const turnedOff = ownerTurnedOff?.(ctx?.execution_source) ?? [];
+    const tabOf = new Map(turnedOff.map(({ entry, tab }) => [entry.name, tab] as const));
+    const offMatches = turnedOff.length > 0
+      ? searchToolCatalog(turnedOff.map(({ entry }) => entry), args.query, limit)
+      : [];
     // ⛔ SEARCHED ALWAYS, RETURNED SECOND. The docs answer "how does this work"
     // where the catalog answers "what can I run", and a question often wants
     // both — but a tool is a thing the model can DO, so it leads. Doc hits are
@@ -257,7 +295,9 @@ const dispatchToolsSearch = (
     // on it, four of six requests only the marketplace serves were offered
     // nothing (spec §3a). A failing source offers nothing.
     const offers = installOffers !== undefined
-      ? await installOffers(args.query, matches.map((entry) => ({
+      // Something installed and switched off does it too: the owner turns it on, and is not
+      // offered a pack for what they already have.
+      ? await installOffers(args.query, [...matches, ...offMatches].map((entry) => ({
         name: entry.name,
         ...(entry.description !== undefined ? { description: entry.description } : {}),
         tags: entry.topic_tags,
@@ -282,6 +322,15 @@ const dispatchToolsSearch = (
         // D-323 — what the owner is offered under the answer, said to the model
         // too so it can name the one that fits. Never an `args_schema`: none of
         // them can be called. The turn's answer carries these to the owner.
+        ...(offMatches.length > 0
+          ? {
+              turned_off: offMatches.map((entry) => ({
+                recipe_slug: entry.name,
+                description: entry.description,
+                turn_on_under: `Self (you) → ${tabOf.get(entry.name) ?? 'Recipes'} on the Contracts page`,
+              })),
+            }
+          : {}),
         ...(offers.length > 0
           ? {
               installable: offers.map((offer) => ({
@@ -296,6 +345,9 @@ const dispatchToolsSearch = (
         guidance:
           matches.length > 0
             ? (offers.length > 0 ? TOOLS_SEARCH_PARTIAL_MATCHES_GUIDANCE : TOOLS_SEARCH_MATCHES_GUIDANCE)
+              + (offMatches.length > 0 ? TOOLS_SEARCH_TURNED_OFF_ADDENDUM : '')
+            : offMatches.length > 0
+              ? TOOLS_SEARCH_TURNED_OFF_GUIDANCE
             : docs.length > 0
               // ⛔ NOT the no-match copy. That copy tells the model to fall back
               // on "your own knowledge", which for a private product is the
@@ -381,8 +433,11 @@ export const wrapChatRegistryForCatalogModes = (
   /** D-323 — the marketplace offers for a search. POSITIONAL, like the two
    *  above: declared on the options alone, it would reach no search at all. */
   installOffers?: ToolsSearchInstallOffers,
+  /** D-346 follow-up — what is switched off for the owner. POSITIONAL, for the same reason. */
+  ownerTurnedOff?: ToolsSearchTurnedOffSource,
 ): InternalToolRegistry =>
   wrapRegistryWithToolsSearch(inner, {
+    ...(ownerTurnedOff ? { ownerTurnedOff } : {}),
     enabled: anyCatalogModeUsesToolsSearch(modes),
     ...(tier2GrantFilter ? { tier2GrantFilter } : {}),
     ...(tier2OwnerCatalog ? { tier2OwnerCatalog } : {}),
@@ -399,7 +454,7 @@ export const wrapRegistryWithToolsSearch = (
   const entry = TOOLS_SEARCH_TOOL_ENTRY;
   const dispatchSearch = dispatchToolsSearch(
     inner, opts.tier2GrantFilter, opts.tier2OwnerCatalog, opts.ownerCatalogGuard, opts.rawOpSource,
-    opts.installOffers,
+    opts.installOffers, opts.ownerTurnedOff,
   );
   return {
     list: () => insertToolEntryAfterTier1(inner.list(), entry),

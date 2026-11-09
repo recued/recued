@@ -1,3 +1,4 @@
+import { PAUSED_RUN_CODE, PAUSED_RUN_DETAIL, PAUSED_RUN_REFUSAL } from './pause-approval.js';
 import { connectionIdentity, connectionRevisionGuard } from './connection-revision.js';
 import { canonicalJsonString } from '@recued/recipes';
 import { collectRefs, mergeValueLabels } from '@recued/contracts';
@@ -50,6 +51,7 @@ import {
   type ExecutionContext,
   type ExecutionResult,
   type IngredientExecutor,
+  type OperationRefusal,
   type SharedResolvers,
 } from '@recued/engine';
 import { localMutationHash } from './storage/ordinary-local-mutation-receipts.js';
@@ -113,6 +115,10 @@ import type {
 } from '@recued/contracts';
 import {
   captureResourceReview,
+  scheduledPromptRunOf,
+  triggeredRunOf,
+  type TriggeredRun,
+  type TriggerPreapprovalHooks,
   entityFieldsFromMetaFields,
   entityFieldsFromRecordsSnapshot,
   isContainerPickDetail,
@@ -138,6 +144,7 @@ import {
   isOwnerDefaultOnlyEntry,
   isOpenProjectionRefusal,
   isBrowserActionSlug,
+  reviewedEachTime,
   stripCorePrefix,
   isOutboundSendSlug,
   isRecordsExecutionBinding,
@@ -222,8 +229,12 @@ import { heldSenderValueLabels, mailSenderAudienceOf, settleMailSenders, type Se
 import { heldPeopleValueLabels } from './held-people-labels.js';
 import { heldRecordArgument, heldRecordValueLabels } from './held-record-labels.js';
 import { heldCalendarValueLabels } from './held-calendar-labels.js';
-import { describeHeldBrowserTarget, heldBrowserTargetRefusal, heldBrowserValueLabels } from './bridges/dom-adapter.js';
-import { browserPassOfferFor, browserPassSiteFor, useBrowserPass } from './browser-passes.js';
+import { browserBatchReadsOnly, browserBatchUploads, describeHeldBrowserTarget, heldBrowserTargetRefusal, heldBrowserValueLabels } from './bridges/dom-adapter.js';
+import { browserBatchAdmissions } from './bridges/browser-batch-admission.js';
+import { browserPassOfferFor, browserPassSiteFor, useBrowserPass, useBrowserRequestPass } from './browser-passes.js';
+import { createNeutralWriteOf, recipeStepOps, triggerPreapprovalOfferFor } from './trigger-preapproval-ops.js';
+import { createScheduledPromptBrowserUse, scheduledPromptBrowserOffer } from './scheduled-prompt-preapproval.js';
+import { createTriggerPreapprovalAdmission } from './trigger-preapproval-admission.js';
 import {
   buildAuditEntry,
   newRunId,
@@ -260,6 +271,7 @@ import {
   type PolicyGateDenial,
 } from './policy-gate.js';
 import { applyAutoPiiForExecution } from './auto-pii-apply.js';
+import { browserFlows as processBrowserFlows } from './bridges/browser-flow-record.js';
 import {
   describeBreakingIngredientPin,
   findBreakingIngredientPins,
@@ -318,7 +330,14 @@ import {
 } from './pick-candidates.js';
 import { bindingsForCatalogs, catalogBindingsOf } from './storage/connection-catalog-binding-store.js';
 import { effectiveSlotDefault } from './pack-connection-outcomes.js';
-import { bundledPackManifestOf, catalogSlotsFrom, type PackManifestOf } from './pack-connection-slots.js';
+import {
+  bundledPackManifestOf,
+  catalogSlotsFrom,
+  installedPackOf,
+  requirementVendor,
+  signInLabel,
+  type PackManifestOf,
+} from './pack-connection-slots.js';
 import {
   applyConnectionChoices,
   assertChoicesHeld,
@@ -331,7 +350,11 @@ import {
   runConnectionSlots,
   settledConnections,
   type ConnectionUsed,
+  type RunConnectionSlot,
 } from './run-connection-choice.js';
+import { runNeedsOf } from './run-needs.js';
+import { PROGRAM_NOT_INSTALLED, missingProgramsMessage, missingProgramsOf } from './run-missing-programs.js';
+import type { ProgramPresence } from './cli-program-presence.js';
 import {
   raiseContainerPickAsk,
   type ContainerPickAskInput,
@@ -375,7 +398,7 @@ import type { EnrichmentStore } from './storage/enrichment-store.js';
 import { createEnrichmentReader } from './storage/enrichment-resolver.js';
 import { createStoredRowOriginResolver } from './stored-root-origin.js';
 import type { WsClient } from './ws-server.js';
-import { createSingleOperationAdmission } from './single-operation-admission.js';
+import { createSingleOperationAdmission, type SingleOperationAdmissionDeps } from './single-operation-admission.js';
 
 /** D-153 P2.C — closed set of system-actor channels whose dispatch
  *  path runs through the Engine-boundary policy gate. The first slice
@@ -1076,6 +1099,21 @@ export interface ExecuteHandlerDeps {
    *  one on its site, and the resumer mints the answer's and keeps every answer. Absent ⇒
    *  every browser write asks, offering allow once and deny. */
   browserPasses?: import('./storage/browser-pass-store.js').BrowserPassStore;
+  /** D-341 slice B1 — triggers' standing pre-approvals (trigger × recipe version × writes): the
+   *  commit gateway lets one stand in for the ask of a write a schedule, an event trigger or a
+   *  webhook started, spending a use. Absent ⇒ those writes ask. */
+  triggerPreapprovals?: import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore;
+  /** D-341 slice B2 — grants what a held write's "Always allow for this …" offered, when the owner
+   *  answers it (`preflight-resumer.ts`). Late-bound in `compose-listeners.ts`, where the stores a
+   *  trigger is checked against exist. Absent ⇒ that answer is a plain approve. */
+  triggerPreapprovalGranter?: Pick<import('./trigger-preapproval-rpc.js').TriggerPreapprovalGranter, 'grantOffer'>;
+  /** How long a hold waits for the Bridge to describe a browser write's element before its ask goes
+   *  out saying it could not (`HELD_BROWSER_DESCRIBE_TIMEOUT_MS` when absent). A harness that runs real
+   *  Chrome beside a whole suite gives it longer: the bound is the owner's wait, not the check's. */
+  heldBrowserDescribeTimeoutMs?: number;
+  /** D-335 slice W2 — where a run's browser steps are filed under the owner's chat turn that ran
+   *  it; the process's own by default (the DOM adapter records into the same one). */
+  browserFlows?: import('./bridges/browser-flow-record.js').BrowserFlowRecorder;
   /** D-221 — namespaced Records storage and execution authority. Optional for
    * old/dbless harnesses; a Records catalog call fails closed when absent. */
   recordsStore?: RecordsStore;
@@ -1103,6 +1141,11 @@ export interface ExecuteHandlerDeps {
    *  started was another thing a drain step waited on (2026-10-26). Late-bound by
    *  `composeListeners`, where the lifecycle exists. Absent ⇒ never draining. */
   isDraining?: () => boolean;
+  /** D-188 — the master "Pause server" flag. While it is on, no new run starts, whatever
+   *  starts it: the pause is the emergency stop (the owner's rulings of 2026-11-08). A run by
+   *  hand reads the owner's words; any other caller "not run", as for a drain.
+   *  Late-bound by `composeListeners`. Absent ⇒ never paused. */
+  isServerPaused?: () => boolean;
   /** Guided Yours sources pin the reviewed recipe, settings and API account on
    * manual and scheduled runs alike. Unmanaged dishes pass through unchanged. */
   prepareAssetWriterRun?: (request: ExecuteRequest) => ExecuteRequest;
@@ -1285,6 +1328,12 @@ export interface ExecuteHandlerDeps {
    *  bindings recorded none (a pack installed before slice 2b;
    *  `pack-connection-slots.ts`). Absent ⇒ the shipped packs' manifests. */
   packManifestOf?: PackManifestOf;
+  /** D-346 A — whether a cli catalog's program is on this server, read as its
+   *  launch reads it and never run (`cli-program-presence.ts`). A run with a step
+   *  that always runs and launches a program that is gone is refused before any
+   *  step runs (`program_not_installed`). Absent ⇒ no check up front, and each
+   *  step reports its own program, as before (db-less and unit paths). */
+  programPresence?: ProgramPresence;
   /** D-166 contract_definition — the contract-overlay use-resolution resolver
    *  (`createContractOverlayResolver`, built from the same local-only contract
    *  store as `contractScan`). The static `gateRecipeAgainstPolicy` pre-run walk +
@@ -2482,6 +2531,16 @@ export const handleExecute = (
   if (internal.resume_from === undefined && deps.isDraining?.() === true) {
     return Promise.reject(new RpcError('draining', 'The server is restarting; try again in a moment.', 503));
   }
+  // D-188 — no run starts while the server is paused, whatever starts it (the emergency stop,
+  // the owner's ruling of 2026-11-08), refused like a drain: before anything is registered or
+  // audited, so a schedule, a trigger or a queue reads "not run" and keeps its work for after
+  // Resume (`isRunRefusedForNow`). Their services stop with the pause; this holds when one is
+  // re-armed meanwhile, and for everything else. A resume is not refused here: one follows an
+  // approval, and approving waits for Resume.
+  if (internal.resume_from === undefined && deps.isServerPaused?.() === true) {
+    return Promise.reject(new RpcError(PAUSED_RUN_CODE,
+      request.trigger_source === 'manual' ? PAUSED_RUN_REFUSAL : PAUSED_RUN_DETAIL, 409));
+  }
   return withoutRunAbortContext(() => handleExecuteInRunContext(deps, request, internal));
 };
 
@@ -2637,6 +2696,9 @@ const handleExecuteInner = async (
   // hash the same canonical DEFINITION; only the reader's side was ever able to.
   authoredRecipeHash = hashRecipe(canonicalRecipeDefinition(recipe));
   authoredRecipeSha256 = createHash('sha256').update(canonicalJsonString(canonicalRecipeDefinition(recipe))).digest('hex');
+  // D-341 slice B1 — the version as authored, before anything rewrites the recipe for the run:
+  // a trigger's pre-approval is matched against the ops its own steps call (`recipeStepOps`).
+  const authoredRecipe = recipe;
   if (request.invocation !== undefined) {
     const invocation = request.invocation !== null
       && typeof request.invocation === 'object'
@@ -3015,6 +3077,20 @@ const handleExecuteInner = async (
   const connectionChoiceOwner = request.execution_source?.actor === 'user_self';
   const connectionDisplayName = (name: string): string | undefined =>
     deps.connectionStore?.get('api', name)?.display_name;
+  // D-321 P2 — a pack's name, and the vendor its requirement names with what to
+  // call the sign-in (as the Access tab names it): where the owner sets one up.
+  const packNameOf = (pack_slug: string): string | undefined => {
+    const name = (deps.packManifestOf ?? bundledPackManifestOf)(pack_slug)?.name;
+    return typeof name === 'string' && name.trim() !== '' ? name : undefined;
+  };
+  const slotSignIn = (pack_slug: string, slot: string): { vendor?: string; label: string } => {
+    const vendor = requirementVendor((deps.packManifestOf ?? bundledPackManifestOf)(pack_slug));
+    const name = packNameOf(pack_slug);
+    return {
+      ...(vendor !== undefined ? { vendor } : {}),
+      label: signInLabel(vendor, slot, name !== undefined ? [name] : []),
+    };
+  };
   // D-320 phase 3 (3d) — each vendor-neutral family's setting, for
   // `context.connections` below (the steps are lowered by then).
   let vendorNeutralFamilies: Readonly<Record<string, string>> = {};
@@ -3535,6 +3611,10 @@ const handleExecuteInner = async (
   // connection each slot settled on goes on the run's record and to a recipe this
   // run calls (`localRecipeInvoker`).
   let connectionsUsed: ConnectionUsed[] = [];
+  // D-321 P2 / C2 — the run's slots and the bindings read for them, kept for what a
+  // failed step needed (`run_needs`, below).
+  let runSlots: readonly RunConnectionSlot[] = [];
+  let runBindings: ReturnType<typeof bindingsForCatalogs> = [];
   {
     const steps = connectionSteps(recipe);
     const catalogs = [...new Set(steps.map((step) => step.catalog))];
@@ -3545,6 +3625,8 @@ const handleExecuteInner = async (
       steps,
       catalogSlotsFrom(bindings, catalogs, deps.packManifestOf ?? bundledPackManifestOf, runPackOps),
     );
+    runSlots = slots;
+    runBindings = bindings;
     // Read only for a run with a choice to check: a run with none never asks.
     const enrolled = (): Set<string> =>
       new Set((deps.connectionOperationProfiles?.list() ?? []).map(([name]) => name));
@@ -3595,7 +3677,34 @@ const handleExecuteInner = async (
         bindings,
         enrolled,
         owner: connectionChoiceOwner,
+        // D-321 P2 — where the owner's refusal says to set one up.
+        signInOf: slotSignIn,
       });
+    }
+  }
+
+  // D-346 A — a step that always runs and launches a program the server cannot
+  // find would stop the run there, after every step before it ran. Refused here
+  // instead, before any step (prefetch included), whoever started the run: each
+  // program and its pack go as data (`missing_programs`, the shape a step that
+  // stopped on its program has) beside a sentence a model or a log can read.
+  if (deps.programPresence !== undefined) {
+    const missingPrograms = missingProgramsOf({
+      recipe,
+      autoRunTick: request.trigger_source === 'auto_run',
+      manifestOf: (catalog) => deps.executorConfig.manifests.get(catalog),
+      isPresent: deps.programPresence,
+      packOfCatalog: (catalog) => installedPackOf(runPackOps, catalog),
+      packNameOf,
+    });
+    if (missingPrograms.length > 0) {
+      throw new RpcError(
+        PROGRAM_NOT_INSTALLED,
+        missingProgramsMessage(recipe.metadata?.name ?? recipe.recipe_id, missingPrograms),
+        400,
+        undefined,
+        { missing_programs: missingPrograms },
+      );
     }
   }
 
@@ -4064,6 +4173,12 @@ const handleExecuteInner = async (
   const run_id = internal.run_id ?? newRunId();
   // D-315 §6.4 — the event-trigger runtime links the fire to this run.
   try { internal.onRunMinted?.(run_id); } catch { /* observability only */ }
+  // D-335 slice W2 — the owner's chat turn this run belongs to, so the browser steps it does are
+  // filed under it; a run resumed once the owner approved it binds again, to the same turn.
+  const runSource = request.execution_source;
+  if (runSource?.channel === 'chat' && runSource.actor === 'user_self' && runSource.turn_id !== undefined) {
+    (deps.browserFlows ?? processBrowserFlows).bindRun(run_id, { session_id: runSource.chat_session_id, turn_id: runSource.turn_id });
+  }
   // D-179 P1 — the run's dish attribution. A standing dish keeps its
   // long-life id; a dishless (manual / legacy-dispatch) run derives an
   // ephemeral id from the run id — attribution-only, never persisted.
@@ -4694,6 +4809,21 @@ const handleExecuteInner = async (
   // the grant — fail-closed, never open.
   const capturedFilesThisRun = new Set<string>();
 
+  // The per-call admission's inputs, one object for both of its readers: the gateway's
+  // probe at dispatch (`evaluateAdmission`, below) and the catalog gateway's check before
+  // it asks the owner (`operationRefusal`, below), so the two cannot disagree.
+  const singleOperationAdmissionDeps = (): Omit<SingleOperationAdmissionDeps, 'onRecipeCoverage'> => ({
+    source: executionSource!,
+    manifest: slug => deps.executorConfig.manifests.get(slug),
+    contract_snapshot: request.contract_snapshot,
+    contractScan: deps.contractScan,
+    opAdmissionGate: deps.opAdmissionGate,
+    contractOverlay: deps.contractOverlay,
+    granted_recipe_steps: grantedRecipeSteps,
+    recipeCoversOp: opId => coverageIsInherited
+      || recipeCoversOp(recipe.recipe_id, opId, resolveRecipeCoverage()),
+  });
+
   // D-157 P1 slice 4 — per-call admission probe. Closes over the run's
   // typed `ExecutionSource` + the manifest registry so the gateway can
   // evaluate `(channel × actor × contract_id)` for the *real* ingredient
@@ -4724,15 +4854,7 @@ const handleExecuteInner = async (
             // the slug is unknown (the gateway treats null as admit — the
             // dispatch hits the executor's own missing-manifest surface).
             const admitOne = createSingleOperationAdmission({
-              source: executionSource,
-              manifest: slug => deps.executorConfig.manifests.get(slug),
-              contract_snapshot: request.contract_snapshot,
-              contractScan: deps.contractScan,
-              opAdmissionGate: deps.opAdmissionGate,
-              contractOverlay: deps.contractOverlay,
-              granted_recipe_steps: grantedRecipeSteps,
-              recipeCoversOp: opId => coverageIsInherited
-                || recipeCoversOp(recipe.recipe_id, opId, resolveRecipeCoverage()),
+              ...singleOperationAdmissionDeps(),
               onRecipeCoverage: overlayOpId => {
                 if (!deps.auditLog) return;
                 void deps.auditLog.logActivity({
@@ -5018,6 +5140,30 @@ const handleExecuteInner = async (
               });
             }
           : undefined;
+
+  // D-346 follow-up (2026-11-08) — the refusal the probe above would give a catalog action
+  // its caller may not use, for the catalog gateway to give BEFORE it asks the owner. The
+  // probe runs only as the action dispatches, after the owner said yes, so an action
+  // switched off for its caller was held for their approval and then refused. Only the
+  // grant: a refusal that reads the dispatch's own input (a connection, a path) stays with
+  // the probe or the gateway's own checks. A second admission, without the coverage log, so
+  // a covered step is logged once, at dispatch. Defined exactly when the probe's gated
+  // branch is (a source on a policy-gated channel).
+  // D-188 / the owner's ruling of 2026-11-08 — and a paused server: nothing new is asked
+  // during a pause, so a caller the pause stops is refused before the ask, in the words
+  // the commit gateway would give it at dispatch (`PreflightDeniedError`'s own message).
+  const operationRefusal: ((slug: string, operation_key: string) => OperationRefusal | undefined) | undefined =
+    evaluateAdmission !== undefined && executionSource !== undefined
+      ? ((admit) => (slug: string, operation_key: string): OperationRefusal | undefined => {
+          const decision = admit(slug, {}, operation_key);
+          if (decision?.verdict !== 'deny') return undefined;
+          if (decision.code === 'op_not_granted') return { code: 'op_not_granted', message: decision.detail };
+          if (decision.code === 'server_paused') {
+            return { code: 'server_paused', message: new PreflightDeniedError(slug, decision.code, decision.detail).message };
+          }
+          return undefined;
+        })(createSingleOperationAdmission(singleOperationAdmissionDeps()))
+      : undefined;
 
   // D-196 — reserve a deferred direct-MCP base +1 at the REAL post-approval
   // proceed point (idempotent with an outer reservation). If the dispatch is a
@@ -5452,6 +5598,9 @@ const handleExecuteInner = async (
     input,
     run_id,
     step_id,
+    ...(deps.heldBrowserDescribeTimeoutMs !== undefined ? { timeoutMs: deps.heldBrowserDescribeTimeoutMs } : {}),
+    // D-335 slice AQ — so the ask names the file an upload step puts into a page.
+    ...(deps.executorConfig.browserFiles !== undefined ? { files: deps.executorConfig.browserFiles } : {}),
   });
   const heldBrowserTargetRead = (
     slug: string | undefined,
@@ -5463,11 +5612,62 @@ const handleExecuteInner = async (
     lastBrowserTargetRead = undefined;
     return kept ?? describeBrowserTarget(slug, input, step_id);
   };
+  // D-341 slice A — how many of this run's browser writes the conversation's "Don't ask about
+  // browser actions" let through: named in the run's answer, which the model reads.
+  let requestPassWrites = 0;
+  // D-341 slice B5 (ruling 11) — a scheduled prompt's pre-approval of its browser actions, spent a
+  // use at a time where the switch is.
+  const useScheduledPromptBrowser = createScheduledPromptBrowserUse({
+    store: deps.triggerPreapprovals,
+    ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+  });
   const browserPasses: BrowserPassHooks | undefined =
     deps.browserPasses !== undefined && runIdentity !== undefined
       ? {
           admit: async ({ slug, input }): Promise<boolean> => {
             const identity = runIdentity!;
+            // D-335 slice X — a batch that only reads, scrolls, waits and points, on tabs already
+            // open, changes nothing and asks nothing; what it may open is recorded, which is none.
+            if (stripCorePrefix(slug) === 'dom-act' && await browserBatchReadsOnly({
+              dispatcher: deps.executorConfig.bridgeDispatcherRef?.(),
+              manifests: { get: (manifestSlug) => deps.executorConfig.manifests.get(manifestSlug) ?? null },
+              input,
+              run_id,
+            })) {
+              browserBatchAdmissions.record(run_id, input, { open: new Set() });
+              return true;
+            }
+            // D-335 slice AQ — a batch that puts one of the owner's files into a page is always asked
+            // about: the file leaves the owner's files for the site, which no pass or switch stands in for.
+            if (stripCorePrefix(slug) === 'dom-act' && browserBatchUploads(input)) return false;
+            // D-341 slice B5 (ruling 11) — a scheduled prompt's own pre-approval of its browser
+            // actions: every Browser Toolkit write of its runs, on any site, as the chat's switch lets
+            // them through, standing for the prompt's text. The Bridge still refuses the owner's
+            // listed sites, and a secret is still asked for at its step.
+            if (useScheduledPromptBrowser(identity.source) !== undefined) {
+              if (stripCorePrefix(slug) === 'dom-act') browserBatchAdmissions.record(run_id, input, { open: 'any' });
+              return true;
+            }
+            // D-341 slice A — a request approved ahead: the owner's chat, with its switch on, lets every
+            // browser write through, on any site its tabs go. The Bridge still refuses the owner's
+            // listed sites, and a secret is still asked for at its step.
+            const request = useBrowserRequestPass(deps.browserPasses, identity.source, identity.channel_session_id);
+            if (request !== undefined) {
+              requestPassWrites += 1;
+              if (stripCorePrefix(slug) === 'dom-act') browserBatchAdmissions.record(run_id, input, { open: 'any' });
+              if (deps.auditLog !== undefined) {
+                const at = Date.now();
+                void deps.auditLog.logActivity({
+                  activity_id: `browser_pass_used_${run_id}_${at}_${Math.random().toString(36).slice(2, 8)}`,
+                  timestamp: at,
+                  action: 'browser_pass_used',
+                  target: request.channel_session_id,
+                  detail: JSON.stringify({ run_id, recipe_id: recipe.recipe_id, kind: 'request', principal: 'owner_chat',
+                    started_at: request.started_at, uses: request.uses }),
+                }).catch(() => {});
+              }
+              return true;
+            }
             let target: HeldBrowserTarget | undefined;
             if (slug !== 'dom-open') {
               const read = describeBrowserTarget(slug, input, 'browser-pass');
@@ -5484,6 +5684,8 @@ const handleExecuteInner = async (
             const pass = useBrowserPass(deps.browserPasses, offer.key, identity.channel_session_id);
             if (pass === undefined) return false;
             lastBrowserTargetRead = undefined;
+            // Slice X — a batch the pass let through may open a tab on the pass's site only.
+            if (stripCorePrefix(slug) === 'dom-act') browserBatchAdmissions.record(run_id, input, { open: new Set([offer.key.site]) });
             if (deps.auditLog !== undefined) {
               const at = Date.now();
               void deps.auditLog.logActivity({
@@ -5500,6 +5702,41 @@ const handleExecuteInner = async (
             return true;
           },
         }
+      : undefined;
+
+  // D-341 slice B1 — a trigger's standing pre-approval: the run a schedule, an event trigger, a
+  // webhook, an armed auto-run (B1b) or a reception form (B4) started makes the writes the owner
+  // named for this recipe version without asking. The key is the run's, never the call's: the
+  // trigger from the authenticated source, the version from the run, the op from the recipe's own
+  // step, which the engine names. The same host answers the commit gateway (a single-op
+  // ingredient) and the catalog gate (a catalog op).
+  const triggeredRun = runIdentity !== undefined ? triggeredRunOf(runIdentity.source) : undefined;
+  // D-341 slice B6 (ruling 12) — a recipe a scheduled prompt's AI started, pre-approved recipe by
+  // recipe: its installed version and the prompt's, never an inline recipe, a connection the AI chose
+  // or a vault it gave. Counted per occurrence of the prompt, however many runs it starts.
+  const promptRun = triggeredRun === undefined && runIdentity !== undefined && request.recipe === undefined
+    && request.vault === undefined && !callerChoseConnection(request, authoredRecipe)
+    ? scheduledPromptRunOf(runIdentity.source) : undefined;
+  const preapprovedRun: TriggeredRun | undefined = triggeredRun
+    ?? (promptRun !== undefined ? { trigger: promptRun.trigger, prompt_sha256: promptRun.prompt_sha256 } : undefined);
+  // D-341 slice B7 (ruling 14) — what a CRM's catalog op serves, for a vendor-neutral write's call.
+  const neutralWriteOf = createNeutralWriteOf({
+    manifestOf: (slug) => deps.executorConfig.manifests.get(slug),
+    ...(deps.localManifestStore !== undefined ? { localManifestStore: deps.localManifestStore } : {}),
+  });
+  const triggerPreapprovals: TriggerPreapprovalHooks | undefined =
+    deps.triggerPreapprovals !== undefined && preapprovedRun !== undefined
+      ? createTriggerPreapprovalAdmission({
+          store: deps.triggerPreapprovals, run: preapprovedRun, recipe_id: authoredRecipe.recipe_id,
+          recipe_sha256: authoredRecipeSha256, run_id: promptRun?.run_id ?? run_id,
+          // Named on the first write the run holds, once the run's packs are known (`runPackOps`).
+          stepOps: () => recipeStepOps(authoredRecipe, {
+            manifestOf: (slug) => deps.executorConfig.manifests.get(slug),
+            ...(runPackOps !== undefined ? { packs: runPackOps } : {}),
+          }),
+          neutralWriteOf,
+          ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        })
       : undefined;
 
   // 2026-11-04 — a held browser write whose page or element the Bridge says has gone fails
@@ -6211,6 +6448,7 @@ const handleExecuteInner = async (
           ...(sessionGrants ? { sessionGrants } : {}),
           ...(qualityDelegations ? { qualityDelegations } : {}),
           ...(browserPasses ? { browserPasses } : {}),
+          ...(triggerPreapprovals ? { triggerPreapprovals } : {}),
           browserTargets,
         })
       : admissionAwareFallbackExecutor;
@@ -6398,9 +6636,10 @@ const handleExecuteInner = async (
       stores,
       ...(contextRecipeSnapshot !== null ? { contextRecipeSnapshot } : {}),
       ingredientExecutor: engineExecutor,
-      withRunAbortSignal: (signal, run) => {
+      withRunAbortSignal: (signal, run, extendBudget) => {
         effectiveRunAbortSignal = signal ?? runAbortSignal;
-        return withRunAbortContext({ run_id, signal, owner_signal: ownerSignal }, run);
+        return withRunAbortContext({ run_id, signal, owner_signal: ownerSignal,
+          ...(extendBudget !== undefined ? { extend_budget: extendBudget } : {}) }, run);
       },
       cliInvocationExecutor: deps.cliInvocationExecutor ?? CLI_INVOCATION_EXECUTOR,
       ...(deps.ingestFileDownload
@@ -6880,6 +7119,8 @@ const handleExecuteInner = async (
               deps.contractOverlay!.admitsConnection(executionSource, connection_name),
           }
         : {}),
+      // D-346 follow-up — an action switched off for its caller, refused before the ask.
+      ...(operationRefusal !== undefined ? { operationRefusal } : {}),
       ...(deps.connectionStore
         ? {
             connectionSubresourcePathResolver: (connection_name: string) =>
@@ -6905,6 +7146,9 @@ const handleExecuteInner = async (
       // D-177 catalog-gate session-grant loop — the catalog gate's grant seam
       // (absent ⇒ every catalog `ask` holds exactly as pre-loop).
       ...(catalogSessionGrants ? { catalogSessionGrants } : {}),
+      // D-341 slice B1 — a trigger's standing pre-approval, at the catalog gate (the commit
+      // gateway gets the same host for a single-op ingredient).
+      ...(triggerPreapprovals ? { triggerPreapprovals } : {}),
       ...(typeof request.trigger_source === 'string'
         ? { trigger_source: request.trigger_source }
         : {}),
@@ -7640,6 +7884,49 @@ const handleExecuteInner = async (
                 channel_session_id: runIdentity?.channel_session_id,
               })
             : undefined;
+          // D-341 slice B2 — what this hold's "Always allow for this webhook / schedule / trigger /
+          // form" would grant: the run's trigger, this recipe version and the op its step calls.
+          // Offered only where a pre-approval could admit the write, as the gates check.
+          // B6 — a prompt-started run's browser action is left to B5's offer below.
+          const triggerPreapprovalOffer = deps.triggerPreapprovals !== undefined
+            && !(promptRun !== undefined && awaitingApproval.tool_slug !== undefined
+              && isBrowserActionSlug(awaitingApproval.tool_slug))
+            ? triggerPreapprovalOfferFor({
+                run: preapprovedRun, recipe: authoredRecipe, recipe_sha256: authoredRecipeSha256,
+                held: {
+                  gated_step_id,
+                  ...(awaitingApproval.ingredient_slug ?? awaitingApproval.tool_slug) !== undefined
+                    ? { slug: (awaitingApproval.ingredient_slug ?? awaitingApproval.tool_slug)! } : {},
+                  ...(awaitingApproval.operation_id !== undefined ? { operation_id: awaitingApproval.operation_id } : {}),
+                  ...(awaitingApproval.risk_tier !== undefined ? { risk_tier: awaitingApproval.risk_tier } : {}),
+                  ...(awaitingApproval.authorization_provenance !== undefined
+                    ? { provenance: awaitingApproval.authorization_provenance } : {}),
+                  single: foreachCover === undefined,
+                },
+                deps: {
+                  manifestOf: (slug) => deps.executorConfig.manifests.get(slug),
+                  ...(runPackOps !== undefined ? { packs: runPackOps } : {}),
+                  neutralWriteOf,
+                },
+              })
+            : undefined;
+          // D-341 slice B5 (ruling 11) — a scheduled prompt's held browser action offers its prompt's
+          // own pre-approval of them, where an answer could grant one: one call (no foreach cover)
+          // whose ask the owner's policy leaves waivable, below destructive, with no review lift, and
+          // never one putting the owner's files into a page (always asked, slice AQ).
+          const heldOffer = triggerPreapprovalOffer ?? (
+            deps.triggerPreapprovals !== undefined && deps.triggerPreapprovalGranter !== undefined
+            && foreachCover === undefined
+            && awaitingApproval.tool_slug !== undefined
+            && isBrowserActionSlug(awaitingApproval.tool_slug)
+            && awaitingApproval.risk_tier !== 'destructive'
+            && awaitingApproval.authorization_provenance?.lift_reason === undefined
+            && (
+              awaitingApproval.authorization_provenance?.pre_lift_approval === 'never'
+              || awaitingApproval.authorization_provenance?.pre_lift_approval === 'ask'
+            )
+            && !(stripCorePrefix(awaitingApproval.tool_slug) === 'dom-act' && browserBatchUploads(heldCall.input))
+              ? scheduledPromptBrowserOffer(executionSource) : undefined);
           const browserLabels = heldBrowserValueLabels(browserTarget, heldCall.input);
           const heldValueLabels = browserLabels === undefined ? valueLabels
             : valueLabels === undefined ? browserLabels : { ...valueLabels, ...browserLabels };
@@ -7681,6 +7968,7 @@ const handleExecuteInner = async (
             ...(heldValueLabels !== undefined ? { value_labels: heldValueLabels } : {}),
             ...(browserTarget !== undefined ? { browser_target: browserTarget } : {}),
             ...(browserPassOffer !== undefined ? { browser_pass: browserPassOffer } : {}),
+            ...(heldOffer !== undefined ? { trigger_preapproval: heldOffer } : {}),
             ...(awaitingApproval.egress_bound !== undefined
               ? { egress_bound: awaitingApproval.egress_bound }
               : {}),
@@ -7854,10 +8142,13 @@ const handleExecuteInner = async (
                 // D-335 slice F — a browser write that offers a pass on its site offers no
                 // D-177 grant: an exact grant pins the page handle and the ref, which change
                 // on every read, so it never covered a second write.
+                // A review the owner gives each time (a proposal, a quote, a workflow, a payment) offers
+                // no "Allow this session": the gate would mint and match nothing for it.
                 const resolvedOffer =
                   deps.sessionGrantResolver !== undefined
                   && awaitingApproval.resource_review === undefined
                   && !individualWorkflowReview
+                  && !reviewedEachTime(awaitingApproval.authorization_provenance?.lift_reason)
                   && browserPassOffer === undefined
                   && runIdentity !== undefined
                   && executionSource !== undefined
@@ -7982,6 +8273,11 @@ const handleExecuteInner = async (
                   // D-335 slice F — a browser write that offers a pass asks on its own, so
                   // its ask can offer the pass (a batch ask offers no site answers).
                   && browserPassOffer === undefined
+                  // D-341 slice B2 — so does a hold that offers its trigger's standing
+                  // pre-approval: a batch ask offers no "Always allow for this …", so a kernel
+                  // write a trigger's run held (which batches) would never be offered it.
+                  // Found live on an auto-run's task (B1b); a Records write never batched.
+                  && heldOffer === undefined
                   // Slice J — a sequence asks on its own too: its ask lists each step as the
                   // page shows it, hiding what goes into a password field, and a batch ask
                   // would list its raw steps instead.
@@ -9243,6 +9539,29 @@ const handleExecuteInner = async (
       }
     }
 
+    // D-321 P2 / C2 — what a failed step needed and did not have: a program, or a
+    // connection to set up or reconnect. The owner's own runs only, as the
+    // connection names in it are theirs (ruling 12); the agent projection drops it.
+    // D-346 follow-up (2026-11-08) — and the owner's own unattended runs (a schedule or an
+    // auto-run under no contract), whose failure notice says how to fix it
+    // (`automation-failure-reporter.ts`). Never a webhook's or a contract's run: their
+    // caller is not the owner.
+    const ownerAutomation = executionSource !== undefined
+      && (executionSource.channel === 'schedule' || executionSource.channel === 'reactive')
+      && executionSourceContractId(executionSource) === undefined;
+    const runNeeds = (connectionChoiceOwner || ownerAutomation) && result.errors.length > 0
+      ? runNeedsOf({
+        errors: result.errors,
+        recipe,
+        slots: runSlots,
+        used: withFollowedCalls(connectionsUsed, followedCalls),
+        bindings: runBindings,
+        packOfCatalog: (catalog) => installedPackOf(runPackOps, catalog),
+        signInOf: slotSignIn,
+        packNameOf,
+      })
+      : [];
+
     const response = stampExecuteResponseStandingDish(stampExecuteResponseAuditRun({
       recipe_id: result.recipe_id,
       recipe_hash: result.recipe_hash,
@@ -9300,6 +9619,8 @@ const handleExecuteInner = async (
       // HOST forgetting it on the recipe's behalf, which is exactly what
       // happened between the fire point shipping and this line existing.
       ...(result.exchange_ack !== undefined ? { exchange_ack: result.exchange_ack } : {}),
+      // D-341 slice A — what the conversation's switch let through without asking.
+      ...(requestPassWrites > 0 ? { request_pass_writes: requestPassWrites } : {}),
       // D-232 § 30 — the PEER's verdict, named here for the reason the line
       // above documents: this is the enumerating copier, and a field it does not
       // list reaches no client. The asker's own tool result is the one place a
@@ -9326,6 +9647,7 @@ const handleExecuteInner = async (
       // returned an empty result because their convention's provider is not
       // connected (the recipe ran on empty data). Present only when ≥1 fired.
       ...(runnabilityWarnings.length > 0 ? { runnability_warnings: runnabilityWarnings } : {}),
+      ...(runNeeds.length > 0 ? { run_needs: runNeeds } : {}),
     }, auditAnchorWritten ? run_id : undefined), boundDish?.dish_id);
     if (runningTwinLeader) {
       deps.inFlightRegistry!.settleRunningTwin(run_id, {
@@ -9605,6 +9927,14 @@ const handlePolicyGateDenial = async (args: {
   }, auditAnchorWritten ? run_id : undefined),
   isEphemeralDishId(dish_id) ? undefined : dish_id);
 };
+
+/** D-341 slice B6 — whether the caller chose a connection for the run: a choice by slot, or a value
+ *  for one of the recipe's connection settings. A scheduled prompt's AI that chose one names a run
+ *  no pre-approval covers. */
+const callerChoseConnection = (request: ExecuteRequest, recipe: RecipeDefinition): boolean =>
+  Object.keys(request.connections ?? {}).length > 0
+  || Object.entries(request.config ?? {}).some(([name, value]) => typeof value === 'string' && value.trim() !== ''
+    && (recipe.variables?.[name] as { type?: unknown } | undefined)?.type === 'connection');
 
 /** D-120 Phase 3 — resolve the surrogate `recipe_insights.id` for the
  *  recipe about to execute. Three paths:

@@ -23,7 +23,12 @@ import {
 /** What "Used by packs" reads off an installed pack's `packs.list` row: its slug,
  *  the scopes it needs, and (D-320 slice 2h) its name, shown instead of the slug. */
 export type InstalledPackScopes = Pick<PackListEntry, 'slug' | 'required_scopes_by_connection'>
-  & { name?: string };
+  & {
+    name?: string;
+    /** D-321 P8 — where the pack's page is, in the host's routes: "Used by packs"
+     *  names it as a link there. Absent: a plain name. */
+    href?: string;
+  };
 
 /** One installed pack's use of a connection. */
 export interface PackConnectionUsage {
@@ -42,6 +47,8 @@ export interface PackConnectionUsage {
   coverage: ScopeCoverage;
   /** D-320 §4 — the pack uses this connection by default. */
   is_default?: true;
+  /** D-321 P8 — the pack's page, when the host gave one. */
+  href?: string;
 }
 
 /** The packs using a connection — for the connection-detail "Used by packs"
@@ -89,6 +96,7 @@ export const packsUsingConnection = (
       needed: [...(needed ?? [])],
       coverage: scopeCoverage(needed ?? [], granted),
       ...(defaults.has(pack.slug) ? { is_default: true as const } : {}),
+      ...(typeof pack.href === 'string' && pack.href.startsWith('#') ? { href: pack.href } : {}),
     });
   }
   // A family once: each member folds into its holder's line, its scopes with it,

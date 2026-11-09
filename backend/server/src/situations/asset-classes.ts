@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { ASSET_SEARCH_TERMS, assetSearchTerms, validateAssetClassPreset, type Asset, type AssetClassPreset, type AssetRule } from '@recued/contracts';
+import { ASSET_SEARCH_TERMS, PURSUIT_CLASS_ID, assetSearchTerms, validateAssetClassPreset, type Asset, type AssetClassPreset, type AssetRule } from '@recued/contracts';
 import { reindexAssetTypeSearchTerms } from '../storage/work-entity-store.js';
 
 const expiry = (id: string, title: string, field: string, floor: boolean, before: AssetRule['schedule']['before'], notice = false): AssetRule => ({
@@ -46,6 +46,12 @@ export const STARTER_ASSET_CLASSES: readonly AssetClassPreset[] = [
   preset('home', 'Home', [], [condition('hazard', 'Check nearby hazard', 'fire_nearby', true, true)], { audience: 'household', fields: { dates: {}, readings: {}, observations: { fire_nearby: null }, settings: { hazard_radius_km: 5 } } }),
   preset('holding', 'Holding', [], [condition('price_move', 'Review price movement', 'price_move', false, true)], { fields: { dates: {}, readings: {}, observations: { price_move: null }, settings: {} } }),
   preset('heirloom', 'Heirloom or keepsake', [], []),
+  // D-342 — what the owner is working toward. No rules (ruling 3): nothing goes under Due and
+  // nothing reminds. A target date and a progress reading stay null until the owner gives them;
+  // personal by default (§3), and not private (ruling 9): the daily suggestions are what it is for.
+  // Changed at v1, as no release had it.
+  preset(PURSUIT_CLASS_ID, 'Pursuit', ['target_on'], [], { sphere: 'personal',
+    fields: { dates: { target_on: null }, readings: { progress: null }, observations: {}, settings: {} } }),
 ];
 
 export const validateAssetClass = validateAssetClassPreset;

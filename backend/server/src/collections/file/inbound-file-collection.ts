@@ -64,7 +64,15 @@ export type FileOrigin =
   // owner brought it into Chat from the Files tab (`folder-file-attachments.ts`).
   // The owner's own file, from her own disk; later edits in the folder leave the
   // copy alone.
-  | 'watched_folder';
+  | 'watched_folder'
+  // D-335 slice AP — a file the owner's AI saved from a web page through the
+  // Browser Bridge (`bridges/browser-files.ts`): a link it followed, fetched as
+  // the page would fetch it, in a run the owner started. As untrusted as the page.
+  | 'browser_download'
+  // D-345 — a file the owner's AI downloaded from a public web address with the
+  // server's own fetch (`http-toolkit/http-actions.ts`), nothing of the owner's
+  // sent with it. As untrusted as the site.
+  | 'http_download';
 
 export type FileMediaClass = 'voice' | 'image' | 'document' | 'other';
 

@@ -148,3 +148,19 @@ test('a quote-only draft is kept through navigation and fits a narrow composer',
     await expect(a.locator('[data-chat-reply-draft="question-2"]')).toBeVisible();
   } finally { await f.close(); }
 });
+
+test('the conversation Today\'s "Close the day" opens replies to its evening notice (D-343 slice 4)', async ({ browser }) => {
+  const f = await setup(browser); const [a] = f.pages;
+  try {
+    const notice = await f.fixture.openClosingConversation({ title: 'Close the day · Sat 7 Nov',
+      text: '07:00 Run 5 km\n18:00 Spanish lesson\n\nReply to this with what you did.' });
+    await a.evaluate(value => (window as unknown as { queueTestOpenClosing(n: unknown): Promise<void> }).queueTestOpenClosing(value), notice);
+    // The notice is there, drawn as one, and the composer already replies to it.
+    await expect(row(a, notice.message_id)).toContainText('Notice · Close the day · Sat 7 Nov');
+    await expect(a.locator(`[data-chat-reply-draft="${notice.message_id}"]`)).toContainText('Replying to a notice · Close the day · Sat 7 Nov');
+    await send(a, 'Ran 5 km, skipped Spanish.');
+    await expect.poll(() => f.calls.filter(call => call.method === 'chat.send').length).toBe(1);
+    expect(f.calls.find(call => call.method === 'chat.send')!.args).toMatchObject({ session_id: notice.session_id,
+      message: 'Ran 5 km, skipped Spanish.', reply_to_message_id: notice.message_id });
+  } finally { await f.close(); }
+});

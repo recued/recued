@@ -77,6 +77,21 @@ export interface ServerStateStore {
   clearStagedBootstrap(): void;
 }
 
+/** D-188 — the master pause as stored, for a reader that holds only the database: the
+ *  background-AI pause (`isAiPaused`) reads it, so every background AI call stops with the
+ *  pause (the emergency stop, the owner's ruling of 2026-11-08). False when the table does not
+ *  exist yet (a database no server has opened). */
+export const isServerPausedIn = (db: Database.Database): boolean => {
+  try {
+    const row = db.prepare(`SELECT value FROM ${TABLE} WHERE key = ?`).get(KEY_PAUSED_ACTIVE) as
+      | { value: string }
+      | undefined;
+    return row?.value === '1';
+  } catch {
+    return false;
+  }
+};
+
 export const createServerStateStore = (db: Database.Database): ServerStateStore => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${TABLE} (

@@ -1,5 +1,6 @@
 import type { AssetEvidence, AssetStatus, Sphere } from './assets.js';
 import type { Commitment } from './work-entities.js';
+import type { NotificationDeliveryChannel } from './notifications.js';
 import { ASSET_FACT_CONTEXT_REQUEST_SCHEMA, type AssetFactContext, type AssetFactContextRequest } from './asset-fact-context.js';
 import { calendarDayMs, dueSpan } from './due-day.js';
 
@@ -13,7 +14,11 @@ export type SituationBasis = 'declared' | 'derived' | 'inferred';
 export type SituationVerdict = 'match' | 'near' | 'outside' | 'unknown';
 /** `ended`: a trip, event or booking already over, returned only to a question
  * about a span that reaches back over it, never to a forward list. */
-export type SituationReason = 'due' | 'collides' | 'related' | 'missing' | 'last_time' | 'ended';
+/** `holds` (D-340 §4): a state, shown while it holds. Never `due` and never news, so the
+ * Agenda, Coming up and reminders leave it out.
+ * `pursuing` (D-342 §5): an active pursuit, what the owner is working toward, given only to the
+ * read that asks for them (`include_pursuits`). Never `due` and never news. */
+export type SituationReason = 'due' | 'collides' | 'related' | 'missing' | 'last_time' | 'ended' | 'holds' | 'pursuing';
 export interface SituationRef { collection: string; id: string; field?: string }
 export interface SituationPlace { key: string; name: string }
 export interface SituationDimension<T> {
@@ -47,9 +52,16 @@ export interface SituationAssetDetails {
   dates?: Record<string, string | null>;
   readings?: Record<string, { value: number; unit: string; as_of: number } | null>;
   settings?: Record<string, string | number | boolean>;
-  attributes?: Record<string, string | number | boolean>;
+  /** An unset attribute its type names (a pursuit's Where I am, D-342) is null: unknown, as a date
+   *  can be, so a model that changes it has its name. */
+  attributes?: Record<string, string | number | boolean | null>;
   left_out?: string[];
 }
+/** D-343 slice 5 (§5) — the days of the last week, on the owner's clock, that they recorded doing or
+ *  skipping a pursuit in Close the day, newest first, each as its weekday and date ("Thu
+ *  2026-11-05"). A day listed in neither is one they did not record: unknown, never a day they
+ *  missed (§3.5). Absent when they recorded none. */
+export interface SituationRecordedDays { done: string[]; skipped: string[] }
 export interface SituationQuery {
   time: number | SituationWindow;
   place?: SituationPlace;
@@ -60,6 +72,9 @@ export interface SituationQuery {
   surface?: 'tool' | 'today' | 'digest' | 'prefetch' | 'push';
   /** Last-time is available only to the opted-in digest caller. */
   include_last_time?: boolean;
+  /** D-342 §5 — host-only: the read lists the owner's active pursuits beside the window, each a
+   *  `pursuit` item with the reason `pursuing`. Only the Agenda suggestions' own run sets it. */
+  include_pursuits?: boolean;
   limit_clusters?: number;
   limit_items?: number;
 }
@@ -98,6 +113,9 @@ export interface SituationFact {
   visa?: { name: string; valid_for?: string; expires_on?: string };
   /** The one bounded copy a fact may carry: an asset's own fields. */
   details?: SituationAssetDetails;
+  /** D-343 slice 5 (§5) — a pursuit's closing records over the last week, for the read that lists
+   *  pursuits (`include_pursuits`). Read-time context, like `details`. */
+  recorded?: SituationRecordedDays;
   /** Native request for this rule's graph; identity only, no relationship read. */
   context?: AssetFactContextRequest;
 }
@@ -125,6 +143,8 @@ export interface SituationItem {
   updated_at: number;
   /** Read-time context, not part of the situation: a saved snapshot leaves it out. */
   details?: SituationAssetDetails;
+  /** Read-time context: the days of the last week the owner recorded a pursuit (D-343 slice 5). */
+  recorded?: SituationRecordedDays;
   /** Read-time native request, copied to situation.query to inspect this rule. */
   context?: AssetFactContextRequest;
   /** Where a trip goes and its days of entry and exit, as its booking or the owner
@@ -155,7 +175,7 @@ export interface SituationResult {
 /** The public tool and recipe input. Surface, owner, spheres and recall opt-in
  * are supplied by the host and cannot be requested through this shape. Parsed, its `time`
  * is instants: a day the caller named is resolved to its whole span (`parseSituationQueryInput`). */
-export type SituationQueryInput = Omit<SituationQuery, 'surface' | 'include_last_time'>;
+export type SituationQueryInput = Omit<SituationQuery, 'surface' | 'include_last_time' | 'include_pursuits'>;
 /** D-338 — a whole day, `YYYY-MM-DD`, read on the owner's clock.
  *  ⛔ Not under `from` / `to`: the chat's argument check reads a field named `from` or `to` as an
  *  identifier the model must have read (`tool-argument-grounding.ts`, for mail's addresses), and
@@ -295,6 +315,98 @@ export interface SituationAgendaStatus {
   time_zone?: string;
   /** D-338 slice 3 — the conversation the AI suggestions run in, once they have one. */
   suggestions_session_id?: string;
+  /** D-343 slice 4 — Close the day, the evening message beside the Agenda (ruling 19). A server
+   *  before it names none, so a client offers it only to a server that named it. */
+  close_day?: SituationCloseDayStatus;
+  /** D-340 slice 2 — the daily and weekly streams, which took over the Agenda and Coming up: a
+   *  server that names them sends by them, and its Agenda and Coming up settings above are the
+   *  ones it carried over, no longer used. A server before it names none, and a client keeps the
+   *  Agenda and Coming up cards for it. */
+  streams?: SituationStreamsStatus;
+}
+/** D-340 slice 2 (§3.1, rulings 1, 7 and 11) — the daily stream or the weekly one: one message at
+ *  its time that holds the parts the owner checks, sent to the channels they pick. Daily and weekly
+ *  are tabs on Today, each its own schedule, and both can be on (ruling 11). Its message is "Your
+ *  day · Sat 7 Nov" or "Your week · Mon 2 Nov to Sun 8 Nov" (ruling 12). */
+export type SituationStreamKind = 'daily' | 'weekly';
+export interface SituationStreamSettings {
+  enabled: boolean;
+  /** HH:MM in the server's zone. */
+  time: string;
+  /** The day it lists, the day it goes or the next. A weekly stream's seven days start there. */
+  day: 'today' | 'tomorrow';
+  /** ISO weekday a weekly stream goes on, Monday=1. The daily one keeps it and does not use it. */
+  weekday: number;
+  /** Its parts (§3.1): the day in time order, and what changed in the days ahead. Reminders and
+   *  the suggestions inside it come with D-340 slices 3 and 4. */
+  agenda: boolean;
+  coming_up: boolean;
+  /** How far ahead Coming up looks, from the day it goes. A weekly stream looks at least 7 days. */
+  look_ahead_days: SituationDigestLookAhead;
+  /** D-338 slice 3 — after it goes, the AI looks its Agenda over and sends suggestions, as a
+   *  scheduled prompt the stream keeps in step. Only with the Agenda. */
+  suggestions: boolean;
+  /** Daily only: what is due that day, on a day it lists no Agenda ("Due today", §3.2). */
+  due_today: boolean;
+  /** D-340 slice 5 (§3.4) — every part names a private item (an asset the owner marked sensitive,
+   *  an occasion with people in it, or an item citing either), in the channels it goes to, and its
+   *  AI suggestions may name one too. Off, each reads "Reminder in Yours", as before. The daily
+   *  stream's also decides Close the day's, which goes where it goes. */
+  include_private: boolean;
+  /** D-340 slice 3 (§3.1) — daily only, and only listing today: the owner's reminders due that day,
+   *  each with its buttons, inside this message instead of one by one. An urgent one (consequence
+   *  floor) still goes at once, and reminders for the household's shared items go to the household
+   *  as before. A server before slice 3 names none, and a client then offers none. */
+  reminders: boolean;
+  /** The channels it goes to (ruling 7). Null is every channel that is set up, where the Agenda
+   *  and Coming up went. */
+  channels: NotificationDeliveryChannel[] | null;
+}
+export interface SituationStreamStatus {
+  settings: SituationStreamSettings;
+  last_run: SituationAgendaStatus['last_run'];
+  last_sent: SituationAgendaStatus['last_sent'];
+  pending: number;
+  uncertain: number;
+  /** When it next goes, quiet hours included, and the server's zone to say it in. Absent while
+   *  it is off or nothing can send. */
+  next_at?: number;
+  time_zone?: string;
+  /** The conversation its AI suggestions run in, once they have one. */
+  suggestions_session_id?: string;
+}
+export interface SituationStreamsStatus { daily: SituationStreamStatus; weekly: SituationStreamStatus }
+/** D-340 §3.7 (ruling 10) — the next message of a stream, as it would go now: its title, how many
+ *  lines each part holds, and its text on request. Nothing is sent or marked by it, and no model is
+ *  asked: Coming up's groups read without their summaries. */
+export interface SituationStreamPreview {
+  title: string;
+  /** `reminders` (D-340 slice 3) and `suggestions` (slice 4, 1 when they finished before it goes):
+   *  absent from a server before them. */
+  counts: { states: number; agenda: number; due_today: number; coming_up: number; reminders?: number; suggestions?: number };
+  /** Empty when there is nothing to send now. */
+  text: string;
+  next_at?: number;
+  time_zone?: string;
+}
+/** D-343 slice 4 (§3.1, rulings 3, 5 and 19) — the evening message that lists the day and asks what
+ *  the owner did. Off until they turn it on, at a time that is a proposal, not a cutoff: a reply
+ *  closes the day whenever it comes. It goes where the Agenda goes. */
+export interface SituationCloseDaySettings {
+  enabled: boolean;
+  /** HH:MM in the server's zone. */
+  time: string;
+}
+export interface SituationCloseDayStatus {
+  settings: SituationCloseDaySettings;
+  last_run: { at: number; mode: string; state: string; text: string; delivered_to: string[] } | null;
+  last_sent: { at: number; mode: string; text: string; delivered_to: string[] } | null;
+  pending: number;
+  uncertain: number;
+  /** When it next goes, quiet hours included, and the server's zone to say it in. Absent while it
+   *  is off or nothing can send. */
+  next_at?: number;
+  time_zone?: string;
 }
 export interface SituationDeliveryStatus {
   settings: SituationDeliverySettings;
@@ -308,6 +420,9 @@ export interface SituationDeliveryStatus {
    *  nothing can send, and from an older server. */
   next_at?: number;
   time_zone?: string;
+  /** D-340 slice 2 — the streams took over: Coming up is a part of them, and these settings no
+   *  longer send. A client leaves the card off the page. */
+  streams?: true;
 }
 export interface ProactiveToday {
   situations: SituationResult;
@@ -328,4 +443,15 @@ export interface ProactiveToday {
   newest_proposal: { id: string; title: string } | null;
   unmatched_replies: Array<{ id: string; text: string; reason: string; created_at: number }>;
   phone_ready: boolean;
+  /** D-343 slice 4 (ruling 20) — this server opens a conversation holding today's evening notice,
+   *  quoted, for Today's "Close the day" (`yours.change` `close_day.open`). Absent from a server
+   *  before it, so Today offers the button only to one that names it. */
+  close_day?: true;
+  /** D-340 slice 2 (§3.7) — this server keeps the daily and weekly streams, whose settings Today's
+   *  "Daily stream" opens. Absent from a server before it. */
+  stream?: true;
+  /** D-340 slice 4 (§3.3) — the AI suggestions for today's daily stream, once they finished: their
+   *  answer, and the conversation "Talk it over" opens. Absent before then, and from a server before
+   *  slice 4. */
+  suggestions?: { text: string; session_id: string; day: string };
 }

@@ -504,6 +504,7 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
       connectionStoreRef: { tag: 'connection-store' },
       enrichmentCascadeRef: { tag: 'enrichment-cascade' },
       enrichmentStoreRef: { tag: 'enrichment-store' },
+      chatNoticesRef: { tag: 'chat-notices' },
       contactMergeCycleObserverRef: { tag: 'contact-observer' },
       stopWarehouseEventBridges: vi.fn(async () => undefined),
       contactBackfillDone,
@@ -555,6 +556,8 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
           backgroundAiBudgetSpent: expect.any(Function),
           // D-338 slice 3 — the Agenda's AI suggestions run as one of the chat's scheduled prompts.
           getPromptSchedules: expect.any(Function),
+          // D-338 §16 — what the collection context sends to the owner's chat is a notice there.
+          chatNotices: app.chatNoticesRef,
         });
         expect(actualOptions.execution).toEqual({
           ...options.execution,

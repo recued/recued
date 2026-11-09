@@ -16,11 +16,13 @@ ${detail} {
 ${detail} :where(*) { box-sizing: border-box; min-width: 0; max-width: 100%; }
 ${detail} [hidden] { display: none !important; }
 ${detail} > .packs-detail-back { align-self: flex-start; width: auto; margin: 0; }
-${detail} :is([data-recued-packs-detail-section="identity"], .packs-detail-content) {
+${detail} :is([data-recued-packs-detail-section="identity"], [data-recued-packs-detail-section="needs"], .packs-detail-content) {
   border: 1px solid var(--border);
   border-radius: var(--wc-radius-lg, 10px);
   background: var(--surface);
 }
+/* D-321 — what the pack needs, its own card between the summary and the tabs. */
+${detail} [data-recued-packs-detail-section="needs"] { padding: clamp(14px, 2vw, 20px); }
 ${detail} [data-recued-packs-detail-section="identity"] {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -382,7 +382,9 @@ describe('D-325 scheduled overview through the shared query', () => {
     it('names the next agenda only while it is on, and sends a held-over agenda no later than its own day', async () => {
       const f = fixture([...routine(1), ...routine(2)]); f.time(on(1, '06:00'));
       expect(f.service().agendaStatus()).toEqual({ settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1, suggestions: false },
-        last_run: null, last_sent: null, pending: 0, uncertain: 0 });
+        last_run: null, last_sent: null, pending: 0, uncertain: 0,
+        // D-343 slice 4 — the Agenda names Close the day beside it, off until turned on.
+        close_day: { settings: { enabled: false, time: '21:00' }, last_run: null, last_sent: null, pending: 0, uncertain: 0 } });
       agendaOnly(f, { time: '07:00', day: 'today' }); f.fail(true); f.time(on(1, '07:00')); await f.service().tick();
       expect(f.service().agendaStatus().pending).toBe(1);
       // The next day, Tuesday's agenda is not sent late: it is superseded, and Wednesday's goes.

@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BootTraceEvent } from '../cli/boot-trace.js';
+import { formatUrlList } from '../cli/url-enumerate.js';
 import { serverEntry } from './helpers/server-bundle.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -123,6 +124,24 @@ const normalizePairOutput = (stdout: string): string =>
     .replace(/\r\n/g, '\n')
     .replace(/Pairing code: [2-9A-HJ-NP-Za-km-z]{8}\s+\(TTL\s+\d+\s+min\)/g, 'Pairing code: <code> (TTL <ttl>)')
     .replace(/\?code=[2-9A-HJ-NP-Za-km-z]{8}/g, '?code=<code>');
+
+/** One `Server reachable at:` row, its padding collapsed: the column follows the longest address
+ *  (`formatUrlList`), so one new address can re-pad every row. */
+const URL_ROW = /^\s+(\S+:\/\/\S+)\s+(configured|this machine|LAN|public IP)\s*$/;
+
+/** Two runs' `pair generate` output, normalized, each keeping only the LAN rows both printed, in its
+ *  own order. The machine's network interfaces are not the test's to hold still: one that came up
+ *  between the runs (`http://192.168.215.0:8123`, a virtual machine's bridge, in the sweep at
+ *  `e3fd7d5cb`) is a change in the machine, not in the output. */
+const comparablePairOutputs = (first: string, second: string): [string, string] => {
+  const rows = (stdout: string): string[] => normalizePairOutput(stdout).split('\n')
+    .map((line) => line.replace(URL_ROW, '$1 $2'));
+  const isLan = (line: string): boolean => /^\S+:\/\/\S+ LAN$/.test(line);
+  const [a, b] = [rows(first), rows(second)];
+  const shared = (mine: string[], other: string[]): string =>
+    mine.filter((line) => !isLan(line) || other.includes(line)).join('\n');
+  return [shared(a, b), shared(b, a)];
+};
 
 const seedAuditDb = (dbPath: string): void => {
   const db = new Database(dbPath);
@@ -955,8 +974,25 @@ describe('production router', () => {
 
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
-    expect(normalizePairOutput(second.stdout)).toBe(normalizePairOutput(first.stdout));
+    const [firstOutput, secondOutput] = comparablePairOutputs(first.stdout, second.stdout);
+    expect(firstOutput).toContain('https://203.0.113.42:8123 public IP');
+    expect(secondOutput).toBe(firstOutput);
   }, forChildren(2));
+
+  it('compares two pair generate runs over the LAN rows both printed, in their order', () => {
+    const run = (lan: string[]): string => ['', '  Pairing code: ABCDEFGH   (TTL 10 min)', '', '  Server reachable at:',
+      formatUrlList([...lan.map((url) => ({ url, source: 'LAN' as const })),
+        { url: 'https://203.0.113.42:8123', source: 'public IP' as const }]), ''].join('\n');
+    const before = run(['http://192.168.1.2:8123', 'http://[fd00::1]:8123']);
+    // An interface came up between the runs, its address the longest, so every row was re-padded.
+    const [a, b] = comparablePairOutputs(before,
+      run(['http://192.168.1.2:8123', 'http://[fd00::1]:8123', 'http://[fd07:b51a:cc66:0:a617:db5e:ab7:e9f1]:8123']));
+    expect(b).toBe(a);
+    expect(a).toContain('http://[fd00::1]:8123 LAN');
+    // The same addresses in another order are still a difference.
+    const [c, d] = comparablePairOutputs(before, run(['http://[fd00::1]:8123', 'http://192.168.1.2:8123']));
+    expect(d).not.toBe(c);
+  });
 
   it.each([
     ['recent entries', ['audit']],

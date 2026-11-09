@@ -447,7 +447,7 @@ describe('D-137 Trio #D — Codex P1 fold: channel-aware handler gates', () => {
     expect(mcpResult.ok).toBe(false);
     if (!mcpResult.ok) {
       expect(mcpResult.reason).toBe('classification_blocked');
-      expect(mcpResult.detail).toMatch(/not read-granted/);
+      expect(mcpResult.detail).toMatch(/is not available for this contract/);
     }
     expect(listCalls).toBe(0); // store.list NEVER called when gated.
   });

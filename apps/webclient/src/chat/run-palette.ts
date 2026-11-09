@@ -26,6 +26,7 @@ import {
   wireFocusTrap,
   type FocusTrapHandle,
 } from '@recued/ui-shared';
+import { wireRunModal } from '../shell/run-modal.js';
 import type {
   AutoRunStatusEntry,
   ServerRecipeListEntry,
@@ -467,7 +468,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     const prefill = tab === 'run' ? recipePagePrefill(entry, pageContext, recipeConnections?.slots) : null;
     const recordRefSearch = opts.recordRefSearch?.(entry);
     let initialConnections = recipeConnections;
-    childRunModal = RunModal.wireRunModal({
+    childRunModal = wireRunModal({
       ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
       recipe: entry,
       document: doc,

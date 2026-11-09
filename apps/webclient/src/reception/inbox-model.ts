@@ -58,6 +58,9 @@ export const RECEPTION_INBOX_ERROR_COPY: Readonly<Record<ReceptionInboxRpcErrorC
     'One of your changes does not fit its box. Check the one marked and try again.',
   attachment_scan_pending:
     'Recued is checking the file for viruses. Try again in a moment.',
+  // D-188 — the owner's pause holds an approval back until Resume; saying no still works.
+  server_paused:
+    'The server is paused. Resume it to approve this; you can still deny it.',
   attachment_unscanned:
     'Nobody has checked this file for viruses. Look at it, then say yes if you still want it.',
   attachment_flagged:
@@ -138,6 +141,9 @@ export interface ReceptionInboxRowModel {
   /** D-177 N.14 — the "allow for this form" offer as projected by the
    *  server off the hold's real ask (null when the ask carries none). */
   allow_offer: { ttl_ms: number; max_uses: number } | null;
+  /** D-341 slice B4 — the ask offers "Always allow for this form" (the form's standing
+   *  pre-approval) in place of the session's offer. */
+  always_allow: boolean;
 }
 
 export interface ReceptionInboxGroupModel {
@@ -323,6 +329,7 @@ export const buildReceptionInboxRowModel = (
   status: item.status,
   attachment: buildReceptionInboxAttachmentModel(item.attachment),
   allow_offer: item.allow_offer ?? null,
+  always_allow: item.always_allow === true,
 });
 
 const MULTILINE_STRING_FIELD = /(?:^|[._-])(body|content|description|details?|message|notes?|summary)(?:$|[._-])/i;

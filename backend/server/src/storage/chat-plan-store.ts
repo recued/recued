@@ -71,6 +71,11 @@ interface ChatPlanRow {
   value_labels_encrypted: string | null;
   /** D-336 slice G — the notes in memory a held save meets (`ChatPlanProposal.memory_conflicts`). */
   memory_conflicts_encrypted: string | null;
+  /** D-341 — the label of the trigger's pre-approval its hold's ask offers (`hold.always_allow`).
+   *  Absent on a row made before the column. */
+  hold_always_allow?: string | null;
+  /** D-341 — what that answer lets happen, in the ask's words (`hold.always_allow_note`). */
+  hold_always_allow_note?: string | null;
 }
 
 const chatMutationIdentity = (row: ChatPlanRow): unknown => ({
@@ -239,6 +244,10 @@ const planShellFromRow = (
           hold: {
             run_id: row.hold_run_id,
             ...(typeof row.hold_lapsed_at === 'number' ? { lapsed_at: row.hold_lapsed_at } : {}),
+            ...(typeof row.hold_always_allow === 'string' && row.hold_always_allow !== ''
+              ? { always_allow: row.hold_always_allow } : {}),
+            ...(typeof row.hold_always_allow_note === 'string' && row.hold_always_allow_note !== ''
+              ? { always_allow_note: row.hold_always_allow_note } : {}),
           },
           // D-336 slice E — what the owner may change on its card while approving it.
           ...(heldPlanEditableArgs(row.tool) !== undefined ? { editable_args: heldPlanEditableArgs(row.tool) } : {}),
@@ -518,7 +527,9 @@ export const createSqliteChatPlanStore = (
   );
   const unlinkHoldRun = db.prepare(`
     UPDATE chat_plans
-       SET hold_run_id = NULL
+       SET hold_run_id = NULL,
+           hold_always_allow = NULL,
+           hold_always_allow_note = NULL
      WHERE plan_id = @plan_id AND hold_run_id = @run_id
   `);
   const addConflictRun = db.prepare(`
@@ -543,13 +554,13 @@ export const createSqliteChatPlanStore = (
       args_encrypted, resource_review_encrypted, args_hash, target_instance, status, created_at,
       resolved_at, consumed_at, execution_status, execution_turn_id,
       execution_blob_encrypted, execution_updated_at, hold_run_id, value_labels_encrypted,
-      memory_conflicts_encrypted
+      memory_conflicts_encrypted, hold_always_allow, hold_always_allow_note
     ) VALUES (
       @plan_id, @session_id, @turn_id, @retry_of_plan_id, NULL,
       @tool, @tier, @classification,
       @args_encrypted, @resource_review_encrypted, @args_hash, @target_instance, @status, @created_at,
       @resolved_at, @consumed_at, NULL, NULL, NULL, NULL, @hold_run_id, @value_labels_encrypted,
-      @memory_conflicts_encrypted
+      @memory_conflicts_encrypted, @hold_always_allow, @hold_always_allow_note
     )
     ON CONFLICT(plan_id) DO NOTHING
   `);
@@ -719,6 +730,8 @@ export const createSqliteChatPlanStore = (
       resolved_at: plan.resolved_at ?? null,
       consumed_at: plan.consumed_at ?? null,
       hold_run_id: plan.hold?.run_id ?? null,
+      hold_always_allow: plan.hold?.always_allow ?? null,
+      hold_always_allow_note: plan.hold?.always_allow_note ?? null,
       value_labels_encrypted: plan.value_labels
         ? await encodePayload(plan.value_labels, 'value_labels', plan, getKey) : null,
       memory_conflicts_encrypted: plan.memory_conflicts !== undefined && plan.memory_conflicts.length > 0

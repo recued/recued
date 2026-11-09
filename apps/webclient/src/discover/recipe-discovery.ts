@@ -39,6 +39,12 @@ import {
   type DepPackInfo,
 } from '../recipes/required-packs.js';
 import { INSTALL_GRANT_PICKER_STYLES } from '../settings/install-grant-picker.js';
+import {
+  CLI_GRANT_DIALOG_STYLES,
+  mountCliGrantDialog,
+  type CliGrantDialogMount,
+  type MountCliGrantDialogOptions,
+} from '../settings/cli-grant-dialog.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
   resolveRecipeBundleInstallPack,
@@ -144,6 +150,13 @@ export interface MountRecipeDiscoveryOptions {
   origin?: string;
   /** Broadcast bus — refresh the installed index on pack install/uninstall. */
   subscribe?: BroadcastSubscriber['on'];
+  /** D-182 §7.1 — the program-access dialog's callers (`cli.reachability.universe`
+   *  and `.set`, and `packs.tool_status`). Given, a recipe install that brings in a
+   *  pack running a program on the server asks which of its actions to allow, as
+   *  an install from Packs does. Absent, those actions stay off until the owner
+   *  turns them on in the pack's Access tab, and the recipe's first run is refused
+   *  "… is switched off". */
+  programAccess?: Pick<MountCliGrantDialogOptions, 'runUniverse' | 'runSet' | 'runToolStatus'>;
 }
 
 /** service_kind slug → human label for the dep type badge (shared vocabulary
@@ -326,6 +339,7 @@ export const mountRecipeDiscovery = (
   // dialog. Both stay inert unless `listPacks` + `installPack` are wired.
   let roster: DepPackInfo[] = [];
   let dialog: RecipeInstallDialogMount | null = null;
+  let programDialog: CliGrantDialogMount | null = null;
 
   const oneClickInstall = async (recipeId: string) => {
     const { result } = await opts.installBySlug(recipeId);
@@ -476,7 +490,11 @@ export const mountRecipeDiscovery = (
   if (opts.installPack !== undefined && opts.listPacks !== undefined) {
     ensureDialogStyles(doc);
     const installPack = opts.installPack;
+    programDialog = opts.programAccess !== undefined
+      ? mountCliGrantDialog({ host: opts.host, document: doc, ...opts.programAccess })
+      : null;
     dialog = mountRecipeInstallDialog({
+      ...(programDialog !== null ? { programAccess: programDialog } : {}),
       host: opts.host,
       document: doc,
       installPack: async (slug, requires, installScope) => {
@@ -562,6 +580,7 @@ export const mountRecipeDiscovery = (
       }
       updates?.dispose();
       if (dialog !== null) dialog.dispose();
+      if (programDialog !== null) programDialog.dispose();
       panel.dispose();
     },
   };
@@ -583,6 +602,8 @@ const ensureDialogStyles = (doc: Document): void => {
   style.setAttribute(DIALOG_STYLES_MARKER, '');
   // Join the shared {Access × Audience} grant-picker CSS — the co-install dialog
   // renders `renderInstallGrantPicker` for a connection-backed dep (§7.1/§7.2).
-  style.textContent = `${RECIPE_DIALOG_STYLES}\n${INSTALL_GRANT_PICKER_STYLES}`;
+  // …and the program-access dialog's, which follows a recipe install that brought
+  // in a pack running a program on the server.
+  style.textContent = `${RECIPE_DIALOG_STYLES}\n${INSTALL_GRANT_PICKER_STYLES}\n${CLI_GRANT_DIALOG_STYLES}`;
   doc.head?.appendChild?.(style);
 };

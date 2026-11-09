@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RpcError, type ServerHeartbeatSnapshot, type ServerBackupHealthSnapshot } from '@recued/contracts';
 
 import {
+  PAUSE_STAKES_HTML,
   SERVER_CONTROL_STORAGE_ATTR,
   SERVER_CONTROL_BACKUP_ATTR,
   isServerHeartbeatSnapshot,
@@ -426,6 +427,11 @@ describe('webclient server pill — master pause control (D-188)', () => {
     // confirm-on-pause: first click arms the confirm, not the rpc.
     parts().popoverHost?.fire('click', popoverClick('pause-request'));
     expect(parts().popoverHost?.innerHTML).toContain('Confirm pause');
+    // D-188 — the purpose and the stakes, read before confirming (the emergency stop).
+    expect(parts().popoverHost?.innerHTML).toContain(PAUSE_STAKES_HTML);
+    expect(parts().popoverHost?.innerHTML).toContain('nothing leaves your server and nothing comes in');
+    expect(parts().popoverHost?.innerHTML).toContain('One already going stops at its next step.');
+    expect(parts().popoverHost?.innerHTML).toContain('Approving waits until you resume.');
     expect(runSetPaused).not.toHaveBeenCalled();
     parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
     expect(runSetPaused).toHaveBeenCalledWith(true);
@@ -554,7 +560,7 @@ describe('webclient server pill — master pause control (D-188)', () => {
 
     resolvePause({ ok: true, active_since: 1 });
     await flush();
-    expect(parts().popoverHost?.innerHTML).toContain('Every door is shut');
+    expect(parts().popoverHost?.innerHTML).toContain('Paused: an emergency stop.');
     expect(parts().popoverHost?.innerHTML).not.toContain(
       'still awaiting a server response',
     );

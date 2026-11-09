@@ -7,6 +7,7 @@ import type { MailFact, SituationQuery, Sphere } from '@recued/contracts';
 import { createAskDeliveryStore, createAskStore, createNotificationBlock, createNotificationSettingsStore, createUiChannel,
   type AskDeliveryRecord, type NotificationSettings, type PendingAsk } from '@recued/notification';
 import { createEpisodeRuntime, recallOfferKey } from '../situations/episode-runtime.js';
+import { createClosingRecords } from '../situations/closing-records.js';
 import { createYoursService } from '../situations/yours-service.js';
 import { createAssetOccurrenceService } from '../situations/asset-occurrence-service.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
@@ -330,5 +331,33 @@ describe('D-325 evidence-led episodes and measured recall', () => {
     expect(await f.runtime.ownerEpisodes()).toHaveLength(1);
     const original = f.calendar.listSnapshots.bind(f.calendar); vi.spyOn(f.calendar, 'listSnapshots').mockImplementation(input => { f.runtime.forget(); return original(input); });
     expect(await f.runtime.ownerEpisodes()).toEqual([]); expect(f.facts.getFact('old')).not.toBeNull(); expect(f.history.darkPending()).toEqual([]); expect(f.runtime.traces()).toEqual([]);
+  });
+});
+
+describe('D-343 slice 2 — the owner’s closing record of an item has the final say', () => {
+  const closingFor = (f: ReturnType<typeof fixture>) => createClosingRecords({ db: f.db, history: f.history, work: f.work,
+    calendars: () => [{ slug: 'personal', table: f.calendar }], contacts: f.contacts, timeZone: () => 'UTC', now: f.now });
+  it('replaces the episode assembled for its item, and a skipped one leaves what the owner did', async () => {
+    const f = fixture(); f.plan('trip'); f.purchase('flowers', '2025-10-17', { location: 'Las Vegas' });
+    const [assembled] = await f.runtime.ownerEpisodes();
+    expect(assembled).toMatchObject({ title: 'Las Vegas trip', basis: 'derived', assembly_rule: 'plan_trace.v1' });
+    const closing = closingFor(f); const item = closing.item(assembled!.subjects[0]!)!;
+    closing.record({ day: '2025-10-17', records: [{ title: 'Our Las Vegas weekend', outcome: 'done', item }] });
+    // One episode for the trip: the owner's.
+    expect((await f.runtime.ownerEpisodes()).map(episode => [episode.title, episode.basis, episode.outcome])).toEqual([['Our Las Vegas weekend', 'declared', 'done']]);
+    closing.record({ day: '2025-10-17', records: [{ title: 'Las Vegas, called off', outcome: 'skipped', item }] });
+    // Skipped, it is no episode of what they did, and the trip's assembled one stays away.
+    expect(await f.runtime.ownerEpisodes()).toEqual([]);
+    // Their own list still has it, marked.
+    expect(f.history.episodes().map(episode => [episode.title, episode.outcome])).toEqual([['Las Vegas, called off', 'skipped']]);
+  });
+  it('counts a routine the owner reports: a recurring event they did is an episode (D-325 §4.7, amended)', async () => {
+    const f = fixture(); f.plan('weekly', { routine: true }); f.purchase('flowers', '2025-10-17', { location: 'Las Vegas' });
+    // Recurring, so nothing is assembled from it: the purchase stands alone.
+    expect((await f.runtime.ownerEpisodes()).map(episode => episode.assembly_rule)).toEqual(['trace_only.v1']);
+    const closing = closingFor(f);
+    const item = closing.item({ collection: 'calendar', id: `personal:${f.calendar.get('weekly')!.record_id}` })!;
+    closing.record({ day: '2025-10-17', records: [{ title: 'Weekly trip, done', outcome: 'done', item }] });
+    expect((await f.runtime.ownerEpisodes()).map(episode => [episode.title, episode.assembly_rule])).toEqual(expect.arrayContaining([['Weekly trip, done', 'owner_record.v1']]));
   });
 });

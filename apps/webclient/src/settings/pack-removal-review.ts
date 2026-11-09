@@ -1,6 +1,23 @@
 import type { PackRemovalPlan,PackRemovalApply,PackRemovalReview,PackRemovalApplyResult,PackRemovalPack } from '@recued/contracts';
 import type { PackRemovalCaller } from './pack-removal-caller.js';
 
+/** D-346 B — the warning a reviewed removal of a pack other packs use gives (ruling
+ *  2): the actions that stop, by pack, and until when. Null when nothing stops, and
+ *  from a server before D-346, which sends no `stops` and blocks on the dependants. */
+export const removalStopsWarning = (plan: Pick<PackRemovalPlan,'pack' | 'stops'>): { lead: string; items: string[] } | null => {
+  if (!plan.stops?.length) return null;
+  return {
+    // ⛔ Not "everything else keeps working": a recipe the server ships that needs
+    // it stops too, with no pack of the owner's behind it; those are in "Surviving
+    // recipes that become blocked" below (found live, 2026-11-07: 2 actions here,
+    // 8 recipes there, 6 of them shipped recipes on a source checkout).
+    lead: `Removing ${plan.pack.pack_slug} stops these actions until you install it again. Their packs’ other actions keep working.`,
+    items: plan.stops.map(stop => `${stop.name ?? stop.pack_slug ?? 'Your own recipes'}: ${stop.actions.length
+      ? stop.actions.map(action => action.name ?? action.recipe_id).join(', ')
+      : 'lists it as a pack it needs, with no action that calls it'}`),
+  };
+};
+
 /** Stable local review/recovery intent inside the existing Delete strip. */
 export const createPackRemovalReview = (options: { document: Document;packSlug: string;
   caller: PackRemovalCaller;changed(): void;confirm(): void }) => {
@@ -55,7 +72,16 @@ export const createPackRemovalReview = (options: { document: Document;packSlug: 
         select.value = publisher ?? '';select.onchange = () => { publisher = select.value || undefined;pendingReview = undefined;void reload(); };label.append(select);root.append(label);
       }
       for (const blocker of plan.blockers) { const el = node('p',blocker.message);el.setAttribute('role','alert');root.append(el); }
-      list('Dependent packs — remove these first',plan.dependants.map(pack => `${packName(pack)}${pack.direct ? ' · direct dependency' : ' · via '+pack.via.join(' → ')}`));
+      // D-346 B — a pack other packs use can go, after this: what stops, and until when.
+      const stopping = removalStopsWarning(plan);
+      if (stopping !== null) {
+        const warning = node('p',stopping.lead);warning.setAttribute('role','note');warning.setAttribute('data-pack-removal-stops','');root.append(warning);
+        const items = node('ul');items.setAttribute('data-pack-removal-stops-list','');
+        for (const item of stopping.items) items.append(node('li',item));
+        root.append(items);
+      }
+      list(plan.stops ? 'Packs that list it as a dependency' : 'Dependent packs — remove these first',
+        plan.dependants.map(pack => `${packName(pack)}${pack.direct ? ' · direct dependency' : ' · via '+pack.via.join(' → ')}`));
       list('Recipes whose stored installation will be removed',plan.recipes);
       list('Bundled recipes that remain available',plan.bundled_recipes_kept);
       root.append(node('p',`Also removes ${plan.owned.schedules} schedules, ${plan.owned.automations} automations and saved settings for ${plan.owned.recipes_with_settings} recipes.`));

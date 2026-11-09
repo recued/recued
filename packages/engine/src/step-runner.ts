@@ -20,6 +20,7 @@ import {
   isCanonicalOpStep,
   isCatalogForm,
   isCliFailureDetail,
+  isProgramSwitchDetail,
   isContainerPickDetail,
   isCreatePlanDetail,
   isPeerAnswerRequiredSignal,
@@ -42,7 +43,7 @@ import {
 } from '@recued/contracts';
 import { runCatalogOperation } from './catalog-gateway.js';
 import { invokeGoverned, throwIfRunKilled } from './lane.js';
-import type { CliFailureDetail, ContainerPickDetail, CreatePlanDetail, RecipeError, RecipeErrorCode } from '@recued/contracts';
+import type { CliFailureDetail, ContainerPickDetail, CreatePlanDetail, ProgramSwitchDetail, RecipeError, RecipeErrorCode } from '@recued/contracts';
 import { getTransform } from '@recued/transforms';
 import { estimateSize } from '@recued/cache';
 import type { ExecutionContext, StepLog } from './types.js';
@@ -266,6 +267,16 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
     const cliFailure: CliFailureDetail | undefined = isCliFailureDetail(cliFailureRaw)
       ? cliFailureRaw
       : undefined;
+    // D-346 follow-up (2026-11-08) — a program switched off for the owner: the gateway's
+    // refusal carries the switch (same carrier pattern), kept so the run dialog offers
+    // "Turn it on" (`run-needs.ts`).
+    const programSwitchRaw =
+      e !== null && typeof e === 'object' && 'program_switch' in e
+        ? (e as { program_switch?: unknown }).program_switch
+        : undefined;
+    const programSwitch: ProgramSwitchDetail | undefined = isProgramSwitchDetail(programSwitchRaw)
+      ? programSwitchRaw
+      : undefined;
     // D-192 Slice 6b — a work-entity CREATE whose vendor container dependency is
     // ambiguous rejects with a `container_pick` carrier (same carrier pattern as
     // `cli_failure`). Preserve it into `details.container_pick` and code the step
@@ -375,6 +386,7 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       ...(heavyOp !== undefined ? { heavy_op: heavyOp } : {}),
       ...(slotCancelled ? { slot_cancelled: true } : {}),
       ...(cliFailure ? { cli_failure: cliFailure } : {}),
+      ...(programSwitch ? { program_switch: programSwitch } : {}),
       ...(containerPick ? { container_pick: containerPick } : {}),
       ...(createPlan ? { create_plan: createPlan } : {}),
       ...(modelRefused ? {

@@ -324,6 +324,33 @@ describe('memory.forget — an agent drops an entry it saved', () => {
     const r = await h.call('memory.forget', { memory_id: 'umem_1' }, ownerChat);
     expect(r).toMatchObject({ ok: false, reason: 'classification_blocked' });
   });
+
+  // D-346 follow-up (2026-11-08) — the owner's ruling: the owner reads which of their switches
+  // is off and where; an app reads only that the tool is not available, naming no switch.
+  it('tells the owner which switch is off and where, and an app only that it is not available', async () => {
+    const h = harness(makePool(), false);
+    expect(await h.call('memory.forget', { memory_id: 'umem_1' }, ownerChat)).toMatchObject({
+      ok: false,
+      reason: 'classification_blocked',
+      detail: '\'memory.forget\' needs "Save to your memory", which is turned off for you, so it did not run. '
+        + 'To use it, turn on "Save to your memory" under Self (you) → Ops on the Contracts page.',
+    });
+    expect(await h.call('memory.forget', { memory_id: 'umem_1' }, door('door-a'))).toMatchObject({
+      ok: false,
+      reason: 'classification_blocked',
+      detail: "'memory.forget' is not available for this contract.",
+    });
+  });
+
+  // D-346 follow-up (2026-11-08) — "Turn it on" under the owner's answer: the owner's refusal
+  // carries the switch it needs; an app's carries none.
+  it('carries the switch for the owner’s chat to turn on, and none for an app', async () => {
+    const h = harness(makePool(), false);
+    const own = await h.call('memory.forget', { memory_id: 'umem_1' }, ownerChat);
+    expect((own as { fixes?: unknown }).fixes).toEqual([{ kind: 'switch', entry_key: 'core.memory.write', label: 'Save to your memory' }]);
+    const app = await h.call('memory.forget', { memory_id: 'umem_1' }, door('door-a'));
+    expect('fixes' in (app as object)).toBe(false);
+  });
 });
 
 // ── the check before asking ─────────────────────────────────────────

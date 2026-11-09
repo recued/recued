@@ -24,6 +24,8 @@ export const createGoogleAdapter = (): LLMAdapter => ({
         maxOutputTokens: options.max_tokens,
         // Gemini's native JSON mode — equivalent to OpenAI's response_format.
         ...(options.json ? { responseMimeType: 'application/json' } : {}),
+        // D-344 — the owner's thinking setting: a dynamic budget on, none off.
+        ...(options.thinking !== undefined ? { thinkingConfig: { thinkingBudget: options.thinking ? -1 : 0 } } : {}),
       },
     };
     if (system_instruction) {

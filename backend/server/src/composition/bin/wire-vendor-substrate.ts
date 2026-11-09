@@ -67,6 +67,8 @@ import {
  *  optional with documented degradation. */
 export interface ComposeVendorSubstrateDeps {
   connectionStore: ConnectionStoreSqlite;
+  /** D-188 — the master pause, for a vendor's live stream (`VendorBootDeps.isPaused`). */
+  isPaused?: () => boolean;
   /** D-269 step 1 — the owner's declared server zone, for D-139 § A.3.7's
    *  engagement timezone fallback. Absent ⇒ the chain skips to UTC, which is
    *  what it did for every engagement before this was supplied at all. */
@@ -280,6 +282,7 @@ export const composeVendorSubstrate = async (
   for (const entry of VENDOR_BOOT_REGISTRY) {
     const bundle = await entry.boot({
       connectionStore: deps.connectionStore,
+      ...(deps.isPaused ? { isPaused: deps.isPaused } : {}),
       engagementStore: deps.engagementStore,
       // D-269 — fills D-139 § A.3.7's third fallback step, declared on eleven
       // reconcilers and supplied by nobody until now.

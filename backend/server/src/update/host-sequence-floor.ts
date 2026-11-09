@@ -56,6 +56,7 @@
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireUpdateLease, UpdateLeaseHeldError } from './update-lease.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 /** Beside the binary, and named by install.sh — this is its file too. */
 export const HOST_SEQUENCE_FLOOR_FILE = '.release-sequence';
@@ -121,6 +122,7 @@ export const advanceHostSequenceFloor = (
     lease = acquireUpdateLease({
       leasePath: `${floorPath}.lock`,
       operation: `advance replay floor to ${sequence}`,
+      identify: processStartIdentity,
       ...(opts.now ? { now: opts.now } : {}),
       ...(opts.currentPid ? { currentPid: opts.currentPid } : {}),
       ...(opts.isAlive ? { isAlive: opts.isAlive } : {}),

@@ -14,8 +14,13 @@ import {
   PACK_PROGRAMS_ACTION_ATTR,
   PACK_PROGRAMS_ATTR,
   PACK_PROGRAMS_ERROR_ATTR,
+  PACK_PROGRAMS_FOUND_AT_ATTR,
   PACK_PROGRAMS_INSTALL_ATTR,
+  PACK_PROGRAMS_LOCATION_ATTR,
+  PACK_PROGRAMS_LOCATION_FROM_ATTR,
+  PACK_PROGRAMS_LOCATION_INPUT_ATTR,
   PACK_PROGRAMS_OUTSIDE_ATTR,
+  PACK_PROGRAMS_REPAIR_ATTR,
   PACK_PROGRAMS_ROW_ATTR,
   PACK_PROGRAMS_STATE_ATTR,
   createPackProgramsController,
@@ -24,7 +29,7 @@ import {
   programDisplayName,
   type PackProgramsCallers,
 } from '../settings/pack-programs-controls.js';
-import { packBadges, programBadge } from '../discover/pack-discovery.js';
+import { connectionBadge, packBadges, programBadge, signInBadge } from '../discover/pack-discovery.js';
 
 interface FakeElement {
   tagName: string;
@@ -125,8 +130,15 @@ const opencode = (over: Partial<PackToolStatus> = {}): PackToolStatus => ({
  *  the real read applies it. */
 const fakeServer = (tools: PackToolStatus[]) => {
   let owner: CliVersionOutside | undefined;
+  let location: { ingredient_id: string; path: string } | undefined;
   const calls: Array<{ method: string; args: unknown }> = [];
-  const view = (): PackToolStatus[] => tools.map((tool) => (tool.tested === undefined ? tool : {
+  /** A set location makes that program ready from it, as the server reads it. */
+  const located = (tool: PackToolStatus): PackToolStatus => {
+    if (location?.ingredient_id !== tool.catalog) return tool;
+    const { found_at: _found, repair: _repair, ...rest } = tool;
+    return { ...rest, state: 'ready', owner_path: location.path };
+  };
+  const view = (): PackToolStatus[] => tools.map((tool) => located(tool.tested === undefined ? tool : {
     ...tool,
     outside: owner ?? tool.pack_outside,
     ...(owner !== undefined ? { owner_outside: owner } : {}),
@@ -150,6 +162,17 @@ const fakeServer = (tools: PackToolStatus[]) => {
       owner = undefined;
       return { deleted };
     },
+    setPath: async (args) => {
+      calls.push({ method: 'setPath', args });
+      location = args;
+      return { ingredient_id: args.ingredient_id, binary: 'rg', path: args.path, written_at: 1 };
+    },
+    clearPath: async (args) => {
+      calls.push({ method: 'clearPath', args });
+      const deleted = location !== undefined;
+      location = undefined;
+      return { deleted };
+    },
   };
   return { callers, calls };
 };
@@ -165,6 +188,36 @@ const mount = (callers: PackProgramsCallers | undefined, copied: string[] = []) 
   const render = (): FakeElement | null => controller.renderForPack(pack) as unknown as FakeElement | null;
   return { controller, render, renders: () => renders };
 };
+
+/** D-321 C1 — a pack not installed yet: its programs, checked on this server,
+ *  said before install, with nothing stored for a catalog that is not there. */
+describe('D-321 C1 — the Programs block before install', () => {
+  const before = (tools: PackToolStatus[]): PackProgramsCallers => {
+    const server = fakeServer([]);
+    return { ...server.callers, status: async () => ({ system: 'macos', packs: [{ slug: PACK, installed: false, tools }] }) };
+  };
+
+  it('says what the pack runs and how to get it, and offers nothing it would store', async () => {
+    const { controller, render } = mount(before([
+      opencode({ state: 'missing', binary: 'rg', catalog: 'recued-core/ripgrep', found_at: '/opt/homebrew/bin/rg', tested: undefined }),
+      opencode({ state: 'untested' }),
+    ]));
+    render();
+    await controller.whenSettled();
+    const section = render()!;
+    expect(text(section)).toContain('checked on your server before you install it');
+    expect(one(section, PACK_PROGRAMS_FOUND_AT_ATTR)?.getAttribute(PACK_PROGRAMS_FOUND_AT_ATTR)).toBe('/opt/homebrew/bin/rg');
+    // No location, no "Use …", no Refuse / Warn: each is stored per installed catalog.
+    expect(one(section, PACK_PROGRAMS_OUTSIDE_ATTR)).toBeNull();
+    expect(one(section, PACK_PROGRAMS_ACTION_ATTR, 'use-found')).toBeNull();
+    expect(one(section, PACK_PROGRAMS_LOCATION_ATTR)).toBeNull();
+    expect(one(section, PACK_PROGRAMS_LOCATION_INPUT_ATTR)).toBeNull();
+    expect(one(section, PACK_PROGRAMS_ACTION_ATTR, 'use-default')).toBeNull();
+    // Checking again still works.
+    expect(one(section, PACK_PROGRAMS_ACTION_ATTR, 'check-again')).not.toBeNull();
+    expect(controller.toolsFor(PACK)?.map((tool) => tool.state)).toEqual(['missing', 'untested']);
+  });
+});
 
 describe('D-321 — the Programs block', () => {
   it('loads on first sight, then shows each program, the range and what a run does', async () => {
@@ -309,6 +362,81 @@ describe('D-321 — the Programs block', () => {
     expect(docs.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
+  it("a program installed outside the server's PATH says where, and copies the repair instead of an install command", async () => {
+    const copied: string[] = [];
+    const repair = 'curl -fsSL https://recued.com/install.sh | sh';
+    const server = fakeServer([
+      { catalog: 'rg', binary: 'rg', state: 'missing', install: ['brew install ripgrep'], docs: [], found_at: '/opt/homebrew/bin/rg', repair },
+      { catalog: 'tsc', binary: 'tsc', state: 'missing', install: ['npm install -g typescript'], docs: [], found_at: '/home/me/.local/bin/tsc' },
+    ]);
+    const { controller, render } = mount(server.callers, copied);
+    render();
+    await controller.whenSettled();
+    const section = render()!;
+    const rg = one(section, PACK_PROGRAMS_ROW_ATTR, 'rg')!;
+    expect(text(rg)).toContain("Not on the server's PATH");
+    expect(text(rg)).toContain("Installed at /opt/homebrew/bin/rg, but the server doesn't look in /opt/homebrew/bin.");
+    expect(one(rg, PACK_PROGRAMS_INSTALL_ATTR)).toBeNull();
+    expect(one(rg, PACK_PROGRAMS_REPAIR_ATTR)?.textContent).toBe(repair);
+    one(rg, PACK_PROGRAMS_ACTION_ATTR, 'copy')!.click();
+    await flush();
+    expect(copied).toEqual([repair]);
+    // No repair offered: the owner is told what to do themselves.
+    const tsc = one(section, PACK_PROGRAMS_ROW_ATTR, 'tsc')!;
+    expect(text(tsc)).toContain('add /home/me/.local/bin to the PATH it starts with');
+    expect(one(tsc, PACK_PROGRAMS_ACTION_ATTR, 'copy')).toBeNull();
+  });
+
+  it('a found program runs from where it is in one press, and goes back to the PATH in another', async () => {
+    const server = fakeServer([
+      { catalog: 'rg', binary: 'rg', state: 'missing', install: ['brew install ripgrep'], docs: [], found_at: '/opt/homebrew/bin/rg' },
+    ]);
+    const { controller, render } = mount(server.callers);
+    render();
+    await controller.whenSettled();
+    one(render()!, PACK_PROGRAMS_ACTION_ATTR, 'use-found')!.click();
+    await controller.whenSettled();
+    expect(server.calls.filter((c) => c.method === 'setPath'))
+      .toEqual([{ method: 'setPath', args: { ingredient_id: 'rg', path: '/opt/homebrew/bin/rg' } }]);
+    const row = one(render()!, PACK_PROGRAMS_ROW_ATTR, 'rg')!;
+    expect(text(row)).toContain('Runs /opt/homebrew/bin/rg, the location you set.');
+    expect(one(row, PACK_PROGRAMS_LOCATION_ATTR)).not.toBeNull();
+    one(row, PACK_PROGRAMS_ACTION_ATTR, 'use-path')!.click();
+    await controller.whenSettled();
+    expect(server.calls.filter((c) => c.method === 'clearPath'))
+      .toEqual([{ method: 'clearPath', args: { ingredient_id: 'rg' } }]);
+  });
+
+  it("D-346 — a Kitchen copy running its original's location says so, and offers setting its own instead of a way back", async () => {
+    const server = fakeServer([
+      { catalog: 'rg-copy', binary: 'rg', state: 'ready', install: [], docs: [], owner_path: '/opt/homebrew/bin/rg', owner_path_from: 'rg' },
+    ]);
+    const { controller, render } = mount(server.callers);
+    render();
+    await controller.whenSettled();
+    const row = one(render()!, PACK_PROGRAMS_ROW_ATTR, 'rg-copy')!;
+    expect(text(row)).toContain('Runs /opt/homebrew/bin/rg, the location you set for the pack this copies. Set one here to change it for this copy.');
+    expect(one(row, PACK_PROGRAMS_LOCATION_FROM_ATTR)?.getAttribute(PACK_PROGRAMS_LOCATION_FROM_ATTR)).toBe('rg');
+    // Clearing the copy's own row would change nothing: no "Use the server's PATH" here.
+    expect(one(row, PACK_PROGRAMS_ACTION_ATTR, 'use-path')).toBeNull();
+    // Setting one for the copy is still offered.
+    expect(one(row, PACK_PROGRAMS_LOCATION_INPUT_ATTR, 'rg-copy')).not.toBeNull();
+  });
+
+  it('a location can be typed for a program the server did not find', async () => {
+    const server = fakeServer([{ catalog: 'rg', binary: 'rg', state: 'missing', install: [], docs: [] }]);
+    const { controller, render } = mount(server.callers);
+    render();
+    await controller.whenSettled();
+    const section = render()!;
+    const input = one(section, PACK_PROGRAMS_LOCATION_INPUT_ATTR, 'rg')! as unknown as { value: string };
+    input.value = '  /home/me/.cargo/bin/rg ';
+    one(section, PACK_PROGRAMS_ACTION_ATTR, 'save-location')!.click();
+    await controller.whenSettled();
+    expect(server.calls.filter((c) => c.method === 'setPath'))
+      .toEqual([{ method: 'setPath', args: { ingredient_id: 'rg', path: '/home/me/.cargo/bin/rg' } }]);
+  });
+
   it('a failed write says so and keeps the block', async () => {
     const server = fakeServer([opencode()]);
     const failing: PackProgramsCallers = {
@@ -361,6 +489,27 @@ describe('D-321 — the Programs block', () => {
 describe('D-321 — the pack list badge', () => {
   const tool = (state: PackToolStatus['state'], over: Partial<PackToolStatus> = {}): PackToolStatus =>
     opencode({ state, ...over });
+
+  it('a connection pack whose connection is not set up gets its own badge, counted not named', () => {
+    expect(connectionBadge(['hubspot'])).toMatchObject({ label: 'Needs a connection', tone: 'danger' });
+    expect(connectionBadge(['hubspot', 'slack'])).toMatchObject({ label: 'Needs 2 connections' });
+    expect(connectionBadge([])).toBeNull();
+  });
+
+  it('D-321 P3 — a sign-in the service turned down gets its own badge, beside one never set up', () => {
+    expect(signInBadge(['exa'])).toMatchObject({ label: 'Sign-in not accepted', tone: 'danger' });
+    expect(signInBadge(['exa', 'hubspot'])).toMatchObject({ label: '2 sign-ins not accepted' });
+    expect(signInBadge([])).toBeNull();
+    const row = { slug: PACK } as unknown as Parameters<typeof packBadges>[0];
+    const needs = new Map([[PACK, { unset: ['slack'], rejected: ['exa'] }]]);
+    expect(packBadges(row, undefined, undefined, undefined, needs).map((b) => b.label))
+      .toEqual(['Needs a connection', 'Sign-in not accepted']);
+  });
+
+  it('a program installed outside the PATH is not one the pack "needs"', () => {
+    expect(programBadge([tool('missing', { binary: 'rg', found_at: '/opt/homebrew/bin/rg' })]))
+      .toMatchObject({ label: 'rg not on PATH', tone: 'danger' });
+  });
 
   it('one badge for the most urgent program', () => {
     expect(programBadge([tool('ready', { version: '1.18.35' })])).toBeNull();

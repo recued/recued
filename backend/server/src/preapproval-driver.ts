@@ -8,6 +8,7 @@ import type { PreapprovalActivations, TriggerOccurrence } from './storage/preapp
 import type { createPreapprovalExecutionRuntime } from './preapproval-execution.js';
 import type { ExecuteRequest, ExecuteResponse, InternalExecuteOverrides } from './types.js';
 import { triggerEventContext } from './triggers/event-context.js';
+import { isRunRefusedForNow } from './pause-approval.js';
 
 export const createPreapprovalDriver = (deps: {
   storage: PreapprovalStorage;
@@ -37,7 +38,7 @@ export const createPreapprovalDriver = (deps: {
    *  back for the same occurrence (`handBackRefused`) rather than failed. */
   const draining = (): boolean => deps.execution.isDraining?.() === true;
   /** The run was refused at entry because the server is restarting. */
-  const refusedByRestart = (error: unknown): boolean => error instanceof RpcError && error.code === 'draining';
+  const refusedByRestart = (error: unknown): boolean => isRunRefusedForNow(error); // D-188: or paused
   /** Finish a claim whose run threw — unless the restart refused it, which
    *  hands the approval back unused (D-261 amendment 2026-10-26). */
   const handBackRefused = async (handle: object, error: unknown): Promise<void> => {
@@ -286,7 +287,7 @@ export const createPreapprovalDriver = (deps: {
         // A competing worker, cancellation or material drift never falls
         // through to the ordinary scheduler. The durable state explains why.
         if (!(error instanceof RpcError && ['preapproval_already_claimed', 'preapproval_cancelled',
-          'preapproval_expired', 'preapproval_stale', 'preapproval_authority_changed', 'draining'].includes(error.code))) {
+          'preapproval_expired', 'preapproval_stale', 'preapproval_authority_changed', 'draining', 'server_paused'].includes(error.code))) {
           if (deps.onError) deps.onError(managed.future_execution_ref, error);
           else console.warn('[preapproval] scheduled execution failed', managed.future_execution_ref, error);
         }

@@ -166,7 +166,8 @@ describe('work.create — an asset, to its type', () => {
     const f = harness(['core.work-entity.task.create']);
     const res = await f.create(passport, inChat()) as Refused;
     expect(res).toMatchObject({ ok: false, reason: 'classification_blocked' });
-    expect(res.detail).toContain('asset');
+    // D-346 follow-up (2026-11-08) — the owner reads the switch that adds things they own.
+    expect(res.detail).toContain('turn on "Add a thing you own" under Self (you) → Ops');
     expect(f.store.listAssets({})).toEqual([]);
   });
 
@@ -284,15 +285,15 @@ describe('work.create — the readings the user gave', () => {
     expect(res.result.reminders).toEqual(['Check usage']);
   });
 
-  it('records an approved create\'s readings as the owner\'s own samples, and the rest at the AI\'s rank', async () => {
-    // The owner's ruling of 2026-10-25: "readings mine, rest AI's".
+  it('records an approved create\'s facts as the owner\'s, its readings as their own samples', async () => {
+    // D-343 ruling 16 (2026-11-06), which replaced "readings mine, rest AI's" (2026-10-25).
     const f = harness();
     const approved = { ...(inChat() as object), owner_approved: true } as never;
     const res = await f.create({ ...car, readings: { odometer: { value: 12400, unit: 'km' } }, attributes: { colour: 'blue' } }, approved) as Ok;
     const asset = f.store.readAsset(res.result.id as string)!;
     expect(asset.field_sources['readings.odometer']).toMatchObject({ kind: 'owner', ref: 'chat:sess-1', revision: expect.any(String) });
-    expect(asset.field_sources['attributes.colour']).toMatchObject({ kind: 'extracted', ref: 'chat:sess-1' });
-    expect(asset.field_sources.name).toMatchObject({ kind: 'extracted', ref: 'chat:sess-1' });
+    expect(asset.field_sources['attributes.colour']).toMatchObject({ kind: 'owner', ref: 'chat:sess-1' });
+    expect(asset.field_sources.name).toMatchObject({ kind: 'owner', ref: 'chat:sess-1' });
     const unapproved = await f.create({ ...car, readings: { odometer: { value: 1, unit: 'km' } } }, inChat()) as Ok;
     expect(f.store.readAsset(unapproved.result.id as string)!.field_sources['readings.odometer']).toMatchObject({ kind: 'extracted' });
   });

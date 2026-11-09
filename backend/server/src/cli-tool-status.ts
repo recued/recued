@@ -52,6 +52,7 @@ import {
   type CliToolVersionPolicy,
 } from '@recued/contracts';
 import { createCliBinaryPathResolver } from './cli-binary-reachability.js';
+import { withFoldersAfterPath } from './cli-owner-location.js';
 import { envForOthers } from './supervision/env-for-others.js';
 import {
   killProcessGroup,
@@ -150,6 +151,10 @@ export interface CliToolStatusCheck {
    *  tool is a version manager's shim (`isVersionManagerShim`); absent for a
    *  check no action is waiting on (the pack page). */
   where?: { cwd: string; env: NodeJS.ProcessEnv };
+  /** D-321 — folders added at the end of the probe's PATH: those of a location
+   *  the owner set (`cli-owner-location.ts`), the same an action from it gets,
+   *  so a script naming `node` on its first line reads its version too. */
+  extraPath?: readonly string[];
 }
 
 export interface CliToolStatus {
@@ -354,12 +359,12 @@ export const createCliToolStatus = (options: CliToolStatusOptions = {}): CliTool
   });
 
   return {
-    async check({ probe, tested, where }) {
+    async check({ probe, tested, where, extraPath }) {
       const binary = probe[0] ?? '';
       if (!isVersionOnlyProbe(probe)) {
         return { state: 'unreadable', binary, probe_result: { kind: 'not_run' } };
       }
-      const env = envOf();
+      const env = withFoldersAfterPath(envOf(), extraPath ?? [], platform);
       const PATH = envValue(env, 'PATH', platform) ?? '';
       // The file an action would start (the executor launches what this same
       // resolver finds), so the version read is the version an action runs.

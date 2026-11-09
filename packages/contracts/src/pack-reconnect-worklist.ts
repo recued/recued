@@ -9,6 +9,11 @@ export interface PackReconnectItem {
   missing_scopes: string[];
   coverage: 'missing' | 'unknown';
   reviewed: boolean;
+  /** D-321 P5 — no set-up connection backs this sign-in (none bound, or one named
+   *  that is not set up), scopes or none: an API-key pack's too. */
+  connection_needed?: true;
+  /** D-321 P5 — the vendor its pack's requirement names: whose form sets it up. */
+  vendor?: string;
 }
 export interface PackReconnectGroup {
   id: string;

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Schedule } from '@recued/scheduler';
-import { PREAPPROVAL_LIMITS } from '@recued/contracts';
+import { PREAPPROVAL_LIMITS, zoneOffsetMsAt } from '@recued/contracts';
 import { createScheduleStore } from '../schedule-store.js';
 import { createAutoRunSettingsStore, createCircuitBreakerStore } from '../auto-run-scheduler.js';
 import { listAutoRun } from '../auto-run-handler.js';
@@ -33,14 +33,15 @@ const schedule = (): Schedule => ({
   cron_expression: '* * * * *', enabled: true, created_at: 0, last_run_at: null,
   next_run_at: 60_000, last_status: null, last_error: null,
 });
-const connect = (db = new Database(':memory:'), state = { now: 1_000, locked: false }) => {
+const connect = (db = new Database(':memory:'), state = { now: 1_000, locked: false }, serverTimeZone?: string) => {
   databases.push(db);
   const schedules = createScheduleStore(db);
   const autoRun = createAutoRunSettingsStore(db);
   const circuits = createCircuitBreakerStore(db);
   const triggers = createEventTriggersStore(db);
   const recipes = createRecipeStore('/d261-no-bundled-recipes', db);
-  const activations = createPreapprovalActivations({ db, schedules, autoRun, circuits, triggers, recipes, now: () => state.now });
+  const activations = createPreapprovalActivations({ db, schedules, autoRun, circuits, triggers, recipes, now: () => state.now,
+    ...(serverTimeZone !== undefined ? { serverTimeZone: () => serverTimeZone } : {}) });
   const { repository, codec } = repositoryFixture(db, state, {
     validateLive: (plan, stage) => activations.validate(plan, !['prepare', 'decide'].includes(stage)),
     activate: activations.activate,
@@ -367,5 +368,52 @@ describe('D-261 activation in actual automation stores', () => {
     expect((await f.repository.inspect(autoApproval.proposal_id)).execution_status).toBe('invalidated');
     f.activations.retire(autoApproval.future_execution_ref);
     expect(f.autoRun.isEnabled('dsh_auto')).toBe(false);
+  });
+});
+
+/** D-269 — an approved schedule's run is read in the schedule's zone, as the
+ *  scheduler fires it. Read host-local, a Hong Kong 07:00 approved ahead on a
+ *  UTC host fell due at 15:00 (the driver fires it then), and its resumed
+ *  schedule named the host's 07:00 as the next run. Written in a zone whose offset differs from
+ *  this machine's, so each case can tell the two apart wherever it runs. */
+describe("D-269 — an approved schedule's run is read in its zone", () => {
+  const MIN = 60_000;
+  const JUNE = Date.UTC(2026, 5, 10);
+  const hostOffset = (ms: number): number => -new Date(ms).getTimezoneOffset() * MIN;
+  const ZONE = zoneOffsetMsAt(JUNE, 'Asia/Hong_Kong') !== hostOffset(JUNE) ? 'Asia/Hong_Kong' : 'America/New_York';
+  /** A wall-clock time in June 2026 in `ZONE`, as Unix ms (no DST change near). */
+  const inZone = (day: number, hour: number, minute = 0): number => {
+    const naive = Date.UTC(2026, 5, day, hour, minute);
+    return naive - zoneOffsetMsAt(naive, ZONE);
+  };
+  const daily = (over: Partial<Schedule> = {}): Schedule => ({
+    ...schedule(), cron_expression: '0 7 * * *', next_run_at: inZone(10, 7), ...over,
+  });
+  /** Reviewed at 05:00 in the zone: decided by 05:30, dispatched by 08:00. */
+  const planAt = (f: Fixture) => {
+    f.state.now = inZone(10, 5);
+    const plan = planFor(f);
+    plan.request.decision_deadline = inZone(10, 5, 30);
+    plan.request.dispatch_deadline = inZone(10, 8);
+    plan.target = f.activations.prepareTarget(plan.request);
+    return plan;
+  };
+
+  it("⛔ the run approved ahead is due at 07:00 in the schedule's own zone", () => {
+    const f = connect(); f.schedules.set(daily({ time_zone: ZONE }));
+    expect(planAt(f).target.due_at).toBe(inZone(10, 7));
+  });
+
+  it("⛔ a row from before D-269 reads the server's declared zone", () => {
+    const f = connect(undefined, undefined, ZONE); f.schedules.set(daily());
+    expect(planAt(f).target.due_at).toBe(inZone(10, 7));
+  });
+
+  it("⛔ when the approval ends, the schedule's next run is the next 07:00 in its zone", async () => {
+    const f = connect(); f.schedules.set(daily({ time_zone: ZONE }));
+    const approved = await approve(f, planAt(f));
+    f.repository.cancelExecution(approved.future_execution_ref);
+    expect(f.activations.retire(approved.future_execution_ref)).toBe(true);
+    expect(f.schedules.get(schedule().schedule_id)?.next_run_at).toBe(inZone(11, 7));
   });
 });

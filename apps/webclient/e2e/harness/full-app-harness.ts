@@ -41,6 +41,7 @@ import { restoreReadinessFixture, seedRestoreReadinessReceipt } from './restore-
  */
 import type {
   BulkPackUninstallResultLike,
+  PackConnectionsView,
   PackRemovalApply,
   PackRemovalApplyResult,
   PackRemovalPlan,
@@ -73,6 +74,7 @@ import { workEntityUpsertDemoReply } from './work-entity-upsert.js';
 import { createYoursFixture } from './yours-fixture.js';
 import { recipeSimulationDemoReply } from './recipe-simulation.js';
 import { preapprovalDemoReply } from './preapproval.js';
+import { triggerPreapprovalDemoReply } from './trigger-preapproval.js';
 import type { GrantRecipeOpUsageCaller } from '../../src/contracts/contract-grants-panel.js';
 import { HOUSEKEEPING_PRESET_DEFAULTS, HOUSEKEEPING_CYCLE_BUDGET_MIN_MS, HOUSEKEEPING_CYCLE_BUDGET_MAX_MS } from '@recued/contracts';
 import {
@@ -2256,7 +2258,8 @@ const buildFakeTransport = (
     },
   };
   let receptionInboxItems = [
-    receptionInboxItem,
+    // D-341 slice B4 — the first hold's ask offers "Always allow for this form".
+    searchParams.get('reception_always_allow') === '1' ? { ...receptionInboxItem, always_allow: true } : receptionInboxItem,
     secondReceptionInboxItem,
   ];
   let receptionDecisionAcknowledged = false;
@@ -2298,6 +2301,10 @@ const buildFakeTransport = (
           rpc.method,
           (rpcCallCounts.get(rpc.method) ?? 0) + 1,
         );
+        // D-341 — a chat card's yes with its trigger's standing pre-approval ("Always allow").
+        if (rpc.method === 'chat.plan.approve' && (rpc.args as { always_allow?: unknown } | undefined)?.always_allow === true) {
+          rpcCallCounts.set('chat.plan.approve.always_allow', (rpcCallCounts.get('chat.plan.approve.always_allow') ?? 0) + 1);
+        }
         // D-336 slice H — a Memory save whose relationship links the contact the picker added.
         if (rpc.method === 'memory.create'
           && JSON.stringify((rpc.args as { claim?: unknown } | undefined)?.claim ?? null).includes('"contact_id":"ct-added"')) {
@@ -4662,6 +4669,34 @@ const buildFakeTransport = (
           result = {
             connections: [connectionGrantConnection()],
           };
+        }
+        // D-321 P4 (fca6b1580) — an installed pack shows its OWN list's
+        // Connections block where the readiness rows were, read here. Left
+        // pending, the block said "Loading connections…" for good and the
+        // narrow long-text journey had no connection on the page to measure.
+        // The long connection, set up and the default, granted only
+        // `crm.objects.deals.read`: the block says what it is missing for the
+        // pack and offers Re-authorize.
+        if (
+          longConnectionTextDemo
+          && rpc.method === 'packs.connections.list'
+          && (rpc.args as { pack_slug?: unknown }).pack_slug === connectionDemoPackSlug
+        ) {
+          result = {
+            pack_slug: connectionDemoPackSlug,
+            slots: [{
+              slot: 'hubspot',
+              catalogs: [`${packDemoPublisher}/connection-long-catalog`],
+              connections: [{
+                connection_name: connectionDemoName,
+                display_name: connectionDemoDisplayName,
+                enrolled: true,
+                is_default: true,
+              }],
+              candidates: [],
+              vendor: 'hubspot',
+            }],
+          } satisfies PackConnectionsView;
         }
         if (
           connectionsGrantDemo
@@ -7661,6 +7696,8 @@ const buildFakeTransport = (
         }
         const preapprovalReply = preapprovalDemoReply(rpc.method, rpc.args);
         if (preapprovalReply !== null) { result = preapprovalReply.result; error = preapprovalReply.error; }
+        const triggerPreapprovalReply = triggerPreapprovalDemoReply(rpc.method, rpc.args);
+        if (triggerPreapprovalReply !== null) { result = triggerPreapprovalReply.result; error = triggerPreapprovalReply.error; }
         const localChangesReply = localChangesDemoReply(rpc.method,rpc.args);
         if (localChangesReply !== null) { result = localChangesReply.result; error = localChangesReply.error; }
         const undoReply = localUpdateUndoDemoReply(rpc.method, rpc.args);

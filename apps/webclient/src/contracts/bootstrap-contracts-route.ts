@@ -1325,9 +1325,11 @@ export interface ContractsRoute {
 // Helpers
 // ════════════════════════════════════════════════════════════════
 
+// "Self (you)", as a pack's Access tab names the same row (the owner's ruling, 2026-11-08: the
+// more used of the two labels; this row read "Owner (you)" and the badge beside it "Self").
 const SELF_ROW: ContractRowVM = {
   contract_id: OWNER_CONTRACT_ID,
-  display_name: 'Owner (you)',
+  display_name: 'Self (you)',
   is_self: true,
   lifecycle_state: 'active',
 };

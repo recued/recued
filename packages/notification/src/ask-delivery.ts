@@ -54,6 +54,7 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
     destination: group.destinations.find(item => item.id === attempt.destination_id)!,
     asks: group.asks, repeat: attempt.repeat,
     ...(attempt.closed_ask_ids ? { closed_ask_ids: attempt.closed_ask_ids } : {}),
+    ...(group.lead ? { lead: group.lead } : {}),
   });
   const receipt = (group: AskDeliveryGroup, attempt: AskDeliveryAttempt): AskDeliveryReceipt => ({
     ...envelope(group, attempt),
@@ -61,6 +62,7 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
       ? { provider_message_id: attempt.result.provider_message_id } : {}),
     ...(attempt.result?.outcome === 'delivered' && attempt.result.presentation
       ? { presentation: attempt.result.presentation } : {}),
+    ...(attempt.result?.outcome === 'delivered' && attempt.result.sent ? { sent: attempt.result.sent } : {}),
   });
   const closedIds = async (group: AskDeliveryGroup): Promise<string[]> => {
     const rows = await Promise.all(group.asks.map(ask => deps.asks.get(ask.ask_id)));
@@ -254,6 +256,9 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
         // group stored before may still carry the old answer fields, which nothing reads.
         || (destination.audience === 'household' && destination.channel !== 'telegram'))
       || (input.not_before !== undefined && !Number.isFinite(input.not_before))
+      // D-340 slice 3 — a stream's lead: a title and its text, as a day's message has them.
+      || (input.lead !== undefined && (typeof input.lead.title !== 'string' || !input.lead.title.trim() || input.lead.title.length > 300
+        || typeof input.lead.text !== 'string' || !input.lead.text.trim() || input.lead.text.length > 12_000))
       || new TextEncoder().encode(JSON.stringify(input)).length > 256 * 1024) {
       throw new Error('Invalid reminder delivery envelope');
     }
@@ -266,9 +271,11 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
         options: [...ask.options], handler_kind: ask.handler.kind, handler_payload: ask.handler.payload,
         delivery_group_id: input.group_id, created_at,
         fanout_channels: [...new Set(input.destinations.map(destination => destination.channel))] }));
-      const seed = { asks, destinations: [...input.destinations], not_before: input.not_before ?? created_at };
+      const seed = { asks, destinations: [...input.destinations], not_before: input.not_before ?? created_at,
+        ...(input.lead ? { lead: { title: input.lead.title, text: input.lead.text } } : {}) };
       if (group) {
-        if (canonical(seed) !== canonical({ asks: group.asks, destinations: group.destinations, not_before: group.not_before })) {
+        if (canonical(seed) !== canonical({ asks: group.asks, destinations: group.destinations, not_before: group.not_before,
+          ...(group.lead ? { lead: group.lead } : {}) })) {
           throw new Error('Reminder envelope id is already in use');
         }
       } else {

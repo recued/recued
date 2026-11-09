@@ -1582,7 +1582,8 @@ describe('D-167 P5 S4 — end-to-end through the orchestrator', () => {
     const db = new Database(':memory:');
     try {
       ensureChatSchema(db);
-      const chatStore = createChatStore(db);
+      // D-347 — the closing brief itself, so a store without the carry: the turn closes with a fold.
+      const { readSessionCarry: _read, writeSessionCarry: _write, deleteSessionCarry: _delete, ...chatStore } = createChatStore(db);
       chatStore.createSession({ id: 'sess-1', now: NOW - 1_000 });
       chatStore.setRollingBriefEnabled(true);
       const sender = 'new.sender@outside.example';

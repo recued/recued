@@ -517,10 +517,19 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
       cacheBlobs: app.cacheBlobs,
       warehouseBus: app.warehouseBus,
       contactStore: app.contactStoreRef,
+      ...(app.occasionsRef ? { occasionsRef: app.occasionsRef } : {}),
+      ...(app.mailFactsRef ? { mailFactsRef: app.mailFactsRef } : {}),
+      ...(app.closingRecordsRef ? { closingRecordsRef: app.closingRecordsRef } : {}),
+      ...(app.chatNoticesRef ? { chatNotices: app.chatNoticesRef } : {}),
+      ...(app.openNoticeConversationRef ? { openNoticeConversation: app.openNoticeConversationRef } : {}),
       gateRegistry: options.app.gateRegistry,
       eventBus: options.app.eventBus,
       keys: app.keys,
       vaultStateBus: app.vaultStateBus,
+      // D-188 — the mail and calendar poll loops hold while the owner's pause does.
+      ...(app.serverState !== undefined
+        ? { isServerPaused: (): boolean => app.serverState!.isPaused() }
+        : {}),
       connectionStore: app.connectionStoreRef,
       ...(app.managedOAuthConsumers ? { managedOAuthConsumers: app.managedOAuthConsumers } : {}),
       ...(app.oauthAppConnectionUses ? { oauthAppConnectionUses: app.oauthAppConnectionUses } : {}),

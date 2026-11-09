@@ -354,6 +354,53 @@ describe('trigger dispatcher dispose() during a restart drain', () => {
     }
   });
 
+  // D-188 — a run refused because the server is paused is "not run" the same way.
+  it('a run refused because the server is paused is let go without a failure; only a mail fact is parked', async () => {
+    const onAutomationFailure = vi.fn();
+    const { db, store, bus, dispatcher } = setup(async () => {
+      throw new RpcError('server_paused', 'server is paused', 409);
+    }, { onAutomationFailure });
+    try {
+      bus.emit(mail('mail:1'));
+      bus.emit(fact(7));
+      await dispatcher.drained();
+      expect(parked(store)).toEqual([['t-fact', 7]]);
+      expect(store.get('t-mail')!.last_error).toBeNull();
+      expect(store.get('t-fact')!.last_error).toBeNull();
+      expect(onAutomationFailure).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  // D-188 — ⛔ a rebuild (a trigger or recipe change, a vault unlock, a boot) used to start the
+  // triggers the owner's pause had stopped. During a pause it leaves them stopped and keeping
+  // what arrives; Resume's rebuild subscribes and hands it back.
+  it('a rebuild during a pause starts nothing, and the one after Resume replays what was kept', async () => {
+    const runs: RunInput[] = [];
+    let paused = true;
+    const { db, store, bus, dispatcher } = setup(async (input) => { runs.push(input); }, {
+      isPaused: () => paused,
+    });
+    try {
+      expect(dispatcher.activeSubscriptions()).toBe(0);
+      bus.emit(fact(12));
+      dispatcher.rebuild();
+      expect(dispatcher.activeSubscriptions()).toBe(0);
+      await dispatcher.drained();
+      expect(runs).toEqual([]);
+      expect(parked(store)).toEqual([['t-fact', 12]]);
+
+      paused = false;
+      dispatcher.rebuild();
+      expect(dispatcher.activeSubscriptions()).toBeGreaterThan(0);
+      await vi.waitFor(() => expect(ats(runs)).toEqual([12]));
+      expect(parked(store)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('a run the restart killed counts toward no cap and sends no notice; an ordinary kill still does', async () => {
     const run = async (drainBegins: boolean) => {
       let isDraining = false;

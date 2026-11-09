@@ -34,7 +34,8 @@ import {
   writeStagedSig,
 } from './binary-apply-executor.js';
 import { acquireUpdateLease, updateLeasePathFor } from './update-lease.js';
-import { copyClosedDatabaseForSnapshot, copyDatabaseForSnapshot } from '../open-database.js';
+import { copyClosedDatabaseForSnapshot, copyDatabaseForSnapshot, openDatabase } from '../open-database.js';
+import { compareReleaseSchemas } from './schema-compat.js';
 import { createBootFailureCounter, BOOT_FAILURE_COUNTER_FILE } from './boot-failure-counter.js';
 import { createReleaseStateStore } from './release-state-store.js';
 import { createUpdateLedger, UPDATE_LEDGER_FILE } from './update-ledger.js';
@@ -91,6 +92,7 @@ import {
   markManualRollbackPhase,
 } from './manual-rollback-journal.js';
 import { recoverManualRollbackBeforeOpen } from './manual-rollback-recovery.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 /** Release feed root (overridable for staging via `RECUED_RELEASE_MANIFEST_URL`,
  *  which pins a FULL url and bypasses the per-channel derivation below). */
@@ -452,6 +454,21 @@ export const buildApplyOrchestratorDeps = (opts: BuildApplyOrchestratorOptions):
       snapshotPath,
     ),
     snapshotRef: snapshotPath,
+    // The release's own schema rules, against the one binary this install's rollback
+    // returns to (`schema-compat.ts`). Each boots from a folder beside the binaries, so
+    // its files are hard links rather than 150 MB copies. No binary there yet (a
+    // `:managed` volume before its first update): nothing to return to, nothing to compare.
+    compareSchemas: async ({ stagedAddon }) => {
+      if (!existsSync(binaryPath)) return null;
+      return compareReleaseSchemas({
+        previous: { binary: binaryPath, sidecar: sidecarPaths.livePath },
+        next: { binary: stagedPath, sidecar: stagedAddon ? libStagedPath : sidecarPaths.livePath },
+        workRoot: binaryDir,
+        // A fresh realm's database is unkeyed, and the staged release's may carry a
+        // schema version past this one's: read it, never refuse it.
+        open: (path) => openDatabase(path, { databaseKey: null, readonly: true, allowNewerSchema: true }),
+      });
+    },
     recordGenerationTransition: ({ fromVersion, toVersion, migration }) => {
       const transition = {
         schema: 1 as const,
@@ -518,6 +535,7 @@ export const buildApplyOrchestratorDeps = (opts: BuildApplyOrchestratorOptions):
     acquireUpdateLease: (operation) => acquireUpdateLease({
       leasePath: updateLeasePathFor(binaryPath),
       operation,
+      identify: processStartIdentity,
     }),
     installedVersion: () => {
       const probe = spawnSync(binaryPath, ['--version'], {

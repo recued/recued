@@ -25,6 +25,7 @@ import {
   resolveDatabaseKeyFromServerFiles,
 } from './database-encryption.js';
 import { resolveServerBundleSwapMarkerPath } from './archive/server-bundle-swap.js';
+import { fsyncDir, fsyncFile } from './durable-fs.js';
 import { manualRollbackJournalPathForDb } from './update/manual-rollback-journal.js';
 import { runningAsPackagedBinary } from './packaged-binary.js';
 import { DatabaseStillOpenError } from './database-still-open-error.js';
@@ -693,10 +694,13 @@ export const copyDatabaseForSnapshot = async (
   const staging = snapshotStagingPath(destination);
   try {
     db.prepare('VACUUM INTO ?').run(staging);
+    // Durable before it is named: see `copyClosedDatabaseForSnapshot`.
+    fsyncFile(staging);
     // Rename straight over the destination. Unlinking it first opened a window
     // in which NEITHER the old snapshot nor the new one existed — POSIX
     // `rename` replaces atomically, so the window was pure downside.
     renameSync(staging, destination);
+    fsyncDir(dirname(destination));
     restrictToOwner(destination);
   } catch (err) {
     try { unlinkSync(staging); } catch { /* absent — fine */ }
@@ -740,7 +744,14 @@ export const copyClosedDatabaseForSnapshot = async (
   const staging = snapshotStagingPath(destination);
   try {
     copyFileSync(dbPath, staging);
+    // ⛔ DURABLE BEFORE IT IS NAMED. The binary swap fsyncs every rename; this
+    // copy fsynced nothing, so a power loss soon after could leave a snapshot
+    // whose name survived and whose bytes did not — and a later revert copies
+    // the snapshot over the live database, checking its hash only at the boot
+    // after. Flush the bytes, then the rename.
+    fsyncFile(staging);
     renameSync(staging, destination);
+    fsyncDir(dirname(destination));
     restrictToOwner(destination);
   } catch (err) {
     try { unlinkSync(staging); } catch { /* absent — fine */ }

@@ -1314,6 +1314,21 @@ export interface PackListEntry {
    *  this list until `b06752cc9` cut it, and read nothing from then on: "Used
    *  by packs" rendered nothing for any connection (found 2026-10-09). */
   required_scopes_by_connection?: Readonly<Record<string, readonly string[]>>;
+  /** D-321 W2 / S8 — for an installed pack, the packs its recipes call that are
+   *  not installed (`depends_on`, as `<publisher>.<pack>`), each with the recipes
+   *  that wait on it. The rule a run of one of them is refused with
+   *  (`missingPackDependencies`), so the list, the pack's page and the refusal
+   *  name the same packs. Absent when none is missing, for a pack not installed,
+   *  and from an older server. */
+  missing_packs?: ReadonlyArray<PackMissingPack>;
+}
+
+/** D-321 W2 — a pack an installed pack's recipes call that is not installed. */
+export interface PackMissingPack {
+  /** As the recipes name it: `<publisher>.<pack>`. */
+  ref: string;
+  /** The installed recipes of the pack that call it, which a run refuses. */
+  recipe_ids: ReadonlyArray<string>;
 }
 
 /** One installed pack's identity + version, read from the `installed_pack`

@@ -124,3 +124,118 @@ describe('D-273 / D-148 — moving the public port at runtime', () => {
     expect(portOf(c, 'public')).toBe(pub);
   });
 });
+
+/** The ports asked for are the ports bound, whoever applies next (found by D-341's live drive,
+ *  2026-11-08). An exposure flip names no port, and it used the port the set was BUILT with: a
+ *  moved public listener went back to its boot port while the server advertised the moved one.
+ *
+ *  ⚠ Built on a NAMED port, never 0: from port 0 a move back to the boot port is a fresh OS pick
+ *  either way, which is how the control above ("a resolution-only apply moves NEITHER port") stayed
+ *  green through it. */
+describe('D-273 — the port asked for outlives the apply that asked for it', () => {
+  const BIND = { lan: '127.0.0.1', public: '127.0.0.1' };
+  // ⚠ A fresh table each apply: the listener set keeps the first one it is given as its live table
+  // and rewrites it in place on every later apply, so a shared constant becomes whatever was
+  // applied last. (The tests above apply one resolution only, so they never see it.)
+  const allOn = (): Record<PathRole, PathResolution> => totalRecord(PATH_ROLES, () => ({ lan: true, public: true }));
+  const lanOnly = (): Record<PathRole, PathResolution> => totalRecord(PATH_ROLES, () => ({ lan: true, public: false }));
+  /** An exposure flip that keeps some path public: one path's public bit off. */
+  const flip = (): Record<PathRole, PathResolution> => ({ ...allOn(), reception: { lan: true, public: false } });
+
+  const named = (public_port: number, on_applied?: (statuses: unknown) => void) => {
+    const c = createProductionPathListenerCoordinator({
+      handlers: totalRecord(PATH_ROLES, () => ok),
+      upgradeHandlers: {},
+      cert_chain: { current: () => null, replace: () => {}, onRotate: () => () => {} } as never,
+      lan_port: 0,
+      public_port,
+      ...(on_applied !== undefined ? { on_applied } : {}),
+    });
+    running.push(() => c.stop());
+    return c;
+  };
+  const twoFreePorts = async (): Promise<[number, number]> => {
+    const a = await freePort();
+    let b = await freePort();
+    while (b === a) b = await freePort();
+    return [a, b];
+  };
+
+  it('⛔⛔ an exposure flip after a live move keeps the moved port', async () => {
+    const [boot, moved] = await twoFreePorts();
+    const c = named(boot);
+    await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    expect(portOf(c, 'public')).toBe(boot);
+    await c.apply({ resolution: allOn(), bind_addresses: BIND, ports: { public: moved } } as never);
+    expect(portOf(c, 'public')).toBe(moved);
+
+    await c.apply({ resolution: flip(), bind_addresses: BIND });
+    expect(portOf(c, 'public'), 'an exposure flip put the public listener back on its boot port').toBe(moved);
+    await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    expect(portOf(c, 'public')).toBe(moved);
+  });
+
+  it('the moved port survives the public listener going off and on again', async () => {
+    const [boot, moved] = await twoFreePorts();
+    const c = named(boot);
+    await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    await c.apply({ resolution: allOn(), bind_addresses: BIND, ports: { public: moved } } as never);
+    await c.apply({ resolution: lanOnly(), bind_addresses: BIND });
+    expect(portOf(c, 'public')).toBeNull();
+    await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    expect(portOf(c, 'public'), 'off and on again, it came back on its boot port').toBe(moved);
+  });
+
+  it('a port asked for while no path is public is the one bound when a path is', async () => {
+    const [boot, wanted] = await twoFreePorts();
+    const c = named(boot);
+    await c.apply({ resolution: lanOnly(), bind_addresses: BIND });
+    await c.apply({ resolution: lanOnly(), bind_addresses: BIND, ports: { public: wanted } } as never);
+    expect(portOf(c, 'public')).toBeNull();
+    await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    expect(portOf(c, 'public'), 'the port asked for while it was off was dropped').toBe(wanted);
+  });
+
+  it('a move that failed is asked for again, and never falls back to the old port', async () => {
+    const [boot, taken] = await twoFreePorts();
+    const { createServer } = await import('node:http');
+    const holder = createServer();
+    await new Promise<void>((done) => holder.listen(taken, '127.0.0.1', done));
+    const c = named(boot);
+    await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    const failed = await c.apply({ resolution: allOn(), bind_addresses: BIND, ports: { public: taken } } as never);
+    expect(failed.public.listening).toBe(false);
+    await c.apply({ resolution: flip(), bind_addresses: BIND });
+    expect(portOf(c, 'public'), 'a flip after a failed move served the old port').toBeNull();
+    await new Promise<void>((done) => holder.close(() => done()));
+    await c.apply({ resolution: flip(), bind_addresses: BIND });
+    expect(portOf(c, 'public'), 'freed, the port asked for was not bound').toBe(taken);
+  });
+
+  it('a first apply that names a port binds it: the set is built with it, not with the boot port', async () => {
+    const [boot, wanted] = await twoFreePorts();
+    const c = named(boot);
+    await c.apply({ resolution: allOn(), bind_addresses: BIND, ports: { public: wanted } } as never);
+    expect(portOf(c, 'public'), 'the set was built on the boot port, ignoring the port asked for').toBe(wanted);
+  });
+
+  it('tells its observer what every apply bound, an exposure flip\'s included', async () => {
+    const [boot, moved] = await twoFreePorts();
+    const seen: number[] = [];
+    const c = named(boot, (statuses) => {
+      const pub = (statuses as Array<{ listener: string; listening: boolean; port: number }>).find((s) => s.listener === 'public');
+      if (pub?.listening === true) seen.push(pub.port);
+    });
+    await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    await c.apply({ resolution: allOn(), bind_addresses: BIND, ports: { public: moved } } as never);
+    await c.apply({ resolution: flip(), bind_addresses: BIND });
+    expect(seen).toEqual([boot, moved, moved]);
+  });
+
+  it('an observer that throws does not fail the apply', async () => {
+    const [boot] = await twoFreePorts();
+    const c = named(boot, () => { throw new Error('observer down'); });
+    const statuses = await c.apply({ resolution: allOn(), bind_addresses: BIND });
+    expect(statuses.public.listening).toBe(true);
+  });
+});

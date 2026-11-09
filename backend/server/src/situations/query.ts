@@ -107,6 +107,10 @@ export interface SituationReadContext {
   /** Host-only: a surface that lists a whole day (the Agenda, §15.7) keeps every group and
    *  every item in it. The one inferred item a group may carry still holds. Never an input. */
   everyItem?: true;
+  /** Host-only (D-343 slice 4): a list of a day being closed keeps what is already over in it,
+   *  as a question about that time does. The evening notice lists the morning's run and the
+   *  afternoon's call, which a forward list drops once they end. Never an input. */
+  throughTheDay?: true;
   signal?: AbortSignal;
 }
 export interface SituationQueryDeps {
@@ -183,6 +187,7 @@ const itemOf = (fact: SituationFact, reasons: Set<SituationReason>, query: Situa
   ...(fact.when_day ? { when_day: fact.when_day } : {}),
   ...(fact.sphere ? { sphere: fact.sphere } : {}), updated_at: fact.updated_at,
   ...(fact.details ? { details: fact.details } : {}),
+  ...(fact.recorded ? { recorded: fact.recorded } : {}),
   ...(fact.context ? { context: fact.context } : {}),
   ...tripOf(fact.trip),
 });
@@ -201,7 +206,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
    * (the tool) about a span that reaches back over it; every forward list leaves it
    * out, and nothing derived from it outlives it. */
   const isOver = (fact: SituationFact): boolean => fact.valid_until !== undefined && fact.valid_until <= current;
-  const asksThePast = (query.surface ?? 'tool') === 'tool' && window.from < current;
+  const asksThePast = ((query.surface ?? 'tool') === 'tool' || context.throughTheDay === true) && window.from < current;
   // A record read from email is `derived` too, so basis cannot tell a record from a
   // check; checks come only from `relate`, which drops every one that is over.
   const inAskedPast = (fact: SituationFact): boolean => asksThePast && fact.when !== undefined && intersects(fact.when, window);
@@ -399,7 +404,11 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   for (const fact of facts) {
     // What is over is never due: it is here only because the question asked about its time.
     const over = isOver(fact);
-    const due = !over && situationDue(fact, window);
+    // D-340 §4 — a state holds over its window: never due, never news.
+    const state = fact.kind === 'asset_state';
+    // D-342 §5 — a pursuit is what the owner is working toward, beside the window: never due either.
+    const pursuit = fact.kind === 'pursuit';
+    const due = !state && !pursuit && !over && situationDue(fact, window);
     const named = querySubjects.has(refKey(fact.ref)) || fact.subjects.some(ref => querySubjects.has(refKey(ref)))
       || Boolean(query.place && fact.place?.key === query.place.key)
       || fact.people.some(id => askedIds.has(id) || namedIds.has(id))
@@ -408,6 +417,8 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     // Prefetch must match the message; a general overdue item alone isn't a hit.
     if (query.surface === 'prefetch' && !named) continue;
     if (due) add(fact, 'due');
+    if (state && !over && fact.when && intersects(fact.when, window)) add(fact, 'holds');
+    if (pursuit) add(fact, 'pursuing');
     if (over) add(fact, 'ended');
     if (named) add(fact, fact.last_time ? 'last_time' : 'related');
     if (query.changed_since !== undefined && fact.updated_at > query.changed_since) add(fact, 'related');

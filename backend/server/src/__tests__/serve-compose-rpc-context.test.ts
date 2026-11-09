@@ -189,10 +189,15 @@ describe('composeRpcContext', () => {
         // The SAME store the approval resumer writes an owner page-run's
         // result into — `execution.get` hands it to the page still "held".
         settledRunResults: storageContext.settledRunResults,
+        // D-341 slice B1 — the SAME store the execute path spends pre-approvals from:
+        // `execution.get` lists what a run made without asking.
+        triggerPreapprovals: storageContext.triggerPreapprovalStore,
         serverInstanceId: storageContext.serverInstanceId,
       });
       expect(context.observabilityBundle.executionFeedDeps?.settledRunResults)
         .toBe(storageContext.settledRunResults);
+      expect(context.observabilityBundle.executionFeedDeps?.triggerPreapprovals)
+        .toBe(storageContext.triggerPreapprovalStore);
       expect(context.observabilityBundle.statusPageDeps?.realmToken).toBe(
         storageContext.pairing?.getRealmToken(),
       );

@@ -157,6 +157,10 @@ export const tier1WriteStaysInRecued = (
     // this false; it would then have to name the contact's Source, as a task's does.
     case 'contact.write':
       return true;
+    // D-343 slice 2 — the owner's closing records are episodes, kept on the server and written
+    // nowhere else.
+    case 'episode.record':
+      return true;
     default:
       return false;
   }

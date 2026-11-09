@@ -7,7 +7,7 @@ import type { InternalToolRegistry, SituationAgendaSettings, SituationFact } fro
 import { createSituationQuery } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
 import { createScheduledSituations } from '../situations/scheduled-situations.js';
-import { agendaSuggestionsCron, agendaSuggestionsPrompt } from '../situations/agenda-suggestions.js';
+import { SUGGESTIONS_TOOL_ROUNDS, agendaSuggestionsCron, agendaSuggestionsPrompt } from '../situations/agenda-suggestions.js';
 import { createSituationStore } from '../storage/situation-store.js';
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
 import { createContractStore } from '../storage/contract-store.js';
@@ -87,8 +87,17 @@ describe('D-338 the Agenda\'s AI suggestions', () => {
     // request names (D-338 §7: epoch ms put the wrong day in 4 of 6 live runs; with no marker the
     // private occasion was named 7 times in 7).
     expect(schedule!.prompt).toContain('give it today as a date.');
-    expect(schedule!.prompt).toContain('Leave out an item marked private unless a suggestion involves it, such as a clash; then '
+    // D-342 §5 — "any other item": a pursuit marked private is left out outright, before this rule.
+    expect(schedule!.prompt).toContain('Leave out any other item marked private unless a suggestion involves it, such as a clash; then '
       + 'write it only as "a reminder in Yours", with its time if it has one, and never its title, who it is for, or anything to do for it.');
+    // A line that only said "A reminder in Yours (all day)." came back as the request grew (4 of 15 live
+    // runs, 2026-11-07), and the Agenda lists it already.
+    expect(schedule!.prompt).toContain('anything to do for it. A line that only says I have a reminder in Yours is not a suggestion. ');
+    // Plain lines: the notice and the stream's messengers show bold as it was typed.
+    expect(schedule!.prompt).toContain('Reply with the suggestions only, as a short list of plain lines, without bold (my notifications '
+      + 'show it as asterisks): I already have the agenda, so do not repeat it.');
+    // Its run takes the suggestions' own rounds too (`suggestionsToolRounds`), and its request says so.
+    expect(schedule!.prompt).toContain(`at most ${String(SUGGESTIONS_TOOL_ROUNDS - 1)} lookups besides the read.`);
     expect(await f.schedules.list()).toEqual([]);
     expect(f.service.agendaStatus().suggestions_session_id).toBe(schedule!.session_id);
     // The conversation is in the chat list, under the schedule's title.

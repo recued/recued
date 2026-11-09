@@ -75,6 +75,24 @@ export const noteWaitingInTurn = (turn_state: Map<string, unknown> | undefined, 
   turn_state.set(WAITING_IN_TURN, [...(Array.isArray(waiting) ? waiting as string[] : []), tool_name]);
 };
 
+/** The owner's 3a (2026-11-07) — how long a turn of the owner's own app chat waits, in all, for
+ *  their answers to the calls it holds for approval, before the model is told a call waits. Task J
+ *  measured an answered approval at about 44 s otherwise: a model round writing that the call waits
+ *  (27 s), then a continuation turn (17 s), for an answer given in 2. Answered within it, the call
+ *  returns what it would have returned had it not waited, in the same round. */
+export const OWNER_CHAT_HELD_WAIT_MS = 60_000;
+
+/** The owner's 3a (2026-11-07) — a call this turn waited on was answered while its round waited:
+ *  the turn waits on it no more, so a further call that would ask is asked. */
+export const noteAnsweredInTurn = (turn_state: Map<string, unknown> | undefined, tool_name: string): void => {
+  if (turn_state === undefined) return;
+  const waiting = turn_state.get(WAITING_IN_TURN);
+  if (!Array.isArray(waiting)) return;
+  const at = waiting.indexOf(tool_name);
+  if (at === -1) return;
+  turn_state.set(WAITING_IN_TURN, [...waiting.slice(0, at), ...waiting.slice(at + 1)]);
+};
+
 /** D-337 slice K — the call this turn already waits on, when a further call that would ask the
  *  owner must not be asked yet; `undefined` when it may be asked. Only in a conversation that
  *  carries on: there the model gets that call's outcome once the owner answers, and makes this

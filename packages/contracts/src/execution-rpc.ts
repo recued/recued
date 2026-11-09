@@ -344,11 +344,26 @@ export interface RunGatewayCallTraceEntry {
   duration_ms?: number;
   cached?: true;
   local_receipt?: import('./resource-review.js').LocalMutationReceiptSummary;
+  /** D-341 slice B1 — the trigger pre-approval this write ran under without asking, by its id
+   *  (`collection.contract.listTriggerPreapprovals`). Absent on every other call. */
+  trigger_preapproval?: { id: string };
 }
 
 export interface RunGatewaySummary {
   policy_result: PolicyResult;
   per_call_trace: RunGatewayCallTraceEntry[];
+}
+
+/** D-341 slice B1 — what a run made without asking under its trigger's standing pre-approval:
+ *  one entry per pre-approval and op, in the order they were first made. */
+export interface RunPreapprovedWrite {
+  preapproval_id: string;
+  /** The kind of trigger it names (`webhook`, `schedule`, `event_trigger` today). */
+  trigger_kind: string;
+  /** The op, as the gate names it (a catalog op's qualified id, else the ingredient's slug). */
+  op: string;
+  /** How many of its writes this run made. */
+  writes: number;
 }
 
 export interface RunDetail {
@@ -357,6 +372,9 @@ export interface RunDetail {
   errors: RecipeError[];
   links: RunProvenanceLink[];
   gateway: RunGatewaySummary;
+  /** D-341 slice B1 — what ran without asking, under a trigger's pre-approval. Absent when nothing
+   *  did, and from a server older than the field. */
+  preapproved?: RunPreapprovedWrite[];
 }
 
 export interface ExecutionGetResponse {

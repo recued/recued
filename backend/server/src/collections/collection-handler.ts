@@ -106,6 +106,10 @@ import type { AuditLogStore } from '@recued/storage';
 
 export interface CollectionHandlerDeps {
   registry: CollectionRegistry;
+  /** D-188 — the owner's pause, the flag the rpc gate reads. Opening an email or an event then
+   *  shows the stored copy and holds the read at the account (`pause-rpc-gate.ts` leaves those
+   *  two open for it). */
+  isServerPaused?: () => boolean;
   ownerDocumentSearch?: OwnerDocumentSearch;
   /** D-236 — injectable clock for the source-freshness verdict on
    *  `collection.list` / `.get` / `.search`. Defaults to `Date.now`. Present because a verdict
@@ -1193,6 +1197,7 @@ export const makeCollectionHandlers = (
     return {
       instances: requireCalendarEnroll(deps).instances,
       ...(deps.now ? { now: deps.now } : {}),
+      ...(deps.isServerPaused ? { isPaused: deps.isServerPaused } : {}),
       getCollection: (slug: string) => deps.registry.get('calendar', slug) as CalendarCollection | undefined,
     };
   };
@@ -1304,6 +1309,7 @@ export const makeCollectionHandlers = (
           listMailInstances: () => handleMailList(requireMailEnroll(deps)),
           getIncarnation: slug => requireMailEnroll(deps).instances.getIncarnation?.('mail', slug) ?? null,
           ...(deps.mailBodyBlobs ? { blobs: deps.mailBodyBlobs } : {}),
+          ...(deps.isServerPaused ? { isPaused: deps.isServerPaused } : {}),
         }, args);
       },
       'collection.mail.message.attachments': async (args, client) => {

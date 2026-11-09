@@ -67,6 +67,7 @@ import {
   createProviderSetupContinuityStore,
   type ProviderSetupContinuityStore,
 } from '../connections/provider-setup-continuity.js';
+import { serializeShellRoute } from '../shell/route.js';
 import {
   CONNECTION_VENDOR_PROVIDERS,
   HUBSPOT_OAUTH_SCOPES,
@@ -926,7 +927,7 @@ describe('pack-guided permission repair editor', () => {
       review_fingerprint: 'a'.repeat(64), required_scopes: ['new'], expires_at: Date.now() + 30 * 60_000,
       resume: { pack: { ...manifest, pre_install: false, installed: false, recipe_count: 1, recipe_refs: manifest.recipes,
         body_visibility_grant_keys: [], body_visibility_grant_count: 0, manifest }, marketplace: false, permissions: [],
-        chosen_connection: 'saved-sheets', also_unticked: [], also_connections: [], webhook_picks: [], template_keep: [], dependency_access: [] } };
+        chosen_connection: 'saved-sheets', also_unticked: [], also_connections: [], webhook_picks: [], template_keep: [] } };
   };
   const preview = (broker = false, fingerprint = 'a'.repeat(64)) => ({ resolved: true, will_enable: [], hidden_count: 0,
     vendor_permissions: { fingerprint, resolved: true, changes: [{ pack_slug: 'scope-pack', pack_name: 'Scope pack', slot: 'sheets',
@@ -1818,6 +1819,8 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
     expect(panel.getHtml()).not.toContain('data-connections-pack-inventory');
     expect(panel.getHtml()).toContain('Used by packs');
     expect(panel.getHtml()).toContain('hubspot-workflows');
+    // D-321 P8 — each pack's name is the way to its page.
+    expect(panel.getHtml()).toContain(`href="${serializeShellRoute('packs', 'hubspot-workflows')}" data-pack-usage-link>`);
     panel.mount.dispose();
   });
 

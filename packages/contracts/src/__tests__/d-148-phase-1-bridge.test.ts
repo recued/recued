@@ -43,25 +43,44 @@ describe('D-148 P1 — BRIDGE_ACTIONS closed list', () => {
   it('matches spec § A.3.1', () => {
     expect([...BRIDGE_ACTIONS].sort()).toEqual([
       'click',
+      // D-335 slice X — a tab closed by its page handle.
+      'close_tab',
       // D-335 slice B.
       'describe',
+      // D-335 slice AP — a file a page links to, fetched as the page fetches it.
+      'download_file',
       'extract_table',
       'fill',
+      // D-335 slice X — a tab moved back, an element pointed at.
+      'go_back',
+      'hover',
       // D-335 slice A.
       'inspect',
       // D-335 slice C.
       'list_tabs',
+      // D-335 slice X — an address loaded in a tab.
+      'navigate',
       'open_tab',
       'os_notification',
       // D-335 slice L — types into a field that suggests, then picks a suggestion by its text.
       'pick',
+      // D-335 slice U — a key pressed in an element.
+      'press',
       'read_dom',
       // D-335 slice H, on a page handle: a table, a picture and a wait.
       'read_table',
+      // D-335 slice X — a tab reloaded.
+      'reload_page',
+      // D-335 slice T — an inspection after an action that keeps the refs a page lost.
+      'reread',
       'screenshot',
       'screenshot_page',
+      // D-335 slice U — a page, a panel or an element scrolled a screen at a time.
+      'scroll',
       // D-335 slice J — sends the form an element is in.
       'submit',
+      // D-335 slice AQ — one of the owner's files into a page's file field.
+      'upload_file',
       'wait_for_element',
       'wait_for_selector',
     ]);

@@ -77,6 +77,34 @@ const OPAQUE_ID_SHAPE = /^[a-z][a-z0-9]*([_-][a-z0-9]+)*[_-]\d{3,}$/i;
  *  anything, and refusing on one would break ordinary turns for noise. */
 const SKIP_LEAVES = /^(recipe_id|tool|name|kind|type|status|channel|surface)$/;
 
+/** ⛔ D-335 slice AB — A PAGE A BROWSER STEP GOES TO IS A PLACE, NOT AN IDENTIFIER.
+ *
+ *  `address` is in `IDENTIFIER_FIELDS` for a mail address, and Act on web pages' `go` step names
+ *  the page it loads under the same key, so a right guess of an article's address was refused as
+ *  never given: 3 of the 6 runs of D-335 E's search task sent
+ *  `{"do":"go","address":"https://en.wikipedia.org/wiki/Ada_Lovelace"}` and lost a round to it
+ *  (2026-11-06). This check cannot tell a right address from a wrong one: a wrong one loads a page
+ *  that says so, which the step's answer names, and an address a page planted in its own text is
+ *  "given" and passes anyway. What stands between the model and the page is the ask, which shows
+ *  the whole address, the Bridge's grant and the owner's listed sites. The same address as a
+ *  step's `url`, or to Open a web page, was never checked: only the key's name made this one.
+ *
+ *  ⚠ NARROW ON PURPOSE: Act on web pages (the owner's copy in Kitchen and an AI app's name too),
+ *  a step whose kind is `go`, an http or https value. Every other `address` stays an identifier,
+ *  so a mail address is still checked, and so is a `go` to anything that is not a web address. */
+const BROWSER_BATCH_TOOL = /(^|\/|__)act-on-web-page$/;
+const isBrowserGoAddress = (tool: string | undefined, args: unknown, path: string, value: string): boolean => {
+  if (tool === undefined || !BROWSER_BATCH_TOOL.test(tool) || !/^https?:\/\//i.test(value.trim())) return false;
+  const at = /^steps\[(\d+)\]\.address$/.exec(path);
+  if (at === null || args === null || typeof args !== 'object') return false;
+  const steps = (args as { steps?: unknown }).steps;
+  const step: unknown = Array.isArray(steps) ? steps[Number(at[1])] : undefined;
+  if (step === null || typeof step !== 'object' || Array.isArray(step)) return false;
+  // As the step parser reads a step's kind: `do`, else `type` or `action`.
+  const { do: kind, type, action } = step as Record<string, unknown>;
+  return (kind ?? type ?? action) === 'go';
+};
+
 /** ⛔⛔ A `{{…}}` INSIDE AN INLINE RECIPE IS THE VALUE SYSTEM, NOT A PLACEHOLDER
  *  — and treating it as one silently killed `recipe.run`'s inline path.
  *
@@ -409,6 +437,20 @@ export const groundingCorpusFromPacket = (body: string): string => {
   try { return JSON.stringify(o); } catch { return body; }
 };
 
+/** ⛔ A LITERAL WORD IS A PLACEHOLDER ONLY WHERE AN IDENTIFIER GOES.
+ *
+ *  `TODO`, `TBD`, `FIXME`, `N/A`, `XXX`, `PLACEHOLDER` stand in for a value the
+ *  model does not have when they sit where an identifier goes (`to`, `*_id`, an
+ *  address). In a search pattern, a query, a title or a note they are words, and
+ *  the commonest of them is the owner's own: live (2026-11-08, `qwen3.7-plus`),
+ *  "find the TODO notes in the folder …" had `pattern: "TODO"` and then
+ *  `"todo"` refused as placeholders, three calls in one turn, before ripgrep ever
+ *  ran. The same split as the rest of this file: what identifies must be
+ *  sourced, what describes need not. The bracketed, template, angle and
+ *  underscore forms stay placeholders everywhere: no one searches for
+ *  `[search_term]`. */
+const isLiteralWordText = (path: string, value: string): boolean => !isIdentifier(path, value);
+
 /** Identifier arguments in ONE call that the packet never carried.
  *
  *  ⚠ `packet` must be what the model was handed for THIS call — not the
@@ -432,9 +474,13 @@ export const ungroundedArgumentsInCall = (
       && (TEMPLATE_REF.test(value) || RECIPE_STRUCTURAL_LEAVES.test(leafOf(path)))) {
       continue;
     }
+    // See `isBrowserGoAddress`: the page a browser step goes to.
+    if (isBrowserGoAddress(context?.tool, args, path, value)) continue;
     const form = PLACEHOLDER_PATTERNS.find(([re]) => re.test(value))?.[1];
     if (form === 'schema field as value' && context
       && isCsvSchemaArgument(context.tool, args, path, value, context.packet)) continue;
+    // See `isLiteralWordText`: `TODO` searched for is the owner's text.
+    if (form === 'literal placeholder' && isLiteralWordText(path, value)) continue;
     if (form !== undefined) {
       found.push({ path, value, why: form });
     } else if (isIdentifier(path, value) && !isGrounded(value, lower)) {

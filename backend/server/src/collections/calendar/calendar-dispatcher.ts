@@ -84,6 +84,8 @@ import type {
 
 export interface CalendarDispatcherDeps {
   instances: CollectionInstanceStore;
+  /** D-188 — the owner's pause. While it holds, an opened event is not read at its calendar. */
+  isPaused?(): boolean;
   /** D-236 — injectable clock for the source-freshness verdict. Defaults to
    *  `Date.now`. Mirrors `CollectionHandlerDeps.now`. */
   now?: () => number;

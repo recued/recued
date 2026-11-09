@@ -2,7 +2,7 @@ import { createPromptSchedules, type PromptSchedules } from '../../prompt-schedu
 import { withQueuedChatTurns } from '../../chat-turn-queue.js';
 import { createProjectionVersionProbe } from '../../chat-projection-refresh.js';
 import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
-import { createChatNotices, conversationHoldsNotices } from '../../chat-notices.js';
+import { createChatNotices, conversationHoldsNotices, createNoticeConversationOpener } from '../../chat-notices.js';
 import { createMessengerAccountResolver } from './messenger-account-identity.js';
 import type { RemoteNoticeHook } from '@recued/notification';
 /** D-137 — boot composer for the AI Chat substrate.
@@ -56,7 +56,7 @@ import { resolveChatInputTokenBudget } from '../../chat-context-budget.js';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
 import { buildPriorToolPointers } from '../../chat-orchestrator.js';
 import { createChatRunSettledSink } from '../../chat-run-settled-sink.js';
-import { createHeldRunWaiters, settledHeldCallResult } from '../../held-run-waiters.js';
+import { createHeldRunWaiters, createRoundAnswers, settledHeldCallResult } from '../../held-run-waiters.js';
 import { buildWaitedCallsContext, joinInFlightContexts } from '../../chat-waited-calls-context.js';
 import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
@@ -105,13 +105,17 @@ import { createMiddlewareRegistry } from '@recued/middleware';
 
 import { createInternalToolRegistry } from '@recued/middleware/internal-tool-registry/index.js';
 import { buildTier2Catalog, createOpKindLookup, hashRecipe, parseRecipe } from '@recued/recipes';
+import { recipeFromBrowserFlow } from '../../browser-flow-recipe.js';
+import { validateRecipeInline } from '../../recipe-save-handler.js';
 import { registerFirstPartyMiddlewares } from '@recued/middleware-recued';
 import { registerPromptCacheMiddleware } from '@recued/middleware-prompt-cache';
 import { buildPackOpResolution } from '../../pack-inventory.js';
 import { createContactPrefetchSearch } from '../../chat-prefetch-search.js';
 import { createTrustStore } from '../../housekeeping/index.js';
 import { wrapRegistryWithEnrichmentTopicTools } from '../../chat-enrichment-topic-tools.js';
-import { wrapChatRegistryForCatalogModes } from '../../chat-tools-search.js';
+import { wrapRegistryWithPause } from '../../registry-pause.js';
+import { ChatServerPausedError } from '../../chat-turn-executor.js';
+import { wrapChatRegistryForCatalogModes, type ToolsSearchTurnedOffEntry } from '../../chat-tools-search.js';
 import type { MarketplaceCatalogue } from '../../install-offers/catalogue.js';
 import { createInstallOfferSource } from '../../install-offers/source.js';
 import { createNeededPackOffers, wrapRegistryWithNeededPackOffers } from '../../install-offers/needed-packs.js';
@@ -190,6 +194,7 @@ import { createMailAttachmentReader } from '../../mail-attachment-evidence.js';
 import { legacyAttachmentsAmbiguousIn } from '../../collections/mail/mail-attachment-source-id.js';
 import {
   createChatStore,
+  resolveDefaultModelSourceId,
   ensureChatSchema,
   type ChatStore,
 } from '../../storage/chat-store.js';
@@ -273,7 +278,7 @@ import { createHeldChatWrites, createHoldTier1Write, settleChatRun } from '../..
 import { createClaimLinker } from '../../claim-link.js';
 import { createWaitingSaveMarker } from '../../waiting-save-marks.js';
 import { createClaimLinkLedger } from '../../storage/claim-link-ledger.js';
-import { listWaitingTier1Calls } from '../../raw-op-dispatch.js';
+import { listWaitingTier1Calls, pausedCallRefusal } from '../../raw-op-dispatch.js';
 import {
   createCarriedHeldResults,
   createHeldResultContinuations,
@@ -281,6 +286,7 @@ import {
   createWatchedRunSettlement,
   HELD_RESULT_QUEUE_FAMILY,
   watchHeldRunsIn,
+  type HeldResultContinuation,
 } from '../../chat-held-results.js';
 import { createHeldResultTurnStore, createHeldRunWatchStore } from '../../storage/chat-held-result-store.js';
 import { recipeToolTitle } from '../../recipe-tool-name.js';
@@ -295,10 +301,18 @@ import {
 } from '../../mcp-server.js';
 import { sweepMcpRecipeCallbackRetention } from '../../mcp-recipe-callback.js';
 import { assetTypes } from '../../situations/asset-types.js';
+import { createBrowserPassStore, type BrowserPassStore } from '../../storage/browser-pass-store.js';
+import { listHeldBrowserTabs } from '../../bridges/dom-adapter.js';
+import { readableNamedPages } from '../../chat-named-pages.js';
+import { createScheduledPromptPreapprovalUse, scheduledPromptHoldAlwaysAllow } from '../../scheduled-prompt-preapproval.js';
 
 /** Direct + late-bound dependencies the chat composer needs. */
 export interface ComposeChatOrchestratorDeps {
   db: Database.Database;
+  /** D-188 — the master "Pause server" flag. While paused (a lockdown, the owner's ruling of
+   *  2026-11-08) no chat turn starts, every tool call is refused, and a plan cannot be
+   *  approved (`chat-handler.ts`). Absent ⇒ never paused. */
+  isServerPaused?: () => boolean;
   keys: KeyManager | undefined;
   eventBus: EventBus;
   auditLog: AuditLogStore | undefined;
@@ -378,6 +392,10 @@ export interface ComposeChatOrchestratorDeps {
    *  compose-app-context); absent or resolving undefined → the parse hook
    *  is a faithful no-op. */
   getSituationAccess?: () => import('../../situations/access.js').SituationAccess | undefined;
+  /** D-343 slice 1 — the occasions made in Yours, for `work.update` of an occasion. */
+  getOccasions?: () => import('../../chat-tool-handlers.js').ChatOccasions | undefined;
+  getMailFacts?: () => import('../../situations/mail-fact-records.js').MailFactClose | undefined;
+  getClosingRecords?: () => import('../../situations/closing-records.js').ClosingRecords | undefined;
   getContractStore?: () => ContractStore | undefined;
   /** D-323 — the server's copy of the marketplace catalogue. Present, chat's
    *  `tools.search` offers a pack to install when nothing installed matches;
@@ -424,6 +442,9 @@ export interface ChatOrchestratorBundle {
   /** D-338 — turns a notification to a linked messenger into a notice in that chat. Handed to the
    *  messenger channels, which are composed after the chat. */
   readonly chatNotices: RemoteNoticeHook;
+  /** D-343 slice 4 (ruling 20) — opens a conversation in the app holding a notice, for Today's
+   *  "Close the day". Handed to Yours, which is composed after the chat. */
+  readonly openNoticeConversation: (notice: { title: string; text: string }) => Promise<{ session_id: string; message_id: string }>;
   connectionMcpStore: ChatConnectionMcpStore;
   inboundTokenStore: ChatInboundTokenStore;
   internalRegistry: InternalToolRegistry;
@@ -790,7 +811,18 @@ export const composeChatOrchestrator = (
 
   let promptSchedules: PromptSchedules | undefined;
   let documentSearchIndex: DocumentSearchIndex | undefined;
+  let browserPasses: BrowserPassStore | undefined;
   const chatToolHandlerDeps: ChatToolHandlerDeps = {
+    // D-335 slice AG — a Browser Toolkit read runs beside the round's other reads while the
+    // conversation's "Don't ask about browser actions" is on: nothing in it can ask the owner then.
+    // A store that cannot be read says off: the read then takes its turn, as with the switch off.
+    ...(deps.db ? { browserRequestPassLive: (session_id: string) => {
+      try {
+        return (browserPasses ??= createBrowserPassStore(deps.db)).requestPass(`chat:${session_id}`, Date.now()) !== undefined;
+      } catch {
+        return false;
+      }
+    } } : {}),
     getDocumentSearchIndex: () => documentSearchIndex ??= createDocumentSearchIndex(deps.db),
     getPromptSchedules: () => promptSchedules,
     getContactStore,
@@ -1011,6 +1043,9 @@ export const composeChatOrchestrator = (
     ...(getWorkEntityResolver ? { getWorkEntityResolver } : {}),
     ...(getWorkEntityTargetedReadDeps ? { getWorkEntityTargetedReadDeps } : {}),
     ...(deps.getSituationAccess ? { getSituationAccess: deps.getSituationAccess } : {}),
+    ...(deps.getOccasions ? { getOccasions: deps.getOccasions } : {}),
+    ...(deps.getMailFacts ? { getMailFacts: deps.getMailFacts } : {}),
+    ...(deps.getClosingRecords ? { getClosingRecords: deps.getClosingRecords } : {}),
     ...(getWorkEntityCrudDeps ? { getWorkEntityCrudDeps } : {}),
     // D-325 — the asset types behind `work.type` and an asset's `work.create`.
     getAssetTypes: () => assetTypes(db),
@@ -1089,6 +1124,29 @@ export const composeChatOrchestrator = (
     ).filter((entry) => reachable(entry.name));
   };
 
+  // D-346 follow-up (2026-11-08) — what is installed but switched off for the OWNER: the
+  // recipes the same projection holds that their grant does not admit, and the pack actions
+  // they switched off. `tools.search` names these with where each is turned on; any other
+  // source gets none, because a contract's app learns nothing about what is installed.
+  const ownerTurnedOff = (source?: ExecutionSource): ReadonlyArray<ToolsSearchTurnedOffEntry> => {
+    if (source === undefined) return [];
+    const gate = getExecuteDeps()?.opAdmissionGate;
+    if (gate === undefined || !gate.isOwnerGoverned(source)) return [];
+    const reachable = chatToolRegistryInputs.tier2GrantFilter(source);
+    const recipes = buildTier2Catalog(
+      chatToolRegistryInputs.tier2Source.listRecipes(),
+      chatToolRegistryInputs.manifestLookup,
+      opKindLookup,
+      true,
+      true,
+    )
+      .filter((entry) => !reachable(entry.name))
+      .map((entry) => ({ entry, tab: 'Recipes' as const }));
+    const actions = (chatToolRegistryInputs.rawOpTurnedOffSource(source) as ReadonlyArray<ToolEntry>)
+      .map((entry) => ({ entry, tab: 'Ops' as const }));
+    return [...recipes, ...actions];
+  };
+
   // ⛔ ONE RULE, ONE DEFINITION. The registry gates Tier-1 dispatch with this,
   // and the pre-seed index probes the SAME handlers — so the index must consult
   // the SAME predicate, not a second copy of it. A duplicated gate is the shape
@@ -1099,7 +1157,15 @@ export const composeChatOrchestrator = (
     return gate.isOpGranted(ctx.execution_source, primitiveGrantEntry(name));
   };
 
-  const internalRegistry = createInternalToolRegistry({
+  // D-188 — every built-in tool call is refused while the owner's pause holds (a lockdown):
+  // a turn already running when the owner paused, and an AI app's calls over MCP, in the words
+  // a paused held write already reads (`registry-pause.ts`).
+  const withServerPause = (registry: InternalToolRegistry): InternalToolRegistry =>
+    (deps.isServerPaused === undefined
+      ? registry
+      : wrapRegistryWithPause(registry, (name) => (deps.isServerPaused!() ? pausedCallRefusal(name) : undefined)));
+
+  const internalRegistry = withServerPause(createInternalToolRegistry({
     tier1Handlers: chatToolRegistryInputs.tier1Handlers,
     // D-329 — a write's own refusal, asked before the owner is: the chat's proposals and
     // the MCP door's holds both call `checkBeforeAsking`.
@@ -1151,7 +1217,7 @@ export const composeChatOrchestrator = (
     // ⛔ D-228 slice 4 — no `tier3Dispatch` / `tier3Source`. The tier-3 catalog
     // projects empty since `tool_overrides` was deleted; wiring a source into a
     // producer that returns `[]` would only suggest it still does something.
-  });
+  }));
 
   // D-164 per-topic enrichment entries — CHAT-ONLY registry view. The
   // orchestrator (catalog build + tool-loop dispatch + tier/concurrency
@@ -1310,6 +1376,8 @@ export const composeChatOrchestrator = (
             installedPackSlugs,
             hasRecipe: (recipe_id) => deps.recipeStore.get(recipe_id) !== null,
           }),
+      // D-346 follow-up — what the owner switched off, so search says "turn it on".
+      ownerTurnedOff,
     ),
     {
       backend: createRecallSearchBackend(chatStore),
@@ -1384,7 +1452,8 @@ export const composeChatOrchestrator = (
         }
       : {}),
   });
-  const chatRegistry = executionCases.registry;
+  // D-188 — outermost too: the chat's wrappers answer some calls themselves (`registry-pause.ts`).
+  const chatRegistry = withServerPause(executionCases.registry);
 
   const chatEvents = broadcastEmitterFromBus(eventBus);
   const broadcast: ChatBroadcastEmitter = { emit(event) {
@@ -1411,6 +1480,10 @@ export const composeChatOrchestrator = (
     input,
     opts,
   ) => {
+    // D-188 — the emergency stop: no model call leaves while the owner's pause holds. Every chat
+    // model call comes through here, so a turn already running stops at its next one (it ends on
+    // `ChatServerPausedError` in plain words); the background AI that shares it is held upstream.
+    if (deps.isServerPaused?.() === true) throw new ChatServerPausedError();
     // D-174 R28 — resolve config PER-USE (a live db read; getLlmConfig falls
     // back to the boot snapshot internally) so a slot saved mid-session routes
     // correctly WITHOUT a restart, instead of the frozen boot `llmConfig`.
@@ -1589,6 +1662,27 @@ export const composeChatOrchestrator = (
         turn_id,
       );
     },
+    // D-335 slice X — the Browser Toolkit's main tools are listed while a Bridge is connected.
+    browserBridgeConnected: () => (getExecutorConfig()?.bridgeDispatcherRef?.()?.connectedBridges?.() ?? 0) > 0,
+    // D-335 slice AK — of the pages a request names, those its turn reads before the first round:
+    // every one while the conversation's "Don't ask about browser actions" is on (opening asks
+    // nothing then), else those a tab already shows. A store that cannot be read says off.
+    namedPagesReadable: (session_id: string, addresses: readonly string[]) => readableNamedPages(addresses, {
+      requestPassLive: () => {
+        if (!deps.db) return false;
+        try {
+          return (browserPasses ??= createBrowserPassStore(deps.db)).requestPass(`chat:${session_id}`, Date.now()) !== undefined;
+        } catch {
+          return false;
+        }
+      },
+      listTabs: async () => {
+        const config = getExecutorConfig();
+        if (config?.manifests === undefined) return undefined;
+        return listHeldBrowserTabs({ dispatcher: config.bridgeDispatcherRef?.(), manifests: config.manifests,
+          target: '*://*/*', run_id: `named-pages:${session_id}`, step_id: 'named-pages' });
+      },
+    }),
     buildInFlightContext: (source: ExecutionSource, telling?: ReadonlySet<string>) => joinInFlightContexts(
       getExecuteDeps()?.inFlightRegistry?.promptContext(
         deriveChannelSessionId(source),
@@ -1879,6 +1973,16 @@ export const composeChatOrchestrator = (
     holdTier1Write: createHoldTier1Write(getExecuteDeps),
     // D-329 §3.4 — a standing write rule the owner accepted stands in for that ask.
     useWriteRule: (source, tool, args) => useWriteRule(getExecuteDeps()?.writeRules, source, tool, args),
+    // D-341 — the pre-approval a held write's ask offers, which its card offers too.
+    holdAlwaysAllow: (source, tool, args) => scheduledPromptHoldAlwaysAllow(getExecuteDeps() ?? {}, source, tool, args),
+    // D-341 slice B3 — and, for a scheduled prompt, the prompt's own standing pre-approval.
+    useTriggerPreapproval: (source, tool, args) => {
+      const executeDeps = getExecuteDeps();
+      return createScheduledPromptPreapprovalUse({
+        store: executeDeps?.triggerPreapprovals,
+        ...(executeDeps?.auditLog !== undefined ? { auditLog: executeDeps.auditLog } : {}),
+      })(source, tool, args);
+    },
     getResourceReview: () => getExecuteDeps()?.executorConfig.resourceReview,
     validateLocalMutation: (source, tool) => {
       const authority = getExecuteDeps()?.approvalResumeAuthority?.resolve({
@@ -1929,9 +2033,13 @@ export const composeChatOrchestrator = (
 
   const messengerBridge = createChatMessengerBridge({
     db, store: chatStore, getKey: chatKeyProvider, broadcast,
+    // D-188 — no reply leaves for a messenger while the owner's pause holds.
+    ...(deps.isServerPaused !== undefined ? { isPaused: deps.isServerPaused } : {}),
     ...(deps.publicBaseUrl !== undefined ? { publicBaseUrl: deps.publicBaseUrl } : {}),
   });
-  const orchestrator = withQueuedChatTurns(executionOrchestrator, { db, store: chatStore, getKey: chatKeyProvider, broadcast, messengerBridge });
+  // D-188 — no chat turn starts while the owner's pause holds (a lockdown); it waits for Resume.
+  const orchestrator = withQueuedChatTurns(executionOrchestrator, { db, store: chatStore, getKey: chatKeyProvider, broadcast, messengerBridge,
+    ...(deps.isServerPaused !== undefined ? { isPaused: deps.isServerPaused } : {}) });
   // D-338 — after the bridge, which owns the bindings a notice is matched against.
   const chatNotices = createChatNotices({
     db,
@@ -1944,11 +2052,18 @@ export const composeChatOrchestrator = (
     signature: selfSignature,
     broadcast,
   });
+  const openNoticeConversation = createNoticeConversationOpener({ chatStore, signature: selfSignature, broadcast });
 
   promptSchedules = createPromptSchedules({ db, store: chatStore, queue: orchestrator.turnQueue!,
     instanceId: selfSignature.instance_id,
     runTurn: (input) => executionOrchestrator.runTurn(input), getKey: chatKeyProvider, broadcast,
     readPlans: (session, turn) => planApprovalStoreShared.listForTurn(session, turn),
+    // D-344 slice D — a schedule's model, read against the live configuration as the chat's default is.
+    modelPrefFor: (source_id) => {
+      const routing = resolveDefaultModelSourceId(getLlmConfig(), source_id);
+      return { current: routing.layer, ...(routing.model_hint !== undefined ? { model_hint: routing.model_hint } : {}),
+        ...(routing.source_id !== undefined ? { source_id: routing.source_id } : {}) };
+    },
     recordChange: (action, id, revision) => {
       void auditLog?.logActivity({ activity_id: '', timestamp: Date.now(), action: action === 'created' ? 'schedule_create' : action === 'remove' ? 'schedule_delete' : 'schedule_update',
         target: id, detail: JSON.stringify({ kind: 'prompt', change: action, revision }) }).catch(() => undefined);
@@ -1970,6 +2085,7 @@ export const composeChatOrchestrator = (
     ...(auditLog ? { auditLog } : {}),
     selfSignature,
     planApprovalStore: planApprovalStoreShared,
+    ...(deps.isServerPaused !== undefined ? { isServerPaused: deps.isServerPaused } : {}),
     inboundTokenStore,
     keyAgreement: (contract_id) => keyAgreements().keyAgreement(contract_id),
     preflightExternalToolGrant: (toolName) => {
@@ -2262,6 +2378,39 @@ export const composeChatOrchestrator = (
       store: authoredStore,
       now: () => Date.now(),
     }, input),
+    // D-335 slice W4 — the browser flows the owner kept, beside the cases: listed with the sites
+    // their steps were on, forgotten, and made into a recipe without a model (a draft for Kitchen).
+    executionBrowserFlows: {
+      list: async () => (await executionCases.browserFlowStore.list()).map((flow) => ({
+        flow_id: flow.flow_id,
+        kept_at: flow.kept_at,
+        sites: [...new Set(flow.steps.map((step) => {
+          try {
+            return new URL(step.url).host;
+          } catch {
+            return step.url;
+          }
+        }))],
+        steps: flow.steps,
+      })),
+      forget: async (flow_id) => executionCases.browserFlowStore.forget(flow_id),
+      recipe: async (flow_id) => {
+        const flow = await executionCases.browserFlowStore.get(flow_id);
+        if (flow === undefined || flow.steps.length === 0) {
+          return { ok: false, reason: 'unknown_flow', issues: ['There is no such browser flow: it may have been forgotten.'] };
+        }
+        const { recipe, issues } = recipeFromBrowserFlow(flow);
+        // The same checks a recipe saved in Kitchen meets.
+        const parsed = parseRecipe(recipe);
+        if (!parsed.ok) {
+          return { ok: false, reason: 'invalid_recipe', issues: [...issues, ...parsed.issues.map((issue) => issue.message)] };
+        }
+        const checked = validateRecipeInline(parsed.recipe);
+        return checked.ok ? { ok: true, recipe: parsed.recipe, issues }
+          : { ok: false, reason: 'invalid_recipe', issues: [...issues,
+            ...checked.issues.filter((issue) => issue.severity === 'error').map((issue) => issue.message)] };
+      },
+    },
     executionCaseForget: async (case_id) => {
       const result = await executionCases.compiler.forgetCase(case_id);
       return {
@@ -2564,16 +2713,23 @@ export const composeChatOrchestrator = (
     ? createCarriedHeldResults({ turns: heldResultTurnStore, queue: orchestrator.turnQueue })
     : undefined;
   const heldRunTitle = (tool_name: string): string | undefined => recipeToolTitle(recipeStore, tool_name);
+  // The owner's 3a (2026-11-07) — a run whose answer the round that holds it took while it waited
+  // (`heldRunWaiters`, told first): the round told the model its outcome, so no continuation tells it
+  // again, and no fixed reply is written for it either (`createRoundAnswers`).
+  const roundAnswers = createRoundAnswers(heldRunWaiters);
+  const continueUnlessAnswered = heldResults !== undefined
+    ? roundAnswers.continueUnless<HeldResultContinuation>(heldResults.continueWith)
+    : undefined;
   const chatRunSettledSink = createChatRunSettledSink(chatStore, selfSignature, broadcast,
-    heldResults !== undefined
-      ? { continueWith: heldResults.continueWith, toolTitle: heldRunTitle }
+    continueUnlessAnswered !== undefined
+      ? { continueWith: continueUnlessAnswered, toolTitle: heldRunTitle }
       : undefined);
   // D-337 — "all channels should behave the same": a run held in a messenger or email chat
   // carries that conversation on too, found by its watch.
   const watchedRunSettlement = heldResults !== undefined
     ? createWatchedRunSettlement({
         watches: heldRunWatchStore,
-        continueWith: heldResults.continueWith,
+        continueWith: continueUnlessAnswered!,
         toolTitle: heldRunTitle,
         reply: heldRunReply,
       })
@@ -2587,7 +2743,7 @@ export const composeChatOrchestrator = (
   });
   const settleRun = settleChatRun(createHeldChatWrites({
     plans: planApprovalStoreShared, chatStore, broadcast, signature: selfSignature,
-    ...(heldResults !== undefined ? { continueConversation: heldResults.continueWith } : {}),
+    ...(continueUnlessAnswered !== undefined ? { continueConversation: continueUnlessAnswered } : {}),
   }), chatRunSettledSink, watchedRunSettlement);
   const runSettledListeners = new Set<(settled: PreflightRunSettled) => void>();
   const ownerDocumentSearch = createOwnerDocumentSearch({
@@ -2603,17 +2759,19 @@ export const composeChatOrchestrator = (
     ownerDocumentSearch,
     chatStore,
     chatNotices,
+    openNoticeConversation,
     runSettledSink: async (settled) => {
       ownerDocumentSearch.settled(settled);
+      // The owner's 3a — a round waiting for this run takes its answer first, then the chat records the
+      // settlement knowing whether one took it (`createRoundAnswers`).
       // D-337 — the chat settles first, the listeners after. A run whose conversation carries on
       // is recorded as continued (in its turn's admission) before the email door hears of it, so
       // the door never also writes its fixed follow-up for it (`follow-ups.ts`).
       try {
-        await settleRun(settled);
+        await roundAnswers.settle(settled, () => settleRun(settled));
       } catch (error) {
         console.error('[chat] run settlement failed', error);
       } finally {
-        try { heldRunWaiters.settled(settled); } catch (error) { console.error('[chat] held-run waiter failed', error); }
         for (const listener of runSettledListeners) {
           try { listener(settled); } catch (error) { console.error('[chat] run-settled listener failed', error); }
         }

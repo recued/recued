@@ -110,6 +110,7 @@ import type { FormSubmissionStore } from '../../storage/reception-form-store.js'
 import type { ScopedWebhookEventReader } from '../../webhook-recipe-consumer.js';
 import { makeConnectionRuntimeBaseIssueSink } from '../../connection-runtime-base-issue.js';
 import { makeConnectionCredentialPersistFailureSink } from '../../connection-credential-persist-failure.js';
+import { createBrowserFiles, type BrowserFilesCollection } from '../../bridges/browser-files.js';
 
 /** Inline type alias matching the pre-extraction
  *  `ReturnType<typeof createWorkEntityDispatchers>` shape that bin.ts
@@ -691,6 +692,9 @@ export const composeExecutorConfig = async (
     ...(deps.getBridgeDispatcher
       ? { bridgeDispatcherRef: deps.getBridgeDispatcher }
       : {}),
+    // D-335 slice AP — the owner's files, for a browser step's download (and, slice AQ, upload): the
+    // `data.file.received` collection, looked up when a step uses it, as the CSV Toolkit's ingest is.
+    browserFiles: createBrowserFiles(() => deps.collectionRegistry.get('file', 'received') as BrowserFilesCollection | undefined),
     // Shared with housekeeping (`llmQuota` declared near llmConfig setup)
     // so per-source cooldowns + free-pool round-robin survive across
     // both recipe runs and AI-driven housekeeping cycles.
@@ -1740,6 +1744,21 @@ export const composeExecutorConfig = async (
       fileReadTemp: async (input) => {
         const { handleFileReadTemp } = await import('../../collections/file/file-read-temp-handler.js');
         return handleFileReadTemp(input);
+      },
+      // D-345 — the HTTP Toolkit: the server's own fetch of a public web address. A download is kept
+      // among the owner's files through the same handoff a page's file is (D-335 slice AP).
+      httpGet: async (input) => {
+        const { httpGet, ingredientErrorOf } = await import('../../http-toolkit/http-kernel.js');
+        return ingredientErrorOf('http-get', () => httpGet({}, input));
+      },
+      httpRead: async (input) => {
+        const { httpRead, ingredientErrorOf } = await import('../../http-toolkit/http-kernel.js');
+        return ingredientErrorOf('http-read', () => httpRead({}, input));
+      },
+      httpDownload: async (input, step) => {
+        const { httpDownload, ingredientErrorOf } = await import('../../http-toolkit/http-kernel.js');
+        const files = createBrowserFiles(() => deps.collectionRegistry.get('file', 'received') as BrowserFilesCollection | undefined);
+        return ingredientErrorOf('http-download', () => httpDownload({ files }, input, step));
       },
       filePersist: async (input) => {
         const { handleFilePersist } = await import('../../collections/file/file-persist-handler.js');

@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   BROWSER_PASS_SESSION_TTL_MS,
+  BROWSER_REQUEST_PASS_TTL_MS,
   browserPassKeyHash,
   evaluateWriteRuleEvidence,
   isBrowserPassLive,
@@ -24,6 +25,7 @@ import {
   type BrowserPassKind,
   type BrowserPassRow,
   type BrowserPassSuggestionRow,
+  type BrowserRequestPass,
   type WriteRuleAnswer,
 } from '@recued/contracts';
 
@@ -75,6 +77,14 @@ export interface BrowserPassStore {
   listPasses(now: number): BrowserPassRow[];
   /** End a pass. Ending an always pass ends its key's suggestions too. */
   revoke(pass_id: string, now: number): BrowserPassRow;
+  /** D-341 slice A — the live request approved ahead in this conversation, or undefined. */
+  requestPass(channel_session_id: string, now: number): BrowserRequestPass | undefined;
+  /** Turn it on: a live one is kept as it is; otherwise one starts now, for eight hours. */
+  startRequestPass(channel_session_id: string, now: number): BrowserRequestPass;
+  /** Turn it off. False when none was live. */
+  endRequestPass(channel_session_id: string, now: number): boolean;
+  /** The live one, with one more use counted, or undefined (⇒ the write asks). */
+  useRequestPass(channel_session_id: string, now: number): BrowserRequestPass | undefined;
 }
 
 interface KeyRow {
@@ -133,6 +143,13 @@ export const ensureBrowserPassSchema = (db: Database.Database): void => {
       last_used_at        INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_browser_passes_key ON browser_passes (key_hash, created_at);
+    CREATE TABLE IF NOT EXISTS browser_request_passes (
+      channel_session_id  TEXT PRIMARY KEY,
+      started_at          INTEGER NOT NULL,
+      expires_at          INTEGER NOT NULL,
+      ended_at            INTEGER,
+      uses                INTEGER NOT NULL DEFAULT 0
+    );
   `);
 };
 
@@ -334,5 +351,31 @@ export const createBrowserPassStore = (
     return toPass(passRow.get(pass_id) as PassRowDb)!;
   }) as BrowserPassStore['revoke'];
 
-  return { use, mint, recordAnswer, listSuggestions, accept, dismiss, listPasses, revoke };
+  // D-341 slice A — the requests approved ahead, one a conversation.
+  const requestRow = db.prepare(`SELECT channel_session_id, started_at, expires_at, uses FROM browser_request_passes
+    WHERE channel_session_id = @channel_session_id AND ended_at IS NULL AND expires_at > @now`);
+  const startRequest = db.prepare(`INSERT INTO browser_request_passes (channel_session_id, started_at, expires_at, ended_at, uses)
+    VALUES (@channel_session_id, @now, @expires_at, NULL, 0)
+    ON CONFLICT(channel_session_id) DO UPDATE SET started_at = excluded.started_at, expires_at = excluded.expires_at,
+      ended_at = NULL, uses = 0`);
+  const endRequest = db.prepare(`UPDATE browser_request_passes SET ended_at = @now
+    WHERE channel_session_id = @channel_session_id AND ended_at IS NULL AND expires_at > @now`);
+  const countRequest = db.prepare(`UPDATE browser_request_passes SET uses = uses + 1
+    WHERE channel_session_id = @channel_session_id AND ended_at IS NULL AND expires_at > @now`);
+  const requestPass = (channel_session_id: string, now: number): BrowserRequestPass | undefined =>
+    requestRow.get({ channel_session_id, now }) as BrowserRequestPass | undefined;
+  const startRequestPass = db.transaction((channel_session_id: string, now: number): BrowserRequestPass => {
+    const live = requestPass(channel_session_id, now);
+    if (live !== undefined) return live;
+    startRequest.run({ channel_session_id, now, expires_at: now + BROWSER_REQUEST_PASS_TTL_MS });
+    return requestPass(channel_session_id, now)!;
+  }) as BrowserPassStore['startRequestPass'];
+  const endRequestPass = (channel_session_id: string, now: number): boolean =>
+    endRequest.run({ channel_session_id, now }).changes > 0;
+  const useRequestPass = db.transaction((channel_session_id: string, now: number): BrowserRequestPass | undefined =>
+    countRequest.run({ channel_session_id, now }).changes > 0 ? requestPass(channel_session_id, now) : undefined,
+  ) as BrowserPassStore['useRequestPass'];
+
+  return { use, mint, recordAnswer, listSuggestions, accept, dismiss, listPasses, revoke,
+    requestPass, startRequestPass, endRequestPass, useRequestPass };
 };

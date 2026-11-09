@@ -129,7 +129,7 @@ describe('D-228 slice 6 — DISPATCH denies without a checklist', () => {
       inboundTokenAuthorize: () => false,
     });
     expect(res.isError).toBe(true);
-    expect(res.content[0]?.text).toContain('not granted to this key');
+    expect(res.content[0]?.text).toBe("Tool 'recued_listRecipes' is not available for this contract.");
     expect(res.content[0]?.text).not.toContain('presented no MCP token');
   });
 });
@@ -151,7 +151,7 @@ describe('a Tier-1 primitive is governed by the per-token checklist', () => {
       inboundTokenAuthorize: (n: string) => n !== 'contact.search',
     });
     expect(res.isError).toBe(true);
-    expect(res.content[0]?.text).toContain('not granted to this key');
+    expect(res.content[0]?.text).toBe("Tool 'contact.search' is not available for this contract.");
   });
 
   /** ⚠ THE PERMITTING WITNESS, and it needs the indirect proof: with no
@@ -212,7 +212,7 @@ describe('D-228 slice 5 — the contract gates Tier-1 primitives', () => {
   it('⛔ a primitive the contract does not grant is REFUSED', async () => {
     const res = await callTool('mail.search', gateDeps(() => false));
     expect(res.isError).toBe(true);
-    expect(res.content[0]?.text).toContain('not granted by this contract');
+    expect(res.content[0]?.text).toBe("Tool 'mail.search' is not available for this contract.");
   });
 
   /** ⚠ THE PERMITTING WITNESS. Without it "refused" is indistinguishable from a
@@ -226,7 +226,7 @@ describe('D-228 slice 5 — the contract gates Tier-1 primitives', () => {
       res = await callTool('mail.search', gateDeps(() => true));
     } catch (e) { threw = e; }
     const text = res?.content?.[0]?.text ?? '';
-    expect(text).not.toContain('not granted by this contract');
+    expect(text).not.toContain('is not available for this contract');
     expect(threw !== null || text !== '').toBe(true);
   });
 
@@ -253,7 +253,7 @@ describe('D-228 slice 5 — the contract gates Tier-1 primitives', () => {
       const res = await callTool('acme/some-recipe', deps);
       text = res.content?.[0]?.text ?? '';
     } catch { /* dispatch incomplete on partial deps — fine */ }
-    expect(text).not.toContain('not granted by this contract');
+    expect(text).not.toContain('is not available for this contract');
     expect(seen).toHaveLength(0);
   });
 });

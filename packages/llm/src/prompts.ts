@@ -1,5 +1,5 @@
 import { AI_RESULT_FIELDS, isAIBatchMode, stripCorePrefix } from '@recued/contracts';
-import type { LLMMessage } from './types.js';
+import type { ContentPart, LLMMessage } from './types.js';
 import { isLLMMessageRole, LLMError } from './types.js';
 
 /** The slugs for which we have a contracted prompt template.
@@ -242,9 +242,60 @@ export const buildUncontractedPrompt = (
     ? input['llm.system_role']
     : 'system';
   if (system) messages.push({ role: systemRole, content: system });
-  messages.push(buildUserTurn(user, input['llm.cache_prefix']));
+  messages.push(buildUserTurn(user, input['llm.cache_prefix'], input['llm.cache_rolling_field']));
   return messages;
 };
+
+/** D-347 slice C follow-up (2026-11-08) — where each element of the top-level array field `field` ends
+ *  in the JSON object `json` (the offset just past it), or `[]` when the field is absent, is not an
+ *  array, or the text does not scan as JSON. Strings and their escapes are scanned, so a bracket in a
+ *  value is never read as structure, and a key of that name deeper in the object is not the field. */
+export const topLevelArrayElementEnds = (json: string, field: string): number[] => {
+  const key = JSON.stringify(field);
+  const ends: number[] = [];
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let stringStart = -1;
+  let lastKey: string | null = null;
+  let valueOfField = false;
+  let inField = false;
+  for (let i = 0; i < json.length; i += 1) {
+    const ch = json[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') {
+        inString = false;
+        if (depth === 1) lastKey = json.slice(stringStart, i + 1);
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      stringStart = i;
+    } else if (ch === ':') {
+      if (depth === 1) valueOfField = lastKey === key;
+    } else if (ch === '{' || ch === '[') {
+      if (depth === 1 && valueOfField && ch === '[') inField = true;
+      if (depth === 1) valueOfField = false;
+      depth += 1;
+    } else if (ch === '}' || ch === ']') {
+      depth -= 1;
+      if (inField && depth === 2) ends.push(i + 1);
+      else if (inField && depth === 1) return ends;
+      if (depth < 0) return [];
+    } else if (ch === ',') {
+      if (depth === 1) { valueOfField = false; lastKey = null; }
+    }
+  }
+  return [];
+};
+
+/** The most element boundaries a turn's blocks carry: Anthropic looks for a cached prefix at the block
+ *  boundaries up to about 20 blocks back from a breakpoint, so the previous round's breakpoint must lie
+ *  within them. Earlier elements merge into the first block. */
+const MAX_ROLLING_BOUNDARIES = 19;
 
 /** D-164 prompt-cache restructure — build the user turn, optionally split into a
  *  cached-prefix block + a per-turn block.
@@ -253,8 +304,9 @@ export const buildUncontractedPrompt = (
  *  `user` (the byte-identity invariant from the chat main-turn composer's
  *  `cacheable_prefix`), the message carries `content_parts`:
  *    [ { text: prefix, cache_breakpoint: true }, { text: rest } ]
- *  so the Anthropic adapter places ONE `cache_control` breakpoint after the
- *  (stable) prefix. `content` stays the FULL `user` string, so every other
+ *  so the Anthropic adapter places a `cache_control` breakpoint after the
+ *  (stable) prefix, and with `llm.cache_rolling_field` a second after the last
+ *  element of that array (below). `content` stays the FULL `user` string, so every other
  *  provider — and the text-only collapse in the OpenAI/Gemini adapters — sends
  *  the byte-identical single string. The split is therefore a no-op everywhere
  *  explicit caching isn't supported; the model reads the exact same bytes.
@@ -263,7 +315,7 @@ export const buildUncontractedPrompt = (
  *  the plain single-string turn (today's behaviour) — so a silent prefix drift
  *  (e.g. a PII pre-scan that rewrote a `pii.` literal inside the catalog) just
  *  loses caching for that turn rather than corrupting the prompt. */
-const buildUserTurn = (user: string, cachePrefixRaw: unknown): LLMMessage => {
+const buildUserTurn = (user: string, cachePrefixRaw: unknown, rollingFieldRaw?: unknown): LLMMessage => {
   const cachePrefix = typeof cachePrefixRaw === 'string' ? cachePrefixRaw : '';
   if (
     cachePrefix.length === 0
@@ -272,14 +324,23 @@ const buildUserTurn = (user: string, cachePrefixRaw: unknown): LLMMessage => {
   ) {
     return { role: 'user', content: user };
   }
-  return {
-    role: 'user',
-    content: user,
-    content_parts: [
-      { type: 'text', text: cachePrefix, cache_breakpoint: true },
-      { type: 'text', text: user.slice(cachePrefix.length) },
-    ],
-  };
+  // D-347 slice C follow-up (2026-11-08) — `llm.cache_rolling_field` names a top-level array the
+  // rounds of one turn append to (the chat's `prior_tool_calls`): the rest is cut at each element's end
+  // and the last element's block is a second breakpoint, so the next round, holding the same elements
+  // and more, reads everything through them from the cache (Anthropic finds a cached prefix only at a
+  // block boundary). Content outside the array, or a field the body does not hold, leaves the one cut.
+  const ends = typeof rollingFieldRaw === 'string' && rollingFieldRaw.length > 0
+    ? topLevelArrayElementEnds(user, rollingFieldRaw).filter((end) => end > cachePrefix.length && end < user.length)
+      .slice(-MAX_ROLLING_BOUNDARIES)
+    : [];
+  const parts: ContentPart[] = [{ type: 'text', text: cachePrefix, cache_breakpoint: true }];
+  let from = cachePrefix.length;
+  for (const [i, end] of ends.entries()) {
+    parts.push({ type: 'text', text: user.slice(from, end), ...(i === ends.length - 1 ? { cache_breakpoint: true } : {}) });
+    from = end;
+  }
+  parts.push({ type: 'text', text: user.slice(from) });
+  return { role: 'user', content: user, content_parts: parts };
 };
 
 /** Exposed for tests — lets them assert the delimiter sentinel is

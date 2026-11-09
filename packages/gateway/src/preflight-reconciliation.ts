@@ -57,13 +57,21 @@ import {
   BROWSER_PASS_SESSION_TTL_MS,
   browserPassActsOf,
   browserPassKindOfOption,
+  BROWSER_REQUEST_PASS_TTL_MS,
+  browserPassOffersRequest,
   browserPassOptions,
   isApprovalWorkflowOperation,
   isBrowserPassOptionId,
   readBrowserPassOffer,
+  describeTriggerPreapprovalOffer,
+  readTriggerPreapprovalOffer,
+  TRIGGER_PREAPPROVAL_OPTION_ID,
+  triggerPreapprovalOfferOption,
   isOperationSpecHash,
   kernelWriteStaysInRecued,
+  browserActNamesTabs,
   parseBrowserActSteps,
+  parseBridgeKey,
   renderBatchItemsBlock,
   tier1CallDetails,
   tier1CallTitle,
@@ -78,7 +86,7 @@ import type {
   OriginUnit,
   OriginUnitKind,
   AuthorizationProvenance,
-  BrowserPassKind,
+  BrowserPassAnswerKind,
   BrowserPassOffer,
   OperationApproval,
   PreflightForeachCover,
@@ -310,7 +318,13 @@ export interface PreflightAskContext {
    *  (`preflight_context.browser_pass`), never a key read again. Absent on every other
    *  answer. ⚠ Not `browser_pass`: a re-raise spreads the checkpoint's context, offer and
    *  all, into this one. */
-  browser_pass_kind?: BrowserPassKind;
+  browser_pass_kind?: BrowserPassAnswerKind;
+  /** D-341 slice B2 — answer-time resume context ONLY: the owner chose "Always allow for this
+   *  webhook / schedule / trigger". The resumer grants the offer the checkpoint carries
+   *  (`preflight_context.trigger_preapproval`), never one read again, then resumes. Absent on
+   *  every other answer. ⚠ Not `trigger_preapproval`: a re-raise spreads the checkpoint's
+   *  context, offer and all, into this one. */
+  trigger_preapproval_answer?: true;
 }
 
 /** The narrow notification-block seam this leaf calls — the subset of
@@ -497,7 +511,11 @@ const heldBrowserLine = (
       : undefined;
   }
   if (named === 'dom-act') return heldBrowserSteps(target, args);
-  const doing = named !== undefined && Object.hasOwn(BROWSER_DOING, named) ? BROWSER_DOING[named] : undefined;
+  // D-335 slice U — a click call with a key presses that key in the element instead.
+  const key = named === 'dom-click' && typeof args?.key === 'string' && args.key.trim() !== ''
+    ? parseBridgeKey(args.key)?.name ?? oneLine(args.key) : undefined;
+  const doing: string | undefined = key !== undefined ? `presses ${key} in`
+    : named !== undefined && Object.hasOwn(BROWSER_DOING, named) ? BROWSER_DOING[named] : undefined;
   if (doing === undefined || target === null || typeof target !== 'object') return undefined;
   const read = target as Record<string, unknown>;
   if (typeof read.site !== 'string') return undefined;
@@ -517,6 +535,7 @@ const heldBrowserLine = (
   } else {
     return undefined;
   }
+  if (key !== undefined) return `${head} What the key does there cannot be undone.`;
   if (doing === 'clicks') return `${head} A click cannot be undone.`;
   if (typeof args?.value !== 'string') return head;
   if (read.protected === true) {
@@ -542,45 +561,130 @@ const heldBrowserLine = (
  *    3. …
  *    A click or a sent form cannot be undone. It stops at the first step that does not work.
  *
+ *  Slice X — a batch whose steps name their tabs is listed under each tab, as the hold read it
+ *  (`HeldBrowserStep.on`): "On “Wikipedia” (en.wikipedia.org):", or for a tab it opens, "In a new
+ *  tab at …" with the address in full, as Open a web page's ask shows it. A step on the page as a
+ *  whole (a read, a scroll, going to an address, back, a reload, closing the tab) names no element.
+ *
  *  Undefined when the steps and what was read do not line up, so the ask says nothing it cannot
  *  stand behind. ⛔ Every name on a line goes through `oneLine`: a selector is the model's, a
  *  label the page's, and either could otherwise write a line of its own. */
+/** D-335 slice AQ — a file's size as an ask says it. */
+const fileSizeSaid = (bytes: number): string => (bytes < 1_000 ? `${String(bytes)} bytes`
+  : bytes < 1_000_000 ? `${String(Math.round(bytes / 1_000))} KB` : `${(bytes / 1_000_000).toFixed(1)} MB`);
+
 const heldBrowserSteps = (target: unknown, args: Record<string, unknown> | undefined): string | undefined => {
   if (target === null || typeof target !== 'object') return undefined;
   const read = target as Record<string, unknown>;
-  const parsed = parseBrowserActSteps(args?.steps);
+  const parsed = parseBrowserActSteps(args?.steps, { page: args?.page });
   if (!parsed.ok || typeof read.site !== 'string' || !Array.isArray(read.steps)
     || read.steps.length !== parsed.steps.length) return undefined;
   const quoted = (text: string) => `“${oneLine(text)}”`;
+  // Slice X — the steps under their tabs, when the batch names its tabs.
+  const byTab = browserActNamesTabs(parsed.steps);
+  const tabHeading = (on: unknown): string | undefined => {
+    if (on === null || typeof on !== 'object') return undefined;
+    const tab = on as Record<string, unknown>;
+    if (typeof tab.opens === 'string') return `In a new tab at ${JSON.stringify(oneLine(tab.opens))}:`;
+    if (typeof tab.site !== 'string') return undefined;
+    return typeof tab.title === 'string' && tab.title !== '' && tab.site !== ''
+      ? `On ${quoted(tab.title)} (${oneLine(tab.site)}):` : tab.site !== '' ? `On ${oneLine(tab.site)}:` : undefined;
+  };
   const lines: string[] = [];
+  let heading: string | undefined;
   let acts = false;
   for (const [index, step] of parsed.steps.entries()) {
     const seen = read.steps[index] as Record<string, unknown> | null;
     if (seen === null || typeof seen !== 'object') return undefined;
+    if (byTab) {
+      const on = tabHeading(seen.on);
+      if (on !== undefined && on !== heading) {
+        lines.push(on);
+        heading = on;
+      }
+    }
     const n = `${index + 1}.`;
     if (step.do === 'wait') {
-      const wait = step.selector === undefined ? `Waits ${step.seconds} seconds.`
-        : `Waits for ${quoted(step.selector)} to ${step.until === 'gone' ? 'go' : 'show'}.`;
+      const wait = step.url_includes !== undefined ? `Waits for the address to contain ${quoted(step.url_includes)}.`
+        : step.selector === undefined ? `Waits ${step.seconds} seconds.`
+          : `Waits for ${quoted(step.selector)} to ${step.until === 'gone' ? 'go' : 'show'}.`;
       lines.push(`${n} ${wait}`);
       continue;
     }
+    // Slice X — the steps on the page as a whole.
+    if (step.do === 'read') {
+      lines.push(`${n} Reads the page${step.find !== undefined ? `, the part about ${quoted(step.find)}`
+        : step.form === 'text' ? ' as text' : ''}.`);
+      continue;
+    }
+    // Slice AD — a question about the page, which a separate AI answers from its text.
+    if (step.do === 'ask') {
+      lines.push(`${n} Has a separate AI answer from the page's text: ${quoted(step.question)}.`);
+      continue;
+    }
+    if (step.do === 'go') {
+      acts = true;
+      lines.push(`${n} Loads this address in the tab:\n${JSON.stringify(step.address)}`);
+      continue;
+    }
+    if (step.do === 'back' || step.do === 'reload' || step.do === 'close') {
+      acts = true;
+      lines.push(`${n} ${step.do === 'back' ? 'Goes back a page' : step.do === 'reload' ? 'Reloads the page' : 'Closes the tab'}.`);
+      continue;
+    }
+    // D-335 slice AP — a file kept among the owner's files, by its address; it changes nothing on the page.
+    if (step.do === 'download' && step.address !== undefined) {
+      lines.push(`${n} Saves the file at this address among your files:\n${JSON.stringify(step.address)}`);
+      continue;
+    }
+    const named = 'ref' in step && step.ref !== undefined ? `ref ${oneLine(step.ref)}`
+      : 'selector' in step && step.selector !== undefined ? quoted(step.selector)
+        // Slice Y — an element named by its text: that text, and the role that narrows it.
+        : 'text' in step && step.text !== undefined
+          ? `${'role' in step && step.role !== undefined ? `the ${oneLine(step.role)} ` : ''}${quoted(step.text)}` : undefined;
     let element: string;
     let shownNot = false;
     if (typeof seen.unread === 'string') {
-      element = `${step.ref !== undefined ? `ref ${oneLine(step.ref)}` : quoted(step.selector!)}, which could not be shown `
-        + `here (${oneLine(seen.unread).replace(/\.$/, '')})`;
+      element = `${named ?? 'the page'}, which could not be shown here (${oneLine(seen.unread).replace(/\.$/, '')})`;
     } else if (typeof seen.role === 'string' && typeof seen.label === 'string') {
       element = seen.label !== '' ? `the ${oneLine(seen.role)} ${quoted(seen.label)}` : `a ${oneLine(seen.role)}`;
       shownNot = seen.protected === true;
+    } else if (seen.whole_page === true && step.do === 'scroll' && named === undefined) {
+      element = 'the page';
     } else {
       return undefined;
     }
-    if (step.do === 'click') {
+    if (step.do === 'scroll') {
+      lines.push(`${n} Scrolls ${element} ${step.screen !== undefined ? `to screen ${step.screen}`
+        : step.to === 'top' ? 'to the top' : step.to === 'bottom' ? 'to the bottom'
+          : step.to === 'previous' ? 'up a screen' : 'down a screen'}.`);
+    } else if (step.do === 'hover') {
+      lines.push(`${n} Points at ${element}.`);
+    } else if (step.do === 'download') {
+      lines.push(`${n} Saves the file ${element} links to among your files.`);
+    } else if (step.do === 'upload') {
+      // D-335 slice AQ — one of the owner's files leaves for the site: the ask names it as their files do.
+      acts = true;
+      const file = seen.file !== null && typeof seen.file === 'object' ? seen.file as { filename?: unknown; size_bytes?: unknown } : undefined;
+      const which = typeof file?.filename === 'string' ? `${quoted(file.filename)}${typeof file.size_bytes === 'number'
+        ? ` (${fileSizeSaid(file.size_bytes)})` : ''}` : oneLine(step.file);
+      lines.push(`${n} Puts your file ${which} into ${element}, for the site to receive.`);
+    } else if (step.do === 'click') {
       acts = true;
       lines.push(`${n} Clicks ${element}.`);
     } else if (step.do === 'submit') {
       acts = true;
       lines.push(`${n} Sends the form ${element} is in.`);
+    } else if (step.do === 'press') {
+      // Slice U — a key, which can send what a field holds as a click on Send would.
+      acts = true;
+      lines.push(`${n} Presses ${oneLine(step.key)} in ${element}.`);
+    } else if (step.secret !== undefined) {
+      // Slice Z — a secret is never in the step, so never in the ask: Recued types it when the step runs.
+      acts ||= step.submit === true;
+      lines.push(`${n} Types your ${step.secret} into ${element}${step.submit === true ? ', then sends its form' : ''}. `
+        + (step.secret === 'sign-in code' ? 'Recued asks you for it when the step runs.'
+          : 'Recued types the one you saved for this field on this site, or asks you for it when the step runs.'));
     } else {
       // Slice L — then the suggestion it picks, by its text, which the ask names as the model gave it.
       const picks = step.pick !== undefined ? `, then picks ${quoted(step.pick)} from its suggestions` : '';
@@ -596,18 +700,20 @@ const heldBrowserSteps = (target: unknown, args: Record<string, unknown> | undef
   }
   const page = typeof read.title === 'string' && read.title !== '' && read.site !== ''
     ? `${quoted(read.title)} (${read.site})` : read.site;
-  const where = page !== '' ? `On ${page}, this` : 'This';
+  const where = !byTab && page !== '' ? `On ${page}, this` : 'This';
   const count = parsed.steps.length;
   return `${where} does ${count} step${count === 1 ? '' : 's'} in your browser, in order:\n${lines.join('\n')}\n`
     + `${acts ? 'A click or a sent form cannot be undone. ' : ''}It stops at the first step that does not work.`;
 };
 
 /** D-329 — who proposed a held Tier-1 write, in the owner's words: their own chat in the
- *  app, their own chat on a messenger, or an AI agent (an AI app, or anyone acting under a
- *  contract; a door's starter is named on its own line, `startedByPhrase`). The owner reads
- *  it on a phone or in Telegram, away from the conversation, so the chat is named. */
+ *  app, their own chat on a messenger, one of their scheduled prompts (D-341 B3), or an AI agent
+ *  (an AI app, or anyone acting under a contract; a door's starter is named on its own line,
+ *  `startedByPhrase`). The owner reads it on a phone or in Telegram, away from the conversation,
+ *  so the chat is named. */
 const tier1Proposer = (source: unknown): string => {
-  const s = source as { channel?: unknown; actor?: unknown; vendor?: unknown } | null | undefined;
+  const s = source as { channel?: unknown; actor?: unknown; vendor?: unknown; prompt_schedule?: unknown } | null | undefined;
+  if (s?.channel === 'schedule' && s.actor === 'system' && s.prompt_schedule !== undefined) return 'Your scheduled prompt';
   if (s?.actor !== 'user_self') return 'An AI agent';
   if (s.channel === 'chat') return 'Your chat';
   if (s.channel !== 'messenger' || typeof s.vendor !== 'string') return 'An AI agent';
@@ -847,7 +953,11 @@ const renderBrowserPassBlock = (offer: BrowserPassOffer): string => {
   const everywhere = offer.key.principal.kind === 'owner_chat' ? 'in all your chats' : 'for this AI app';
   return oneLine(`“Allow on ${offer.host} for this session” stops asking about ${acts} in this `
     + `conversation, for up to ${renderTtl(BROWSER_PASS_SESSION_TTL_MS)}. “Always allow on ${offer.host}” stops `
-    + `asking about them ${everywhere}, until you end it under Contracts.`);
+    + `asking about them ${everywhere}, until you end it under Contracts.`
+    // D-341 slice A — and, from the owner's own chat, the switch below its input.
+    + (browserPassOffersRequest(offer) ? ' “Don’t ask about browser actions in this chat” stops asking about any of '
+      + `them, on any site, in this conversation, until you turn it off below the chat's input, for up to `
+      + `${renderTtl(BROWSER_REQUEST_PASS_TTL_MS)}.` : ''));
 };
 
 /** Render a byte count as a size a reader can act on.
@@ -1036,7 +1146,13 @@ export const buildPreflightAsk = (args: {
   const browserPass = freshReview || batch !== undefined || cover !== undefined
     ? undefined
     : readBrowserPassOffer(checkpoint.preflight_context?.browser_pass);
-  const sessionGrant = freshReview || browserPass !== undefined ? undefined : context.session_grant;
+  // D-341 slice B2 — a held write a trigger's run made offers its pre-approval on that trigger,
+  // in place of "Allow this session" too: an exact grant matches the same values only, and the
+  // next post, morning or event brings new ones. One call only, as a site pass.
+  const triggerOffer = freshReview || batch !== undefined || cover !== undefined || browserPass !== undefined
+    ? undefined
+    : readTriggerPreapprovalOffer(checkpoint.preflight_context?.trigger_preapproval);
+  const sessionGrant = freshReview || browserPass !== undefined || triggerOffer !== undefined ? undefined : context.session_grant;
   const overrideOffer = freshReview ? undefined : context.owner_override_offer;
   // WHICH account this lands in — unless the op id already said so.
   const onConnection = connectionPhrase(context.connection_name, named);
@@ -1214,6 +1330,12 @@ export const buildPreflightAsk = (args: {
           )}`
         : `\n\n${renderExactGrantBlock(sessionGrant, grantActor)}`;
   const passBlock = browserPass === undefined ? '' : `\n\n${renderBrowserPassBlock(browserPass)}`;
+  // A scheduled prompt is its own recipe (D-341 B3): "when it runs on its schedule", even where its
+  // run is a recipe's, a Browser Toolkit action's (B5): the prompt is what runs on its schedule.
+  const triggerBlock = triggerOffer === undefined ? ''
+    : `\n\n${describeTriggerPreapprovalOffer(triggerOffer,
+      triggerOffer.trigger.kind === 'prompt_schedule' && triggerOffer.prompt_sha256 === undefined ? 'it'
+        : recipeTitle !== undefined ? `"${recipeTitle}"` : 'the recipe')}`;
 
   // The question goes LAST, always — it is what the buttons answer, and a
   // reader who has to scroll back up past the evidence to find what they
@@ -1259,7 +1381,7 @@ export const buildPreflightAsk = (args: {
     title,
     text:
       `${opening}\n${held}${technicalLine}${startedByLine}${browserBlock}${egressBoundLine}${reasonLine}`
-      + `${resourceBlock}${clampWarning}${itemsBlock}${changeBlock}${grantBlock}${passBlock}\n\n${question}`,
+      + `${resourceBlock}${clampWarning}${itemsBlock}${changeBlock}${grantBlock}${passBlock}${triggerBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {
     kind: PREFLIGHT_HANDLER_KIND,
@@ -1296,14 +1418,16 @@ export const buildPreflightAsk = (args: {
     },
   };
   const options: readonly AskOption[] =
-    overrideOffer === undefined && browserPass === undefined
+    overrideOffer === undefined && browserPass === undefined && triggerOffer === undefined
       ? sessionGrant !== undefined
         ? PREFLIGHT_ASK_OPTIONS_WITH_SESSION
         : PREFLIGHT_ASK_OPTIONS
       : [
           PREFLIGHT_ASK_OPTIONS[0],
           ...(sessionGrant !== undefined ? [ALLOW_SESSION_ASK_OPTION] : []),
-          ...(browserPass !== undefined ? browserPassOptions(browserPass.host) : []),
+          ...(browserPass !== undefined
+            ? browserPassOptions(browserPass.host, { request: browserPassOffersRequest(browserPass) }) : []),
+          ...(triggerOffer !== undefined ? [triggerPreapprovalOfferOption(triggerOffer)] : []),
           ...(overrideOffer !== undefined ? [overrideAskOption(overrideOffer)] : []),
           PREFLIGHT_ASK_OPTIONS[1],
         ];
@@ -1563,6 +1687,7 @@ export const createPreflightAnswerHandler = (deps: {
       effectiveAnswer.option === 'approve'
       || effectiveAnswer.option === 'allow_session'
       || isBrowserPassOptionId(effectiveAnswer.option)
+      || effectiveAnswer.option === TRIGGER_PREAPPROVAL_OPTION_ID
     ) {
       // D-177 P3 — `allow_session` is approve PLUS a mint instruction: the
       // resume context carries the bounds the ask offered (read back off the
@@ -1587,11 +1712,17 @@ export const createPreflightAnswerHandler = (deps: {
         && readBrowserPassOffer(checkpoint.preflight_context?.browser_pass) !== undefined
           ? browserPassKindOfOption(effectiveAnswer.option)
           : undefined;
+      // D-341 slice B2 — "Always allow for this …" is approve PLUS the pre-approval the hold
+      // offered, which the resumer reads off the checkpoint. An offer that no longer reads
+      // degrades to a plain approve, as a site answer's does.
+      const triggerGrant = effectiveAnswer.option === TRIGGER_PREAPPROVAL_OPTION_ID
+        && readTriggerPreapprovalOffer(checkpoint.preflight_context?.trigger_preapproval) !== undefined;
       await deps.resumer.resumeRun(checkpoint, {
         ...context,
         approved_at: effectiveAnswer.answered_at,
         ...(grant !== undefined ? { session_grant: grant } : {}),
         ...(pass !== undefined ? { browser_pass_kind: pass } : {}),
+        ...(triggerGrant ? { trigger_preapproval_answer: true as const } : {}),
       });
     } else {
       // Any other answer is treated as deny. The closed option lists

@@ -60,6 +60,39 @@ export const SERVER_CONTROL_TITLE_ATTR =
 export const SERVER_CONTROL_STATUS_ATTR =
   'data-recued-webclient-server-control-status';
 
+/** D-188 — the pause's purpose and stakes, shown before the owner confirms a pause. */
+export const SERVER_CONTROL_PAUSE_STAKES_ATTR = 'data-recued-webclient-server-control-pause-stakes';
+
+/** D-188 — what "Pause server" is for and what it stops, read before the owner confirms (the
+ *  owner's ruling of 2026-11-08: the pause is the emergency stop, and the owner should know what
+ *  is at stake when they press it). Every line is enforced by the server: keep them in step. */
+export const PAUSE_STAKES_HTML =
+  `<div class="server-control-stakes" ${SERVER_CONTROL_PAUSE_STAKES_ATTR}>`
+  + '<p class="server-control-stakes-lead"><strong>Emergency stop.</strong> Until you resume,'
+  + ' nothing leaves your server and nothing comes in.</p>'
+  + '<div class="server-control-stakes-title">Stops</div>'
+  + '<ul>'
+  + '<li>AI and apps, chat included. A message you send waits; an answer being written'
+  + ' stops.</li>'
+  + '<li>Schedules, automations and runs. One already going stops at its next step.</li>'
+  + '<li>Mail, calendar, Salesforce and S3 sync, your messengers, and everything Recued'
+  + ' sends for you.</li>'
+  + '<li>Anything you do that reaches an account: a calendar change, a connection test,'
+  + ' a re-sync.</li>'
+  + '<li>Webhooks and forms sent to you are turned away.</li>'
+  + '</ul>'
+  + '<div class="server-control-stakes-title">Still works</div>'
+  + '<ul>'
+  + '<li>Looking at what your server holds, and its history.</li>'
+  + '<li>Changing settings, keys and recipes.</li>'
+  + '<li>Denying approvals. Approving waits until you resume.</li>'
+  + '</ul>'
+  + '</div>';
+
+/** D-188 — the status line while paused. */
+export const PAUSED_STATUS_TEXT = 'Paused: an emergency stop. Nothing leaves your server and nothing'
+  + ' comes in until you resume. You can look around, change settings and deny approvals.';
+
 /** Stable hook for the storage read-out list. */
 export const SERVER_CONTROL_STORAGE_ATTR =
   'data-recued-webclient-server-control-storage';
@@ -167,6 +200,12 @@ export const SERVER_PILL_STYLES = `
   color: var(--fg-muted, #71717a);
   font-size: 12px;
 }
+/* D-188 — the pause's stakes: read before confirming, so the lead is in the body colour. */
+[${SERVER_PILL_HOST_ATTR}] .server-control-stakes { display: grid; gap: 4px; }
+[${SERVER_PILL_HOST_ATTR}] .server-control-stakes-lead { margin: 0 0 4px; color: var(--fg, #27272a); }
+[${SERVER_PILL_HOST_ATTR}] .server-control-stakes-title { font-weight: 600; color: var(--fg, #27272a); }
+[${SERVER_PILL_HOST_ATTR}] .server-control-stakes ul { margin: 0 0 4px; padding-left: 1.2rem; }
+[${SERVER_PILL_HOST_ATTR}] .server-control-stakes li { margin: 1px 0; }
 [${SERVER_PILL_HOST_ATTR}] .server-control-actions {
   display: flex;
   flex-wrap: wrap;
@@ -694,7 +733,9 @@ export const mountWebclientServerPill = (
       detail = 'Restarting — reconnecting…';
       actions = '';
     } else if (confirming === 'pause') {
-      detail = 'Shuts every door and stops anything scheduled. You stay connected, and you can start it again whenever you like.';
+      // D-188 — the pause's purpose and what is at stake, before the owner confirms (the owner's
+      // ruling of 2026-11-08: the pause is the emergency stop).
+      detail = PAUSE_STAKES_HTML;
       actions = button('pause-cancel', 'Cancel')
         + button('pause-confirm', 'Confirm pause', ' server-control-btn--confirm');
     } else if (confirming === 'restart') {
@@ -711,7 +752,7 @@ export const mountWebclientServerPill = (
       detailCls = ' server-control-status--crash';
       actions = restart;
     } else if (paused()) {
-      detail = 'Paused. Every door is shut, and nothing scheduled is running.';
+      detail = PAUSED_STATUS_TEXT;
       actions = button('resume', 'Resume', ' server-control-btn--resume') + restart;
     } else {
       detail = 'Running.';

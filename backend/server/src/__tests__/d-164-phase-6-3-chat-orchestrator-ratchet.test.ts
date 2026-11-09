@@ -29,6 +29,7 @@ import {
   type ToolCall,
   type ToolEntry,
 } from '@recued/contracts';
+import { BOUNDED_RUN_LAST_ROUND, TOOL_BUDGET_EXHAUSTED_MESSAGE, isToolBudgetExhaustedAnswer } from '../chat-turn-budget.js';
 import {
   createChatOrchestrator,
   type BroadcastChatEvent,
@@ -152,6 +153,8 @@ const setup = (input: {
   catalogProjectionForSource?: (
     source: ChatModelSourceId | undefined,
   ) => ChatCatalogProjectionConfig;
+  /** D-340 slice 4 — the situation access, for a run's own tool rounds. */
+  toolRoundCap?: number;
 } = {}) => {
   const sessionId = input.sessionId ?? 'sess';
   const harnessId = `h${++harnessCounter}`;
@@ -168,6 +171,9 @@ const setup = (input: {
     ...(input.catalogProjection ? { catalogProjection: input.catalogProjection } : {}),
     ...(input.catalogProjectionForSource
       ? { catalogProjectionForSource: input.catalogProjectionForSource }
+      : {}),
+    ...(input.toolRoundCap !== undefined
+      ? { getSituationAccess: () => ({ toolRoundCap: () => input.toolRoundCap, namesPrivateIn: () => false }) as never }
       : {}),
   });
   store.createSession({
@@ -2225,5 +2231,71 @@ describe('D-164 P6.3 decoder_unavailable emission', () => {
     expect((await finalAssistant(sessionId))?.content).toContain(
       'No AI model is available',
     );
+  });
+});
+
+describe('D-340 slice 4 — a run\'s own tool rounds (§3.3, ruling 9)', () => {
+  // The streams' AI suggestions read the day once and look up a detail or two: their run takes
+  // `SUGGESTIONS_TOOL_ROUNDS`, below the chat's cap, and is told on its last to answer.
+  const looping = (calls: CapturedAiCall[], answerAt?: number) => mkExecuteAiCall((index) => ({
+    body: index === answerAt ? aiOutput('Leave at 08:10 for the dentist.') : aiOutput(`lookup ${String(index)}`, [toolCall()]),
+  }), calls);
+  const feedbackOf = (call: CapturedAiCall): string => String(promptBody<{ output_feedback?: string }>(call).output_feedback ?? '');
+
+  it('stops at its own rounds, told on its last to answer from what it read', async () => {
+    let dispatched = 0;
+    const calls: CapturedAiCall[] = [];
+    const { orchestrator, sessionId } = setup({ catalog: [mkTool('mail.search', 1)], toolRoundCap: 3,
+      dispatchImpl: async () => { dispatched += 1; return { ok: true, result: { dispatched } }; },
+      executeAiCall: looping(calls, 3) });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'suggest', picker_state: { current: 'self' } });
+    // Three rounds of lookups, then the answer the last one was asked for.
+    expect(dispatched).toBe(3);
+    expect(calls).toHaveLength(4);
+    expect(calls.map(feedbackOf).map((text) => text.includes(BOUNDED_RUN_LAST_ROUND))).toEqual([false, false, false, true]);
+    expect(eventsByKind('recued.multi_turn.round_started')[0]).toMatchObject({ expected_max_rounds: 3 });
+    expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([{ termination_reason: 'completed' }]);
+    expect(await finalAssistant(sessionId)).toMatchObject({ content: 'Leave at 08:10 for the dentist.' });
+  });
+
+  it('ends a run that still looks things up with the budget\'s reason, which a reader can tell apart', async () => {
+    const calls: CapturedAiCall[] = [];
+    const { orchestrator, sessionId } = setup({ catalog: [mkTool('mail.search', 1)], toolRoundCap: 3, executeAiCall: looping(calls) });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'suggest', picker_state: { current: 'self' } });
+    expect(calls).toHaveLength(4);
+    expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([{ termination_reason: 'max_rounds_exhausted' }]);
+    const content = String((await finalAssistant(sessionId))?.content);
+    expect(content.endsWith(TOOL_BUDGET_EXHAUSTED_MESSAGE)).toBe(true);
+    expect(isToolBudgetExhaustedAnswer(content)).toBe(true);
+    expect(isToolBudgetExhaustedAnswer('Leave at 08:10 for the dentist.')).toBe(false);
+  });
+
+  it('never raises the chat\'s own cap, and says nothing more to a run at it', async () => {
+    let dispatched = 0;
+    const calls: CapturedAiCall[] = [];
+    const { orchestrator, sessionId } = setup({ catalog: [mkTool('mail.search', 1)], toolRoundCap: CHAT_MAIN_TURN_TOOL_LOOP_CAP + 5,
+      dispatchImpl: async () => { dispatched += 1; return { ok: true, result: { dispatched } }; },
+      executeAiCall: looping(calls) });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'suggest', picker_state: { current: 'self' } });
+    expect(dispatched).toBe(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
+    expect(calls.some((call) => feedbackOf(call).includes(BOUNDED_RUN_LAST_ROUND))).toBe(false);
+    expect(eventsByKind('recued.multi_turn.round_started')[0]).toMatchObject({ expected_max_rounds: CHAT_MAIN_TURN_TOOL_LOOP_CAP });
+  });
+
+  it('leaves a discovery round free and unwarned, as the chat\'s own cap does', async () => {
+    let dispatched = 0;
+    const calls: CapturedAiCall[] = [];
+    // Two lookups, a catalog search where the next round would be its last, then a third lookup: the
+    // search is not one of its rounds, so it is not told to answer yet.
+    const executeAiCall = mkExecuteAiCall((index) => ({
+      body: index === 2 ? aiOutput('searching', [toolCall('tools.search', { query: 'route' })])
+        : index === 4 ? aiOutput('Leave at 08:10.') : aiOutput(`lookup ${String(index)}`, [toolCall()]),
+    }), calls);
+    const { orchestrator, sessionId } = setup({ catalog: [mkTool('tools.search', 1), mkTool('mail.search', 1)], toolRoundCap: 3,
+      dispatchImpl: async () => { dispatched += 1; return { ok: true, result: { dispatched } }; }, executeAiCall });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'suggest', picker_state: { current: 'self' } });
+    expect(dispatched).toBe(4);
+    expect(calls.map(feedbackOf).map((text) => text.includes(BOUNDED_RUN_LAST_ROUND))).toEqual([false, false, false, false, true]);
+    expect(await finalAssistant(sessionId)).toMatchObject({ content: 'Leave at 08:10.' });
   });
 });

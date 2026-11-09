@@ -16,7 +16,7 @@
  *  shared reader (`installOffersOf`), never from the model's text: the answer
  *  can link nothing but records, so the model never chooses a link. */
 
-import { INSTALL_OFFER_LIMIT, installOffersOf, type InstallOffer } from '@recued/contracts';
+import { INSTALL_OFFER_LIMIT, chatFixesOf, installOffersOf, type ChatFix, type InstallOffer } from '@recued/contracts';
 
 import { TOOLS_SEARCH_TOOL_NAME } from '../chat-tools-search-name.js';
 
@@ -61,3 +61,16 @@ export const installOffersFromToolResults = (
   }
   return offers;
 };
+
+/** D-346 follow-up (2026-11-08) — the fixes a turn's calls carry (`ChatDispatchResult.fixes`:
+ *  a run's needs, an owner's switch that refused a call), for the answer to offer under it.
+ *  Every call's, in the order they ran, deduplicated and capped by the shared reader. Only the
+ *  owner's own calls carry any, so another caller's turn stamps none. */
+export const chatFixesFromToolResults = (
+  toolResults: ReadonlyArray<{ readonly tool_name: string; readonly result?: unknown }> | undefined,
+): ChatFix[] => chatFixesOf((toolResults ?? []).flatMap((entry) => {
+  const fixes = entry.result !== null && typeof entry.result === 'object'
+    ? (entry.result as { fixes?: unknown }).fixes
+    : undefined;
+  return Array.isArray(fixes) ? fixes : [];
+}));

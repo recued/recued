@@ -36,6 +36,10 @@ export const composePreapproval = (deps: {
   keys?: Parameters<typeof createPreapprovalTelegramDelivery>[0]['keys'];
   mail?: Pick<Parameters<typeof createPreapprovalMail>[0], 'registry' | 'instances' | 'blobs'>;
   now?: () => number;
+  /** D-269 — the server's declared zone, for an approved schedule's next run.
+   *  ⛔ REQUIRED, so no composition can leave it out: optional, the approved
+   *  run silently fell back to the host's hour. */
+  serverTimeZone: () => string | undefined;
   onActivationChanged?: () => void | Promise<void>;
   /** D-315 §6.4 — the recovery clock's runs go on the trigger dispatcher's books. */
   settleRecoveredTrigger?: Parameters<typeof createPreapprovalDriver>[0]['settleRecovered'];
@@ -47,7 +51,8 @@ export const composePreapproval = (deps: {
   const authority = createPreapprovalOriginAuthority({ realm: deps.ownerId, clientTokens: deps.clientTokens,
     resumeAuthority: deps.execution.approvalResumeAuthority, opAdmissionGate: deps.execution.opAdmissionGate,
     connections: deps.profiles.connectionStore });
-  const activations = createPreapprovalActivations({ ...deps.sources, circuits: deps.circuits, now: deps.now });
+  const activations = createPreapprovalActivations({ ...deps.sources, circuits: deps.circuits, now: deps.now,
+    serverTimeZone: deps.serverTimeZone });
   const mail = deps.mail ? createPreapprovalMail({ ...deps.mail, db: deps.sources.db,
     manifest: slug => deps.execution.executorConfig.manifests.get(slug) }) : undefined;
   const drafts = createMailDraftService({ store: deps.storage.drafts, authority, gate: deps.execution.opAdmissionGate,

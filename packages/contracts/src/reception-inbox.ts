@@ -217,6 +217,11 @@ export interface InboxItem {
    *  the ask never carried the option). The approve rpc RE-VERIFIES at
    *  the act site regardless — this field never authorizes anything. */
   allow_offer?: { ttl_ms: number; max_uses: number };
+  /** D-341 slice B4 — the hold's ask offers "Always allow for this form" (the form's standing
+   *  pre-approval, in place of the session's "allow for this form"): a rendering hint for "Say
+   *  yes, and always allow this form". Approving with `allow` then answers with it. Re-verified at
+   *  the act site. */
+  always_allow?: true;
   /** Lifecycle — `pending` / `requires_review` are open; `dismissed` /
    *  `expired` are the subview (D10). */
   status: ReceptionInboxStatus;
@@ -269,7 +274,8 @@ export interface ReceptionInboxApproveInput {
    *  held regardless (not acknowledgeable — the verdict is imminent). */
   acknowledge_attachment_risk?: boolean;
   /** D-177 N.14 — "Approve & allow for this form": answer the hold's ask
-   *  with `allow_session` instead of `approve`, minting the door-bound
+   *  with `allow_session` instead of `approve` (D-341 B4: with `allow_trigger`, the form's standing
+   *  pre-approval, when that is what the ask offers), minting the door-bound
    *  session grant that absorbs this form's subsequent fires until its
    *  TTL / uses run out. REFUSED when combined with non-empty `edits` (an
    *  edited approval is proof the pipe's output wasn't right — it earns
@@ -342,6 +348,10 @@ export type ReceptionInboxRpcErrorCode =
   /** The held op carries a `flagged` attachment and `acknowledge_attachment_risk`
    *  was not supplied (N.2 / D-172 Q2). */
   | 'attachment_flagged'
+  /** D-188 — the owner paused the server: a held item came in through a door, which the pause
+   *  stops, so it cannot be approved until Resume (the owner's ruling of 2026-11-08). Denying
+   *  still works. */
+  | 'server_paused'
   /** Malformed request shape. */
   | 'bad_request';
 
@@ -362,6 +372,7 @@ const RECEPTION_INBOX_RPC_ERROR_CODE_MAP: Readonly<
   attachment_scan_pending: true,
   attachment_unscanned: true,
   attachment_flagged: true,
+  server_paused: true,
   bad_request: true,
 };
 

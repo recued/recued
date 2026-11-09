@@ -64,6 +64,8 @@ export type UpstreamMergeRegistry = Map<UpstreamMergeObjectType, VendorMergeClie
  *  processors still install. */
 export interface VendorBootDeps {
   connectionStore: ConnectionStoreSqlite;
+  /** D-188 — the master pause: a vendor's live stream (Salesforce's) holds while it does. */
+  isPaused?: () => boolean;
   engagementStore: EngagementStore | undefined;
   /** D-269 step 1 — the owner's declared server zone, for D-139 § A.3.7's
    *  engagement timezone fallback (`vendor → calendar adapter → prefs.timezone

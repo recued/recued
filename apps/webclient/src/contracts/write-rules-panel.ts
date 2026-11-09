@@ -21,16 +21,26 @@
  *  - **Passes**, among the things happening without asking: what each lets happen, who asks,
  *    for how long and how often it was used. **End pass** asks once more, then ends it.
  *
+ *  D-341 slice B2 adds the triggers' pre-approvals there too (`triggers`): what a webhook, a
+ *  schedule or an event trigger may make its recipe do without asking, its bounds, and why one
+ *  covers nothing now (the recipe changed, or the trigger no longer runs it). **End it** asks once
+ *  more, then ends it.
+ *
  *  The rpc family is `collection.contract.*`, which MCP never reaches: an AI never sees its
  *  own suggestion. Spec: D-329 §3.4, D-335 §3.4. */
 
 import {
   describeBrowserPass,
   describeWriteRule,
+  triggerPreapprovalAiNote,
+  triggerPreapprovalTerms,
+  triggerPreapprovalWhen,
   WRITE_RULE_MAX_USES,
   WRITE_RULE_TTL_MS,
+  type BrowserLoginRow,
   type BrowserPassRow,
   type BrowserPassSuggestionRow,
+  type TriggerPreapprovalView,
   type WriteRuleKey,
   type WriteRulePrincipal,
   type WriteRuleRow,
@@ -68,6 +78,22 @@ export interface WriteRulesPanelCallers {
   readonly listContracts?: () => Promise<{ contracts: ReadonlyArray<{ contract_id: string; display_name: string }> }>;
   /** D-335 slice F — the passes for Browser Toolkit writes; absent ⇒ none are shown. */
   readonly passes?: BrowserPassesPanelCallers;
+  /** D-335 slice Z — the logins remembered for browser steps; absent ⇒ none are shown. */
+  readonly logins?: BrowserLoginsPanelCallers;
+  /** D-341 slice B2 — the triggers' pre-approvals; absent ⇒ none are shown. */
+  readonly triggers?: TriggerPreapprovalsPanelCallers;
+}
+
+/** D-341 slice B2 — the triggers' standing pre-approvals (`collection.contract.*TriggerPreapproval*`). */
+export interface TriggerPreapprovalsPanelCallers {
+  readonly list: () => Promise<{ preapprovals: ReadonlyArray<TriggerPreapprovalView> }>;
+  readonly revoke: (args: { id: string }) => Promise<{ preapproval: TriggerPreapprovalView }>;
+}
+
+/** D-335 slice Z — the logins remembered for browser steps (`collection.contract.*BrowserLogin*`). */
+export interface BrowserLoginsPanelCallers {
+  readonly list: () => Promise<{ logins: ReadonlyArray<BrowserLoginRow> }>;
+  readonly forget: (args: { origin: string; field: string }) => Promise<{ forgotten: true }>;
 }
 
 export interface MountWriteRulesPanelOptions extends WriteRulesPanelCallers {
@@ -99,6 +125,10 @@ export const BROWSER_PASS_ATTR = 'data-recued-browser-pass';
 export const BROWSER_PASS_ALWAYS_ATTR = 'data-recued-browser-pass-always';
 export const BROWSER_PASS_DISMISS_ATTR = 'data-recued-browser-pass-dismiss';
 export const BROWSER_PASS_END_ATTR = 'data-recued-browser-pass-end';
+export const BROWSER_LOGIN_ATTR = 'data-recued-browser-login';
+export const BROWSER_LOGIN_FORGET_ATTR = 'data-recued-browser-login-forget';
+export const TRIGGER_PREAPPROVAL_ATTR = 'data-recued-trigger-preapproval';
+export const TRIGGER_PREAPPROVAL_END_ATTR = 'data-recued-trigger-preapproval-end';
 
 const DAY_MS = 86_400_000;
 const TTL_CEILING_DAYS = Math.floor(WRITE_RULE_TTL_MS / DAY_MS);
@@ -110,7 +140,25 @@ type Mode =
   | { readonly kind: 'revoking'; readonly rule_id: string }
   | { readonly kind: 'always'; readonly key_hash: string }
   | { readonly kind: 'pass-dismissing'; readonly key_hash: string }
-  | { readonly kind: 'ending'; readonly pass_id: string };
+  | { readonly kind: 'ending'; readonly pass_id: string }
+  | { readonly kind: 'forgetting'; readonly login: string }
+  | { readonly kind: 'ending-trigger'; readonly id: string };
+
+/** Why a trigger's pre-approval covers nothing now, for the ones still listed. */
+const TRIGGER_PREAPPROVAL_IDLE: Readonly<Record<string, string>> = {
+  outdated: 'Not in use: the recipe changed since, or is gone.',
+  detached: 'Not in use: its trigger no longer runs this recipe as it did.',
+};
+/** D-341 slice B3 — a scheduled prompt's: its "recipe" is its prompt. */
+const PROMPT_PREAPPROVAL_IDLE: Readonly<Record<string, string>> = {
+  outdated: 'Not in use: its prompt changed since.',
+  detached: 'Not in use: the scheduled prompt is gone.',
+};
+
+/** "Once a run · used 4 times · until you end it", or why it covers nothing now. */
+const triggerPreapprovalLine = (row: TriggerPreapprovalView): string =>
+  (row.trigger.kind === 'prompt_schedule' ? PROMPT_PREAPPROVAL_IDLE : TRIGGER_PREAPPROVAL_IDLE)[row.state]
+    ?? triggerPreapprovalTerms(row);
 
 const formatDate = (ms: number): string => (Number.isFinite(ms) ? new Date(ms).toLocaleDateString() : '—');
 const formatTime = (ms: number): string => (Number.isFinite(ms)
@@ -152,6 +200,8 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
   let rules: ReadonlyArray<WriteRuleRow> = [];
   let passSuggestions: ReadonlyArray<BrowserPassSuggestionRow> = [];
   let passes: ReadonlyArray<BrowserPassRow> = [];
+  let logins: ReadonlyArray<BrowserLoginRow> = [];
+  let triggerPreapprovals: ReadonlyArray<TriggerPreapprovalView> = [];
   let names: ReadonlyMap<string, string> = new Map();
   let listError: string | null = null;
   let actionError: { id: string; message: string } | null = null;
@@ -371,6 +421,68 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
     return card;
   };
 
+  /** D-341 slice B2 — a trigger's pre-approval: what its recipe may do without asking, when its
+   *  trigger runs it, and what is left of it. */
+  const renderTriggerPreapproval = (row: TriggerPreapprovalView): HTMLElement => {
+    const card = el('div', 'wr-card');
+    card.setAttribute(TRIGGER_PREAPPROVAL_ATTR, row.id);
+    const info = el('div', 'wr-card-info');
+    info.appendChild(el('div', 'wr-card-heading', row.write_labels.join('; ')));
+    info.appendChild(el('div', 'wr-evidence', `${row.recipe_name}, ${triggerPreapprovalWhen(row.trigger.kind, 'it')}`));
+    // `?? []`: a server from before ruling 8 sends no `ai_steps`.
+    if ((row.ai_steps ?? []).length > 0) info.appendChild(el('div', 'wr-evidence', triggerPreapprovalAiNote(row.writes)));
+    info.appendChild(el('div', 'wr-evidence', triggerPreapprovalLine(row)));
+    card.appendChild(info);
+    const actions = el('div', 'wr-actions');
+    if (mode.kind === 'ending-trigger' && mode.id === row.id) {
+      actions.appendChild(el('span', 'wr-confirm-prompt', 'It asks again from now on.'));
+      actions.appendChild(button(WRITE_RULES_CONFIRM_ATTR, 'wr-danger', 'End it', () => {
+        void act(row.id, () => opts.triggers!.revoke({ id: row.id }));
+      }));
+      actions.appendChild(cancel());
+    } else {
+      actions.appendChild(button(TRIGGER_PREAPPROVAL_END_ATTR, 'wr-secondary', busy === row.id ? 'Working…' : 'End it', () => {
+        mode = { kind: 'ending-trigger', id: row.id };
+        actionError = null;
+        render();
+      }));
+    }
+    card.appendChild(actions);
+    const error = errorLine(row.id);
+    if (error !== null) card.appendChild(error);
+    return card;
+  };
+
+  /** D-335 slice Z — a login remembered for a browser step: what it is for, never the secret. */
+  const renderLogin = (login: BrowserLoginRow): HTMLElement => {
+    const id = `${login.origin}|${login.field}`;
+    const card = el('div', 'wr-card');
+    card.setAttribute(BROWSER_LOGIN_ATTR, id);
+    const info = el('div', 'wr-card-info');
+    info.appendChild(el('div', 'wr-card-heading', `Your ${login.kind} for ${login.site}`));
+    info.appendChild(el('div', 'wr-evidence', `For the field “${login.label}”; saved ${formatDate(login.saved_at)}`
+      + (login.used_at !== undefined ? `, last typed ${formatDate(login.used_at)}` : ', not typed since')));
+    card.appendChild(info);
+    const actions = el('div', 'wr-actions');
+    if (mode.kind === 'forgetting' && mode.login === id) {
+      actions.appendChild(el('span', 'wr-confirm-prompt', 'The next step that needs it asks you for it again.'));
+      actions.appendChild(button(WRITE_RULES_CONFIRM_ATTR, 'wr-danger', 'Forget it', () => {
+        void act(id, () => opts.logins!.forget({ origin: login.origin, field: login.field }));
+      }));
+      actions.appendChild(cancel());
+    } else {
+      actions.appendChild(button(BROWSER_LOGIN_FORGET_ATTR, 'wr-secondary', busy === id ? 'Working…' : 'Forget', () => {
+        mode = { kind: 'forgetting', login: id };
+        actionError = null;
+        render();
+      }));
+    }
+    card.appendChild(actions);
+    const error = errorLine(id);
+    if (error !== null) card.appendChild(error);
+    return card;
+  };
+
   function render(): void {
     if (disposed) return;
     while (root.firstChild) root.removeChild(root.firstChild);
@@ -395,10 +507,18 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
         + 'it again; its ask still offers “Always allow”.'));
       for (const row of passSuggestions) root.appendChild(renderPassSuggestion(row));
     }
-    if (rules.length > 0 || passes.length > 0) {
+    if (rules.length > 0 || passes.length > 0 || triggerPreapprovals.length > 0) {
       root.appendChild(el('h2', 'wr-heading', 'Happening without asking'));
       for (const rule of rules) root.appendChild(renderRule(rule));
       for (const pass of passes) root.appendChild(renderPass(pass));
+      for (const row of triggerPreapprovals) root.appendChild(renderTriggerPreapproval(row));
+    }
+    if (logins.length > 0) {
+      root.appendChild(el('h2', 'wr-heading', 'Remembered for your browser'));
+      root.appendChild(el('p', 'wr-copy',
+        'Recued types these into their own field on their own site when a step in your browser needs them, and '
+        + 'nowhere else. No AI sees them. Forget one and the next step that needs it asks you again.'));
+      for (const login of logins) root.appendChild(renderLogin(login));
     }
   }
 
@@ -424,9 +544,13 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
           if (code === 'unknown_method' || code === 'not_configured') return undefined;
           throw error;
         };
-        const [listed, live, named, passListed, passLive] = await Promise.all([
+        const [listed, live, named, passListed, passLive, remembered, preapproved] = await Promise.all([
           opts.listSuggestions(), opts.listRules(), loadNames(),
           opts.passes?.listSuggestions().catch(noPasses) ?? none, opts.passes?.listPasses().catch(noPasses) ?? none,
+          // A server from before remembered logins has no method for them, as for passes.
+          opts.logins?.list().catch(noPasses) ?? none,
+          // Nor one from before triggers' pre-approvals (26.11.8 and older).
+          opts.triggers?.list().catch(noPasses) ?? none,
         ]);
         if (disposed || mine !== generation) return;
         suggestions = listed.suggestions;
@@ -434,6 +558,11 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
         names = named;
         passSuggestions = passListed?.suggestions ?? [];
         passes = passLive?.passes ?? [];
+        logins = remembered?.logins ?? [];
+        // Ended, used up and revoked ones are gone from the owner's view; one that covers nothing
+        // now for another reason stays, saying why, until it is ended.
+        triggerPreapprovals = (preapproved?.preapprovals ?? [])
+          .filter((row) => row.state === 'live' || row.state === 'outdated' || row.state === 'detached');
         listError = null;
       } catch (error) {
         if (disposed || mine !== generation) return;

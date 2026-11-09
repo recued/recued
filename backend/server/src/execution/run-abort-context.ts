@@ -6,6 +6,9 @@ export interface RunAbortContext {
   readonly signal?: AbortSignal;
   /** Manual owner stops, including ancestors; excludes recipe deadlines. */
   readonly owner_signal?: AbortSignal;
+  /** D-335 slice Z — adds time to the run's budget (the engine's D-116 hook), for a step that waits
+   *  for the owner: a browser step asking for a secret. Absent for a run with no budget. */
+  readonly extend_budget?: (ms: number) => void;
 }
 
 const contexts = new AsyncLocalStorage<RunAbortContext>();

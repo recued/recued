@@ -218,6 +218,10 @@ export interface CalendarAdapterBundle {
    *  the deferred loops on the vault→unlocked edge. Absent (dbless / harness —
    *  no vault) ⇒ sync always starts. */
   isVaultUnlocked?: () => boolean;
+  /** D-188 — the master pause. While it holds, a live collection's poll loop is deferred as
+   *  while the vault is locked: nothing comes in during the emergency stop (the owner's ruling
+   *  of 2026-11-08). `resumeSync()` starts the loops on Resume. Absent ⇒ never paused. */
+  isPaused?: () => boolean;
 }
 
 export const composeCalendarStack = (
@@ -349,6 +353,16 @@ export const composeCalendarStack = (
         'info',
         `calendar-stack: sync deferred for '${row.slug}' — vault locked; `
           + 'reads still serve, and the poll loop starts automatically on unlock',
+      );
+      return;
+    }
+
+    if (bundle.isPaused?.() === true) {
+      // D-188 — the owner's pause holds the poll loop like a locked vault (see `isPaused`).
+      log(
+        'info',
+        `calendar-stack: sync deferred for '${row.slug}' — server paused; `
+          + 'reads still serve, and the poll loop starts automatically on Resume',
       );
       return;
     }

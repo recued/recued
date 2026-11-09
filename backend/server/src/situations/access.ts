@@ -1,4 +1,4 @@
-import { OWNER_CONTRACT_ID, parseAssetFactContextRequest, parseSituationQueryInput, type AssetFactContext, type AssetFactContextRequest, type ExecutionSource, type SituationItem, type SituationQueryInput, type SituationResult } from '@recued/contracts';
+import { OWNER_CONTRACT_ID, parseAssetFactContextRequest, parseSituationQueryInput, type AssetFactContext, type AssetFactContextRequest, type ExecutionSource, type SituationItem, type SituationQueryInput, type SituationRef, type SituationResult } from '@recued/contracts';
 import { resolveGrantGoverningContractId } from '../grant-governing-contract.js';
 import { createGatedReadGrantResolver, type ReadGrantChecker } from '../read-grant-checker.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
@@ -30,6 +30,18 @@ export const createSituationAccess = (deps: {
   /** D-338 — the Agenda's rule for what the owner's notifications call only "a private
    *  reminder" (`ScheduledSituations.isPrivateItem`), so a model is told which items those are. */
   isPrivate?: (item: SituationItem) => boolean;
+  /** D-342 §5 — whether a read is the Agenda suggestions' own run, which reads the owner's active
+   *  pursuits beside the day (`include_pursuits`). The host decides it; a model cannot ask for it. */
+  readsPursuits?: (source: ExecutionSource | undefined) => boolean;
+  /** D-343 slice 4 — the owner's active pursuits marked "Ask me in the evening", which the evening
+   *  notice lists (`ScheduledSituations.eveningPursuits`). */
+  eveningPursuits?: () => ReadonlyArray<{ id: string; name: string; private: boolean }>;
+  /** D-340 slice 5 — whether the notice a reply quotes names private items
+   *  (`ScheduledSituations.namesPrivateIn`). */
+  namesPrivateIn?: (title: string) => boolean;
+  /** D-340 slice 4 — a managed run's own tool rounds: the streams' AI suggestions
+   *  (`ScheduledSituations.suggestionsToolRounds`). */
+  toolRoundCap?: (source: ExecutionSource | undefined) => number | undefined;
 }) => {
   const now = deps.now ?? Date.now;
   const definitions = createContractDefinitionStore(deps.contracts, { now });
@@ -101,6 +113,19 @@ export const createSituationAccess = (deps: {
     },
     /** True for an item the owner's notifications name only as "a reminder in Yours". */
     isPrivate: (item: SituationItem): boolean => deps.isPrivate?.(item) === true,
+    /** D-340 slice 5 — whether a notice, by its title, names private items: the stream it came from
+     *  includes them. A closing note names them as the notice did. */
+    namesPrivateIn: (title: string): boolean => deps.namesPrivateIn?.(title) === true,
+    /** D-340 slice 4 — the tool rounds a turn from this source may take, when it is a managed run
+     *  with a budget of its own; otherwise the chat's. */
+    toolRoundCap: (source: ExecutionSource | undefined): number | undefined => deps.toolRoundCap?.(source),
+    /** D-343 slice 4 — the pursuits the evening notice asks about, each with the ref a record cites,
+     *  for the owner's own reads only: the evening notice is theirs alone, and an AI app reads none,
+     *  whatever it may read of assets. */
+    eveningPursuits(source: ExecutionSource | undefined): Array<{ title: string; ref: SituationRef; private: boolean }> {
+      if (!context(source).owner) return [];
+      return (deps.eveningPursuits?.() ?? []).map(pursuit => ({ title: pursuit.name, ref: { collection: 'asset', id: pursuit.id }, private: pursuit.private }));
+    },
     /** `time_zone` is the clock a named day is read on: the chat turn's. Without it, the server's. */
     async read(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal, time_zone?: string): Promise<SituationResult> {
       const access = context(source);
@@ -114,7 +139,8 @@ export const createSituationAccess = (deps: {
         return { clusters: [], omitted: 0, ambiguous: [], fact_context: packet };
       }
       const input: SituationQueryInput = parseSituationQueryInput(raw, time_zone ?? deps.timeZone?.());
-      const result = await deps.query({ ...input, surface: 'tool' }, { ...access, ...(signal ? { signal } : {}) });
+      const result = await deps.query({ ...input, surface: 'tool', ...(deps.readsPursuits?.(source) === true ? { include_pursuits: true } : {}) },
+        { ...access, ...(signal ? { signal } : {}) });
       if (before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the situation read. Ask the owner to refresh before relying on it.');
       return result;
     },

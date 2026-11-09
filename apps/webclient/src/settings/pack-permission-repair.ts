@@ -15,7 +15,6 @@ export interface PackInstallResume {
   also_connections: string[];
   webhook_picks: Array<[string, string]>;
   template_keep: Array<[string, 'recipe' | 'existing']>;
-  dependency_access: Array<[string, InstallAccessTier]>;
 }
 export interface PackPermissionRepairRequest {
   name: string;

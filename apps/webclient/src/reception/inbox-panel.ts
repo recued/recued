@@ -1931,7 +1931,9 @@ export const mountReceptionInboxPanel = (
     // hold's ask actually carries the offer (the server-projected hint; the
     // rpc re-verifies at the act site). Refused with edits — the submit
     // path checks and explains rather than silently dropping them.
-    if (detail.item.allow_offer !== null) {
+    // D-341 slice B4 — or "always allow", where the ask offers the form's standing
+    // pre-approval instead: the same answer, with no end until the owner ends it.
+    if (detail.item.always_allow || detail.item.allow_offer !== null) {
       const allowPending =
         pendingDecisionFocus?.hold_id === detail.item.hold_id
         && pendingDecisionFocus.action === 'approve-allow';
@@ -1939,7 +1941,9 @@ export const mountReceptionInboxPanel = (
         doc,
         allowPending
           ? 'Approving & allowing…'
-          : `Say yes, and allow this form from now on (${formatAllowBounds(detail.item.allow_offer)})`,
+          : detail.item.always_allow
+            ? 'Say yes, and always allow this form'
+            : `Say yes, and allow this form from now on (${formatAllowBounds(detail.item.allow_offer!)})`,
         () => void approveSelected(detail, { allow: true }),
         {
           disabled:

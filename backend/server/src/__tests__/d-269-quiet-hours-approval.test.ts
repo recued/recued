@@ -152,7 +152,9 @@ describe('D-269 step 5 — the hold is a held DELIVERY, never a held ask', () =>
     // nothing else. It cannot catch a wrong one. Kept because the alternative
     // here is no coverage at all — unlike the sweep wiring, which is now driven
     // in `d-269-reminder-composition-drive.test.ts`. See D-269 REV 21.
-    expect(src).toContain('shouldHoldAsk,');
+    // D-188 (2026-11-08) — the owner's pause holds asks too; the quiet-hours predicate is still
+    // the one passed, behind it.
+    expect(src).toMatch(/shouldHoldAsk: \(expires_at\) => [^\n]*\|\| shouldHoldAsk\(expires_at\),/);
     expect(src).toContain('mayHoldAskForQuietHours');
   });
 });

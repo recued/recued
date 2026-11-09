@@ -34,8 +34,8 @@ import type {
 } from '@recued/warehouse-events';
 import { createWarehouseEventBus, matchesPattern, eventPath } from '@recued/warehouse-events';
 import type { AuditLogStore } from '@recued/storage';
-import type { EventTrigger } from '@recued/contracts';
-import { MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter, RpcError } from '@recued/contracts';
+import type { EventTrigger, RunNeed } from '@recued/contracts';
+import { MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter } from '@recued/contracts';
 import type { EventBus } from '../events/bus.js';
 import { emitAutomationRule } from '../events/emit-sites.js';
 import { settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
@@ -60,6 +60,7 @@ import type { ReadGrantChecker } from '../read-grant-checker.js';
 import { projectProactiveEvent } from '../situations/event-visibility.js';
 import type { SituationReadContext } from '../situations/query.js';
 import { situationRevisionEvent, type SituationStore } from '../storage/situation-store.js';
+import { isRunRefusedForNow } from '../pause-approval.js';
 
 /** Callback the dispatcher invokes when a trigger matches. Wired to
  *  `serverExecutor.executeRecipe` by the composition root; tests
@@ -211,6 +212,12 @@ export interface EventTriggerDispatcherDeps {
   now?: () => number;
   /** How often a wait for a sealed vault looks again. Tests shorten it. */
   vaultPollMs?: number;
+  /** D-188 — the master pause. While it holds, `rebuild()` leaves the dispatcher stopped and
+   *  keeping what arrives, as the pause's own stop left it, so a trigger or recipe change, a
+   *  vault unlock or a boot during a pause does not start triggers again (the emergency stop,
+   *  the owner's ruling of 2026-11-08). Resume's rebuild subscribes and hands back what was
+   *  kept. Absent → never paused. */
+  isPaused?: () => boolean;
   /** D-124 Phase 2.2 — backfill-state lookup. The dispatcher gates
    *  every fan-out on `isComplete(event.platform, event.slug)`. Events
    *  emitted while the source adapter is still draining its initial
@@ -343,6 +350,8 @@ export const createEventTriggerDispatcher = (
     code: string | undefined,
     total_refusal: boolean,
     reason: string,
+    // D-346 follow-up — what the run needed, so the notice says how to fix it.
+    needs?: readonly RunNeed[],
   ): 'not_a_failure' | 'continue' | 'stop' => {
     const unit = unitOf(trigger);
     // `recordError` both appends and returns the new length, so the count
@@ -356,6 +365,7 @@ export const createEventTriggerDispatcher = (
       reason,
       prior_consecutive_failures: count - 1,
       threshold: errorCap,
+      needs,
     });
     if (report.not_a_failure) {
       // Undo the append: a tripped guard is not evidence the trigger is broken,
@@ -562,7 +572,8 @@ export const createEventTriggerDispatcher = (
     } catch (err) {
       // ⛔ NOT RUN IS NOT FAILED. No `last_error`, no count toward the cap, no
       // notice, no `trigger_fired` — the run was never started.
-      if (err instanceof RpcError && err.code === 'draining') return NOT_RUN;
+      // D-188 — and the same when it is paused.
+      if (isRunRefusedForNow(err)) return NOT_RUN;
       const raw = (err as { code?: unknown } | null)?.code;
       const code = typeof raw === 'string' ? raw : undefined;
       const failedRunId = (err as { run_id?: unknown } | null)?.run_id;
@@ -581,7 +592,9 @@ export const createEventTriggerDispatcher = (
           `[event-triggers] trigger ${trigger.trigger_id} internal failure: ${failure.internalMessage}`,
         );
       }
-      const verdict = handleFailure(trigger, code, false, failure.userMessage);
+      const needs = (err as { run_needs?: unknown } | null)?.run_needs;
+      const verdict = handleFailure(trigger, code, false, failure.userMessage,
+        Array.isArray(needs) ? needs as readonly RunNeed[] : undefined);
       await logFired(
         trigger,
         event,
@@ -720,6 +733,10 @@ export const createEventTriggerDispatcher = (
   };
 
   const rebuild = (): void => {
+    if (deps.isPaused?.() === true) {
+      dispose();
+      return;
+    }
     disposed = false;
     keepingArrivals?.();
     keepingArrivals = null;

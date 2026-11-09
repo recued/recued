@@ -258,7 +258,7 @@ describe('D-172 P2 (F2) — mail-send attachment read is policy-gated for data-f
     const err = firstError(result.errors);
     expect(err.message).toContain('Gateway refused dispatch');
     expect(err.message).toContain('data-file-read');
-    expect(err.message).toContain('not in contract.allowed_tools');
+    expect(err.message).toContain('is not available for this contract.');
 
     // Fail-closed: the inner mail-send dispatch NEVER ran → provider.send
     // (downstream of mailSend) was never reached, so no file bytes egress.
@@ -363,7 +363,7 @@ describe('D-172 P2 (F2) — mail-send attachment read is policy-gated for data-f
     const err = firstError(result.errors);
     expect(err.message).toContain('Gateway refused dispatch');
     expect(err.message).toContain('data-file-read');
-    expect(err.message).toContain('not in contract.allowed_tools');
+    expect(err.message).toContain('is not available for this contract.');
     // Fail-closed: the inner mail-send dispatch NEVER ran.
     expect(mailSendSpy).not.toHaveBeenCalled();
   });

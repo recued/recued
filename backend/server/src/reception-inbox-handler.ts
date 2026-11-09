@@ -67,6 +67,7 @@ import {
   COMMITMENT_EVIDENCE_PROPOSAL_RECIPE_ID,
 } from './commitment-evidence-capture.js';
 import { holdApprovalCovers } from './foreach-approval-items.js';
+import { PAUSED_APPROVAL_REFUSAL } from './pause-approval.js';
 
 // ────────────────────────────────────────────────────────────────
 // The held-op summary the query recovers from one awaiting hold
@@ -251,6 +252,10 @@ export interface ReceptionInboxBroadcastEvent {
 export interface ReceptionInboxDeps {
   /** Read the held runs (`'awaiting_approval'` anchors). */
   readonly auditLog: AuditLogStore;
+  /** D-188 — the master "Pause server" flag. While paused, a held item cannot be approved: it
+   *  came in through a door, which the pause stops (the owner's ruling of 2026-11-08,
+   *  `pause-approval.ts`). Denying still works. Absent ⇒ never paused. */
+  readonly isServerPaused?: () => boolean;
   /** The checkpoint store — read holds + the NARROW `setArgOverrides`
    *  writer (the N.5 boundary). */
   readonly checkpointStore: CheckpointStore;
@@ -305,6 +310,11 @@ export interface ReceptionInboxDeps {
   readonly readAskAllowOffer?: (
     ask_id: string,
   ) => Promise<{ ttl_ms: number; max_uses: number } | undefined>;
+  /** D-341 slice B4 — whether the hold's ask is open and offers "Always allow for this form" (the
+   *  form's standing pre-approval, `allow_trigger`), which replaces the session's offer on a form
+   *  whose write a pre-approval could admit. Feeds `InboxItem.always_allow` and the approve path,
+   *  which then answers with it. Absent ⇒ never. */
+  readonly readAskAlwaysAllow?: (ask_id: string) => Promise<boolean>;
   /** The subview store (D10). */
   readonly subviewStore: ReceptionInboxSubviewStore;
   /** D-173 D7 — "confirmed at approval": count what else is on the owner's
@@ -376,6 +386,9 @@ const ASK_APPROVE = 'approve';
  *  option the door seed put on the ask; the existing answer path threads
  *  it into the door-bound session-grant mint on resume). */
 const ASK_ALLOW_SESSION = 'allow_session';
+/** D-341 slice B4 — "Always allow for this form": the form's standing pre-approval
+ *  (`TRIGGER_PREAPPROVAL_OPTION_ID`). */
+const ASK_ALLOW_TRIGGER = 'allow_trigger';
 const ASK_DENY = 'deny';
 
 /** Audit action codes (D-120). Not in the closed `ActivityAction` union,
@@ -865,12 +878,25 @@ const resolveAllowOffer = async (
   }
 };
 
+/** D-341 slice B4 — whether the hold's ask offers "Always allow for this form", best-effort like
+ *  the session's offer: a missing dep, ask or read is no. */
+const resolveAlwaysAllow = async (deps: ReceptionInboxDeps, anchor: AuditEntry): Promise<boolean> => {
+  const ask_id = anchor.ask_id;
+  if (typeof deps.readAskAlwaysAllow !== 'function' || typeof ask_id !== 'string' || ask_id.length === 0) return false;
+  try {
+    return await deps.readAskAlwaysAllow(ask_id);
+  } catch {
+    return false;
+  }
+};
+
 const projectInboxItem = async (
   deps: ReceptionInboxDeps,
   anchor: AuditEntry,
   checkpoint: Checkpoint,
   resolved: ResolvedInboxSource,
   allowOffer?: { ttl_ms: number; max_uses: number },
+  alwaysAllow = false,
 ): Promise<InboxItem> => {
   const operation_id = heldOperationId(anchor, checkpoint);
   // ⛔ A HELD LOOP ITEM TAKES NO EDITS. Approving it runs every remaining item
@@ -972,6 +998,7 @@ const projectInboxItem = async (
     preview: resolved.preview,
     ...(resolved.attachment !== undefined ? { attachment: resolved.attachment } : {}),
     ...(allowOffer !== undefined && !isApprovalWorkflowOperation(operation_id) ? { allow_offer: allowOffer } : {}),
+    ...(alwaysAllow && !isApprovalWorkflowOperation(operation_id) ? { always_allow: true as const } : {}),
     proposed_action: resolved.proposed_action,
     ...(calendar_overlap !== undefined ? { calendar_overlap } : {}),
     ...(booking_history !== undefined ? { booking_history } : {}),
@@ -1037,7 +1064,7 @@ export const queryReceptionInboxHeldOps = async (
     held.push({
       anchor,
       checkpoint,
-      item: await projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer),
+      item: await projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer, await resolveAlwaysAllow(deps, anchor)),
     });
   }
   return held;
@@ -1067,7 +1094,7 @@ const findHeldOp = async (
   return {
     anchor,
     checkpoint,
-    item: await projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer),
+    item: await projectInboxItem(deps, anchor, checkpoint, resolved, allowOffer, await resolveAlwaysAllow(deps, anchor)),
   };
 };
 
@@ -1306,7 +1333,9 @@ const auditApprovedWithEdits = async (
   held: ReceptionInboxHeldOp,
   approver: ReceptionInboxApprover,
   validatedEdits: Record<string, unknown>,
-  allowedForForm = false,
+  /** The allow answer given, if any: the session's (N.14) or the form's standing pre-approval
+   *  (D-341 B4). */
+  allowedForForm?: typeof ASK_ALLOW_SESSION | typeof ASK_ALLOW_TRIGGER,
 ): Promise<void> => {
   const diff = computeArgEditsDiff(held.item.args, validatedEdits);
   const editedKeys = diff.map((d) => d.key);
@@ -1318,8 +1347,10 @@ const auditApprovedWithEdits = async (
       }))
     : diff;
   // N.14 — allow never combines with edits (the rpc refuses upstream), so
-  // the detail vocabulary stays a closed three-way.
-  const what = allowedForForm
+  // the detail vocabulary stays a closed four-way (D-341 B4 names the always-allow).
+  const what = allowedForForm === ASK_ALLOW_TRIGGER
+    ? `approved & always allowed for this form on ${held.item.operation_id}`
+    : allowedForForm === ASK_ALLOW_SESSION
     ? `approved & allowed for this form on ${held.item.operation_id}`
     : editedKeys.length > 0
       ? `approved with edits on ${held.item.operation_id}: ${JSON.stringify(auditDiff)}`
@@ -1466,6 +1497,14 @@ export const handleReceptionInboxApprove = async (
     );
   }
 
+  // (1b) D-188 — not while paused: the item came in through a door, which the pause stops, so
+  //      its release could only end in that refusal. Refused before anything is written (the
+  //      approval audit below would record a release that did not happen); it waits for
+  //      Resume, and denying it still works.
+  if (deps.isServerPaused?.() === true) {
+    throw rpcError('server_paused', PAUSED_APPROVAL_REFUSAL, 409);
+  }
+
   // (2) attachment scan-gate (N.2 / D-172 Q2).
   enforceAttachmentScanGate(held.item, args, method);
 
@@ -1556,18 +1595,27 @@ export const handleReceptionInboxApprove = async (
         400,
       );
     }
-    const offer =
-      typeof deps.readAskAllowOffer === 'function'
-        ? await deps.readAskAllowOffer(ask_id as string)
-        : undefined;
-    if (offer === undefined) {
-      throw rpcError(
-        'bad_request',
-        `${method}: this hold's ask carries no allow-for-this-form offer`,
-        400,
-      );
+    // D-341 slice B4 — where the ask offers the form's standing pre-approval, "allow" is that
+    // answer: it replaced the session's offer, so the ask carries no `allow_session` to give.
+    const always = typeof deps.readAskAlwaysAllow === 'function'
+      ? await deps.readAskAlwaysAllow(ask_id as string).catch(() => false)
+      : false;
+    if (always) {
+      releaseOption = ASK_ALLOW_TRIGGER;
+    } else {
+      const offer =
+        typeof deps.readAskAllowOffer === 'function'
+          ? await deps.readAskAllowOffer(ask_id as string)
+          : undefined;
+      if (offer === undefined) {
+        throw rpcError(
+          'bad_request',
+          `${method}: this hold's ask carries no allow-for-this-form offer`,
+          400,
+        );
+      }
+      releaseOption = ASK_ALLOW_SESSION;
     }
-    releaseOption = ASK_ALLOW_SESSION;
   }
 
   // (4) write to checkpoint.arg_overrides through the NARROW writer
@@ -1587,13 +1635,15 @@ export const handleReceptionInboxApprove = async (
 
   // (5) audit the old→new diff (N.5 §4; the N.14 allow answer is named in
   //     the detail — the durable record must read what actually happened).
-  await auditApprovedWithEdits(deps, held, approver, validatedEdits, wantsAllow);
+  await auditApprovedWithEdits(deps, held, approver, validatedEdits,
+    releaseOption === ASK_ALLOW_SESSION || releaseOption === ASK_ALLOW_TRIGGER ? releaseOption : undefined);
 
   // (6) release through the EXISTING preflight resume path. Answer the
   //     held op's `gateway.preflight` ask with `'approve'` — or, N.14, with
   //     `'allow_session'` (the existing answer path threads the session-
   //     grant marker; the resume's commit-gate mint stamps the door
-  //     binding). The existing on_answer → resumer.resumeRun reads the
+  //     binding), or, D-341 B4, with `'allow_trigger'` (the answer grants
+  //     the form's standing pre-approval). The existing on_answer → resumer.resumeRun reads the
   //     checkpoint (now carrying `arg_overrides`) and the engine merges
   //     them on resume. This module never touches the engine /
   //     preflight-resumer.

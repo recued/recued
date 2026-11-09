@@ -41,6 +41,7 @@
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
 import { executionSourceHasContract, isDelegatedMcpToken } from './commits.js';
 import { stripCorePrefix } from './core-pack.js';
+import { grantRefusalSentence } from './grant-refusal-copy.js';
 import {
   resolveSimpleFormOperationPolicy,
   type CatalogOperationResolution,
@@ -364,7 +365,9 @@ export const admitContractToolAccess = (
   return Object.freeze({
     verdict: 'deny',
     code: 'tool_not_in_contract' satisfies AdmissionDenyCode,
-    detail: `tool slug '${slug}' not in contract.allowed_tools (${snapshot.allowed_tools.length} entries)`,
+    // A contract-only refusal: the owner's own calls carry no snapshot. It said "tool slug
+    // '<slug>' not in contract.allowed_tools (<n> entries)" (`grant-refusal-copy.ts`).
+    detail: grantRefusalSentence(`'${slug}'`, false, 'Ops or Recipes'),
   });
 };
 
@@ -433,12 +436,13 @@ export const isCommitmentProposalSlug = (slug: string): boolean =>
  *      unattended case would delete the surface's meaning (contrast a
  *      scheduled digest send, where the unattended relax is the
  *      feature);
- *    - `'contracted_user'` lifts too (its LOW ceiling already asks —
- *      the lift is then a no-op, `res` is already `ask`);
+ *    - `'contracted_user'` lifts too (its LOW ceiling already asks: the
+ *      lift then only records the review, below);
  *    - `'user_self'` lifts: a human-driven propose is still a proposal
  *      (author it directly via `commitment-create` to skip review).
- *  Same pure-tightening contract as the send lift: only `admit` lifts,
- *  `effective_risk_tier` preserved for audit. */
+ *  A pure tightening, as the quote and workflow lifts: an `admit` or an `ask`
+ *  becomes an `ask` carrying the review's `lift_reason`, a `deny` is left
+ *  alone; `effective_risk_tier` preserved for audit. */
 const liftCommitmentProposal = (
   res: CatalogOperationResolution,
   slug: string,
@@ -460,8 +464,12 @@ const liftCommitmentProposal = (
       ...res.authorization_provenance, lift_reason: 'review_quote_signoff',
     } };
   }
-  if (res.verdict !== 'admit') return res;
-  if (!isCommitmentProposalSlug(slug)) return res;
+  if (res.verdict === 'deny' || !isCommitmentProposalSlug(slug)) return res;
+  // ⛔ A ceiling that already asks still records the review (D-341). A standing pre-approval
+  // waives a ceiling's ask but never a review, and tells the two apart by `lift_reason` alone.
+  // Recorded only on `admit` before, a proposal a run held to reads asked with none: its ask
+  // offered "Always allow for this schedule", and once granted, every later proposal was added
+  // unseen.
   return {
     ...res,
     verdict: 'ask',
@@ -472,6 +480,31 @@ const liftCommitmentProposal = (
     },
   };
 };
+
+/** D-177 with D-192 F1 — a review the owner gives each time: a proposed commitment, a quote's release
+ *  or completion, a job a customer accepted, a customer payment. No session grant stands in for one:
+ *  none is offered on its ask, minted from its answer, or matched against it. A send's review
+ *  (`review_send`) is the owner's own chat's, which a session may relax.
+ *  ⛔ The proposal was missing (found 2026-11-09): the other three were excluded by name at the gate,
+ *  so a held proposal offered "Allow this session", and its grant admitted the next identical
+ *  proposal unseen. */
+export const reviewedEachTime = (lift_reason: string | undefined): boolean =>
+  lift_reason === 'review_commitment' || lift_reason === 'review_quote_signoff'
+  || lift_reason === 'review_approval_workflow' || lift_reason === 'review_customer_payment';
+
+/** An op the gate holds for a review of its own, as `liftCommitmentProposal` reads it. */
+const HELD_FOR_REVIEW: CatalogOperationResolution = {
+  verdict: 'ask', operation_id: '', effective_risk_tier: 'write', operation_group: null, approval: 'ask',
+  authorization_provenance: { pre_lift_approval: 'ask' }, granted: true,
+};
+
+/** D-341 — whether the gate holds every call of this op for a review of its own, whoever runs it
+ *  and under any ceiling: a proposed commitment, a quote's release or completion, a workflow a
+ *  customer accepted, a customer payment. No standing pre-approval stands in for a review, so the
+ *  trigger's page lists such a write without offering one. A send's review is only for a person
+ *  driving (`liftOutboundSend`), so an unattended send may be pre-approved. */
+export const opAlwaysReviewed = (slug: string): boolean =>
+  liftCommitmentProposal(HELD_FOR_REVIEW, slug).authorization_provenance.lift_reason !== undefined;
 
 // ════════════════════════════════════════════════════════════════
 // Why a hold asked — the Reason line for a hold no review explains
@@ -628,12 +661,18 @@ const mapResolutionToAdmission = (
         // last id in the email's prose; the ask already says which send in the
         // owner's words (its opening, the card's Action row) and keeps the id on
         // its `Technical:` line, so the Reason says only why.
+        //
+        // ⛔ NOT "ALWAYS" (2026-11-08). These read "so Recued always asks you
+        // first", which stopped being true: a browser action is let through by a
+        // site pass, the chat's switch or a scheduled prompt's pre-approval, and an
+        // unattended send held by its ceiling by a trigger's (D-341), and the very
+        // ask carrying this line may offer one of them.
         detail: stripCorePrefix(slug) === 'peer-ask'
-          ? 'This puts your question on another server owner\'s screen, so Recued always asks you first.'
+          ? 'This puts your question on another server owner\'s screen, so Recued asks you first.'
           : isOutboundSendSlug(slug)
-            ? 'This sends a message to someone outside this server, so Recued always asks you first.'
+            ? 'This sends a message to someone outside this server, so Recued asks you first.'
             : isBrowserActionSlug(slug)
-              ? 'This acts on a web page in your browser, signed in as you, so Recued always asks you first.'
+              ? 'This acts on a web page in your browser, signed in as you, so Recued asks you first.'
             : stripCorePrefix(slug) === 'customer-refund-correct'
               ? 'Review the refund reversal, replacement and exact refund balance change before applying it.'
             : stripCorePrefix(slug) === 'customer-invoice-credit-correct'

@@ -934,6 +934,76 @@ describe('D-130 P5.2 — wireSalesforceCometDLifecycle store-observer pattern', 
     expect(handle.listActive()).toEqual([]);
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  // D-188 — the owner's pause is the emergency stop: nothing comes in. The stream reads
+  // Salesforce, so no subscriber runs while paused, and each starts again once resumed.
+  const salesforceRow = (name: string, updated_at = 1) => ({
+    kind: 'api' as const,
+    name,
+    display_name: name,
+    config_json: JSON.stringify({ base_url: INSTANCE_URL, vendor: 'salesforce' }),
+    auth_ciphertext: 'opaque',
+    enrolled_at: 1,
+    updated_at,
+  });
+  const waitUntil = async (predicate: () => boolean, what: string): Promise<void> => {
+    const deadline = Date.now() + 2_000;
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`${what} never happened`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+
+  it('stops every subscriber while the server is paused, and starts them again once resumed', async () => {
+    connectionStore.upsert(salesforceRow('acme'));
+    let paused = false;
+    const { fetcher } = buildAllInOneFetcher();
+    const handle = wireSalesforceCometDLifecycle({
+      connectionStore,
+      lookupConnection: async () => buildConnection(),
+      refreshAuth: async (c) => c.auth,
+      replayIdTracker: createInMemoryReplayIdTracker(),
+      onEvent: async () => {},
+      fetcher,
+      sleep: async () => {},
+      isPaused: () => paused,
+      pausePollMs: 10,
+    });
+    await waitForActive(handle, 'acme');
+
+    paused = true;
+    await waitUntil(() => handle.listActive().length === 0, 'the stop at the pause');
+    // Held: a token refresh while paused starts nothing, and nor do the next looks.
+    connectionStore.upsert(salesforceRow('acme', 2));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(handle.listActive()).toEqual([]);
+
+    paused = false;
+    await waitForActive(handle, 'acme');
+    await handle.stopAll();
+  });
+
+  it('reaches Salesforce not at all when it starts while the server is paused', async () => {
+    connectionStore.upsert(salesforceRow('acme'));
+    const lookupConnection = vi.fn(async () => buildConnection());
+    const fetcher = vi.fn<typeof fetch>();
+    const handle = wireSalesforceCometDLifecycle({
+      connectionStore,
+      lookupConnection,
+      refreshAuth: async (c) => c.auth,
+      replayIdTracker: createInMemoryReplayIdTracker(),
+      onEvent: async () => {},
+      fetcher,
+      sleep: async () => {},
+      isPaused: () => true,
+      pausePollMs: 10,
+    });
+    connectionStore.upsert(salesforceRow('beta'));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(handle.listActive()).toEqual([]);
+    expect(fetcher).not.toHaveBeenCalled();
+    await handle.stopAll();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

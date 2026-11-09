@@ -131,14 +131,14 @@ describe('the installer\'s claim and the server\'s claim are the SAME mutex', ()
       const claim = await run(['update-lease', 'claim', '--bin-dir', dir, '--pid', String(FOREIGN_LIVE_PID)]);
       expect(claim.code).toBe(LEASE_TAKEN);
       // The server path, verbatim — this is what `runApply` and the auto-revert call.
-      expect(() => acquireUpdateLease({ leasePath: leaseFile(dir), operation: 'apply' }))
+      expect(() => acquireUpdateLease({ identify: () => null, leasePath: leaseFile(dir), operation: 'apply' }))
         .toThrow(UpdateLeaseHeldError);
     });
   });
 
   it('and the reverse: the verb stands down for a lease the server holds', async () => {
     await withDir(async (dir) => {
-      const held = acquireUpdateLease({ leasePath: leaseFile(dir), operation: 'apply' });
+      const held = acquireUpdateLease({ identify: () => null, leasePath: leaseFile(dir), operation: 'apply' });
       try {
         const r = await run(['update-lease', 'claim', '--bin-dir', dir, '--pid', String(FOREIGN_LIVE_PID)]);
         expect(r.code).toBe(LEASE_HELD);
@@ -152,7 +152,7 @@ describe('the installer\'s claim and the server\'s claim are the SAME mutex', ()
     // The arm that proves the two above are exclusion rather than a verb that
     // always refuses.
     await withDir(async (dir) => {
-      acquireUpdateLease({ leasePath: leaseFile(dir), operation: 'apply' }).release();
+      acquireUpdateLease({ identify: () => null, leasePath: leaseFile(dir), operation: 'apply' }).release();
       expect((await run(['update-lease', 'claim', '--bin-dir', dir, '--pid', String(FOREIGN_LIVE_PID)])).code)
         .toBe(LEASE_TAKEN);
     });

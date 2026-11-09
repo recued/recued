@@ -8,6 +8,7 @@ import {
   hasMissedRunAskSurface,
 } from '../missed-run-ask.js';
 import { answerMissed } from '../schedule-handler.js';
+import { browserSecrets, hasBrowserSecretSurface } from '../bridges/browser-secrets.js';
 /** D-266 — where the ask's link lands: the Automation Schedules section,
  *  which is the only surface offering a PER-RECIPE answer. The ask's own
  *  two options are all-or-nothing by design (a chat card with one button
@@ -91,7 +92,9 @@ export type PostListenerRuntimeStorageContext =
   // `serverInstanceId` stamps the enrollment row the same way
   // `compose-listeners` stamps rows written by `collection.hostname.*`.
   // `publicAddress` — its probe rounds run on a timer registered here.
-  & Pick<StorageContext, 'recordsStore' | 'recipeStore' | 'serverInstanceId' | 'publicAddress'>;
+  & Pick<StorageContext, 'recordsStore' | 'recipeStore' | 'serverInstanceId' | 'publicAddress'>
+  // D-335 slice Z — the logins remembered for browser steps, for the secrets installed here.
+  & Partial<Pick<StorageContext, 'browserLoginStore'>>;
 
 export type PostListenerRuntimeAppContext =
   Partial<Pick<AppContext, 'chatOrchestratorRef'>>
@@ -251,6 +254,10 @@ export const startPostListenerRuntime = async (
   options: StartPostListenerRuntimeOptions,
 ): Promise<PostListenerRuntimeResult> => {
   options.executorConfig.wsServer = options.server.wsServer;
+  /** D-188 — the owner's pause, for the services started here that act outside the server on
+   *  their own: they hold while it does (the emergency stop). Read live (late-bound by
+   *  `composeListeners`). */
+  const isServerPaused = (): boolean => options.executeDeps.isServerPaused?.() === true;
 
   // Tier 3 — server heartbeat emitter. The ws handle is live now, so start
   // the periodic `server_heartbeat` push: paired clients detect a half-open
@@ -397,6 +404,16 @@ export const startPostListenerRuntime = async (
   // restart is answerable only once its kind is back in the registry,
   // and the first tick can land within the same second as the start.
   missedRunAsk?.register();
+  // D-335 slice Z — the secrets browser steps type: asked of the owner at their step through this
+  // block, the remembered logins sealed in storage. Installed before any run can reach one; it also
+  // ends the secret asks a restart left open, whose steps are gone.
+  if (hasBrowserSecretSurface(options.notificationBlock)) {
+    void browserSecrets.install({
+      notifier: options.notificationBlock,
+      ...(options.storage.browserLoginStore !== undefined ? { logins: options.storage.browserLoginStore } : {}),
+      ...(options.storage.auditLog !== undefined ? { auditLog: options.storage.auditLog } : {}),
+    }).catch((error: unknown) => { console.warn('[d-335] browser secrets could not be installed', error); });
+  }
 
   const schedulersBundle = startSchedulers({
     promptScheduleTick: async (closed) => { await options.app.chatOrchestratorRef?.promptSchedules?.tick(closed); },
@@ -515,6 +532,8 @@ export const startPostListenerRuntime = async (
       notification: { dispatchers: options.collection.channelDispatchers },
       publicBaseUrl: () => options.storage.publicAddress.baseUrl('root'),
       isVaultUnlocked: options.app.isVaultUnlocked,
+      // D-188 — due reminders wait for Resume.
+      isPaused: isServerPaused,
       ...(options.storage.workEntityStoreRef ? { workEntityStore: options.storage.workEntityStoreRef } : {}),
       ...(auditLog ? { logActivity: (entry) => auditLog.logActivity(entry) } : {}),
     });
@@ -522,14 +541,18 @@ export const startPostListenerRuntime = async (
 
   if (options.collection.assetReminders || options.collection.assetOccurrences) {
     const service = options.collection.assetReminders ?? options.collection.assetOccurrences!;
+    // D-188 — it writes to Home Assistant and asks the household: held while paused; what came
+    // due is handled on the first tick after Resume.
     options.backgroundServices.registerInterval({ name: 'asset-occurrences', intervalMs: 60_000,
-      fireImmediate: true, tick: () => service.tick() });
+      fireImmediate: true, tick: () => (isServerPaused() ? undefined : service.tick()) });
     if (options.collection.assetReminders) options.backgroundServices.register({ name: 'asset-reminder-answer-drain', kind: 'emitter',
       stop: () => options.collection.assetReminders!.stop() });
   }
   if (options.collection.scheduledSituations) {
     const service = options.collection.scheduledSituations;
-    options.backgroundServices.registerInterval({ name: 'scheduled-situations', intervalMs: 60_000, fireImmediate: true, tick: () => service.tick() });
+    // D-188 — it sends digests and asks the model: held while paused.
+    options.backgroundServices.registerInterval({ name: 'scheduled-situations', intervalMs: 60_000, fireImmediate: true,
+      tick: () => (isServerPaused() ? undefined : service.tick()) });
     options.backgroundServices.register({ name: 'scheduled-situations-drain', kind: 'emitter', stop: () => service.stop() });
   }
   if (options.collection.episodeRuntime) {
@@ -731,6 +754,7 @@ export const startPostListenerRuntime = async (
 
   let vendorRefs: VendorSubstratePublishedRefs | undefined;
   await startHousekeepingStartup({
+    isServerPaused,
     // ⛔ D-269 — booking / calendar reminders deliver through `notify`, so the
     // per-kind policy and quiet hours gate a DELIVERY rather than an event that
     // might drive work. That is the shape the due-status sweep should migrate
@@ -880,6 +904,7 @@ export const startPostListenerRuntime = async (
   options.watchManager?.recompute();
 
   startPostHousekeepingTail({
+    isServerPaused,
     dbPath: options.dbPath,
     runtimeConfig: options.runtimeConfig,
     backgroundServices: options.backgroundServices,
@@ -964,6 +989,8 @@ export const startPostListenerRuntime = async (
       const peerAnswers = createPeerAnswerStore(db);
       composePeerAskTimeoutSweep({
         registry: options.backgroundServices,
+        // D-188 — held while the owner's pause holds.
+        isPaused: isServerPaused,
         // ⚠ DEV-ONLY OVERRIDE, for the same reason `exchange-retry` has one:
         // proving the sweep FIRES end to end otherwise needs a 60s wall-clock
         // wait that no drive will sit through. Absent ⇒ production default.
@@ -1085,6 +1112,8 @@ export const startPostListenerRuntime = async (
     };
     composeExchangeRetry({
       registry: options.backgroundServices,
+      // D-188 — held while the owner's pause holds.
+      isPaused: isServerPaused,
       // ⚠ DEV-ONLY OVERRIDE, and it exists because the honest test is otherwise
       // unrunnable: proving a retry FIRES end to end needs a 60s interval plus a
       // 60s backoff to elapse, which no drive waits for. Absent ⇒ production

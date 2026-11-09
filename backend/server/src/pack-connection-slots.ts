@@ -18,7 +18,7 @@
  *  3. else the catalog's own slug, so a catalog nobody can tell more about still
  *     names one slot. */
 
-import type { BulkPackManifest } from '@recued/contracts';
+import { getVendorProvider, type BulkPackManifest } from '@recued/contracts';
 import type { PackOpResolution } from '@recued/recipes';
 
 import { resolveBundledPackManifest } from './bundled-pack-source.js';
@@ -38,6 +38,34 @@ export const authoredSlotOf = (
   return undefined;
 };
 
+/** The vendor a pack's connection requirement names: which Connections form
+ *  sets up its sign-in. */
+export const requirementVendor = (manifest: BulkPackManifest | null | undefined): string | undefined => {
+  const vendor = manifest?.connection_requirements?.[0]?.vendor;
+  return typeof vendor === 'string' && vendor.length > 0 ? vendor : undefined;
+};
+
+/** What to call a sign-in: its vendor's display name; else the vendor as its
+ *  packs' own names write it (`paypal` in "Checkout Orders - PayPal" is
+ *  "PayPal", `azure-devops` in "Azure DevOps Build" is "Azure DevOps"); else the
+ *  vendor, else the slot. Found by a visual pass: the grid read "paypal · 3
+ *  connections" beside "HubSpot · 2 connections". */
+export const signInLabel = (vendor: string | undefined, slot: string, packNames: readonly string[]): string => {
+  if (vendor === undefined) return slot;
+  const provider = getVendorProvider(vendor)?.display_name;
+  if (provider !== undefined && provider.length > 0) return provider;
+  const letters = [...vendor.replace(/[^a-z0-9]/gi, '')];
+  if (letters.length > 0) {
+    // The vendor's letters, one separator allowed between any two of them.
+    const pattern = new RegExp(`\\b${letters.join('[\\s._-]?')}\\b`, 'i');
+    for (const name of packNames) {
+      const found = pattern.exec(name)?.[0];
+      if (found !== undefined) return found;
+    }
+  }
+  return vendor;
+};
+
 /** The slot `catalog` signs in to, given its bindings and its pack's manifest. */
 export const slotOfCatalog = (
   catalog: string,
@@ -49,7 +77,7 @@ export const slotOfCatalog = (
   ?? catalog;
 
 /** The installed pack whose one op-declaring catalog is `catalog`. */
-const installedPackOf = (packs: PackOpResolution | undefined, catalog: string): string | undefined => {
+export const installedPackOf = (packs: PackOpResolution | undefined, catalog: string): string | undefined => {
   for (const [ref, binding] of packs ?? []) {
     if (binding.catalog_slug === catalog) return ref.slice(ref.indexOf('.') + 1);
   }

@@ -417,6 +417,10 @@ const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   'kitchen-draft-get',
   'kitchen-draft-update',
   'peer-ask',
+  // D-345 — the server's own fetch of a public web address reads and writes nothing stored: the
+  // address is the op's argument, and the answer is the site's.
+  'http-get',
+  'http-read',
   'notification-send',
   'core-notification-send',
   'core-notification-recipe-callback',
@@ -491,6 +495,12 @@ export const deriveDispatchScope = (
     // Without this a door fenced away from files could read a named file
     // through a CSV op, which `file.read` refuses.
     if (STORED_FILE_PARSE_SLUGS.has(tool.slug)) {
+      return 'data.file';
+    }
+    // D-345 — a download from a web address keeps a new file among the owner's files
+    // (`data.file.received`), as `file-persist` keeps one: fenced as `data.file`, so a door without
+    // files cannot add one. Its leading segment would derive `data.http`, which no grant names.
+    if (tool.slug === 'http-download') {
       return 'data.file';
     }
     // FormResponses use the canonical underscore collection name. The generic

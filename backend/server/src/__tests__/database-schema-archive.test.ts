@@ -98,6 +98,18 @@ describe('database schema in backup, preview and restore', () => {
     lock.release();
   });
 
+  it.skipIf(process.platform === 'win32')('⛔ a lock whose PID now names another process is no live server: the upgrade goes ahead', async () => {
+    const source = await makeSource(false); source.db.close();
+    // The parent is alive, but the lock says a process that started at another
+    // time wrote it — what an unclean exit leaves once the number is reused.
+    writeFileSync(join(source.root, 'recued-server.lock'), JSON.stringify({
+      pid: process.ppid, boot_at: Date.now(), bind_port: 9876, proc_start: 'not-the-parent',
+    }));
+    const env = { ...process.env, RECUED_DISTRIBUTION_CHANNEL: 'docker-thin', RECUED_BIN_DIR: source.root };
+    const db = await openApplicationDatabase({ dbPath: source.path, env }); handles.push(db);
+    expect(readDatabaseSchema(db).version).toBe(3);
+  });
+
   it('keeps migration receipts out of the fresh-server user-content guard', () => {
     const db = new Database(':memory:'); handles.push(db); migrateDatabaseSchema(db);
     expect(isLiveWarehouseEmpty(db)).toBe(true);

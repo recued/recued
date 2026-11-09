@@ -126,6 +126,7 @@ import {
   type ExecutionSource,
   type ExtractionEvent,
   type ScopeSearchResult,
+  type ToolEntry,
 } from '@recued/contracts';
 
 import {
@@ -209,7 +210,14 @@ export const CHAT_CATALOG_RESULT_STATE_KEY = 'chat:catalog_available_tools';
 export interface ChatCatalogInputs {
   readonly picker_target: ChatPickerTarget;
   readonly projection: ChatCatalogProjectionConfig;
+  /** The turn's grant-decided entries, computed once for its own source (`undefined` for another). */
+  readonly entries?: ChatCatalogEntries;
 }
+
+/** A turn's grant-decided catalog entries for `source`, read once for the turn: its setup asked for
+ *  them 4 or 5 times, each a full listing of every recipe (D-347 slice C follow-up, 2026-11-08).
+ *  `undefined` for a source other than the turn's, which the builder then reads as before. */
+export type ChatCatalogEntries = (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | undefined;
 
 /** The catalog projection the `catalog` before-turn hook DECIDES, bound as
  *  a source by the orchestrator (the chat-specific projection is NOT a
@@ -228,6 +236,8 @@ export type ChatCatalogBuilder = (
    *  no contract governs, so a filter handed no source would admit everything
    *  while looking identical to a working one. */
   source?: ExecutionSource,
+  /** The turn's entries when the caller holds them ({@link ChatCatalogEntries}). */
+  entries?: ChatCatalogEntries,
 ) => ReadonlyArray<ChatMainTurnTool>;
 
 /** D-160 A.8 step 5 — the per-turn scope-search fan-out input the shell's
@@ -328,7 +338,9 @@ const readCatalogInputs = (
   const projection = isValidProjectionSnapshot(snapshot.projection)
     ? snapshot.projection
     : FALLBACK_CATALOG_PROJECTION;
-  return { picker_target: snapshot.picker_target, projection };
+  const entries = (raw as { entries?: unknown }).entries;
+  return { picker_target: snapshot.picker_target, projection,
+    ...(typeof entries === 'function' ? { entries: entries as ChatCatalogEntries } : {}) };
 };
 
 /** D-160 A.8 step 5 — read the `scope-search` fan-out result the real
@@ -573,7 +585,7 @@ const createCatalogSource = (build: ChatCatalogBuilder): Middleware => ({
     if (inputs === undefined) return; // shell seeded no picker → no-op
     ctx.state.set(
       CHAT_CATALOG_RESULT_STATE_KEY,
-      build(inputs.picker_target, inputs.projection, ctx.source),
+      build(inputs.picker_target, inputs.projection, ctx.source, inputs.entries),
     );
   },
 });

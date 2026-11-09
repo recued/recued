@@ -43,6 +43,8 @@ import {
 } from '../settled-run-results.js';
 import { createWriteRuleStore, type WriteRuleStore } from '../storage/write-rule-store.js';
 import { createBrowserPassStore, type BrowserPassStore } from '../storage/browser-pass-store.js';
+import { createTriggerPreapprovalStore, type TriggerPreapprovalStore } from '../storage/trigger-preapproval-store.js';
+import { createBrowserLoginStore, type BrowserLoginStore } from '../storage/browser-login-store.js';
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
@@ -276,6 +278,10 @@ export interface StorageContext {
   writeRuleStore: WriteRuleStore;
   /** D-335 slice F — passes for Browser Toolkit writes, and what their approvals teach. */
   browserPassStore: BrowserPassStore;
+  /** D-341 slice B1 — the owner's standing pre-approvals on triggers. */
+  triggerPreapprovalStore: TriggerPreapprovalStore;
+  /** D-335 slice Z — the logins the owner remembered for browser steps, sealed under the vault key. */
+  browserLoginStore: BrowserLoginStore;
   /** What an owner's page-started run answered once its approval let it
    *  finish — written by the approval resumer, read by `execution.get`.
    *  In memory: a courtesy to an open page, not a record. */
@@ -841,6 +847,8 @@ export const composeStorageContext = async (
   const settledRunResults = createSettledRunResults();
   const writeRuleStore = createWriteRuleStore(db);
   const browserPassStore = createBrowserPassStore(db);
+  const triggerPreapprovalStore = createTriggerPreapprovalStore(db);
+  const browserLoginStore = createBrowserLoginStore(db, { key: () => getVaultKey?.() ?? null });
   const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
     { limits: preapprovalLimitsFromEnvironment(process.env) });
   const mailWorkStore = createMailWorkStore(db, createPreapprovalCodec(() => getVaultKey?.() ?? null));
@@ -1052,6 +1060,8 @@ export const composeStorageContext = async (
     gatedActionStore,
     writeRuleStore,
     browserPassStore,
+    triggerPreapprovalStore,
+    browserLoginStore,
     settledRunResults,
     workEntityStoreRef,
     s2sPreviewStoreRef,

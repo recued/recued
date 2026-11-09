@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ChatQueuedTurn, ChatQueuedTurnStatus, ChatTurnQueueSnapshot } from '@recued/contracts';
 import { createChatQueueView, type ChatQueueClient } from '../turn-queue-view.js';
+import { __resetServerPauseSignal, noteServerPaused } from '../../shell/server-pause-signal.js';
 
 /** Enough of a DOM for the strip: elements, attributes, text, clicks. */
 interface FakeNode {
@@ -337,5 +338,44 @@ describe('the conversation queue strip', () => {
     expect(f.restore).not.toHaveBeenCalled();
     expect(buttons(f.render()).find(button => button.textContent === 'Withdraw to edit')?.getAttribute('aria-disabled')).not.toBe('true');
     f.view.dispose();
+  });
+});
+
+// D-188 — the pause is a lockdown (2026-11-08): no chat turn starts until Resume, so a queued
+// message says it waits for Resume, and why, instead of looking stuck.
+describe('the queue strip while the server is paused', () => {
+  afterEach(() => { __resetServerPauseSignal(); });
+  const paused = (): void => { noteServerPaused(false); noteServerPaused(true); };
+
+  it('says a queued message waits for Resume, and why, keeping its controls', async () => {
+    paused();
+    const { root } = await strip([turn('t1', 'queued', 'Draft the reply')]);
+    expect(root?.textContent).toContain('Waits for Resume: Draft the reply');
+    expect(root?.textContent).toContain('The server is paused. A queued message is sent when you resume it.');
+    expect(buttons(root).map((button) => button.textContent)).toContain('Cancel queued message');
+  });
+
+  it('reads as before while the server runs, and for a turn already running', async () => {
+    noteServerPaused(false);
+    const queued = await strip([turn('t1', 'queued', 'Draft the reply')]);
+    expect(queued.root?.textContent).toContain('Queued: Draft the reply');
+    expect(queued.root?.textContent).not.toContain('paused');
+    paused();
+    const running = await strip([turn('t2', 'running', 'Draft the reply')]);
+    expect(running.root?.textContent).toContain('Working: Draft the reply');
+    expect(running.root?.textContent).not.toContain('paused');
+  });
+
+  it('redraws when the pause turns on or off, and stops listening once disposed', async () => {
+    noteServerPaused(false);
+    const { changed, view } = await controls([turn('t1', 'queued', 'Draft the reply')]);
+    changed.mockClear();
+    noteServerPaused(true);
+    expect(changed).toHaveBeenCalledTimes(1);
+    noteServerPaused(false);
+    expect(changed).toHaveBeenCalledTimes(2);
+    view.dispose();
+    noteServerPaused(true);
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });

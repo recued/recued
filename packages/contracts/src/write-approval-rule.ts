@@ -52,6 +52,7 @@ export const WRITE_RULE_TOOLS = [
   'memory.write',
   'memory.forget',
   'contact.write',
+  'episode.record',
 ] as const;
 export type WriteRuleTool = (typeof WRITE_RULE_TOOLS)[number];
 const WRITE_RULE_TOOL_SET: ReadonlySet<string> = new Set(WRITE_RULE_TOOLS);
@@ -109,6 +110,8 @@ export const writeRuleScopeOf = (tool: string, args: unknown): string | undefine
     case 'recipe.stop':
     case 'memory.write':
     case 'memory.forget':
+    // D-343 slice 2 — one rule records any day: the records are the owner's own words.
+    case 'episode.record':
       return '';
     // D-336 slice F — adding a contact and changing one are two rules: three yeses to
     // new contacts are no yes to rewriting the ones the owner has.

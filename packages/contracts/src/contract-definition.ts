@@ -39,7 +39,8 @@ export const CONTRACT_DEFINITION_SCOPE = 'contract_definition';
 /** D-187 AMENDMENT — the canonical OWNER contract id. The owner runs their own
  *  AI-bearing channels (`chat` / `webclient` / `messenger`) on the implicit
  *  `user_self` contract (the policy-matrix `(channel, user_self)` baseline cell,
- *  surfaced as "Owner (you)" per D-177), so the owner's grant rows live under
+ *  surfaced as "Self (you)": D-177 named it "Owner (you)" on the Contracts page, and the
+ *  owner's ruling of 2026-11-08 unified it with a pack's Access tab), so the owner's grant rows live under
  *  `contract.contract_grant.user_self.<entry_key>`. The owner contract is DERIVED
  *  at the gate from an owner-AI source (`resolveGrantGoverningContractId`), never a
  *  bound door, and seeded complete by the boot reconcile.

@@ -99,11 +99,18 @@ export const missingPacksFromError = (err: unknown): string[] | null => {
   return out.length > 0 ? out : null;
 };
 
+/** The sentence the offer leads with; the run dialog's next step says the same
+ *  (`run-modal.ts`). */
+export const packInstallOfferLead = (missing: readonly string[]): string => {
+  const many = missing.length > 1;
+  return `This recipe needs ${many ? 'packs' : 'a pack'} you don’t have installed`
+    + ` yet. Install ${many ? 'them' : 'it'}, then run again.`;
+};
+
 /** Render the offer. `actionAttr` is the host route's action-attribute name so
  *  one shared component works under each route's existing click dispatcher. */
 export const renderPackInstallOffer = (missing: readonly string[]): string => {
   if (missing.length === 0) return '';
-  const many = missing.length > 1;
   const rows = missing.map((ref) => {
     const slug = packInstallOfferName(ref);
     // The link text IS the pack name — a separate label beside it rendered the
@@ -116,9 +123,7 @@ export const renderPackInstallOffer = (missing: readonly string[]): string => {
   }).join('');
   return `<div class="pack-offer" ${PACK_INSTALL_OFFER_ATTR} role="group"`
     + ` aria-label="Install missing packs">`
-    + `<p class="pack-offer-lead">`
-    + `This recipe needs ${many ? 'packs' : 'a pack'} you don’t have installed`
-    + ` yet. Install ${many ? 'them' : 'it'}, then run again.</p>`
+    + `<p class="pack-offer-lead">${e(packInstallOfferLead(missing))}</p>`
     + `<div class="pack-offer-row">${rows}</div>`
     + `</div>`;
 };

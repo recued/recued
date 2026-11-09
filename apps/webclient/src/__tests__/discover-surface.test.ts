@@ -634,7 +634,7 @@ describe('recipe-discovery deps flow', () => {
       fetchCatalog: async () => ({ status: 'ok', rows: [rr({ recipe_id: 'deal-risk', version: 2, depends_on: dependsOn })] }),
       ...over,
     });
-    return { ...mount, installPack, installBySlug, setInstalledRows };
+    return { ...mount, host, installPack, installBySlug, setInstalledRows };
   };
 
   it('a recipe with a MISSING dep opens the consent dialog (does not one-click)', async () => {
@@ -664,6 +664,32 @@ describe('recipe-discovery deps flow', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(panel.getInstallState('deal-risk')).toBe('installed');
+  });
+
+  // D-182 §7.1 — a pack the recipe brings in that runs a program on the server asks
+  // which actions to allow, as an install from Packs does; before, a recipe install
+  // left them off with no dialog and the first run was refused "… is switched off".
+  it('a recipe install that brings in a program pack opens the program-access dialog for its new actions', async () => {
+    let installed = false;
+    const runUniverse = vi.fn(async () => ({
+      tools: installed
+        ? [{ tool: 'rg', catalog_slugs: ['salesforce'], operations: [{ operation_id: 'file.search_content', catalog_slug: 'salesforce', risk_tier: 'read' }] }]
+        : [],
+    }));
+    const runSet = vi.fn(async (args: { ingredient_id: string; operation_id: string; allowed: boolean }) => ({ principal: 'user_self', ...args }));
+    const installPack = vi.fn(async () => { installed = true; return { result: { ok: true } }; });
+    const { panel, dialog, setInstalledRows, host } = mountDeps(['recued-core.salesforce'], { installPack, programAccess: { runUniverse, runSet } });
+    await panel.whenLoaded();
+    await Promise.resolve();
+    await Promise.resolve();
+    await panel.clickInstall('deal-risk');
+    setInstalledRows([{ recipe_id: 'deal-risk', version: 2 }]);
+    await dialog!.clickInstall();
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runUniverse.mock.calls.length).toBeGreaterThanOrEqual(2); // before and after the install
+    const text = (el: any): string => [el.textContent ?? '', ...(el.children ?? []).map(text)].join(' ');
+    expect(text(host)).toContain('file.search_content');
   });
 
   // ── §7.1/§7.2 per-dep grant scope ────────────────────────────────

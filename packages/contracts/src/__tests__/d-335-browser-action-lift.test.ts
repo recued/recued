@@ -40,7 +40,7 @@ describe('D-335 — a browser write asks, wherever the owner drives it from', ()
     for (const slug of ['dom-write', 'dom-click', 'dom-open']) {
       const decision = admit(source, slug);
       if (decision.verdict !== 'ask') throw new Error(`${slug}: expected ask, got ${decision.verdict}`);
-      expect(decision.detail).toBe('This acts on a web page in your browser, signed in as you, so Recued always asks you first.');
+      expect(decision.detail).toBe('This acts on a web page in your browser, signed in as you, so Recued asks you first.');
       expect(decision.authorization_provenance?.lift_reason).toBe('review_send');
     }
   });

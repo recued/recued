@@ -956,6 +956,31 @@ describe('the D-318 audit — answers', () => {
   });
 });
 
+// D-188 — the owner's pause (the emergency stop: nothing leaves) holds every answer; it goes out
+// after Resume.
+describe('D-188 — while the server is paused', () => {
+  it('sends no answer, and sends it once resumed', async () => {
+    const h = harness({ held: true });
+    await h.send({ id: 'req-9@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.' });
+    const answer = await h.answerOf('req-9@owner.example');
+    await h.answers.dispose();
+
+    let paused = true;
+    const held = composeMailChatAnswers({
+      db: h.db, chatStore: h.store, door: h.door, mailboxes: () => [h.chatMailbox] as never, requests: h.proof,
+      conversations: h.conversations, isPaused: () => paused,
+    })!;
+    cleanup.push(() => held.dispose());
+    await held.tick();
+    expect(h.sends).toHaveLength(0);
+    expect(h.answers.get(answer)?.state).toBe('pending');
+
+    paused = false;
+    await held.tick();
+    expect(h.sends).toHaveLength(1);
+  });
+});
+
 describe('the answer’s text', () => {
   it('names the files that came with it, which stay in Recued, and the subject keeps to one header line', () => {
     expect(mailChatAnswerBody({ content: 'Here they are.', attachments: [{ filename: 'a.pdf' }, { filename: 'b.png' }] }, null))

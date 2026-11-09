@@ -56,7 +56,11 @@ export const chatTurnTimeZoneOf = (state: unknown): string | undefined => {
 };
 
 /** D-338 §13 — the tool argument the turn's own zone fills when the model leaves it out. */
-const TURN_ZONE_ARGS: Readonly<Record<string, string>> = { 'schedule.run_prompt': 'time_zone' };
+const TURN_ZONE_ARGS: Readonly<Record<string, string>> = {
+  'schedule.run_prompt': 'time_zone',
+  // D-343 slice 2 — the day a record is for is read on the turn's clock, which the approved run keeps.
+  'episode.record': 'time_zone',
+};
 
 /** A call's arguments with the turn's zone where the model gave none (absent, null or blank).
  *  The model sees only the zone's offset, never its name (2026-06-09: an IANA id carries a

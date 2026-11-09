@@ -18,11 +18,17 @@ it('removes once and recovers a completed receipt after a lost reply',async () =
   await expect(f.apply({ ...request,request_id: crypto.randomUUID() })).rejects.toThrow('another removal attempt');
   await expect(f.removals.apply(request,'other-owner',f.check,execute)).rejects.toMatchObject({ code: 'not_found' });
 });
-it('blocks direct and transitive dependants in both reviewed and legacy deletion',async () => {
+// D-346 B (ruling 2) — the reviewed removal names its dependants and goes ahead after
+// that warning; the legacy deletion still refuses them. Before D-346 both refused.
+it('names direct and transitive dependants; the reviewed deletion goes ahead after them, the legacy one refuses',async () => {
   const f = await fixture();f.install('middle',[{ type: 'pack',slug: f.manifest.slug }]);f.install('top',[{ type: 'pack',slug: 'middle' }]);
   const plan = await f.review();expect(plan.dependants).toMatchObject([{ pack_slug: 'middle',direct: true },{ pack_slug: 'top',direct: false }]);
-  const execute = vi.fn(f.execute);await expect(f.removals.apply({ review_id: plan.review_id,request_id: crypto.randomUUID() },f.actor,f.check,execute)).rejects.toThrow('unblocked');expect(execute).not.toHaveBeenCalled();
+  // `top` needs it only through `middle`, which stays: nothing of `top`'s stops.
+  expect(plan.blockers).toEqual([]);expect(plan.stops).toEqual([{ pack_slug: 'middle',actions: [] }]);
   await expect(f.execute({ pack_slug: f.manifest.slug },{ check() {},beforeMutation() {} })).rejects.toThrow('dependent packs');
+  const execute = vi.fn(f.execute);
+  expect((await f.removals.apply({ review_id: plan.review_id,request_id: crypto.randomUUID() },f.actor,f.check,execute)).receipt.result.ok).toBe(true);
+  expect(execute).toHaveBeenCalledTimes(1);
 });
 it('requires explicit acknowledgement for unknown dependency metadata',async () => {
   const f = await fixture();f.install('older');const plan = await f.review();expect(plan.unknown_dependencies).toMatchObject([{ pack_slug: 'older' }]);

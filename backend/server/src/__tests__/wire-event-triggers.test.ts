@@ -131,6 +131,8 @@ describe('composeEventTriggers', () => {
         actor: 'system',
         source_recipe: 'r1',
         event_kind: 'data.webhook.work.message.created',
+        // D-341 slice B1 — which trigger fired, for that trigger's own pre-approval.
+        trigger_id: 't-1',
       },
       context: {
         event: {

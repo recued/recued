@@ -143,6 +143,7 @@ import {
   type SituationDeliveryPanelOptions,
 } from './situation-delivery-panel.js';
 import { AGENDA_PANEL_STYLES, mountAgendaPanel, type AgendaPanelOptions } from './agenda-panel.js';
+import { CLOSE_DAY_PANEL_STYLES, mountCloseDayPanel, type CloseDayPanelOptions } from './close-day-panel.js';
 import { mountLastTimePanel, type LastTimePanelOptions } from './last-time-panel.js';
 import {
   HOUSEHOLD_DELIVERY_PANEL_STYLES,
@@ -218,6 +219,8 @@ import {
   type LearningCaseForgetCaller,
   type LearningCasesListCaller,
   type LearningDraftRecipeCaller,
+  type LearningFlowForgetCaller,
+  type LearningFlowRecipeCaller,
   type LearningPanelMount,
   type LearningPrefsGetCaller,
   type LearningPrefsSetCaller,
@@ -677,6 +680,9 @@ export interface BootstrapSettingsRouteOptions {
   /** D-325 §15.7 amendment (2026-11-02, later) — the Agenda, a card of its own under the Digest.
    *  It leaves the page by itself when the server has no Agenda. */
   agendaDelivery?: Omit<AgendaPanelOptions, 'host' | 'document'>;
+  /** D-343 slice 4 — Close the day, a card of its own under the Agenda's. It leaves the page by
+   *  itself when the server does not name it. */
+  closeDayDelivery?: Omit<CloseDayPanelOptions, 'host' | 'document'>;
   /** D-325 §15.7 — "last time" in Privacy → Learning. */
   lastTime?: Omit<LastTimePanelOptions, 'host' | 'document'>;
   householdDelivery?: Omit<HouseholdDeliveryPanelOptions, 'host' | 'document'>;
@@ -893,6 +899,11 @@ export interface BootstrapSettingsRouteOptions {
     request_aliased: boolean;
   }) => boolean | void;
   learningDraftConfirmation?: string;
+  /** D-335 slice W4 — the kept browser flows' Forget and Make a recipe, wired as a set with
+   *  `onLearningFlowDraftReady`, which opens the recipe in Kitchen (false when it could not). */
+  learningFlowForgetCaller?: LearningFlowForgetCaller;
+  learningFlowRecipeCaller?: LearningFlowRecipeCaller;
+  onLearningFlowDraftReady?: (draft: { flow_id: string; recipe: unknown; notes: string[] }) => boolean | void;
   learningPrefsSetCaller?: LearningPrefsSetCaller;
   /** D-132/D-133 — Settings → Housekeeping trust-panel callers. The
    *  panel mounts only when the four read/write seams below are all
@@ -1532,6 +1543,7 @@ export const bootstrapSettingsRoute = (
       // same, rendering unpadded browser defaults under the styled cards.
       SITUATION_DELIVERY_PANEL_STYLES,
       AGENDA_PANEL_STYLES,
+      CLOSE_DAY_PANEL_STYLES,
       HOUSEHOLD_DELIVERY_PANEL_STYLES,
       // D-318 step 7 — Settings → Email chat. Scoped to its own panel
       // attribute, so inert when its callers are absent.
@@ -2448,6 +2460,14 @@ export const bootstrapSettingsRoute = (
               : {}),
           }
         : {}),
+      ...(opts.learningFlowForgetCaller !== undefined && opts.learningFlowRecipeCaller !== undefined
+        && opts.onLearningFlowDraftReady !== undefined
+        ? {
+            runFlowForget: opts.learningFlowForgetCaller,
+            runFlowRecipe: opts.learningFlowRecipeCaller,
+            onFlowDraftReady: opts.onLearningFlowDraftReady,
+          }
+        : {}),
     });
   }
   if (learningBlock !== null && opts.lastTime) {
@@ -2591,6 +2611,7 @@ export const bootstrapSettingsRoute = (
   let quietHours: QuietHoursPanelMount | null = null;
   let situationDelivery: ReturnType<typeof mountSituationDeliveryPanel> | null = null;
   let agendaDelivery: ReturnType<typeof mountAgendaPanel> | null = null;
+  let closeDayDelivery: ReturnType<typeof mountCloseDayPanel> | null = null;
   let householdDelivery: ReturnType<typeof mountHouseholdDeliveryPanel> | null = null;
   let kindPolicy: KindPolicyPanelMount | null = null;
   const canMountNotifications =
@@ -2673,6 +2694,12 @@ export const bootstrapSettingsRoute = (
     if (opts.agendaDelivery) {
       const host = doc.createElement('div'); notifSection.appendChild(host);
       agendaDelivery = mountAgendaPanel({ host, document: doc, ...opts.agendaDelivery });
+    }
+    // D-343 slice 4 (ruling 19) — the evening's message, beside the morning's, until D-340's stream.
+    // Its card goes straight into the section: a server that names no Close the day sees it leave,
+    // and with no host of its own it leaves no empty slot (and gap) between the other two.
+    if (opts.closeDayDelivery) {
+      closeDayDelivery = mountCloseDayPanel({ host: notifSection, document: doc, ...opts.closeDayDelivery });
     }
     if (opts.situationDelivery) {
       const host = doc.createElement('div'); notifSection.appendChild(host);
@@ -3498,6 +3525,7 @@ export const bootstrapSettingsRoute = (
       if (quietHours?.hasInFlightWork() === true) return true;
       if (situationDelivery?.hasInFlightWork() === true) return true;
       if (agendaDelivery?.hasInFlightWork() === true) return true;
+      if (closeDayDelivery?.hasInFlightWork() === true) return true;
       if (householdDelivery?.hasInFlightWork() === true) return true;
       if (serverTimeZone?.isSaving() === true) return true;
       if (tlsCertificates?.hasInFlightWork() === true) return true;
@@ -3523,6 +3551,7 @@ export const bootstrapSettingsRoute = (
         || quietHours?.hasUnsavedChanges() === true
         || situationDelivery?.hasUnsavedChanges() === true
         || agendaDelivery?.hasUnsavedChanges() === true
+        || closeDayDelivery?.hasUnsavedChanges() === true
         || householdDelivery?.hasUnsavedChanges() === true
         || serverTimeZone?.hasUnsavedChanges() === true
         || tlsCertificates?.hasUnsavedChanges() === true
@@ -3538,6 +3567,7 @@ export const bootstrapSettingsRoute = (
       if (quietHours?.hasUnsavedChanges() === true) return 'Discard the unsaved quiet hours window?';
       if (situationDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved “Coming up” settings?';
       if (agendaDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved agenda settings?';
+      if (closeDayDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved Close the day settings?';
       if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household delivery settings?';
       if (serverTimeZone?.hasUnsavedChanges() === true) return 'Discard the unsaved server timezone?';
       if (tlsCertificates?.hasUnsavedChanges() === true) return 'Discard the unsaved certificate upload?';
@@ -3555,6 +3585,7 @@ export const bootstrapSettingsRoute = (
       if (quietHours?.hasInFlightWork() === true) return 'A quiet hours setting is still updating. Leave Settings anyway?';
       if (situationDelivery?.hasInFlightWork() === true) return 'A “Coming up” action is still in progress. Leave Settings anyway?';
       if (agendaDelivery?.hasInFlightWork() === true) return 'An agenda action is still in progress. Leave Settings anyway?';
+      if (closeDayDelivery?.hasInFlightWork() === true) return 'A Close the day action is still in progress. Leave Settings anyway?';
       if (householdDelivery?.hasInFlightWork() === true) return 'Household Telegram is still updating. Leave Settings anyway?';
       if (serverTimeZone?.isSaving() === true) return 'The server timezone is still updating. Leave Settings anyway?';
       if (tlsCertificates?.hasInFlightWork() === true) return 'A certificate change is still in progress. Leave Settings anyway?';
@@ -3621,6 +3652,7 @@ export const bootstrapSettingsRoute = (
       if (quietHours !== null) quietHours.dispose();
       situationDelivery?.dispose();
       agendaDelivery?.dispose();
+      closeDayDelivery?.dispose();
       householdDelivery?.dispose();
       lastTime?.dispose();
       if (mailChatDoor !== null) mailChatDoor.dispose();

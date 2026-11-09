@@ -30,6 +30,9 @@ export const createSavedDataViewAlertRuntime = (deps: {
    *  it runs. */
   getPublicBaseUrl?: () => string | null;
   intervalMs?: number;
+  /** D-188 — true while the owner's pause holds: no alert is pushed until Resume (the emergency
+   *  stop: nothing leaves); the notices stay pending and go out after it. Absent ⇒ never paused. */
+  isPaused?: () => boolean;
 }) => {
   let timer: ReturnType<typeof setInterval> | undefined;
   let running: Promise<void> | undefined;
@@ -37,7 +40,7 @@ export const createSavedDataViewAlertRuntime = (deps: {
   let pushing: Promise<void> | undefined;
   let stopped = false;
   const tick = (): Promise<void> => {
-    if (stopped) return Promise.resolve();
+    if (stopped || deps.isPaused?.() === true) return Promise.resolve();
     if (running) return running;
     running = (async () => {
       deps.store.evaluate();

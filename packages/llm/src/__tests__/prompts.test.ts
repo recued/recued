@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildContractedPrompt, buildUncontractedPrompt, isContractedSlug, CONTRACTED_SLUGS,
+  topLevelArrayElementEnds,
 } from '../prompts.js';
 import { LLMError } from '../types.js';
+import { toAnthropicContent } from '../adapters/content-parts.js';
 
 describe('isContractedSlug', () => {
   it('recognizes all 9 contracted slugs', () => {
@@ -238,5 +240,78 @@ describe('buildUncontractedPrompt — D-164 cache split (llm.cache_prefix)', () 
     expect(user.role).toBe('user');
     expect(user.content).toBe(BODY);
     expect(user.content_parts).toBeUndefined();
+  });
+});
+
+// D-347 slice C follow-up (2026-11-08) — a second Anthropic breakpoint after the last of the turn's calls.
+describe('buildUncontractedPrompt — the rounds\' array as a second breakpoint (llm.cache_rolling_field)', () => {
+  const PREFIX = '{"available_tools":[],"commitment_context":[]';
+  // A value with brackets, braces, quotes and an escape in it, and a nested array of objects.
+  const calls = [
+    { tool_name: 'a', result: { note: 'a ] } " [ { \\ end' } },
+    { tool_name: 'b', result: { nested: { deep: [1, { x: 2 }], prior_tool_calls: [{ no: 1 }] } } },
+    { tool_name: 'c', result: { ok: true } },
+  ];
+  const bodyOf = (n: number, extra: Record<string, unknown> = {}) => `${PREFIX},${JSON.stringify({
+    chat_tail: [], user_message: 'q', ...(n >= 0 ? { prior_tool_calls: calls.slice(0, n) } : {}), pii_notice: 'x', ...extra,
+  }).slice(1)}`;
+  const userOf = (body: string, field: unknown = 'prior_tool_calls') => buildUncontractedPrompt({
+    'llm.prompt': body, 'llm.cache_prefix': PREFIX, 'llm.cache_rolling_field': field })[0]!;
+  const texts = (user: ReturnType<typeof userOf>) => user.content_parts!.map((p) => (p.type === 'text' ? p.text : ''));
+  const marked = (user: ReturnType<typeof userOf>) => user.content_parts!.filter((p) => p.type === 'text' && p.cache_breakpoint).length;
+
+  it('cuts after each call, marks the last as a second breakpoint, and the blocks join back to the body', () => {
+    const body = bodyOf(3);
+    const user = userOf(body);
+    expect(user.content).toBe(body);
+    expect(texts(user).join('')).toBe(body);
+    expect(texts(user)[0]).toBe(PREFIX);
+    // prefix, three blocks each ending with a call, and the rest.
+    expect(texts(user)).toHaveLength(5);
+    for (const [i, call] of calls.entries()) expect(texts(user)[i + 1]!.endsWith(JSON.stringify(call))).toBe(true);
+    expect(user.content_parts![3]).toMatchObject({ cache_breakpoint: true });
+    expect(marked(user)).toBe(2);
+    expect(toAnthropicContent(user.content_parts!).filter((b) => (b as { cache_control?: unknown }).cache_control)).toHaveLength(2);
+  });
+
+  it('the next round, holding the same calls and more, has a block boundary where this round wrote its cache', () => {
+    const first = userOf(bodyOf(1));
+    const second = userOf(bodyOf(3));
+    const written = texts(first).slice(0, 2).join('');
+    const boundaries = texts(second).map((_, i, all) => all.slice(0, i + 1).join(''));
+    expect(boundaries).toContain(written);
+  });
+
+  it('leaves the one cut when the field is not named, absent from the body, or empty', () => {
+    for (const user of [userOf(bodyOf(3), null), userOf(bodyOf(-1)), userOf(bodyOf(0)), userOf(bodyOf(3), 'nothing_here')]) {
+      expect(texts(user)).toHaveLength(2);
+      expect(marked(user)).toBe(1);
+    }
+  });
+
+  it('reads no key of that name deeper in the body, nor one inside a string', () => {
+    const body = bodyOf(-1, { note: '"prior_tool_calls":[{"x":1}]', inner: { prior_tool_calls: [{ y: 2 }] } });
+    expect(texts(userOf(body))).toHaveLength(2);
+  });
+
+  it('keeps the last 19 call boundaries, the earlier calls merged into the first block', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ tool_name: `t${String(i)}`, result: { i } }));
+    const body = `${PREFIX},${JSON.stringify({ user_message: 'q', prior_tool_calls: many }).slice(1)}`;
+    const user = userOf(body);
+    expect(texts(user)).toHaveLength(1 + 19 + 1);
+    expect(texts(user).join('')).toBe(body);
+    expect(texts(user)[19]!.endsWith(JSON.stringify(many[29]))).toBe(true);
+  });
+});
+
+describe('topLevelArrayElementEnds', () => {
+  it('finds where each element of a top-level array ends, and nothing in a body that does not scan', () => {
+    const json = '{"a":"[x]","list":[{"k":"}"},[1,2],{"n":{"m":[3]}}],"z":1}';
+    const ends = topLevelArrayElementEnds(json, 'list');
+    const open = json.indexOf('"list":[') + '"list":['.length;
+    expect(ends.map((end, i) => json.slice(i === 0 ? open : ends[i - 1]! + 1, end))).toEqual(['{"k":"}"}', '[1,2]', '{"n":{"m":[3]}}']);
+    expect(topLevelArrayElementEnds('{"list":[{"k":1}', 'list')).toEqual([]);
+    expect(topLevelArrayElementEnds('{"list":"not an array"}', 'list')).toEqual([]);
+    expect(topLevelArrayElementEnds('{"other":[{"k":1}]}', 'list')).toEqual([]);
   });
 });

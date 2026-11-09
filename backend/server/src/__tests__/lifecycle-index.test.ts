@@ -367,3 +367,22 @@ describe('\u26d4 lifecycle.lock_file comes from the runtime store too', () => {
     } finally { h.close(); }
   });
 });
+
+/** `recued restart` asks a supervised server to restart ITSELF. Stopping it and
+ *  starting a fresh one from the CLI left a server with no supervisor; SIGUSR2
+ *  drains with intent=restart and exits with the supervisor's restart code,
+ *  which the supervisor relaunches on. */
+describe('createLifecycle — SIGUSR2 restarts', () => {
+  it("⛔ SIGUSR2 drains with intent=restart and exits with the supervisor's restart code", async () => {
+    const h = newHarness({ supervisorMode: 'systemd' });
+    try {
+      h.lifecycle.markBooted();
+      h.lifecycle.install();
+      process.emit('SIGUSR2' as never);
+      await vi.waitFor(() => expect(h.exits).toEqual([3]));
+      expect(h.lifecycle.machine.state).toBe('restarting');
+    } finally {
+      h.close();
+    }
+  });
+});

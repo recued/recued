@@ -1,4 +1,4 @@
-import { RpcError, type ExecutionSource } from '@recued/contracts';
+import type { ExecutionSource } from '@recued/contracts';
 import { canonicalHash, recordsCatalogSlug } from '@recued/ingredient-authoring';
 
 import { handleExecute, type ExecuteHandlerDeps } from '../../execute-handler.js';
@@ -14,6 +14,7 @@ import {
   type RecordsSubscriberBinding,
 } from '../../records/index.js';
 import type { BackgroundServiceRegistry } from './wire-background-services.js';
+import { isRunRefusedForNow } from '../../pause-approval.js';
 
 export interface ComposeRecordsOutboxInput {
   recordsStore: RecordsStore;
@@ -62,7 +63,10 @@ export const composeRecordsOutbox = (input: ComposeRecordsOutboxInput): void => 
     );
     return;
   }
-  const serverStopping = input.isStopping ?? ((): boolean => input.executeDeps.isDraining?.() === true);
+  // D-188 — the owner's pause holds the drain the same way: no pass starts while paused, and the
+  // queued events wait for Resume (the emergency stop, 2026-11-08). Both flags are read live.
+  const serverStopping = input.isStopping ?? ((): boolean =>
+    input.executeDeps.isDraining?.() === true || input.executeDeps.isServerPaused?.() === true);
   let stopped = false;
   /** Stopped, or the server stopping. A throwing predicate reads as
    *  stopping: delivering on an unknown answer could spend retries on runs
@@ -149,7 +153,7 @@ export const composeRecordsOutbox = (input: ComposeRecordsOutboxInput): void => 
           // The server refused the run because it is restarting: `admit` read
           // the same signal an instant before, and the drain began between the
           // two checks. Nothing ran.
-          if (error instanceof RpcError && error.code === 'draining') throw new RecordsOutboxStopping();
+          if (isRunRefusedForNow(error)) throw new RecordsOutboxStopping();
           throw error;
         }
         if (!result.success && !result.trigger_skipped) {

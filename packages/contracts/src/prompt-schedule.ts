@@ -40,6 +40,9 @@ export interface PromptSchedule {
    *  list and refuses edits from the scheduled-prompt screens and chat's schedule tools; its owner
    *  (the Agenda card) keeps it in step. */
   managed_by?: 'agenda';
+  /** D-344 slice D — the model its runs use, as the chat's picker offers it; `null` is the chat's
+   *  default. A server since D-344 always names it; one before names nothing, and refuses it in a save. */
+  model_source_id?: import('./chat.js').ChatModelSourceId | null;
   /** Stable server identity used only to scope a client's unanswered run requests. */
   run_request_scope?: string;
   /** A current clock-driven admission failure. Cleared by a successful admission or timing/control change. */
@@ -59,6 +62,9 @@ export interface PromptScheduleInput extends PromptScheduleTiming {
   prompt: string;
   /** D-338 slice 2 — send only to a server whose schedules name it (a preview says so too). */
   notify_on_done?: boolean;
+  /** D-344 slice D — the model its runs use; `null` or absent, the chat's default. Send only to a
+   *  server whose schedules name it (a preview says so too). */
+  model_source_id?: import('./chat.js').ChatModelSourceId | null;
 }
 
 /** Read-only times calculated with the server clock and the save-time rules. */
@@ -73,6 +79,8 @@ export interface PromptSchedulePreview {
   past_run_at?: number;
   /** D-338 slice 2 — this server can notify when a run is done. Absent on servers before it. */
   notify_on_done_available?: true;
+  /** D-344 slice D — this server runs a schedule on the model it names. Absent on servers before it. */
+  model_choice_available?: true;
 }
 
 export interface PromptScheduleUpdate {
@@ -85,6 +93,8 @@ export interface PromptScheduleUpdate {
   cron_expression?: string;
   /** D-338 slice 2 — only to a server whose schedules name it. */
   notify_on_done?: boolean;
+  /** D-344 slice D — only to a server whose schedules name it; `null` sets the chat's default. */
+  model_source_id?: import('./chat.js').ChatModelSourceId | null;
 }
 
 export interface PromptScheduleTarget {
@@ -107,4 +117,9 @@ export interface ScheduledPromptOrigin {
   cron: string;
   /** Absent on older clock-driven occurrences. Authored by the server only. */
   trigger?: 'manual';
+  /** D-341 slice B3 — the sha256 of the prompt text this occurrence runs, from its own snapshot:
+   *  what a scheduled prompt's standing pre-approval pins, so an edit to the prompt ends it while a
+   *  pause or a new time does not. Absent on occurrences queued before it. Authored by the server
+   *  only. */
+  prompt_sha256?: string;
 }

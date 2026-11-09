@@ -24,6 +24,7 @@
 
 import {
   isBrowserPassOptionId,
+  TRIGGER_PREAPPROVAL_OPTION_ID,
   mayHoldAskForQuietHours,
   resolveQuietHoursOccurrence,
   resolveServerTimeZone,
@@ -87,6 +88,7 @@ import type { AnnotationStore } from '../../storage/annotation-store.js';
 import type { ClientTokenStore } from '../../pairing/client-tokens.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 import { createPreflightResumer } from '../../preflight-resumer.js';
+import { createPausedAnswerRefusal } from '../../pause-approval.js';
 import {
   createBatchApprovalCoordinator,
   type BatchApprovalCoordinator,
@@ -124,6 +126,11 @@ import type { ReceptionInboxFanoutMode } from '@recued/contracts';
  *  `annotationStore`) being defined before calling in. */
 export interface ComposeNotificationBlockDeps {
   isVaultUnlocked?: () => boolean;
+  /** D-188 — the master "Pause server" flag. With it, approving a held run waits for Resume
+   *  (`pause-approval.ts`, the owner's ruling of 2026-11-08), and the block's asks and reminders
+   *  are held like quiet hours hold them (the emergency stop: nothing leaves). Absent (dbless /
+   *  unit): every valid answer is recorded and every delivery goes out, as before. */
+  isServerPaused?: () => boolean;
   /** D-137 — late-bound chat sink for a run that settled after its turn.
    *  Absent ⇒ late results are not recallable, the behaviour before this. */
   readonly getRunSettledSink?: () => ((settled: PreflightRunSettled) => void) | undefined;
@@ -356,6 +363,8 @@ const answerAuditAction = (option: string): ActivityAction =>
   || option === 'allow_session'
   // D-335 slice F — "Allow on <site> for this session" / "Always allow on <site>".
   || isBrowserPassOptionId(option)
+  // D-341 slice B2 — "Always allow for this webhook / schedule / trigger".
+  || option === TRIGGER_PREAPPROVAL_OPTION_ID
   || option === NEVER_ASK_OPERATION_OPTION_ID
   || option === RELAX_OPERATION_TO_ASK_OPTION_ID
     ? 'approval_allow'
@@ -665,8 +674,15 @@ export const composeNotificationBlock = (
     ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}),
     deliveryStore: createAskDeliveryStore(createSQLiteCollection<AskDeliveryRecord>(db, 'ask_deliveries')),
     settingsStore,
-    shouldHoldAsk,
-    shouldHoldReminder: () => shouldSuppressForQuietHours({ policy: quietHoursStore.read(), instant: Date.now(),
+    // D-188 — and while the owner's pause holds: nothing leaves during the emergency stop; Resume
+    // re-delivers what was held (`recoverPendingAsks`), as the end of quiet hours does.
+    shouldHoldAsk: (expires_at) => deps.isServerPaused?.() === true || shouldHoldAsk(expires_at),
+    // D-188 — while paused, approving a held run is refused before it is recorded, so it
+    // waits for Resume; declining still works (`pause-approval.ts`).
+    ...(deps.isServerPaused !== undefined
+      ? { refuseAnswer: createPausedAnswerRefusal({ isPaused: deps.isServerPaused }) }
+      : {}),
+    shouldHoldReminder: () => deps.isServerPaused?.() === true || shouldSuppressForQuietHours({ policy: quietHoursStore.read(), instant: Date.now(),
       timeZone: resolveServerTimeZone(serverTimeZoneStore.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
     channels: allChannels,
     readinessProbe,

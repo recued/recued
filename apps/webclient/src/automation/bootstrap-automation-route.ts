@@ -84,6 +84,7 @@ import {
   type MailTemplateVariableCallers,
   type MissedRunsAnswer,
 } from '@recued/ui-shared';
+import { wireRunModal } from '../shell/run-modal.js';
 import { bindRecordRefSearchToRecipe } from '../record-ref-search.js';
 import { serializeChatSessionAddress } from '../shell/route.js';
 import {
@@ -1496,6 +1497,7 @@ export const bootstrapAutomationRoute = (
       AUTOMATION_ROUTE_STYLES,
       RefPicker.REF_PICKER_STYLES,
       BY_RECIPE_STYLES,
+      TRIGGER_PREAPPROVAL_PANEL_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -1522,6 +1524,12 @@ export const bootstrapAutomationRoute = (
   const promptPanel = opts.rehearsalCall ? mountPromptSchedulesPanel({ host: promptHost, call: opts.rehearsalCall as PromptScheduleClient,
     hideCreate: true, onCreateClosed: closeScheduleCreate,
     onStateChange: state => { promptState = state; renderPromptOverview(); },
+    // D-341 slice B3 — each scheduled prompt's own standing pre-approvals, on its card.
+    triggerPreapprovals: {
+      choices: (args) => opts.rehearsalCall!('collection.contract.triggerPreapprovalChoices', args),
+      grant: (args) => opts.rehearsalCall!('collection.contract.grantTriggerPreapproval', args),
+      revoke: (args) => opts.rehearsalCall!('collection.contract.revokeTriggerPreapproval', args),
+    },
     ...(opts.subscribe ? { subscribe: opts.subscribe } : {}) }) : undefined;
   promptPanel?.setSession();
 
@@ -1628,6 +1636,10 @@ export const bootstrapAutomationRoute = (
   let pendingRetryFocus: AutomationSectionToken | null = null;
   const rehearsalPanels = new Map<string, { host: HTMLDetailsElement; panel: ReturnType<typeof mountAutomationRehearsalPanel> | null }>();
   const localWritePanels = new Map<string, { host: HTMLDetailsElement; panel: ReturnType<typeof mountScheduledLocalWritesPanel> | null }>();
+  // D-341 slice B2b — what a schedule or an event trigger may make its recipe do without asking.
+  const preapprovalPanels = new Map<string, { host: HTMLDetailsElement; panel: TriggerPreapprovalPanelMount | null }>();
+  // Hidden on a server from before pre-approvals, asked once for the route.
+  let preapprovalSupport: TriggerPreapprovalSupport | null = null;
   let oneOffEditor: { id: string; host: HTMLElement; panel: ReturnType<typeof mountOneOffReschedule> } | null = null;
   let disposed = false;
   let loadSeq = 0;
@@ -2076,7 +2088,7 @@ export const bootstrapAutomationRoute = (
     scheduleCreateKind = null;
     pendingModalReturnFocus = null;
     const returnSection = tab === 'schedule' ? 'schedules' : 'triggers';
-    const handle = RunModal.wireRunModal({
+    const handle = wireRunModal({
       recipe: entry,
       document: doc,
       initialTab: tab,
@@ -3483,6 +3495,44 @@ export const bootstrapAutomationRoute = (
       }
       routeRoot.querySelector?.('[data-recued-automation-detail]')?.append(entry.host);
     }
+    // D-341 slices B2b and B1b — "What it may do without asking", on a recurring schedule's, an
+    // event trigger's or an auto-run's own page: its pre-approvals, and the writes its recipe could
+    // make without asking. An auto-run is named by its timer's dish; with none, nobody switched
+    // it on, so there is nothing to allow yet.
+    const timerDish = activeSection === 'auto-run' && detailId !== null
+      ? autoRun.find(item => autoRunId(item) === detailId)?.dish_id ?? null : null;
+    if (opts.rehearsalCall && detailId !== null
+      && (activeSection === 'schedules' || activeSection === 'triggers' || timerDish !== null)) {
+      const call = opts.rehearsalCall;
+      const trigger: TriggerPreapprovalTrigger = activeSection === 'schedules'
+        ? { kind: 'schedule', schedule_id: detailId }
+        : activeSection === 'triggers'
+          ? { kind: 'event_trigger', trigger_id: detailId }
+          : { kind: 'auto_run', dish_id: timerDish! };
+      const key = JSON.stringify(trigger);
+      let entry = preapprovalPanels.get(key);
+      if (!entry) {
+        if (preapprovalPanels.size >= 10) {
+          const idle = [...preapprovalPanels].find(([, item]) => !item.panel?.pending());
+          if (idle) { idle[1].panel?.dispose(); idle[1].host.remove(); preapprovalPanels.delete(idle[0]); }
+        }
+        const host = doc.createElement('details'), summary = doc.createElement('summary');
+        summary.textContent = 'What it may do without asking'; host.append(summary);
+        (preapprovalSupport ??= createTriggerPreapprovalSupport((args) => call('collection.contract.triggerPreapprovalChoices', args)))
+          .show(host, trigger);
+        entry = { host, panel: null }; preapprovalPanels.set(key, entry);
+        const item = entry;
+        host.addEventListener('toggle', () => {
+          if (!host.open || item.panel || disposed || !routeRoot.contains(host)) return;
+          item.panel = mountTriggerPreapprovalPanel({ host, trigger, callers: {
+            choices: (args) => call('collection.contract.triggerPreapprovalChoices', args),
+            grant: (args) => call('collection.contract.grantTriggerPreapproval', args),
+            revoke: (args) => call('collection.contract.revokeTriggerPreapproval', args),
+          } });
+        });
+      }
+      routeRoot.querySelector?.('[data-recued-automation-detail]')?.append(entry.host);
+    }
     if (!opts.rehearsalCall || detailId === null) return;
     const kind = activeSection === 'triggers' ? 'trigger' : activeSection === 'schedules' ? 'schedule' : activeSection === 'auto-run' ? 'timer' : null;
     if (!kind) return;
@@ -3674,10 +3724,12 @@ export const bootstrapAutomationRoute = (
           start: (activeElement as HTMLInputElement).selectionStart,
           end: (activeElement as HTMLInputElement).selectionEnd,
         };
-    const focusedRehearsal = [...rehearsalPanels.values(), ...localWritePanels.values()].some(item => item.host.contains(activeElement ?? null)) ? activeElement : null;
+    const focusedRehearsal = [...rehearsalPanels.values(), ...localWritePanels.values(), ...preapprovalPanels.values()]
+      .some(item => item.host.contains(activeElement ?? null)) ? activeElement : null;
     oneOffEditor?.host.remove();
     for (const item of rehearsalPanels.values()) item.host.remove();
     for (const item of localWritePanels.values()) item.host.remove();
+    for (const item of preapprovalPanels.values()) item.host.remove();
     const promptFocus = promptHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
     const alarmFocus = alarmHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
     if (alarmForm) alarmHost.remove();
@@ -4976,6 +5028,7 @@ export const bootstrapAutomationRoute = (
     || oneOffEditor?.panel.pending() === true
     || [...rehearsalPanels.values()].some(item => item.panel?.hasInFlightWork() || item.panel?.hasUnsavedChanges())
     || [...localWritePanels.values()].some(item => item.panel?.pending())
+    || [...preapprovalPanels.values()].some(item => item.panel?.pending())
     || openModal?.hasInFlightWork() === true
     || preapprovalActivation?.hasInFlightWork() === true
     || autoRunConfigHandle?.hasInFlightWork() === true;
@@ -5007,6 +5060,8 @@ export const bootstrapAutomationRoute = (
       rehearsalPanels.clear();
       for (const item of localWritePanels.values()) { item.panel?.dispose(); item.host.remove(); }
       localWritePanels.clear();
+      for (const item of preapprovalPanels.values()) { item.panel?.dispose(); item.host.remove(); }
+      preapprovalPanels.clear();
       for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
       recipePicker?.destroy();
       recipePicker = null;
@@ -5030,3 +5085,11 @@ export const bootstrapAutomationRoute = (
   };
 };
 import { mountScheduledLocalWritesPanel } from './scheduled-local-writes-panel.js';
+import {
+  createTriggerPreapprovalSupport,
+  mountTriggerPreapprovalPanel,
+  TRIGGER_PREAPPROVAL_PANEL_STYLES,
+  type TriggerPreapprovalPanelMount,
+  type TriggerPreapprovalSupport,
+} from '../contracts/trigger-preapproval-panel.js';
+import type { TriggerPreapprovalTrigger } from '@recued/contracts';

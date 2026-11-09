@@ -419,6 +419,9 @@ export const createLLMConfigManager = (
     if (sJson !== undefined) slot.supports_json = sJson === '1';
     const sSearch = get(`${prefix}.supports_search`);
     if (sSearch !== undefined) slot.supports_search = sSearch === '1';
+    // D-344 — the owner's setting for the model's thinking.
+    const thinking = get(`${prefix}.thinking`);
+    if (thinking === 'on' || thinking === 'off') slot.thinking = thinking;
     // D-172 P5 — round-trip the modality + transcription declarations so a
     // BYOK slot configured via the CLI can satisfy a media turn (without
     // these, `matchLLM` reads the slot as text-only).
@@ -450,6 +453,7 @@ export const createLLMConfigManager = (
       'speed',
       'supports_json',
       'supports_search',
+      'thinking',
       'modalities',
       'transcription_model',
       // ⛔ DETECTED capabilities are cleared by every save, on purpose. A save
@@ -532,6 +536,7 @@ export const createLLMConfigManager = (
     else del(`${prefix}.supports_json`);
     if (slot.supports_search !== undefined) set(`${prefix}.supports_search`, slot.supports_search ? '1' : '0');
     else del(`${prefix}.supports_search`);
+    if (slot.thinking !== undefined) set(`${prefix}.thinking`, slot.thinking); else del(`${prefix}.thinking`);
     if (slot.modalities !== undefined) set(`${prefix}.modalities`, JSON.stringify(slot.modalities));
     else del(`${prefix}.modalities`);
     // D-262 § B4 — never written again. ⚠ It stays in the `keys` clear-list

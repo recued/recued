@@ -10,7 +10,12 @@ import type { LLMConfig, LLMSlot } from '@recued/llm';
  *    RECUED_LLM_SLOT2_PROVIDER=anthropic   (slot_2 provider)
  *    RECUED_LLM_SLOT2_MODEL=claude-opus-4-6 (slot_2 model)
  *    RECUED_LLM_SLOT2_API_KEY=sk-ant-...   (slot_2 API key)
+ *    RECUED_LLM_THINKING=off               (D-344: slot_1's thinking, on | off; unset, the provider's default)
+ *    RECUED_LLM_SLOT2_THINKING=on          (D-344: slot_2's thinking)
  */
+const thinkingOf = (value: string | undefined): LLMSlot['thinking'] =>
+  value === 'on' || value === 'off' ? value : undefined;
+
 export const resolveLLMConfigFromEnv = (
   env: Record<string, string | undefined> = process.env,
 ): LLMConfig | undefined => {
@@ -25,6 +30,7 @@ export const resolveLLMConfigFromEnv = (
     model,
     api_key: apiKey,
     base_url: env.RECUED_LLM_BASE_URL,
+    ...(thinkingOf(env.RECUED_LLM_THINKING) !== undefined ? { thinking: thinkingOf(env.RECUED_LLM_THINKING) } : {}),
   };
 
   const config: LLMConfig = { slot_1 };
@@ -38,6 +44,7 @@ export const resolveLLMConfigFromEnv = (
       model: m2,
       api_key: k2,
       base_url: env.RECUED_LLM_SLOT2_BASE_URL,
+      ...(thinkingOf(env.RECUED_LLM_SLOT2_THINKING) !== undefined ? { thinking: thinkingOf(env.RECUED_LLM_SLOT2_THINKING) } : {}),
     };
   }
 

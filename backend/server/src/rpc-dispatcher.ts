@@ -27,6 +27,7 @@
 
 import { RpcError, type HandlerRegistry, type RpcRegistry } from '@recued/contracts';
 import type { HandlerResult } from './types.js';
+import { PAUSED_RPC_REFUSAL, pauseRefusesRpc } from './pause-rpc-gate.js';
 
 /** Methods that remain available while a migration marker is set. */
 export const MIGRATION_ALLOWED_METHODS = new Set<string>([
@@ -101,6 +102,10 @@ export interface DispatcherGates {
    *  fail with `not_ready` / `draining`. Absent → Phase A/B behavior
    *  (no lifecycle gating). */
   lifecycleState?: () => import('@recued/contracts').LifecycleState;
+  /** D-188 — the master pause. While it holds, an owner action that reaches outside the
+   *  server (`PAUSE_REFUSED_METHODS`, `pause-rpc-gate.ts`) is refused before its handler runs:
+   *  the emergency stop, the owner's ruling of 2026-11-08. Absent → never paused. */
+  serverPaused?: () => boolean;
 }
 
 /** Factory result — the dispatcher itself. */
@@ -144,6 +149,12 @@ const draining = (method: string): HandlerResult<never> => ({
     code: 'draining',
     message: `server is draining; new rpc calls rejected (method: ${method})`,
   },
+});
+
+const serverPaused = (): HandlerResult<never> => ({
+  ok: false,
+  status: 409,
+  error: { code: 'server_paused', message: PAUSED_RPC_REFUSAL },
 });
 
 const unknownMethod = (method: string): HandlerResult<never> => ({
@@ -203,6 +214,12 @@ export const createRpcDispatcher = <R extends RpcRegistry, Ctx>(
         // the same from the caller's POV — the server is winding down.
         return draining(method);
       }
+    }
+
+    // D-188 — the owner's pause: an action that would reach outside the server waits for
+    // Resume. Before the auto-lock touch, as the other refusals are.
+    if (gates.serverPaused?.() === true && pauseRefusesRpc(method, args)) {
+      return serverPaused();
     }
 
     // Maintenance gate — block everything except migration-allowed

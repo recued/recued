@@ -97,7 +97,7 @@ export { mintAskId } from './correlation.js';
 export { createAskDeliveryStore, receivesOnly } from './ask-delivery-store.js';
 export type {
   AskDeliveryStore, AskDeliveryRecord, AskDeliveryGroup, AskDeliveryInput,
-  AskDeliveryDestination, AskDeliveryAttempt, AskDeliveryOutcome, AskDeliveryEnvelope,
+  AskDeliveryDestination, AskDeliveryAttempt, AskDeliveryOutcome, AskDeliveryEnvelope, AskDeliveryLead,
   AskDeliveryReceipt, AskWithdrawalJob, AskReplyOrigin, UnmatchedAskReply,
   AskDestinationResolution,
 } from './ask-delivery-store.js';
@@ -304,6 +304,19 @@ export interface NotificationBlockDeps {
    *  which is TR-10, the case the boot sweep already re-delivers. **Quiet hours
    *  on an approval is TR-10 with a clock.** Absent ⇒ nothing is ever held. */
   shouldHoldAsk?: (expires_at: number | undefined) => boolean;
+  /** D-188 — may this answer be recorded now? The owner's ruling of 2026-11-08: while the
+   *  server is paused, nothing the pause stops can be approved (declining still works), so
+   *  an answer that would let a held action go ahead is refused BEFORE it is recorded and
+   *  the ask stays open for after Resume. Answers the refusal (its rpc code and words), or
+   *  undefined to record the answer.
+   *
+   *  ⚠ Injected, because the block is a LEAF: the pause, the held run and who started it
+   *  live in `backend/server` (`pause-approval.ts`). Absent ⇒ every valid answer is
+   *  recorded, as before. */
+  refuseAnswer?: (
+    ask: PendingAsk,
+    option: string,
+  ) => Promise<{ readonly code: string; readonly message: string } | undefined>;
 }
 
 /** The notification block's public operations. */
@@ -1245,6 +1258,10 @@ export const createNotificationBlock = (
         // A reply carrying an option the ask never offered is not a
         // valid answer.
         if (selectAskOption(ask, reply.option) === undefined) return 'ignored';
+        // D-188 — an answer the owner's pause holds back is refused before anything is
+        // recorded, so the ask stays open and is answered after Resume (`refuseAnswer`).
+        const refusal = await deps.refuseAnswer?.(ask, reply.option);
+        if (refusal !== undefined) throw new RpcError(refusal.code, refusal.message, 409);
 
         // D-234 § 234.4e — THE NOTE, admitted only if this ask invited one.
         //

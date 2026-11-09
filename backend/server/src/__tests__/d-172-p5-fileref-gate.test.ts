@@ -222,7 +222,7 @@ describe('D-172 P5 — ai-* file_ref read is policy-gated for data-file-read', (
     const err = firstError(result.errors);
     expect(err.message).toContain('Gateway refused dispatch');
     expect(err.message).toContain('data-file-read');
-    expect(err.message).toContain('not in contract.allowed_tools');
+    expect(err.message).toContain('is not available for this contract.');
 
     // Fail-closed: NO bytes left the warehouse — the raw file reader was never
     // reached, and the LLM never ran.

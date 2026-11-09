@@ -99,6 +99,8 @@ export interface ComposeMailStackBootDeps {
    *  collection's poll loop is deferred while the vault is LOCKED. Absent ⇒
    *  sync always starts (dbless / harness). */
   isVaultUnlocked?: () => boolean;
+  /** D-188 — the master pause: the poll loops are deferred while it holds, as while sealed. */
+  isPaused?: () => boolean;
   /** D-318 P23 — the email-approval reply check, called on every upsert while
    *  the provider's own record of the message is in hand. The listeners bind
    *  it late (`createLateEmailAnswerHook`); absent ⇒ no mail answers an ask. */
@@ -172,6 +174,7 @@ export const composeMailBoot = (
     fileReadDeps,
     inboundAttachmentDeps,
     isVaultUnlocked,
+    isPaused,
     getCollectionRegistry,
   } = deps;
 
@@ -303,6 +306,7 @@ export const composeMailBoot = (
       // adapter's refresh path resolves the same way via `buildProvider`.
       oauthConfig: (provider, appId) => resolveOAuthConfig(provider, appId),
       ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
+      ...(isPaused ? { isPaused } : {}),
     },
     {
       log: (level, msg, data) => {

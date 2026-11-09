@@ -14,7 +14,12 @@ export interface MailMessageReadDeps {
   listMailInstances(): Promise<{ instances: readonly { slug: string; send_capable: boolean; auth_state: string }[] }>;
   blobs?: BlobStore;
   getIncarnation?(slug: string): string | null;
+  /** D-188 — the owner's pause. While it holds, only the stored copy is read. */
+  isPaused?(): boolean;
 }
+
+/** D-188 — why a paused server shows the stored copy without Reply or Forward. */
+export const MAIL_REPLY_PAUSED_REASON = 'The server is paused. Resume it to reply or forward.';
 
 const rfcId = (value: unknown): string | null => {
   if (typeof value !== 'string' || value.length > 998) return null;
@@ -72,6 +77,9 @@ export const getMailMessage = async (deps: MailMessageReadDeps, input: MailMessa
     snapshot.forward_unavailable_reason = reason;
     return snapshot;
   };
+  // D-188 — the emergency stop: nothing reaches the mailbox. The owner still reads what this
+  // server holds; replying and forwarding verify the original at the mailbox first, so they wait.
+  if (deps.isPaused?.() === true) return unavailable(MAIL_REPLY_PAUSED_REASON);
   const canSend = async (): Promise<boolean> => {
     const listed = await deps.listMailInstances();
     return listed.instances.some(row => row.slug === input.slug && row.send_capable && row.auth_state === 'healthy');

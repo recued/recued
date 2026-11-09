@@ -243,6 +243,43 @@ describe('D-196 llm_gateway shared-turn carriers', () => {
     expect(meter.record).toHaveBeenCalledTimes(1);
   });
 
+  // D-346 follow-up (2026-11-08) — the owner's ruling: an app on this door reads only that a
+  // tool is not available for its contract. It read "llm_gateway tool is not granted by this
+  // customer token", naming the token that held it back.
+  it('tells the model only that a tool the contract does not allow is not available', async () => {
+    const aiInputs: Record<string, unknown>[] = [];
+    let aiRound = 0;
+    const executeAiCall: ExecuteChatAiCall = vi.fn(async (_manifest, input) => {
+      aiInputs.push(input);
+      return {
+        body: aiRound++ === 0
+          ? { response: '', events: [], tool_calls: [{ tool: 'seller/mail-send', args: {} }] }
+          : { response: 'not here', events: [], tool_calls: [] },
+      };
+    });
+    const h = createHarness({
+      entries: [readEntry('seller/invoice-search', 2), readEntry('seller/mail-send', 2)],
+      executeAiCall,
+    });
+
+    const result = await h.orchestrator.runLlmGatewayTurn!({
+      session_id: 'gateway-not-allowed',
+      user_id: 'customer-token',
+      contract_id: 'customer-contract',
+      content: { chat_tail: [], user_message: 'send the invoice' },
+      allowed_tool_names: ['seller/invoice-search'],
+      resolve_contract_snapshot: vi.fn(async () => SNAPSHOT),
+      execute_ai_call: executeAiCall,
+      model_layer: 'byok',
+    });
+
+    expect(result.assistant_content).toBe('not here');
+    expect(h.localDispatch).not.toHaveBeenCalled();
+    const seen = String(aiInputs[1]?.['llm.prompt']);
+    expect(seen).toContain("'seller/mail-send' is not available for this contract.");
+    expect(seen).not.toContain('customer token');
+  });
+
   it.each([
     ['vault carrier', { query: 'invoice', vault: { token: 'caller-secret' } }, '$.vault'],
     ['execution context carrier', { query: 'invoice', execution_context: { actor: 'owner' } }, '$.execution_context'],

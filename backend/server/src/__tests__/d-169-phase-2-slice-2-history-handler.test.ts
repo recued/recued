@@ -371,6 +371,8 @@ describe('D-169 P2 Slice 2 history handlers', () => {
       // (history-handler.ts) without updating this assertion. Aligned while
       // co-editing this file for the P3 origin-projection churn.
       'notification.submitAnswer',
+      // D-335 slice Z — the secret a browser step waits for, given from its ask's card.
+      'notification.giveSecret',
     ]);
 
     await expect(
@@ -397,5 +399,39 @@ describe('D-169 P2 Slice 2 history handlers', () => {
     });
     expect(listActivities).toHaveBeenCalledTimes(1);
     expect(listOpenAsks).toHaveBeenCalledTimes(1);
+  });
+});
+
+// D-188 — the owner's ruling of 2026-11-08: an approval the pause holds back says so on its card
+// and offers only the answers that still work (declining). The server decides which asks.
+describe('D-188 a held approval while the server is paused', () => {
+  const approval = (ask_id: string): PendingAsk => pendingAsk({
+    ask_id,
+    handler_kind: 'gateway.preflight',
+    options: [{ id: 'approve', label: 'Approve' }, { id: 'allow_session', label: 'Allow this session' }, { id: 'deny', label: 'Deny' }],
+  });
+
+  it('marks the asks the pause holds back, with the words and the answers still offered', async () => {
+    const { asks } = await handlePendingAsks({
+      listOpenAsks: async () => [approval('held'), approval('by-hand')],
+      askWaitsForResume: async (ask) => ask.ask_id === 'held',
+    } as HistoryDeps);
+    const byId = new Map(asks.map((ask) => [ask.ask_id, ask]));
+    expect(byId.get('held')?.paused).toEqual({
+      message: 'The server is paused. Resume it to approve this; you can still deny it.',
+      allowed_options: ['deny'],
+    });
+    expect(byId.get('held')?.options.map((o) => o.id)).toEqual(['approve', 'allow_session', 'deny']);
+    expect(byId.get('by-hand')).not.toHaveProperty('paused');
+  });
+
+  it('shows an ask as it was when its hold-back cannot be read, or nothing decides it', async () => {
+    const unreadable = await handlePendingAsks({
+      listOpenAsks: async () => [approval('held')],
+      askWaitsForResume: async () => { throw new Error('anchor read failed'); },
+    } as HistoryDeps);
+    expect(unreadable.asks[0]).not.toHaveProperty('paused');
+    const older = await handlePendingAsks({ listOpenAsks: async () => [approval('held')] } as HistoryDeps);
+    expect(older.asks[0]).not.toHaveProperty('paused');
   });
 });

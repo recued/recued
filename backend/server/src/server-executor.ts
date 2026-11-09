@@ -25,6 +25,7 @@ import { IngredientError, createConnectionAdapter, createConnectionApiHandler, c
 import type { ConnectionAdapterDeps, ConnectionApiHandlerDeps, ConnectionAuditEmission, ConnectionMcpHandlerDeps, ConnectionNotificationHandlerDeps, IngredientCacheOptions, IngredientExecutor, Adapter, ResolvedCall, McpStreamHandle } from '@recued/ingredients';
 import { createAdapterRegistry } from '@recued/engine';
 import { createBridgeDomAdapter } from './bridges/dom-adapter.js';
+import { createPublicFileFetch } from './http-toolkit/http-actions.js';
 import {
   executeLLM, createDefaultRegistry, createQuotaTracker,
   executeEmbedding, createDefaultEmbeddingsRegistry, isEmbeddingsManifest, LLMError,
@@ -52,6 +53,7 @@ import { withSalesforceOptionalColumns } from './data/salesforce/optional-column
 import { buildStdioMcpEnvironment } from './mcp-stdio-spawner.js';
 import { currentRunAbortContext } from './execution/run-abort-context.js';
 import { assertProviderHandoffActive, captureProviderHandoffFence } from './execution/provider-handoff.js';
+import { currentChatModelChoice } from './chat-model-choice.js';
 export { resolveLLMConfigFromEnv } from './llm-env.js';
 export { resolveVaultFromEnv, mergeVault } from './vault-env.js';
 
@@ -221,6 +223,11 @@ export interface ServerExecutorConfig {
   llmWebChatSupported?: boolean;
   /** WebSocket handle — enables chat ingredient delegation to extensions. */
   wsServer?: WsServerHandle;
+  /** D-188 — the master pause, late-bound by `composeListeners` like `wsServer`. A catalog
+   *  operation run outside a recipe (`runGatedCatalogOperation`: a vendor task edit, the
+   *  seller's sync, a source sync) is refused while it holds: the emergency stop, nothing
+   *  leaves the server until Resume. Absent ⇒ never paused. */
+  isServerPaused?: () => boolean;
   /** Token budget check. Returns true if over budget. */
   checkTokenBudget?: (expectedTokens: number) => boolean;
   /** Token usage reporter. Called after each LLM call. */
@@ -339,6 +346,10 @@ export interface ServerExecutorConfig {
    *  returns). Absent → DOM ingredient calls surface `ROLE_RESTRICTION`
    *  on this runtime, matching the pre-D-169 server posture. */
   bridgeDispatcherRef?: () => import('./bridges/dispatcher.js').BridgeDispatcher | undefined;
+  /** D-335 slice AP — where a browser step keeps a file it brings in (a download), and reads one it
+   *  puts into a page, among the owner's files (`bridges/browser-files.ts`). Absent, a download fails,
+   *  saying this server keeps no files from the browser. */
+  browserFiles?: import('./bridges/browser-files.js').BrowserFiles;
   /** D-172 P5 / N.8 — Gateway-gated `file.read` for the ai-* multimodal
    *  overload. When wired, a contracted ai-* call whose `llm.data` is a
    *  `data.file` ref (`{ file_ref }` or a resolved file record) has its bytes
@@ -844,6 +855,9 @@ const createLLMAdapter = (
     const knownValues = piiKnownValuesRuns
       ? piiKnownValuesRuns.forRun(resolved.stepMeta?.run_id)
       : piiKnownValues;
+    // D-344 slice C — inside an owner's chat turn, the model that chat runs on, preferred (a reviewed
+    // run keeps the slot it was reviewed on).
+    const chatChoice = reviewed ? undefined : currentChatModelChoice();
     return executeLLM(manifest, input, {
       config,
       adapters: signal ? guardedAdapters : adapters,
@@ -852,7 +866,8 @@ const createLLMAdapter = (
       webChatSupported,
       onTokenUsage: emitUsage,
       ...(knownValues ? { piiKnownValues: knownValues } : {}),
-      ...(reviewed ? { matchContext: () => ({ pinSlot: reviewed.aiSlot() }) } : {}),
+      ...(reviewed ? { matchContext: () => ({ pinSlot: reviewed.aiSlot() }) }
+        : chatChoice ? { matchContext: () => ({ prefer: chatChoice }) } : {}),
       beforeComplete: async (request: import('@recued/llm').LLMProviderInvocation) => {
         assertPreapprovalOrdinaryRun(); await reviewed?.beforeAiProvider(resolved, request);
         assertHandoff();
@@ -889,6 +904,20 @@ export const createServerExecutor = (
   // slot wired, chat delegated via WS when an extension is paired.
   // DOM omitted — server has no browser. Unsupported kinds get
   // INGREDIENT_ADAPTER_ALL_FAILED placeholders from the factory.
+  const ai = createLLMAdapter(
+    config.manifests,
+    config.llmConfig,
+    config.llmQuota ?? createQuotaTracker(),
+    config.llmTabProbe ?? emptyTabProbe,
+    config.llmWebChatSupported ?? false,
+    config.checkTokenBudget,
+    config.onTokenUsage,
+    config.fileRead,
+    config.resolveLlmConfig,
+    config.runTokenUsage,
+    config.piiKnownValues,
+    config.piiKnownValuesRuns,
+  );
   const adapterRegistry = createAdapterRegistry({
     http: reviewedHttp,
     mcp: runMcp,
@@ -896,20 +925,7 @@ export const createServerExecutor = (
     // (`resolveLlmConfig`) and surfaces AI_LLM_UNAVAILABLE when nothing is
     // configured, rather than gating on a boot `slot_1` snapshot (which never
     // saw a post-boot slot, and excluded embeddings-only configs entirely).
-    ai: createLLMAdapter(
-      config.manifests,
-      config.llmConfig,
-      config.llmQuota ?? createQuotaTracker(),
-      config.llmTabProbe ?? emptyTabProbe,
-      config.llmWebChatSupported ?? false,
-      config.checkTokenBudget,
-      config.onTokenUsage,
-      config.fileRead,
-      config.resolveLlmConfig,
-      config.runTokenUsage,
-      config.piiKnownValues,
-      config.piiKnownValuesRuns,
-    ),
+    ai,
     chat: config.wsServer ? createChatDelegationAdapter(config.wsServer) : undefined,
     // D-169 P0 follow-on — DOM-ingredient runner consumer. Materialises
     // the `dom` adapter slot when the WS layer has wired a bridge
@@ -923,6 +939,11 @@ export const createServerExecutor = (
       ? createBridgeDomAdapter({
           manifests: config.manifests,
           getDispatcher: config.bridgeDispatcherRef,
+          // D-335 slice AD — a batch's ask step puts its question through this same AI adapter.
+          askModel: ai,
+          // D-335 slice AP — a file a page links to, kept among the owner's files. D-345 slice E — fetched
+          // by the server first when its address is public.
+          ...(config.browserFiles ? { files: config.browserFiles, fetchFile: createPublicFileFetch() } : {}),
         })
       : undefined,
     // D-125 P3.1 — connection adapter shell. Per-kind handlers (api /
@@ -1039,25 +1060,26 @@ export const createBoundExecutor = (
   // this, recipes invoked via handleExecute (MCP / rpc / scheduler) hit
   // `INGREDIENT_ADAPTER_ALL_FAILED` on any shared-* step — even though
   // the non-bound createServerExecutor path works fine.
+  const ai = createLLMAdapter(
+    config.manifests,
+    config.llmConfig,
+    config.llmQuota ?? createQuotaTracker(),
+    config.llmTabProbe ?? emptyTabProbe,
+    config.llmWebChatSupported ?? false,
+    config.checkTokenBudget,
+    config.onTokenUsage,
+    config.fileRead,
+    config.resolveLlmConfig,
+    config.runTokenUsage,
+    config.piiKnownValues,
+    config.piiKnownValuesRuns,
+  );
   const adapterRegistry = createAdapterRegistry({
     http: reviewedHttp,
     mcp: runMcp,
     // D-174 R28 — always wire the AI adapter (per-use config resolution); see
     // createServerExecutor for the rationale.
-    ai: createLLMAdapter(
-      config.manifests,
-      config.llmConfig,
-      config.llmQuota ?? createQuotaTracker(),
-      config.llmTabProbe ?? emptyTabProbe,
-      config.llmWebChatSupported ?? false,
-      config.checkTokenBudget,
-      config.onTokenUsage,
-      config.fileRead,
-      config.resolveLlmConfig,
-      config.runTokenUsage,
-      config.piiKnownValues,
-      config.piiKnownValuesRuns,
-    ),
+    ai,
     chat: config.wsServer ? createChatDelegationAdapter(config.wsServer) : undefined,
     // D-169 P0 follow-on — DOM-ingredient runner consumer. Materialises
     // the `dom` adapter slot when the WS layer has wired a bridge
@@ -1071,6 +1093,11 @@ export const createBoundExecutor = (
       ? createBridgeDomAdapter({
           manifests: config.manifests,
           getDispatcher: config.bridgeDispatcherRef,
+          // D-335 slice AD — a batch's ask step puts its question through this same AI adapter.
+          askModel: ai,
+          // D-335 slice AP — a file a page links to, kept among the owner's files. D-345 slice E — fetched
+          // by the server first when its address is public.
+          ...(config.browserFiles ? { files: config.browserFiles, fetchFile: createPublicFileFetch() } : {}),
         })
       : undefined,
     // D-125 P3.1 — connection adapter shell. Per-kind handlers (api /

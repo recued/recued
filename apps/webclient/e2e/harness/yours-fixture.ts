@@ -134,6 +134,31 @@ export const createYoursFixture = () => {
     occasions.set('ana-birthday', { id: 'ana-birthday', title: 'Ana birthday', month_day: '10-24', people: ['ana'], rules: [], muted: false, created_at: time, updated_at: time });
     episodes.set('museum', { ...derived, id: 'museum', title: 'Museum afternoon', storage_reason: 'owner_record', created_at: time, updated_at: time });
   }
+  // `&closing_record=1` — a day closed in the chat recorded a lesson with Ana as skipped (D-343 slice 2).
+  if (new URLSearchParams(location.search).has('closing_record')) {
+    episodes.set('skipped-spanish', { id: 'skipped-spanish', title: 'Spanish lesson', when: { from: Date.parse('2025-10-21T18:00:00Z'), to: Date.parse('2025-10-21T19:00:00Z') },
+      people: ['ana'], subjects: [], evidence: [], basis: 'declared', assembly_rule: 'owner_record.v1', sensitive: [], storage_reason: 'owner_record', outcome: 'skipped',
+      created_at: time, updated_at: time });
+  }
+  // `&closing_days=1` — days closed in the chat (D-343 slice 5), each record a whole day on the owner's
+  // clock: Wednesday's written that night, then Monday's written on Thursday. And two pursuits: "Read
+  // more books", recorded over the past month, and "Learn guitar", never recorded.
+  const closingDays = new URLSearchParams(location.search).has('closing_days');
+  if (closingDays) {
+    const day = (month: number, date: number) => ({ from: new Date(2026, month - 1, date).getTime(), to: new Date(2026, month - 1, date + 1).getTime() });
+    const record = (id: string, title: string, when: { from: number; to: number }, outcome: 'done' | 'skipped', written: number, subject?: string) =>
+      episodes.set(id, { id, title, when, people: [], subjects: subject ? [{ collection: 'asset', id: subject }] : [], evidence: subject ? [{ collection: 'asset', id: subject }] : [],
+        basis: 'declared', assembly_rule: 'owner_record.v1', sensitive: [], storage_reason: 'owner_record', outcome, created_at: written, updated_at: written });
+    record('walk', 'Went for a walk', day(10, 14), 'done', time - 3 * 86_400_000);
+    record('run', 'Ran 5 km', day(10, 12), 'done', time - 2 * 86_400_000);
+    record('spanish', 'Spanish lesson', day(10, 12), 'skipped', time - 2 * 86_400_000);
+    record('books-16', 'Read 40 pages', day(10, 16), 'done', time - 86_400_000, 'read-books');
+    record('books-15', 'No reading', day(10, 15), 'skipped', time - 2 * 86_400_000, 'read-books');
+    record('books-10', 'Read 30 pages', day(10, 10), 'done', time - 7 * 86_400_000, 'read-books');
+    record('books-01', 'Read a chapter', day(9, 1), 'done', time - 46 * 86_400_000, 'read-books');
+    assets.set('read-books', make('read-books', { name: 'Read more books', class_id: 'pursuit', attributes: { horizon: 'this year', where_i_am: 'Halfway through the second book' } }));
+    assets.set('guitar', make('guitar', { name: 'Learn guitar', class_id: 'pursuit' }));
+  }
   if (demo) assets.set('passport', make('passport', { name: 'Ana’s passport', class_id: 'passport', holder_contact: 'ana', dates: { expires_on: '2027-04-17' }, rules: [structuredClone(rule)] }));
   // `&yours_provenance=1` — facts from several sources, and a condition a recipe
   // reported with its evidence (D-325 §15.3).
@@ -248,7 +273,9 @@ export const createYoursFixture = () => {
   const placementFor = (ref: { collection: string; id: string }): Omit<YoursSnapshot['sphere_placements'][number], 'ref'> => spherePlacements.get(JSON.stringify([ref.collection, ref.id])) ?? { reason: 'unsorted', pinned: false };
   const sourceSpheres = new Map<string, 'personal' | 'professional'>([['mail:personal', 'personal'], ['calendar:work', 'professional']]);
   let delivery: SituationDeliveryStatus = { settings: { frequency: 'weekly', weekday: 1, time: '08:00', day_of: true, look_ahead_days: 7 }, last_run: null, last_sent: null };
-  let agenda: SituationAgendaStatus = { settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 }, last_run: null, last_sent: null, pending: 0, uncertain: 0 };
+  // `&close_day=1` — a server that names Close the day (D-343 slice 4), so its card shows.
+  let agenda: SituationAgendaStatus = { settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 }, last_run: null, last_sent: null, pending: 0, uncertain: 0,
+    ...(new URLSearchParams(location.search).has('close_day') ? { close_day: { settings: { enabled: false, time: '21:00' }, last_run: null, last_sent: null, pending: 0, uncertain: 0 } } : {}) };
   let householdTelegram: NonNullable<YoursSnapshot['household']>['telegram'] = null;
   let householdHA: import('@recued/contracts').HouseholdHomeAssistantSelection | null = null;
   const familyGroup = () => ({ connection_name: 'Family', connection_enrolled_at: 200, recipient: '-100123', selected_at: time });
@@ -276,7 +303,11 @@ export const createYoursFixture = () => {
       occurrences: demo && commitment.lifecycle_state === 'pending' ? [{ id: 'passport-occurrence', asset_id: 'passport', asset_name: 'Ana’s passport', question: false, reminders_started: true, commitment,
         renewal: { field: 'expires_on', current: '2027-04-17' }, ...(acknowledged ? { acknowledged: true as const } : {}) }] : [],
       proposal_count: proposals.size, newest_proposal: proposals.size ? { id: 'receipt', title: 'LG television' } : null, phone_ready: false,
-      unmatched_replies: demo ? [{ id: 'unmatched', text: 'done', reason: 'no_item_number', created_at: time }] : [] };
+      unmatched_replies: demo ? [{ id: 'unmatched', text: 'done', reason: 'no_item_number', created_at: time }] : [],
+      ...(new URLSearchParams(location.search).has('streams') ? { stream: true as const } : {}),
+      // `&suggestions=1` — today's AI suggestions, finished (D-340 slice 4): a long word in them, to wrap.
+      ...(new URLSearchParams(location.search).has('suggestions') ? { suggestions: { day: '2026-09-08', session_id: 'agenda suggestions/1',
+        text: 'Leave at 08:10 for the dentist: the A4 is closed.\nBring the referral, https://clinic.example.test/referrals/AnaLimaOrthodonticsFollowUpReferralLetter2026November.' } } : {}) };
   };
   const snapshot = (input: YoursReadRequest): YoursSnapshot => {
     const term = input.search?.trim().toLowerCase() ?? '';
@@ -292,7 +323,10 @@ export const createYoursFixture = () => {
     const matching = [...assets.values()].filter(asset => !asset.deleted_at && (!term || asset.name.toLowerCase().includes(term) || asset.class_id?.toLowerCase().includes(term)))
       .filter(asset => !input.asset_sphere || legacySpheres || (placementFor({ collection: 'asset', id: asset.id }).sphere ?? 'unsorted') === input.asset_sphere)
       .filter(asset => !input.asset_filter || legacyFilters || (input.asset_filter === 'missing_facts' ? summaryFor(asset).missing.length > 0 : summaryFor(asset).next_due?.state === 'overdue'));
-    const ordered = matching.sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id));
+    // D-342 — the Pursuits tab reads pursuits alone, and the Assets tab every asset but them.
+    const pursuitsListed = input.pursuits === undefined ? matching
+      : matching.filter(asset => (asset.class_id === 'pursuit') === (input.pursuits === 'only'));
+    const ordered = pursuitsListed.sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id));
     const selected = (input.asset_id ? [...assets.values()].filter(asset => input.asset_id === asset.id && !asset.deleted_at)
       : ordered.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 50))).map(effective);
     const parent = input.asset_id && selected[0]?.belongs_to ? assets.get(selected[0].belongs_to) : undefined;
@@ -304,6 +338,20 @@ export const createYoursFixture = () => {
     // As the server reads them: an occasion's page gets the suggestions that would change
     // it (§15.2), and no list but an episode's own address shows one the owner hid (P44).
     const hidden = (id: string) => suppressions.some(row => row.kind === 'episode' && !row.of && row.value === id);
+    // D-343 slice 5 — as the server lists them: by when each happened, the latest first; an asset's
+    // page the episodes that cite it; and each pursuit's activity from those done.
+    const cites = (row: Episode, id: string) => row.subjects.some(ref => ref.collection === 'asset' && ref.id === id);
+    const listedEpisodes = [...episodes.values()].filter(row => input.episode_id ? row.id === input.episode_id
+      : !hidden(row.id) && (!input.occasion_id || row.occasion_id === input.occasion_id) && (!input.asset_id || cites(row, input.asset_id)))
+      .sort((a, b) => b.when.from - a.when.from || b.updated_at - a.updated_at || a.id.localeCompare(b.id));
+    const localDay = (at: number) => { const d = new Date(at); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+    const pursuitIds = new URLSearchParams(location.search).has('yours_without_pursuit_activity') ? undefined
+      : input.pursuits === 'only' ? selected.map(asset => asset.id) : input.asset_id && selected[0]?.class_id === 'pursuit' ? [selected[0].id] : undefined;
+    const pursuit_activity = pursuitIds ? Object.fromEntries(pursuitIds.flatMap(id => {
+      const days = [...new Set([...episodes.values()].filter(row => !hidden(row.id) && row.outcome !== 'skipped' && cites(row, id)).map(row => localDay(row.when.from)))].sort();
+      const first = localDay(time - 29 * 86_400_000);
+      return days.length ? [[id, { last_on: days.at(-1)!, days_30: days.filter(on => on >= first).length }]] : [];
+    })) : undefined;
     return { assets: selected, related_assets: [...related.values()], total_assets: matching.length, classes,
       proposals: input.asset_id ? [] : input.occasion_id ? [...proposals.values()].filter(row => row.subject?.collection === 'occasion' && row.subject.id === input.occasion_id)
         : [...proposals.values()].filter(row => !input.proposal_kind || row.kind === input.proposal_kind), total_proposals: proposals.size, matching_proposals: [...proposals.values()].filter(row => !input.proposal_kind || row.kind === input.proposal_kind).length,
@@ -319,7 +367,8 @@ export const createYoursFixture = () => {
       // `&yours_proof=1` — a mailbox takes forwarded proof (D-325 §5.3).
       ...(new URLSearchParams(location.search).has('yours_proof') ? { proof_addresses: ['ana+done@example.test'] } : {}),
       occasions: [...occasions.values()].filter(row => !input.occasion_id || row.id === input.occasion_id),
-      episodes: [...episodes.values()].filter(row => input.episode_id ? row.id === input.episode_id : !hidden(row.id) && (!input.occasion_id || row.occasion_id === input.occasion_id)),
+      episodes: listedEpisodes,
+      ...(input.pursuits ? { pursuits: input.pursuits } : {}), ...(pursuit_activity ? { pursuit_activity } : {}),
       ...(input.include_derived && demo && !suppressions.some(row => row.kind === 'episode' && row.value === derived.id) ? { derived_episodes: [derived] } : {}),
       recall_rates: recallRates,
       sources: [{ id: 'mail:personal', name: 'Personal mail', enabled: true, proposals: proposals.size }], suppressions,
@@ -536,8 +585,15 @@ export const createYoursFixture = () => {
         { entity_id: 'todo.household', name: 'Household', usable: true }] } };
     }
     if (method === 'yours.today') return { result: today(raw as { now: number; before: number }) };
-    if (method === 'yours.delivery') return { result: delivery };
-    if (method === 'yours.agenda') return { result: agenda };
+    // `&streams=1` — a server whose daily and weekly streams took over (D-340 slice 2).
+    if (method === 'yours.delivery') return { result: new URLSearchParams(location.search).has('streams') ? { ...delivery, streams: true } : delivery };
+    if (method === 'yours.agenda') {
+      if (!new URLSearchParams(location.search).has('streams')) return { result: agenda };
+      const stream = { settings: { enabled: true, time: '07:30', day: 'today' as const, weekday: 1, agenda: true, coming_up: true, look_ahead_days: 7 as const,
+        suggestions: false, due_today: false, include_private: false, reminders: false, channels: null }, last_run: null, last_sent: null, pending: 0, uncertain: 0 };
+      return { result: { ...agenda, close_day: agenda.close_day ?? { settings: { enabled: false, time: '21:00' }, last_run: null, last_sent: null, pending: 0, uncertain: 0 },
+        streams: { daily: stream, weekly: { ...stream, settings: { ...stream.settings, enabled: false } } } } };
+    }
     if (method === 'yours.learning') return { result: { last_time: lastTime, classes: recallRates,
       asked: lastTime === 'unasked' && new URLSearchParams(location.search).has('yours_last_time_asked') } };
     if (method === 'yours.context') {

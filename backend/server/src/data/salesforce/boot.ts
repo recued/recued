@@ -382,6 +382,8 @@ export const bootSalesforce = async (
         ),
     });
     const cometDLifecycle = wireSalesforceCometDLifecycle({
+      // D-188 — the stream holds while the owner's pause does.
+      ...(deps.isPaused ? { isPaused: deps.isPaused } : {}),
       connectionStore: deps.connectionStore,
       lookupConnection: deps.lookupConnection,
       refreshAuth: deps.refreshAuth,

@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   INSTALL_GRANT_ACCESS_OPTION_ATTR,
   INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR,
+  INSTALL_GRANT_OWNER_ONLY_ATTR,
   INSTALL_GRANT_PICKER_ATTR,
   INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR,
   INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR,
@@ -663,6 +664,58 @@ const setup = (
   });
   return { host, mount, installCalls };
 };
+
+// The owner's ruling (2026-11-08): the dialog shows the Access choice where it decides
+// something. A Pack with recipes limits the owner too (its recipes are switched on for them
+// only up to the level, D-247 D15.1); a Pack of connection actions alone limits only the
+// apps it is shared with, since the owner reaches every one of its actions either way.
+describe('D-346 follow-up — the Access choice shows where it decides something', () => {
+  const actionsOnly = (): BulkPackManifest => ({
+    ...compositionPack('http', [op('invoice.search', 'read'), op('invoice.create', 'write')]),
+    recipes: [],
+  });
+  const render = (model: NonNullable<ReturnType<typeof installGrantModelFromManifest>>, audience: InstallAudienceSelection) =>
+    renderInstallGrantPicker({
+      document: makeFakeDocument() as unknown as Document,
+      model,
+      access: 'read',
+      audience,
+      onAccess: () => {},
+      onAudience: () => {},
+    }) as unknown as FakeElement;
+  const ownerOnly: InstallAudienceSelection = { owner: true, all_customers: false, all_other_contracts: false };
+  const textOf = (node: FakeElement): string => [node.textContent, ...node.children.map(textOf)].join(' ');
+
+  it('a Pack with recipes binds the owner; one of connection actions alone, an authored composition or an MCP server does not', () => {
+    expect(installGrantModelFromManifest(compositionPack('http', [op('invoice.search', 'read')]))!.bindsOwner).toBe(true);
+    expect(installGrantModelFromManifest(recipeOnlyPack())!.bindsOwner).toBe(true);
+    expect(installGrantModelFromManifest(actionsOnly())!.bindsOwner).toBe(false);
+    expect(installGrantModelFromReviewFamilies([family('contact.read', 'read', 'api')])!.bindsOwner).toBe(false);
+  });
+
+  it('shared with no one but the owner, a Pack of connection actions shows a note, not the choice', () => {
+    const node = render(installGrantModelFromManifest(actionsOnly())!, ownerOnly);
+    expect(findAllByAttr(node, INSTALL_GRANT_ACCESS_OPTION_ATTR)).toEqual([]);
+    const note = findByAttr(node, INSTALL_GRANT_OWNER_ONLY_ATTR);
+    expect(note?.textContent).toBe(
+      'You can use every action of this Pack, and each change asks you first. This choice '
+        + 'is for the apps you share it with, so it shows once you tick one in step 2.',
+    );
+  });
+
+  it('shared with an app too, it offers the choice for the apps', () => {
+    const node = render(installGrantModelFromManifest(actionsOnly())!, { ...ownerOnly, all_other_contracts: true });
+    expect(findAllByAttr(node, INSTALL_GRANT_ACCESS_OPTION_ATTR).map((r) => r.getAttribute('data-access'))).toEqual(['read', 'write']);
+    expect(findByAttr(node, INSTALL_GRANT_OWNER_ONLY_ATTR)).toBeNull();
+    expect(textOf(node)).toContain('Choose what the apps you share it with in step 2 may do.');
+  });
+
+  it('a Pack with recipes keeps the choice for the owner alone, saying what it decides for them', () => {
+    const node = render(installGrantModelFromManifest(compositionPack('http', [op('invoice.create', 'write')]))!, ownerOnly);
+    expect(findAllByAttr(node, INSTALL_GRANT_ACCESS_OPTION_ATTR).length).toBeGreaterThan(0);
+    expect(textOf(node)).toContain('for you, it decides which of this Pack’s workflows you can use');
+  });
+});
 
 describe('D-182 §7.1 (5b.2) — packs-panel install dialog grant picker', () => {
   const originalDoc = (globalThis as { document?: unknown }).document;

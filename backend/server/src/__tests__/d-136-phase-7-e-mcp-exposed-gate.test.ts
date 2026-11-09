@@ -409,8 +409,8 @@ describe('handleEnrichmentRead — mcp_exposed gate (P7.E §A.13.5)', () => {
         const e = err as RpcError;
         expect(e.code).toBe('bad_request');
         expect(e.message).toContain('company');
-        expect(e.message).toContain('not read-granted');
-        expect(e.message).toContain('read rejected');
+        expect(e.message).toContain('is not available for this contract');
+        expect(e.message).not.toContain('read-granted');
       }
     } finally {
       restore();
@@ -497,8 +497,8 @@ describe('handleVectorSimilaritySearch — mcp_exposed gate (P7.E §A.13.5)', ()
         const e = err as RpcError;
         expect(e.code).toBe('bad_request');
         expect(e.message).toContain('embedding');
-        expect(e.message).toContain('not read-granted');
-        expect(e.message).toContain('read rejected');
+        expect(e.message).toContain('is not available for this contract');
+        expect(e.message).not.toContain('read-granted');
       }
     } finally {
       restore();
@@ -591,7 +591,7 @@ describe('MCP dispatch — recued_enrichmentRead rejects private topics', () => 
       );
       expect((res as { isError?: boolean }).isError).toBe(true);
       const text = (res as { content?: Array<{ text?: string }> }).content?.[0]?.text;
-      expect(text).toContain('not read-granted');
+      expect(text).toContain('is not available for this contract');
     } finally {
       restore();
     }
@@ -617,7 +617,7 @@ describe('MCP dispatch — recued_vectorSimilaritySearch rejects private topics'
       );
       expect((res as { isError?: boolean }).isError).toBe(true);
       const text = (res as { content?: Array<{ text?: string }> }).content?.[0]?.text;
-      expect(text).toContain('not read-granted');
+      expect(text).toContain('is not available for this contract');
     } finally {
       restore();
     }
@@ -779,8 +779,8 @@ describe('handleEnrichmentList — trigger_source MCP gate (P7.E Codex fix #2)',
         const e = err as RpcError;
         expect(e.code).toBe('bad_request');
         expect(e.message).toContain('company');
-        expect(e.message).toContain('not read-granted');
-        expect(e.message).toContain('read rejected');
+        expect(e.message).toContain('is not available for this contract');
+        expect(e.message).not.toContain('read-granted');
       }
     } finally {
       restore();

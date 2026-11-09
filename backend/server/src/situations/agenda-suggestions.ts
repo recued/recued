@@ -18,13 +18,27 @@
  *  Spec: D-338 § 5. */
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { PromptSchedule, SituationAgendaSettings } from '@recued/contracts';
+import type { ExecutionSource, PromptSchedule, SituationAgendaSettings } from '@recued/contracts';
 import type { PromptSchedules } from '../prompt-schedules.js';
 import type { PromptScheduleDoneGate } from '../prompt-schedule-done.js';
 
 export const AGENDA_SUGGESTIONS_TITLE = 'Agenda suggestions';
+/** The setting that keeps the Agenda's suggestions' schedule id; the daily stream's once the streams
+ *  take over (D-340 slice 2), and the weekly stream keeps its own (`WEEKLY_SUGGESTIONS_KEY`). */
+export const AGENDA_SUGGESTIONS_KEY = 'situations.agenda_suggestions';
+export const WEEKLY_SUGGESTIONS_KEY = 'situations.weekly_suggestions';
 
-type Agenda = Required<SituationAgendaSettings>;
+/** D-340 slice 5 — `names_private`: the stream they follow includes private items (§3.4). D-340 slice
+ *  4 — `head_start`: a stream's, which start ahead of it (§3.3). */
+type Agenda = Required<SituationAgendaSettings> & { names_private?: boolean; head_start?: boolean };
+
+/** D-340 slice 4 (§3.3, ruling 9) — a stream's suggestions start this long before it, and the stream
+ *  still goes at its own time: finished by then, they go inside it; not yet, they follow on their own. */
+export const SUGGESTIONS_HEAD_START_MS = 10 * 60_000;
+/** D-340 slice 4 (§3.3, ruling 9: "the model never checks item by item") — the suggestions' own run
+ *  reads the day once and looks up a detail or two: its tool rounds, below the chat's own cap. On the
+ *  last one it is told to answer with what it has. */
+export const SUGGESTIONS_TOOL_ROUNDS = 3;
 
 /** The days the suggestions look at, in the words of the instruction. */
 const spanWords = (agenda: Agenda): string => agenda.frequency === 'weekly'
@@ -40,23 +54,53 @@ const spanWords = (agenda: Agenda): string => agenda.frequency === 'weekly'
  *  label is "a reminder in Yours", the words the Agenda and the digest use (the owner's choice).
  *  It is left out unless a suggestion involves it: a line that only said "A reminder in Yours (all
  *  day)." repeated what the plain Agenda already lists (D-338 §12).
- *  And "with its time" put a time on an all-day one, so a time is given only if it has one. */
+ *  And "with its time" put a time on an all-day one, so a time is given only if it has one.
+ *  D-342 §5 — the run's read also lists the owner's active pursuits (`pursuit` items), and the request
+ *  asks for a step on one where the day has room. A pursuit is private by default, and any step on
+ *  one is something to do for it, so a private pursuit is left out outright.
+ *  D-343 slice 5 (§5) — each pursuit carries the days this week the owner recorded doing or skipping
+ *  it (`recorded`). The request says a day it does not list is unknown, not missed: an unclosed day
+ *  is never "didn't happen" (D-343 §3.5).
+ *  D-340 slice 4, tuned (2026-11-07) — told there was "room for 2 lookups after reading" the day, the
+ *  model looked for what the owner had done on a pursuit, which the read carries, in 9 of 15 runs (a
+ *  second round in 7), and searched work in all 15; told the read has it, every run took one round.
+ *  A line that only said "A reminder in Yours (all day)." was back in 4 of 15, and bold, which a
+ *  messenger shows as asterisks, in 4 of 18 one evening: the request names both. */
 export const agendaSuggestionsPrompt = (agenda: Agenda): string => {
   const span = spanWords(agenda);
-  return `My agenda for ${span} goes to me at this time. Read ${span} with situation.query, which lists `
-    + `the same items my agenda does: give it ${span} as ${agenda.frequency === 'weekly' ? 'dates' : 'a date'}. `
-    + 'Look up any detail you need. Then suggest what would help: clashes, travel time between places, what '
-    + 'to prepare or bring, and anything that has to happen before an item. Reply with the suggestions only, as '
-    + 'a short list: I already have the agenda, so do not repeat it. This reply goes to my notifications, which '
-    + 'others may see. Leave out an item marked private unless a suggestion involves it, such as a clash; then '
-    + 'write it only as "a reminder in Yours", with its time if it has one, and never its title, who it is for, or '
-    + 'anything to do for it. If nothing is worth suggesting, say so in one line.';
+  // D-340 slice 4 — a stream's run starts ahead of it, which then carries the suggestions.
+  return `My agenda for ${span} goes to me ${agenda.head_start === true ? 'in a few minutes' : 'at this time'}. Read ${span} with situation.query, which lists `
+    + `the same items my agenda does, and beside them what I am working toward (kind pursuit): give it ${span} as `
+    + `${agenda.frequency === 'weekly' ? 'dates' : 'a date'}. `
+    // D-340 slice 4 — bounded: the day once, then at most a detail or two (ruling 9).
+    + 'That read has what most suggestions need, my pursuits and the days I recorded each too: look something else up '
+    + `only if a suggestion cannot do without it, at most ${String(SUGGESTIONS_TOOL_ROUNDS - 1)} lookups besides the read. `
+    + 'Then suggest what would help: clashes, travel time between places, what '
+    + 'to prepare or bring, anything that has to happen before an item, and, where the day has room, a step on one '
+    + 'of my pursuits that fits it, from where I am with it and the days this week I recorded doing or skipping it '
+    + '(recorded; a day it does not list is unknown, not one I missed). Reply with the suggestions only, as '
+    + 'a short list of plain lines, without bold (my notifications show it as asterisks): I already have the agenda, '
+    + 'so do not repeat it. '
+    + (agenda.names_private === true
+      // D-340 slice 5 (§3.4) — Include private items: the owner chose to have them named in the
+      // channels the stream goes to, so a private item or pursuit is suggested about like any other.
+      ? 'This reply goes to my notifications, where I chose to have my private items named: you may name an item or '
+        + 'pursuit marked private and suggest about it like any other. '
+      : 'This reply goes to my notifications, which others may see. Leave out a pursuit marked private. Leave out any '
+        + 'other item marked private unless a suggestion involves it, such as a clash; then write it only as "a reminder '
+        + 'in Yours", with its time if it has one, and never its title, who it is for, or anything to do for it. '
+        + 'A line that only says I have a reminder in Yours is not a suggestion. ')
+    + 'If nothing is worth suggesting, say so in one line.';
 };
 
-/** The Agenda's time as a cron line: every day, or on its weekday (cron counts Sunday as 0). */
+/** The Agenda's time as a cron line: every day, or on its weekday (cron counts Sunday as 0). A stream's
+ *  start `SUGGESTIONS_HEAD_START_MS` ahead (D-340 slice 4): a weekly one that goes in its day's first
+ *  minutes starts the day before. */
 export const agendaSuggestionsCron = (agenda: Agenda): string => {
   const [hour, minute] = agenda.time.split(':').map(Number) as [number, number];
-  return `${minute} ${hour} * * ${agenda.frequency === 'weekly' ? agenda.weekday % 7 : '*'}`;
+  const start = hour * 60 + minute - (agenda.head_start === true ? SUGGESTIONS_HEAD_START_MS / 60_000 : 0);
+  const at = (start + 1440) % 1440; const dayBefore = start < 0;
+  return `${at % 60} ${Math.floor(at / 60)} * * ${agenda.frequency === 'weekly' ? ((agenda.weekday - (dayBefore ? 1 : 0)) % 7 + 7) % 7 : '*'}`;
 };
 
 interface Record {
@@ -74,6 +118,13 @@ export interface AgendaSuggestions {
   refresh(agenda: Agenda): Promise<void>;
   /** The conversation the suggestions run in, while their schedule exists. */
   conversation(): string | undefined;
+  /** D-340 slice 4 — their schedule, while it exists: the stream reads its finished run. */
+  scheduleId(): string | undefined;
+  /** D-342 §5 — whether a turn is the suggestions' own run: one of the managed schedule's, by its id. */
+  isOwnRun(source: ExecutionSource | undefined): boolean;
+  /** D-340 slice 2 — whether a schedule is these suggestions' own: the daily stream's and the weekly
+   *  stream's are both managed by the Agenda, and each gate answers for its own. */
+  owns(schedule_id: string): boolean;
   /** For the done notices: the Agenda's own run decides whether its suggestions are sent. */
   doneGate: PromptScheduleDoneGate;
 }
@@ -87,8 +138,11 @@ export const createAgendaSuggestions = (deps: {
   timeZone: () => string;
   /** The state of the Agenda's own run that went (or was skipped) at or after an instant, if any. */
   agendaRunSince: (at: number) => 'sent' | 'skipped' | 'pending' | undefined;
+  /** D-340 slice 2 — the setting that keeps its schedule's id: the Agenda's (the daily stream's,
+   *  once the streams take over) by default, and the weekly stream's for its own. */
+  key?: string;
 }): AgendaSuggestions => {
-  const KEY = 'situations.agenda_suggestions';
+  const KEY = deps.key ?? AGENDA_SUGGESTIONS_KEY;
   const scheduleOf = (): { schedule_id: string; session_id: string } | undefined => {
     const id = deps.readSetting<Record>(KEY, {}).schedule_id;
     if (typeof id !== 'string') return undefined;
@@ -138,6 +192,10 @@ export const createAgendaSuggestions = (deps: {
       await apply(agenda, false); applied = now;
     }),
     conversation: () => scheduleOf()?.session_id,
+    scheduleId: () => scheduleOf()?.schedule_id,
+    owns: schedule_id => scheduleOf()?.schedule_id === schedule_id,
+    isOwnRun: source => source?.channel === 'schedule' && 'prompt_schedule' in source && source.prompt_schedule !== undefined
+      && source.prompt_schedule.schedule_id === scheduleOf()?.schedule_id,
     doneGate(schedule, run) {
       if (schedule.managed_by !== 'agenda') return 'notify';
       // The Agenda goes at the same minute; quiet hours can carry it later. A day it sent nothing

@@ -11,9 +11,9 @@ import { createMailCollection } from '../mail-collection.js';
 import { createCollectionRegistry } from '../../registry.js';
 import { createInstanceStore } from '../../instance-store.js';
 import { makeCollectionHandlers } from '../../collection-handler.js';
-import { getMailMessage } from '../message-read.js';
+import { getMailMessage, MAIL_REPLY_PAUSED_REASON } from '../message-read.js';
 import { getMailConversation } from '../conversation-read.js';
-import { readMailMessageState, updateMailMessageState } from '../message-state.js';
+import { MAIL_STATE_PAUSED_REASON, readMailMessageState, updateMailMessageState } from '../message-state.js';
 import type { CanonicalMessage, MailProvider } from '../provider.js';
 import type { WsClient } from '../../../ws-server.js';
 
@@ -95,6 +95,26 @@ describe('owner message state', () => {
     const result = await slice.handlers['collection.mail.message.updateState'](f.request('read', true), client);
     expect(result.record.hot_fields.is_read).toBe(true);
     expect(f.mark).toHaveBeenCalledExactlyOnceWith({ source_id: f.record.source_id, read: true });
+  });
+
+  // D-188 — the emergency stop: nothing reaches the mailbox, yet the owner still reads what this
+  // server holds. (The gate used to refuse the whole read, which showed only the refusal.)
+  it('opens an email from the stored copy while the server is paused, reaching the mailbox not at all', async () => {
+    const f = await fixture();
+    const mailEnroll = { instances: { ...createInstanceStore({ db: f.db }), getIncarnation: f.deps.getIncarnation },
+      accountStore: { get: async () => null, set: async () => {}, delete: async () => {} } };
+    let paused = true;
+    const slice = makeCollectionHandlers({ registry: f.deps.registry, mailEnroll, isServerPaused: () => paused })!;
+    const client: WsClient = { ws: null, realm: 'test', instance_id: 'owner', client_kind: 'webclient', display_name: 'owner', connected_at: 0 };
+    const read = await slice.handlers['collection.mail.message.get'](f.ref, client);
+    expect(f.record.body_inline).toEqual(expect.stringContaining('delivery date'));
+    expect(read).toMatchObject({ read: 'stored', body: f.record.body_inline, reply: null, forward: null,
+      reply_unavailable_reason: MAIL_REPLY_PAUSED_REASON, forward_unavailable_reason: MAIL_REPLY_PAUSED_REASON,
+      state: { verified: false, can_mark: false, can_flag: false, is_read: false, unavailable_reason: MAIL_STATE_PAUSED_REASON } });
+    expect(f.fetch).not.toHaveBeenCalled();
+    paused = false;
+    expect((await slice.handlers['collection.mail.message.get'](f.ref, client)).state).toMatchObject({ verified: true });
+    expect(f.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('does not offer a late verified status after an unscoped mailbox read changes enrollment', async () => {

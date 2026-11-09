@@ -23,7 +23,7 @@ import { situationAssetDetails } from './asset-details.js';
 import { rememberAssetDetailsRead } from './asset-projection-provenance.js';
 import { placeCountry } from './country-place.js';
 import { ruleStatement } from './rule-titles.js';
-import { ASSET_SEARCH_TERMS } from '@recued/contracts';
+import { ASSET_SEARCH_TERMS, PURSUIT_CLASS_ID } from '@recued/contracts';
 import { assetSearchTermsFromJson, readAssetTypeSearchTerms } from '../asset-search-terms.js';
 
 const PAGE = 500;
@@ -63,6 +63,23 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
   const trips = createTripDetailsStore(deps.db);
   const proposals = createProactiveProposalStore(deps.db);
   const history = createProactiveHistoryStore(deps.db, proposals);
+  /** D-343 slice 5 (§5) — the days of the last week, on the owner's clock, that they recorded doing or
+   * skipping a pursuit, newest first, as its weekday and date ("Thu 2026-11-05"); a day with both is
+   * done. None recorded: nothing, since a day they did not record is unknown, never one they missed. */
+  const recordedDays = (id: string): SituationFact['recorded'] => {
+    const zone = deps.timeZone(); const first = shiftAssetDate(assetDateAt(now(), zone), { amount: 6, unit: 'days' }, -1);
+    const days = new Map<string, 'done' | 'skipped'>();
+    // Newest first: the latest hundred hold more than any week of them.
+    for (const episode of history.listedEpisodes({ subject: { collection: 'asset', id } }, 100)) {
+      const day = assetDateAt(episode.when.from, zone);
+      if (day >= first && days.get(day) !== 'done') days.set(day, episode.outcome === 'skipped' ? 'skipped' : 'done');
+    }
+    if (!days.size) return undefined;
+    const newest = [...days].sort(([a], [b]) => b.localeCompare(a));
+    const label = (day: string): string => `${new Date(`${day}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' })} ${day}`;
+    return { done: newest.flatMap(([day, outcome]) => outcome === 'done' ? [label(day)] : []),
+      skipped: newest.flatMap(([day, outcome]) => outcome === 'skipped' ? [label(day)] : []) };
+  };
   const place = (value: string | undefined): SituationPlace | undefined => value?.trim()
     ? deps.place?.(value) ?? { key: `label:${value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en')}`, name: value.trim() } : undefined;
   const scope = (item: SituationFact, source_key: string, own?: Sphere): SituationFact => {
@@ -348,6 +365,16 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
         commitments: context?.grants.isVerbOpGranted('core.work-entity.read') === true && context.grants.isCollectionReadGranted('commitment') });
       for (const { rule, clock, ...timing } of timings) {
         if (timing.settled || (clock.question && ['today', 'digest', 'push'].includes(query.surface ?? 'tool'))) continue;
+        // D-340 §4 — a state is its own kind: shown while it holds, over its window, never
+        // due (no act-by) and never news. A condition its rule's certainty doesn't accept shows nothing.
+        if (rule.reaction.state) {
+          if (!clock.active || !timing.when) continue;
+          result.push(scope({ ...base, ref: { ...subject, field: `rules.${rule.id}` }, kind: 'asset_state', title: `${rule.title} · ${asset.name}`,
+            context: { root: { kind: 'rule' as const, asset_id: asset.id, rule_id: rule.id } }, when: timing.when,
+            consequence: rule.consequence, evidence: [{ ...subject, field: `rules.${rule.id}` }, ...clock.evidence] },
+          `work:${asset.source_id}`, asset.sphere_override ?? asset.sphere));
+          continue;
+        }
         const item = { ...base, ref: { ...subject, field: `rules.${rule.id}` }, kind: 'asset_rule', title: `${rule.title} · ${asset.name}`,
           context: { root: { kind: 'rule' as const, asset_id: asset.id, rule_id: rule.id } },
           consequence: rule.consequence, evidence: [{ ...subject, field: `rules.${rule.id}` }, ...clock.evidence] };
@@ -357,7 +384,14 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
         if (clock.question) item.missing = true;
         result.push(scope(item, `work:${asset.source_id}`, asset.sphere_override ?? asset.sphere));
       }
-      if (result.length === beforeRules) result.push(scope(base, `work:${asset.source_id}`, asset.sphere_override ?? asset.sphere));
+      // D-342 §5 — for the read that asks for them, a pursuit is itself an item: what the owner is
+      // working toward, with its own fields, beside the window. Nothing else reads it so.
+      // D-343 slice 5 — with the days of the last week the owner recorded it, done or skipped.
+      if (query.include_pursuits === true && asset.class_id === PURSUIT_CLASS_ID) {
+        const recorded = recordedDays(asset.id);
+        result.push(scope({ ...base, kind: 'pursuit', ...(recorded ? { recorded } : {}) }, `work:${asset.source_id}`, asset.sphere_override ?? asset.sphere));
+      }
+      else if (result.length === beforeRules) result.push(scope(base, `work:${asset.source_id}`, asset.sphere_override ?? asset.sphere));
     };
     if (only) {
       let count = 0;
@@ -380,6 +414,8 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
   // Rule titles and own place labels come from the clock index, current for
   // every evaluated asset; the unevaluated ones are read whatever they say.
   const holders = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE holder_contact=?`);
+  const pursuits = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE class_id=? AND status IN ('active','lent')
+    AND deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')`);
   const changed = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE updated_at>?`);
   const assetNames = deps.db.prepare(`SELECT id,name,class_id,json_quote(json_extract(data_blob,'$.attributes.${ASSET_SEARCH_TERMS}')) AS terms
     FROM ${ASSET_TABLE} WHERE deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')`);
@@ -411,6 +447,8 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       for (const ref of query.subjects ?? []) if (ref.collection === 'asset') ids.add(ref.id);
       for (const person of people) for (const row of holders.all(person) as { id: string }[]) ids.add(row.id);
       if (query.changed_since !== undefined) for (const row of changed.all(query.changed_since) as { id: string }[]) ids.add(row.id);
+      // D-342 §5 — the owner's active pursuits, whatever the window: they have no clock to find them by.
+      if (query.include_pursuits === true) for (const row of pursuits.all(PURSUIT_CLASS_ID) as { id: string }[]) ids.add(row.id);
       return ids;
     },
     // A trip check lists its travellers' visas, so they are read whatever the window.
@@ -566,13 +604,23 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
         return name;
       };
     };
+    // D-343 ruling 15 — a fact a record was made from shows through that record, once: a pack's
+    // commitment to pay a bill or its booking of a reservation, linked by `thing_id`. It closes by
+    // the record's own rules; a deleted record gives the fact back.
+    const madeFrom = deps.db.prepare([TASK_TABLE, NOTE_TABLE, COMMITMENT_TABLE, BOOKING_TABLE].map(table =>
+      `SELECT json_extract(source_extension_blob,'$.thing_id') AS thing_id FROM ${table}
+        WHERE deleted_at IS NULL AND json_valid(source_extension_blob) AND json_extract(source_extension_blob,'$.kind')='mail_fact'`).join(' UNION '));
     const things = source('mail_fact', async (_query, signal, _context, only) => {
       const result: SituationFact[] = []; const typeName = typeNames();
+      // Read once, when the first fact is: one scan of the four tables, 12 ms at 66,000 records.
+      let recorded: Set<string> | undefined;
       const add = (row: MailFactThing): void => {
         // A request the owner mailed their own server is an instruction its trigger carries
         // out (D-315 §7.4), not something to recall; what it makes, a task or a note, is an
         // item of its own. It has no date and no closing state, so it would stay forever.
         if (row.type === 'owner_request') return;
+        recorded ??= new Set((madeFrom.all() as Array<{ thing_id: unknown }>).flatMap(made => typeof made.thing_id === 'string' ? [made.thing_id] : []));
+        if (recorded.has(row.thing_id)) return;
         const variables = row.variables; const state = variables.state;
         if (typeof state === 'string' && ['cancelled', 'paid', 'delivered', 'returned', 'refund_issued'].includes(state)) return;
         const field = DATED[row.type]; const at = field ? timeOf(variables[field]) : undefined;

@@ -264,7 +264,7 @@ export const createSphereStore = (db: Database.Database, work?: WorkEntityStore,
   // retain the original membership query instead of growing a JS asset cache.
   const historyMembershipLimit = 1024 * 1024;
   let historyScope: { sphere: Sphere | 'unsorted'; key: string; checked: boolean; members?: string } | undefined;
-  const assetSphereSql = (query?: Pick<WorkEntityListQuery, 'search' | 'limit' | 'offset'>, safetyChecked = false) => {
+  const assetSphereSql = (query?: Pick<WorkEntityListQuery, 'search' | 'asset_class' | 'limit' | 'offset'>, safetyChecked = false) => {
     const { norm, where } = assetListWhere(query);
     // Canonical columns determine membership. Fall back for legacy blobs that
     // could change projection behavior, including a malformed ignored parent.
@@ -314,7 +314,7 @@ export const createSphereStore = (db: Database.Database, work?: WorkEntityStore,
       ...(row.inherited_sphere ? { sphere: row.inherited_sphere } : {}) }, undefined, undefined,
     source => (source === `asset:${row.id}` ? row.asset_sphere : row.source_sphere) ?? undefined);
   function assetPage(this: { resolve: typeof resolve; resolveAssets: typeof resolveAssets }, sphere: Sphere | 'unsorted',
-    query?: Pick<WorkEntityListQuery, 'search' | 'limit' | 'offset'>): AssetSpherePage | undefined {
+    query?: Pick<WorkEntityListQuery, 'search' | 'asset_class' | 'limit' | 'offset'>): AssetSpherePage | undefined {
     if (!work || sourceForReference || this?.resolve !== resolve || this.resolveAssets !== resolveAssets) return undefined;
     if (!['personal', 'professional', 'unsorted'].includes(sphere)) throw new Error('Unknown asset sphere');
     const { norm, params, sql } = assetSphereSql(query);
@@ -341,7 +341,7 @@ export const createSphereStore = (db: Database.Database, work?: WorkEntityStore,
    * requests the original scan. Preparing and stepping stay inside the generator
    * so an unopened or closed iterator never holds a SQLite read cursor. */
   function assetCandidates(this: { resolve: typeof resolve; resolveAssets: typeof resolveAssets }, sphere: Sphere | 'unsorted',
-    query?: Pick<WorkEntityListQuery, 'search'>): Generator<AssetSphereBatch, boolean, void> | undefined {
+    query?: Pick<WorkEntityListQuery, 'search' | 'asset_class'>): Generator<AssetSphereBatch, boolean, void> | undefined {
     if (!work || sourceForReference || this?.resolve !== resolve || this.resolveAssets !== resolveAssets) return undefined;
     if (!['personal', 'professional', 'unsorted'].includes(sphere)) throw new Error('Unknown asset sphere');
     const { key, params, sql } = assetSphereSql(query); const scope = historyScope; const fields = createAssetSummaryHistoryBatch(db);
@@ -387,7 +387,7 @@ export const createSphereStore = (db: Database.Database, work?: WorkEntityStore,
    * synchronous, replayable attention read with no writes. Unsupported selectors keep ordinary
    * histories, and a failed candidate scan exits this scope before scan fallback. */
   function withAssetReadingHistories<T>(this: { resolve: typeof resolve; resolveAssets: typeof resolveAssets; assetCandidates: typeof assetCandidates },
-    sphere: Sphere | 'unsorted', query: Pick<WorkEntityListQuery, 'search'>, read: () => T): T {
+    sphere: Sphere | 'unsorted', query: Pick<WorkEntityListQuery, 'search' | 'asset_class'>, read: () => T): T {
     if (!work || typeof work.withAssetReadingHistories !== 'function' || sourceForReference
       || this?.resolve !== resolve || this.resolveAssets !== resolveAssets || this.assetCandidates !== assetCandidates) return read();
     if (!['personal', 'professional', 'unsorted'].includes(sphere)) throw new Error('Unknown asset sphere');

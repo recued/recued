@@ -83,6 +83,8 @@ export interface ComposeCalendarStackBootDeps {
    *  live collection's poll loop is deferred while the vault is LOCKED. Absent
    *  ⇒ sync always starts (dbless / harness). */
   isVaultUnlocked?: () => boolean;
+  /** D-188 — the master pause: the poll loops are deferred while it holds, as while sealed. */
+  isPaused?: () => boolean;
 }
 
 export const composeCalendarBoot = (
@@ -98,6 +100,7 @@ export const composeCalendarBoot = (
     accountStore,
     resolveOAuthConfig,
     isVaultUnlocked,
+    isPaused,
     getCollectionRegistry,
   } = deps;
 
@@ -185,6 +188,7 @@ export const composeCalendarBoot = (
       ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(deps.managedOAuth ? { managedOAuth: deps.managedOAuth } : {}),
       ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
+      ...(isPaused ? { isPaused } : {}),
       // `calendar-list` reads a day on the owner's clock, all-day events too.
       ownerTimeZone,
       factories: [

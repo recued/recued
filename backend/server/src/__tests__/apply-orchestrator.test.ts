@@ -7,6 +7,7 @@ import { createBootFailureCounter } from '../update/boot-failure-counter.js';
 import { BOOT_FAILURE_THRESHOLD } from '../update/apply-state-machine.js';
 import {
   closeUnresolvedUpdateOperation,
+  deriveInFlightEntry,
   deriveInFlightRelease,
   evaluatePendingApplyOnBoot,
   reconcileAbandonedUpdateReservations,
@@ -604,6 +605,140 @@ describe('runApply', () => {
     await applyAndCommit(ports, ctx()); // leaves apply_staged (in flight until commit)
     const r = await runApply(ports, ctx({ releaseIdentity: 'stable:1.4.3', toVersion: '1.4.3' }));
     expect(r.status).toBe('busy');
+  });
+});
+
+/** ⛔⛔ THE MANIFEST'S `migration` IS TYPED BY HAND. Before a `false`, the server boots
+ *  the binary its rollback returns to and the staged one on empty realms, and takes the
+ *  snapshot anyway when the second makes a change the first cannot run on. The
+ *  comparison itself is `update-schema-compare.test.ts`; this is what the apply does
+ *  with its answer, and what it leaves in the ledger for every later reader. */
+describe("runApply × the server's own schema comparison", () => {
+  const breaking = [
+    'table notes changed (adds column pinned)',
+    "trigger notes_touch on notes, which the previous release writes: it runs on that release's writes",
+  ];
+
+  it('⛔ a `false` over a change the running binary cannot run on takes the snapshot anyway, and says why', async () => {
+    const compareSchemas = vi.fn(async () => ({ breaking }));
+    const recordGenerationTransition = vi.fn();
+    const ports = makePorts({ compareSchemas, recordGenerationTransition });
+    const order: string[] = [];
+    (ports.takeSnapshot as ReturnType<typeof vi.fn>).mockImplementation(async () => { order.push('snapshot'); });
+    (ports.preserveAndSwap as ReturnType<typeof vi.fn>).mockImplementation(() => { order.push('swap'); });
+    expect((await applyAndCommit(ports, ctx({ migration: false }))).status).toBe('restarting');
+    expect(order).toEqual(['snapshot', 'swap']);
+    const entries = ports.ledger.readAll();
+    // `apply_started` was written before the download, and still says what the manifest said.
+    expect(entries.find((e) => e.kind === 'apply_started')?.migration).toBe(false);
+    const taken = entries.find((e) => e.kind === 'snapshot_taken');
+    expect(taken?.migration).toBe(true);
+    expect(taken?.detail).toBe(
+      'snapshot: 1.3.0 cannot run on 2 change(s) 1.4.2 makes to the database: '
+        + `table notes changed (adds column pinned); ${breaking[1]}`,
+    );
+    expect(entries.find((e) => e.kind === 'apply_staged')?.migration).toBe(true);
+    expect(recordGenerationTransition).toHaveBeenCalledWith({ fromVersion: '1.3.0', toVersion: '1.4.2', migration: true });
+    // What boot-reconcile, the CLI and an outer supervisor's revert read.
+    expect(deriveInFlightEntry(ports.ledger)?.migration).toBe(true);
+  });
+
+  it('a `false` over changes the running binary can run on takes none', async () => {
+    const ports = makePorts({ compareSchemas: vi.fn(async () => ({ breaking: [] })) });
+    await applyAndCommit(ports, ctx({ migration: false }));
+    expect(ports.takeSnapshot).not.toHaveBeenCalled();
+    expect(ports.ledger.readAll().every((e) => e.migration === false)).toBe(true);
+    expect(deriveInFlightEntry(ports.ledger)?.migration).toBe(false);
+  });
+
+  it('with no binary to return to there is nothing to compare, and the manifest decides', async () => {
+    const ports = makePorts({ compareSchemas: vi.fn(async () => null) });
+    await applyAndCommit(ports, ctx({ migration: false }));
+    expect(ports.takeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('⛔ a comparison that cannot tell takes the snapshot, and says so', async () => {
+    const ports = makePorts({
+      compareSchemas: vi.fn(async () => {
+        throw new Error('/x/recued.staged did not finish booting a fresh realm (exit 1):\nboom');
+      }),
+    });
+    await applyAndCommit(ports, ctx({ migration: false }));
+    expect(ports.takeSnapshot).toHaveBeenCalledOnce();
+    expect(ports.ledger.readAll().find((e) => e.kind === 'snapshot_taken')?.detail).toBe(
+      "snapshot: the schema comparison could not tell whether 1.3.0 can run on 1.4.2's database "
+        + '(/x/recued.staged did not finish booting a fresh realm (exit 1):)',
+    );
+  });
+
+  it('a `true` is not second-guessed: nothing is compared', async () => {
+    const compareSchemas = vi.fn(async () => ({ breaking: [] }));
+    const ports = makePorts({ compareSchemas });
+    await applyAndCommit(ports, ctx({ migration: true }));
+    expect(compareSchemas).not.toHaveBeenCalled();
+    expect(ports.takeSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('⛔ a snapshot the volume cannot hold refuses the update before anything is promoted or swapped', async () => {
+    const syncWebclient = vi.fn(async () => 'bundle-replaced' as const);
+    // headroom 100, db 100, free 150: the manifest's `false` needs 100, the snapshot 200.
+    const ports = makePorts({
+      compareSchemas: vi.fn(async () => ({ breaking })),
+      freeBytes: () => 150,
+      dbSizeBytes: () => 100,
+      minFreeHeadroomBytes: 100,
+      syncWebclient,
+    });
+    const r = await applyAndCommit(ports, ctx({
+      migration: false,
+      webclientArtifact: { url: 'https://x/wc', sha256: 'ww', sig: 'wsig' },
+    }));
+    expect(r.status).toBe('insufficient-storage');
+    expect(ports.discardStaged).toHaveBeenCalled();
+    expect(syncWebclient).not.toHaveBeenCalled();
+    expect(ports.requestRestart).not.toHaveBeenCalled();
+    expect(ports.takeSnapshot).not.toHaveBeenCalled();
+    expect(ports.preserveAndSwap).not.toHaveBeenCalled();
+    const terminal = ports.ledger.readAll().at(-1)!;
+    expect(terminal.kind).toBe('apply_reverted');
+    expect(terminal.revert_reason).toBe('other');
+    expect(terminal.detail).toMatch(/^storage: a snapshot is needed because 1\.3\.0 cannot run on 2 change\(s\)/);
+    expect(terminal.detail).toMatch(/, and the data volume has 1 MiB free/);
+    expect(deriveInFlightRelease(ports.ledger)).toBeNull();
+  });
+
+  it('⛔ a disk too full to boot the comparison is too full for the snapshot too: the update stops, saying both', async () => {
+    // The throwaway boot writes a fresh realm, never the owner's database; it refuses
+    // short of room (`schema-compat.ts`), and the snapshot that refusal asks for has to
+    // fit too. headroom 100, db 100, free 150: the manifest's `false` needs 100, the snapshot 200.
+    const ports = makePorts({
+      compareSchemas: vi.fn(async () => {
+        throw new Error('only 10 MB is free on the disk the binaries are on, under the 64 MB a throwaway realm needs, '
+          + 'so none was started');
+      }),
+      freeBytes: () => 150,
+      dbSizeBytes: () => 100,
+      minFreeHeadroomBytes: 100,
+    });
+    const r = await applyAndCommit(ports, ctx({ migration: false }));
+    expect(r.status).toBe('insufficient-storage');
+    expect(ports.takeSnapshot).not.toHaveBeenCalled();
+    expect(ports.preserveAndSwap).not.toHaveBeenCalled();
+    const terminal = ports.ledger.readAll().at(-1)!;
+    expect(terminal.kind).toBe('apply_reverted');
+    expect(terminal.detail).toContain('(only 10 MB is free on the disk the binaries are on');
+    expect(terminal.detail).toContain(', and the data volume has 1 MiB free');
+  });
+
+  it('tells the comparison whether this apply staged its own native addon', async () => {
+    const compareSchemas = vi.fn(async (_input: { stagedAddon: boolean }) => ({ breaking: [] as string[] }));
+    await runApply(
+      makePorts({ compareSchemas, stagedLibPath: join(tmp(), 'lib', 'better_sqlite3.node.staged') }),
+      ctx({ libArtifact: { url: 'https://x/lib', sha256: 'll', sig: 'lsig' } }),
+    );
+    await runApply(makePorts({ compareSchemas }), ctx());
+    await flushCommits();
+    expect(compareSchemas.mock.calls.map(([input]) => input)).toEqual([{ stagedAddon: true }, { stagedAddon: false }]);
   });
 });
 

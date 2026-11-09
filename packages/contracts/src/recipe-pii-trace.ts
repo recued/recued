@@ -379,6 +379,7 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   held: { rule: 'collapse_render', args: ['rows'] },
   transitions: { rule: 'collapse_render', args: ['rows'] },
   window_change: { rule: 'collapse_render', args: ['rows'] },
+  baseline: { rule: 'collapse_render', args: ['rows'] },
   within_distance: { rule: 'collapse_render', args: ['rows', 'place'] },
   http_changed: { rule: 'destroy' },
   calendar_changed_since: { rule: 'pass_array', arg: 'events' },

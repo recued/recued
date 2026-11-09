@@ -865,5 +865,7 @@ export const shouldRemountForSameRoute = (
 ): boolean =>
   (WEBCLIENT_DEEP_LINK_ROUTES.has(route)
     || (route === 'approvals' && [previousHash, nextHash].some(hash =>
-      ['preapproval','local-changes'].includes(parseShellRoute(hash).segments[0] ?? ''))))
+      ['preapproval','local-changes'].includes(parseShellRoute(hash).segments[0] ?? '')))
+    // D-340 slice 2 — `#today/stream` opens the streams' settings over Today, in place.
+    || (route === 'today' && [previousHash, nextHash].some(hash => parseShellRoute(hash).segments[0] === 'stream')))
   && normalizeShellHash(previousHash) !== normalizeShellHash(nextHash);

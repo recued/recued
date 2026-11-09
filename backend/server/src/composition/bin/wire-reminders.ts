@@ -65,6 +65,8 @@ export const wireReminderDelivery = async (
     registry: Pick<BackgroundServiceRegistry, 'registerInterval' | 'register'>;
     notification: NotificationDeps;
     isVaultUnlocked?: () => boolean;
+    /** D-188 — due reminders wait while the owner's pause holds. */
+    isPaused?: () => boolean;
     workEntityStore?: ReminderTaskMoveDeps['workEntityStore'];
     logActivity?: ReminderTaskMoveDeps['logActivity'];
   },
@@ -93,6 +95,7 @@ export const wireReminderDelivery = async (
       timeZone: ownerZone(zone),
     }),
     ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}),
+    ...(deps.isPaused ? { isPaused: deps.isPaused } : {}),
     ...(deps.now ? { now: deps.now } : {}),
   });
   deps.registry.registerInterval({

@@ -31,6 +31,7 @@ import {
   refuseUnpackagedBinaryUpdate,
   refuseWhileRunning,
 } from './update-profile-guards.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 export interface StagedUpdateRollbackOptions {
   args: string[];
@@ -147,7 +148,7 @@ export async function tryRunStagedUpdateRollback(
   const leasePath = updateLeasePathFor(binaryPath);
   let lease: { release: () => void };
   try {
-    lease = acquireUpdateLease({ leasePath, operation: 'rollback' });
+    lease = acquireUpdateLease({ leasePath, operation: 'rollback', identify: processStartIdentity });
   } catch (err) {
     const leaseHolder = (err as { holder?: { pid: number; operation: string } }).holder;
     console.error(

@@ -60,6 +60,7 @@ import {
 import { doorCapabilityChanged } from './mint-door-contract.js';
 import { resolveReceptionDoorContractId } from './reception-door-bind.js';
 import {
+  allowedToolsFor,
   buildReceptionContractSnapshot,
   grantedOperationsFor,
 } from './reception-contract-snapshot.js';
@@ -200,12 +201,6 @@ export interface ReceptionRunInput {
   readonly submission: Record<string, unknown>;
 }
 
-/** Derive the door's tool allowlist from its own stored scope — the SAME derivation the
- *  mint wrote its grant rows from, so the ACCESS and TOOL axes can never disagree. */
-const allowedToolsFor = (
-  definitionStore: ContractDefinitionStore,
-): ((contractId: string) => readonly string[]) => (contractId) =>
-  definitionStore.get(contractId)?.scope?.ingredient_ids ?? [];
 
 type OpenOrderResult =
   /** `context === null` means this pair sells nothing — a plain intake form. */

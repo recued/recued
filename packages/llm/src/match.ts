@@ -65,6 +65,17 @@ export interface MatchRequest {
    *  source → the executor surfaces `AI_MODALITY_UNSUPPORTED` (warn, never
    *  silently drop / auto-reroute — Q4). */
   requireModalities?: Modalities;
+  /** D-344 slice C — the source the call prefers, the model the owner's chat runs on: tried first,
+   *  at whichever speed tier it is. Ignored under a `pinSlot`. */
+  prefer?: PreferredSource;
+}
+
+/** D-344 slice C — a source a call prefers: a slot the owner's chat selected, or the layer it runs
+ *  on (its free models, or its own keys). A preference, not a pin: a call it cannot serve, or one
+ *  whose layer it falls outside, routes as it would without it. */
+export interface PreferredSource {
+  pinSlot?: PinnedSlot;
+  layer?: 'free' | 'byok';
 }
 
 export interface MatchDeps {
@@ -160,6 +171,8 @@ const synthesizeSlotForPoolEntry = (e: FreePoolApiEntry): LLMSlot => ({
   // synthesized slot so the resolved Match retains the capability the
   // executor checks (multimodal) / the transcribe path consumes (A.9).
   ...(e.modalities !== undefined ? { modalities: e.modalities } : {}),
+  // D-344 — the owner's thinking setting for the entry.
+  ...(e.thinking !== undefined ? { thinking: e.thinking } : {}),
 });
 
 /** Candidate = one eligible source the match could route to. Partitioned
@@ -372,6 +385,25 @@ export const matchLLM = (request: MatchRequest, deps: MatchDeps): Match => {
   };
   const rng = deps.rng ?? Math.random;
   const cooldownSources = new Set<string>();
+
+  // D-344 slice C — Pass 0: the model the owner's chat runs on, at whichever speed tier it is, within
+  // the layer the call allows and with its other requirements (JSON, search, media) kept. The owner
+  // chose it for the chat, so a recipe's `fast` hint does not exclude their `quality` slot. A call it
+  // cannot serve goes on to the passes below, as it would without a preference.
+  const prefer = request.prefer;
+  const preferLayer = prefer?.pinSlot !== undefined ? 'byok' : prefer?.layer;
+  if (pinSlot === undefined && preferLayer !== undefined && (forceLayer === 'any' || forceLayer === preferLayer)) {
+    const tiers = [requires.speed, ...DOWNGRADE_ORDER[requires.speed].slice(1), ...UPGRADE_ORDER[requires.speed].slice(1)];
+    for (const speed of tiers) {
+      const filter = { ...base, speed };
+      const candidates = collectCandidates(filter, preferLayer, prefer?.pinSlot, deps, cooldownSources);
+      const picked = pickCandidate(candidates, speed, deps.strategy, deps.quota, rng);
+      if (picked) {
+        return picked.candidate.toMatch(speed, SPEED_RANK[speed] < SPEED_RANK[requires.speed],
+          SPEED_RANK[speed] > SPEED_RANK[requires.speed]);
+      }
+    }
+  }
 
   // Pass 1 — strict speed tier.
   {

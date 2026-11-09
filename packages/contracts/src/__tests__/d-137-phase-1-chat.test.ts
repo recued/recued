@@ -123,6 +123,8 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'calendar.create',
     'calendar.update',
     'work.update',
+    // D-343 slice 2 — +1: `episode.record`, the owner's record of a day, one call for the day.
+    'episode.record',
     // D-172 P2 — +1: `file.search`. Identity-only read over the owner's files,
     // SESSION-SCOPED BY DEFAULT so the model can resolve "that PDF" without
     // being able to reach the whole file store by saying nothing.
@@ -226,8 +228,9 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // lineage in one turn address the same rows: shared identity once more.
     // `contact.write` changes one contact's row, and two adds of one person would make
     // two contacts: shared identity again (D-336 slice F).
+    // A day's records twice in one turn: the same records (D-343 slice 2).
     const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'document.search', 'memory.forget', 'contact.write',
-      'schedule.run_prompt', 'schedule.update', 'schedule.pause', 'schedule.resume', 'schedule.remove']);
+      'episode.record', 'schedule.run_prompt', 'schedule.update', 'schedule.pause', 'schedule.resume', 'schedule.remove']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
     }
@@ -466,6 +469,9 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       // D-219 — records that a drafted recipe was saved, keyed on the durable
       // case_key server-side.
       'chat.execution.authored',
+      // D-335 slice W4 — a kept browser flow's forget, and its recipe.
+      'chat.execution.browser_flow.forget',
+      'chat.execution.browser_flow.recipe',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       // D-167 chat provider-threading — per-session override lifecycle +

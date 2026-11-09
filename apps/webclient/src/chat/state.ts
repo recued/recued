@@ -183,6 +183,13 @@ export interface PlanApprovalCard {
   /** D-336 slice G — notes already in memory a held save meets
    *  (`ChatPlanProposal.memory_conflicts`), for the relationship as proposed. */
   memory_conflicts?: readonly import('@recued/contracts').MemorySaveConflict[];
+  /** D-341 — the standing pre-approval a held write's ask offers, by the option's label
+   *  (`ChatPlanProposal.hold.always_allow`, "Always allow for this scheduled prompt"). The
+   *  card offers it beside "Say yes, once"; absent, it approves once only. */
+  always_allow?: string;
+  /** D-341 — what that answer lets happen, in the ask's words (`hold.always_allow_note`): the
+   *  card says it under its buttons. */
+  always_allow_note?: string;
 }
 
 /** Execution receipt for a consumed one-time approval. `held` is distinct
@@ -391,6 +398,8 @@ export const hydrateThreadFromSnapshot = (
       ...(record.plan.value_labels !== undefined ? { value_labels: record.plan.value_labels } : {}),
       ...(record.plan.editable_args !== undefined ? { editable_args: record.plan.editable_args } : {}),
       ...(record.plan.memory_conflicts !== undefined ? { memory_conflicts: record.plan.memory_conflicts } : {}),
+      ...(record.plan.hold?.always_allow !== undefined ? { always_allow: record.plan.hold.always_allow } : {}),
+      ...(record.plan.hold?.always_allow_note !== undefined ? { always_allow_note: record.plan.hold.always_allow_note } : {}),
       recovered: true,
       payload_available: record.payload_available,
     })),
@@ -792,6 +801,8 @@ export const reduceChatThreadEvent = (
           ...(event.value_labels !== undefined ? { value_labels: event.value_labels } : {}),
           ...(event.editable_args !== undefined ? { editable_args: event.editable_args } : {}),
           ...(event.memory_conflicts !== undefined ? { memory_conflicts: event.memory_conflicts } : {}),
+          ...(event.held === true && event.always_allow !== undefined ? { always_allow: event.always_allow } : {}),
+          ...(event.held === true && event.always_allow_note !== undefined ? { always_allow_note: event.always_allow_note } : {}),
           recovered: false,
           payload_available: true,
         },

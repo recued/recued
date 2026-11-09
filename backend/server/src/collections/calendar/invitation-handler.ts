@@ -76,10 +76,26 @@ const invitationView = (
   } };
 };
 
+/** D-188 — what a paused server says on an event it shows from its last sync. */
+export const CALENDAR_EVENT_PAUSED = {
+  refresh: 'The server is paused. Showing the last synced details.',
+  edit: 'The server is paused. Resume it to change this event.',
+  respond: 'The server is paused. Resume it to respond.',
+} as const;
+
 export const getOwnerCalendarEvent = async (deps: CalendarDispatcherDeps, ref: CalendarEventRef): Promise<CalendarEventSnapshot> => {
   const before = getCalendarEvent(deps, ref);
   const collection = deps.getCollection(ref.slug)!;
   if (collection.provider.kind === 'local') return before;
+  // D-188 — the emergency stop: nothing reaches the calendar. The owner still sees the event as
+  // last synced, read-only, the shape a calendar that cannot be reached already gives.
+  if (deps.isPaused?.() === true) {
+    const view = invitationView(deps, ref, collection, false, { ...before, editable: false, editable_fields: [],
+      read_only_reason: CALENDAR_EVENT_PAUSED.edit, refresh_error: CALENDAR_EVENT_PAUSED.refresh });
+    return view.invitation
+      ? { ...view, invitation: { ...view.invitation, can_respond: false, unavailable_reason: CALENDAR_EVENT_PAUSED.respond } }
+      : view;
+  }
   if (collection.provider.readEventForEdit) {
     const result = await readCalendarEventForEdit(deps, ref);
     return invitationView(deps, ref, collection, result.context?.notification_supported === true, result.view);

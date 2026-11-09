@@ -39,7 +39,15 @@ export interface StashedExecutionCaseDraft {
    *  therefore withheld from the authoring model — the draft is likely thinner
    *  and the Kitchen says so. */
   request_aliased: boolean;
+  /** D-335 slice W4 — what the owner should look at first, shown above the editor: a browser
+   *  flow's step with no selector, a secret it asks for. Absent for an AI draft. */
+  notes?: string[];
 }
+
+/** D-335 slice W4 — a draft built from a kept browser flow, not by the AI: its `case_id` names the
+ *  flow, and no AI revision or case annotation applies to it. */
+export const BROWSER_FLOW_DRAFT_PREFIX = 'browser-flow:';
+export const isBrowserFlowDraft = (draft: { case_id: string }): boolean => draft.case_id.startsWith(BROWSER_FLOW_DRAFT_PREFIX);
 
 /** 128 bits of a browser-grade RNG. ⛔ Not `Date.now()` or a counter: the key is
  *  what stops a stale route opening the current slot, so it must not be
@@ -101,6 +109,7 @@ export const readExecutionCaseDraft = (
     case_id: row.case_id,
     recipe: row.recipe,
     request_aliased: row.request_aliased !== false,
+    ...(Array.isArray(row.notes) && row.notes.every((note) => typeof note === 'string') ? { notes: row.notes } : {}),
   };
 };
 

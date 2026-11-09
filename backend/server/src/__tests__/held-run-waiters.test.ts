@@ -9,6 +9,7 @@ import {
   HELD_RUN_SETTLED_KEEP_MAX,
   HELD_RUN_SETTLED_KEEP_MS,
   createHeldRunWaiters,
+  createRoundAnswers,
   settledHeldCallResult,
 } from '../held-run-waiters.js';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
@@ -131,3 +132,58 @@ describe('settledHeldCallResult — what the held call returns once its run sett
       .toEqual({ ...finished, run_id: 'run-1' });
   });
 });
+
+/** The owner's 3a (2026-11-07) — a round of the owner's chat waits for its own held call's answer;
+ *  a run it took is told no further. */
+describe('createRoundAnswers — a settlement goes to the waiting round first', () => {
+  it('says whether a wait took a settlement', () => {
+    const waiters = createHeldRunWaiters();
+    void waiters.wait('run-1', Date.now() + 60_000);
+    expect(waiters.settled(settled('run-1', { success: true }))).toBe(true);
+    expect(waiters.settled(settled('run-2', { success: true }))).toBe(false);
+    expect(waiters.settled(settled('', { success: true }))).toBe(false);
+  });
+
+  it('a run a waiting round took: the round has it, and its continuation is answered without being queued', async () => {
+    const waiters = createHeldRunWaiters();
+    const round = waiters.wait('run-1', Date.now() + 60_000);
+    const answers = createRoundAnswers(waiters);
+    const queued: string[] = [];
+    const continueWith = answers.continueUnless(async (c: { run_id: string }) => { queued.push(c.run_id); return true; });
+    let answered: boolean | undefined;
+    await answers.settle(settled('run-1', { success: true, recipe_id: 'r' }), async () => {
+      // The chat records the settlement: by now the round holds it.
+      answered = await continueWith({ run_id: 'run-1' });
+    });
+    await expect(round).resolves.toMatchObject({ run_id: 'run-1', result: { recipe_id: 'r' } });
+    expect(answered).toBe(true);
+    expect(queued).toEqual([]);
+  });
+
+  it('a run no round waited on continues as before, and so does one whose round stopped waiting', async () => {
+    const waiters = createHeldRunWaiters();
+    const answers = createRoundAnswers(waiters);
+    const queued: string[] = [];
+    const continueWith = answers.continueUnless(async (c: { run_id: string }) => { queued.push(c.run_id); return true; });
+    await answers.settle(settled('run-2', { success: true }), async () => { await continueWith({ run_id: 'run-2' }); });
+    // A round that waited, and gave up before the answer came.
+    const stopped = new AbortController();
+    const round = waiters.wait('run-3', Date.now() + 60_000, stopped.signal);
+    stopped.abort();
+    await expect(round).resolves.toBeUndefined();
+    await answers.settle(settled('run-3', { success: true }), async () => { await continueWith({ run_id: 'run-3' }); });
+    expect(queued).toEqual(['run-2', 'run-3']);
+  });
+
+  it('remembers a taken run only while its settlement is recorded', async () => {
+    const waiters = createHeldRunWaiters();
+    void waiters.wait('run-1', Date.now() + 60_000);
+    const answers = createRoundAnswers(waiters);
+    const queued: string[] = [];
+    const continueWith = answers.continueUnless(async (c: { run_id: string }) => { queued.push(c.run_id); return true; });
+    await answers.settle(settled('run-1', { success: true }), async () => undefined);
+    await continueWith({ run_id: 'run-1' });
+    expect(queued).toEqual(['run-1']);
+  });
+});
+

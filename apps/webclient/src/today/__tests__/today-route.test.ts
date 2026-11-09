@@ -172,6 +172,26 @@ describe('#today opens', () => {
   });
 });
 
+describe('#today close the day', () => {
+  // D-343 slice 4 — the header's button goes to the shell's opener, from the action the view drew.
+  it('dispatches "Close the day" to the shell\'s opener', async () => {
+    const closeDayCaller = vi.fn(async () => {});
+    const rig = mount({ workEntityListCaller: async () => ({ entities: [], total: 0 }),
+      proactiveTodayCaller: async () => ({ situations: { clusters: [], omitted: 0, ambiguous: [] }, occurrences: [], proposal_count: 0,
+        newest_proposal: null, unmatched_replies: [], phone_ready: true, close_day: true }), closeDayCaller } as never);
+    await rig.route.whenLoaded();
+    const drawn = /<button [^>]*data-recued-today-action="(today-close-day)"[^>]*data-today-close-day/u.exec(rig.html())?.[1];
+    expect(drawn).toBe('today-close-day');
+    const control = { tagName: 'BUTTON', getAttribute: (k: string) => k === 'data-recued-today-action' ? drawn! : null };
+    const root = (rig.container.children as Array<Record<string, unknown>>)[0]!;
+    for (const fn of ((root.listeners as Map<string, Array<(e: unknown) => void>>).get('click') ?? [])) {
+      fn({ target: { closest: (sel: string) => sel === '[data-recued-today-action]' ? control : null } });
+    }
+    expect(closeDayCaller).toHaveBeenCalledTimes(1);
+    rig.route.dispose();
+  });
+});
+
 describe('#today route read ownership', () => {
   it('paints the current read and coalesces source changes into one follow-up', async () => {
     const { subscribe, listeners } = makeSubscribe();

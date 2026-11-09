@@ -215,6 +215,8 @@ const makeHarness = (
     /** D-177 N.14 — wire the allow-offer read (absent ⇒ no affordance +
      *  `allow: true` refuses, the fail-closed default). */
     allowOffer?: { ttl_ms: number; max_uses: number };
+    /** D-341 slice B4 — wire the "Always allow for this form" read. */
+    alwaysAllow?: ReceptionInboxDeps['readAskAlwaysAllow'];
   } = {},
 ): Harness => {
   const auditLog = createAuditLogStore(
@@ -235,6 +237,7 @@ const makeHarness = (
     ...(opts.allowOffer !== undefined
       ? { readAskAllowOffer: async () => opts.allowOffer }
       : {}),
+    ...(opts.alwaysAllow !== undefined ? { readAskAlwaysAllow: opts.alwaysAllow } : {}),
     ...(opts.lookupBookingHistory !== undefined
       ? { lookupBookingHistory: opts.lookupBookingHistory }
       : {}),
@@ -576,6 +579,71 @@ describe("D-177 N.14 — 'Approve & allow for this form'", () => {
   it('plain approve is untouched by the offer (regression pin)', async () => {
     const h = makeHarness({ allowOffer: OFFER });
     await seedHeld(h);
+    await handleReceptionInboxApprove(h.deps, { hold_id: 'cp-1' }, ADMIN);
+    expect(h.submitAnswer).toHaveBeenCalledWith('ask-1', 'approve');
+  });
+});
+
+describe("D-341 slice B4 — 'Say yes, and always allow this form'", () => {
+  const OFFER = { ttl_ms: 86_400_000, max_uses: 20 };
+  const offersIt = vi.fn(async (ask_id: string) => ask_id === 'ask-1');
+
+  it('the list marks a hold whose ask offers it, off the real ask; no dep, another ask or a failed read marks none', async () => {
+    const h = makeHarness({ alwaysAllow: offersIt });
+    await seedHeld(h);
+    const listed = await handleReceptionInboxList(h.deps, undefined, ADMIN);
+    expect(listed.items[0]?.always_allow).toBe(true);
+    expect(offersIt).toHaveBeenCalledWith('ask-1');
+    // It replaced the session's offer, so the item carries none of that.
+    expect(listed.items[0]?.allow_offer).toBeUndefined();
+
+    for (const alwaysAllow of [undefined, async () => false, async () => { throw new Error('ask store down'); }]) {
+      const other = makeHarness(alwaysAllow === undefined ? {} : { alwaysAllow });
+      await seedHeld(other);
+      const items = (await handleReceptionInboxList(other.deps, undefined, ADMIN)).items;
+      expect(items[0], String(alwaysAllow)).toBeDefined();
+      expect(items[0]?.always_allow, String(alwaysAllow)).toBeUndefined();
+    }
+  });
+
+  it("allow answers with 'allow_trigger', with no session offer on the ask, and the record says always", async () => {
+    const h = makeHarness({ alwaysAllow: offersIt });
+    await seedHeld(h);
+    const res = await handleReceptionInboxApprove(h.deps, { hold_id: 'cp-1', allow: true }, ADMIN);
+    expect(res.released).toBe(true);
+    expect(h.submitAnswer).toHaveBeenCalledWith('ask-1', 'allow_trigger');
+    const details = (await h.auditLog.listActivities(10)).map((a) => a.detail ?? '');
+    expect(details.some((d) => d.includes('approved & always allowed for this form'))).toBe(true);
+    expect(details.some((d) => d.includes('approved & allowed for this form'))).toBe(false);
+  });
+
+  it('it wins over a session offer the same ask somehow carried, as the ask offers it in its place', async () => {
+    const h = makeHarness({ alwaysAllow: offersIt, allowOffer: OFFER });
+    await seedHeld(h);
+    await handleReceptionInboxApprove(h.deps, { hold_id: 'cp-1', allow: true }, ADMIN);
+    expect(h.submitAnswer).toHaveBeenCalledWith('ask-1', 'allow_trigger');
+  });
+
+  it('a failed read falls back to the session offer, and with none refuses as before', async () => {
+    const failing = async (): Promise<boolean> => { throw new Error('ask store down'); };
+    const withSession = makeHarness({ alwaysAllow: failing, allowOffer: OFFER });
+    await seedHeld(withSession);
+    await handleReceptionInboxApprove(withSession.deps, { hold_id: 'cp-1', allow: true }, ADMIN);
+    expect(withSession.submitAnswer).toHaveBeenCalledWith('ask-1', 'allow_session');
+
+    const without = makeHarness({ alwaysAllow: failing });
+    await seedHeld(without);
+    await expect(handleReceptionInboxApprove(without.deps, { hold_id: 'cp-1', allow: true }, ADMIN))
+      .rejects.toMatchObject({ code: 'bad_request' });
+    expect(without.submitAnswer).not.toHaveBeenCalled();
+  });
+
+  it('is still refused with edits, and a plain approve stays an approve', async () => {
+    const h = makeHarness({ alwaysAllow: offersIt });
+    await seedHeld(h);
+    await expect(handleReceptionInboxApprove(h.deps, { hold_id: 'cp-1', allow: true, edits: { start_at: 1 } }, ADMIN))
+      .rejects.toMatchObject({ code: 'bad_request' });
+    expect(h.submitAnswer).not.toHaveBeenCalled();
     await handleReceptionInboxApprove(h.deps, { hold_id: 'cp-1' }, ADMIN);
     expect(h.submitAnswer).toHaveBeenCalledWith('ask-1', 'approve');
   });

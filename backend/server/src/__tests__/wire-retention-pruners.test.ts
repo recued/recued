@@ -332,6 +332,28 @@ describe('composeRetentionPruners D-214 expiry handoff', () => {
   });
 });
 
+// D-188 — the owner's pause (the emergency stop: nothing leaves) holds the stale-approval sweep: it
+// withdraws prompts from Slack and Telegram and tells the owner, and an approval cannot be
+// approved during a pause, so expiring one then would end it without a chance.
+describe('composeRetentionPruners D-188 — the stale-approval sweep waits while paused', () => {
+  it('expires nothing while paused, and sweeps once resumed', async () => {
+    let paused = true;
+    const list = vi.fn(async () => []);
+    const registrations = composeWithDeps({
+      checkpointStore: { list, get: vi.fn(async () => null), delete: vi.fn(async () => undefined) },
+      auditLog: { get: vi.fn(async () => null), append: vi.fn(async () => undefined), logActivity: vi.fn(async () => undefined) },
+      runtimeConfig: { get: vi.fn(() => 30) },
+      isPaused: () => paused,
+    });
+    const sweep = registrations.find((r) => r.name === 'checkpoint-stale-prune')!;
+    await sweep.tick();
+    expect(list).not.toHaveBeenCalled();
+    paused = false;
+    await sweep.tick();
+    expect(list).toHaveBeenCalled();
+  });
+});
+
 describe('composeRetentionPruners D-337 slice R — a held recipe run that expired reaches its conversation', () => {
   // Before, only a held write's expiry was told to the chat (`onRawOpExpired`): a held recipe
   // run's conversation never heard, its call kept "waiting to hear back", and the model's next

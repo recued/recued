@@ -333,6 +333,24 @@ describe('§ 2 — the unattended hold now offers allow_session', () => {
     ).toEqual({ ttl_ms: seed.ttl_ms, max_uses: seed.max_uses, risk_tier: 'write' });
   });
 
+  it('⛔ a proposed commitment offers no allow_session: the owner reviews every one (D-192 F1, 2026-11-09)', async () => {
+    // A grant minted from it would bind to every later run of the recipe and admit the next identical
+    // proposal unseen; the gate now matches and mints none for it either (`reviewedEachTime`).
+    const propose = {
+      ...notifyRecipe('seed-propose', 'unused'),
+      steps: [{ id: 'propose', op: 'core.work-entity.commitment.propose',
+        args: { direction: 'outbound', statement: 'Send Dana the deck by Friday', idempotency_key: 'deck-1' } }],
+    } as unknown as RecipeDefinition;
+    for (const [execution_source, trigger_source] of [
+      [scheduleSource('capture-commitments'), 'schedule'],
+      [reactiveSource('capture-commitments'), 'auto_run'],
+    ] as const) {
+      const { open } = await fireUnattended(propose, execution_source, trigger_source, { withResolver: true });
+      expect(open, trigger_source).toHaveLength(1);
+      expect(open[0]!.options.map((o) => o.id), trigger_source).toEqual(['approve', 'deny']);
+    }
+  });
+
   it('⚠ the offer needs the RESOLVER too — the seed alone is not enough', async () => {
     // Found by driving: with the cell seeded but no `sessionGrantResolver` on
     // the deps, the ask still rendered the binary options. The host suppresses

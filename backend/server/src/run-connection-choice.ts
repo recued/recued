@@ -29,12 +29,18 @@
  *  still refused, never swapped: the owner removed it, and the run names the dish
  *  to change. */
 
-import { RpcError, type RecipeDefinition } from '@recued/contracts';
+import {
+  CONNECTION_NOT_SET_UP,
+  RpcError,
+  type ConnectionNotSetUpDetails,
+  type RecipeDefinition,
+} from '@recued/contracts';
 
 /** The refusal's code; `details.problem` says which rule refused. */
 export const CONNECTION_CHOICE_INVALID = 'connection_choice_invalid';
-/** A slot's pack lists connections, and none of them is set up. */
-export const CONNECTION_NOT_SET_UP = 'connection_not_set_up';
+/** A slot's pack lists connections, and none of them is set up (contracts:
+ *  `ConnectionNotSetUpDetails` is what it carries). */
+export { CONNECTION_NOT_SET_UP };
 
 export type ConnectionChoiceProblem =
   | 'malformed'
@@ -433,16 +439,24 @@ export const settledConnections = (
  *  the audit, a name never set up still had an operation profile, so the run took it
  *  and failed on the missing connection instead. The owner is told the names; any
  *  other caller is told none (ruling 12). A slot whose list holds a connection that
- *  is set up is left alone: the pick layer or the pack's default has answered it. */
+ *  is set up is left alone: the pick layer or the pack's default has answered it.
+ *
+ *  D-321 P2 — the owner's refusal also says where to set one up, in `details`:
+ *  the pack whose catalog signs in through the slot, the vendor its requirement
+ *  names, and what to call the sign-in (`signInOf`). A run surface links there
+ *  rather than leaving the owner with a sentence. */
 export const assertListedConnectionsSetUp = (input: {
   recipe_id: string;
   slots: readonly RunConnectionSlot[];
   used: readonly ConnectionUsed[];
-  bindings: readonly { connection_name: string; catalog_slug: string }[];
+  bindings: readonly { connection_name: string; catalog_slug: string; installed_pack_id?: string }[];
   /** Read only for a slot that settled none and whose pack lists some: a run that
    *  settled every slot never reads it. */
   enrolled: () => ReadonlySet<string>;
   owner: boolean;
+  /** A pack's vendor for the slot and what to call the sign-in; read only for the
+   *  owner's refusal. */
+  signInOf?: (pack_slug: string, slot: string) => { vendor?: string; label: string };
 }): void => {
   let enrolled: ReadonlySet<string> | undefined;
   for (const slot of input.slots) {
@@ -457,6 +471,17 @@ export const assertListedConnectionsSetUp = (input: {
     const which = quoted.length === 1
       ? `its pack's connection ${quoted[0]} is not set up`
       : `its pack's connections ${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)} are not set up`;
+    const pack_slug = input.owner
+      ? input.bindings.find((binding) => slot.catalogs.includes(binding.catalog_slug)
+        && typeof binding.installed_pack_id === 'string' && binding.installed_pack_id.length > 0)?.installed_pack_id
+      : undefined;
+    const signIn = pack_slug === undefined ? undefined : input.signInOf?.(pack_slug, slot.slot);
+    const details: ConnectionNotSetUpDetails = {
+      slot: slot.slot,
+      ...(pack_slug !== undefined ? { pack_slug } : {}),
+      ...(signIn?.vendor !== undefined ? { vendor: signIn.vendor } : {}),
+      ...(signIn !== undefined ? { label: signIn.label } : {}),
+    };
     throw new RpcError(
       CONNECTION_NOT_SET_UP,
       input.owner
@@ -465,7 +490,7 @@ export const assertListedConnectionsSetUp = (input: {
         : `Recipe '${input.recipe_id}' needs a connection for '${slot.slot}', and no connection on its pack's list is set up.`,
       400,
       undefined,
-      { slot: slot.slot },
+      details,
     );
   }
 };

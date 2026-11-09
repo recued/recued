@@ -1,0 +1,340 @@
+/* Recued Bridge pair form, shown in the side panel while the bridge is
+ * unpaired (`pairing/pair-code-input-host.ts`). It moved here from the
+ * toolbar popup, which Chrome closed on any click elsewhere.
+ *
+ * Colours come exclusively from the canonical ui-shared tokens; geometry
+ * (`--bridge-radius`, `--bridge-control-h`, `--bridge-ring`) comes from
+ * side-panel.css, which this sheet loads after.
+ */
+
+.pair-code-input-form {
+  width: 100%;
+  margin: 0;
+  text-align: left;
+}
+
+.pair-code-input-title {
+  margin: 0 0 8px;
+  color: var(--fg-strong, var(--fg));
+  font-size: 20px;
+  font-weight: 720;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.pair-code-input-help {
+  margin: 0 0 18px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* For someone who installed the Bridge before Recued: where to get it. */
+.pair-code-input-get-recued {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--bridge-radius, 6px);
+  background: var(--accent-subtle, var(--surface-sunk));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pair-code-input-get-recued a {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.pair-code-input-help code,
+.pair-code-input-waiting code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--surface-sunk);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 12px;
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 15px;
+}
+
+.form-row-recovery {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.form-row > label,
+.form-row > legend {
+  padding: 0;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pair-code-input-optional {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.form-row input,
+.rx-recovery-words input {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--bridge-control-h);
+  padding: 8px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--bridge-radius);
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  transition: border-color 120ms ease, box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+
+.form-row input::placeholder,
+.rx-recovery-words input::placeholder {
+  color: var(--fg-subtle);
+}
+
+.form-row input:disabled,
+.rx-recovery-words input:disabled {
+  background: var(--surface-sunk);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-row input:focus-visible,
+.rx-recovery-words input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--bridge-ring);
+}
+
+.pair-code-input-code {
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace !important;
+}
+
+.pair-code-input-recovery {
+  margin-top: 1px;
+}
+
+.pair-code-input-recovery .field-hint {
+  margin: 0 0 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.rx-recovery-words {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px 5px;
+}
+
+.rx-recovery-word {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.rx-recovery-word label {
+  min-width: 14px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1;
+  text-align: right;
+}
+
+.rx-recovery-words input {
+  min-height: 32px;
+  padding: 5px 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+
+.rx-recovery-word-count {
+  margin: 8px 0 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.pair-code-input-status,
+.pair-code-input-requirement {
+  margin: 9px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.pair-code-input-status {
+  min-height: 1em;
+}
+
+.pair-code-input-status:empty {
+  display: none;
+}
+
+.pair-code-input-requirement {
+  margin: 0 0 9px;
+}
+
+.pair-code-input-requirement:empty {
+  display: none;
+}
+
+.pair-code-input-error {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--bridge-radius);
+  background: var(--danger-weak);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* D-212 tail #6 — a server's own message, quoted beneath Recued's copy.
+   Deliberately NOT the danger block above: that block is Recued speaking,
+   this is an unauthenticated host being quoted, and at the pairing screen
+   the two must not read as one sentence. */
+.pair-code-input-server-said {
+  margin: 6px 0 0;
+  padding: 6px 11px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.pair-code-input-server-said-label {
+  font-weight: 600;
+}
+
+/* Sticky, so Pair stays in view while the form scrolls: the optional
+   24-word recovery grid sits between the code field and the button, and
+   would push it below the fold in a short window. */
+.pair-code-input-actions {
+  position: sticky;
+  z-index: 5;
+  bottom: 0;
+  margin-top: 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.pair-code-input-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--bridge-control-h);
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--bridge-radius);
+  background: var(--accent);
+  color: var(--on-accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  transition: box-shadow 120ms ease, filter 120ms ease, transform 120ms ease;
+}
+
+.pair-code-input-actions button:hover:not(:disabled) {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+
+.pair-code-input-actions button:focus-visible {
+  outline: none;
+  box-shadow: var(--bridge-ring);
+}
+
+.pair-code-input-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* "Finish pairing" view — Start over is quieter than the primary: it gives up
+   a pairing the server already accepted, and costs a new code. */
+.pair-code-input-actions .pair-code-input-start-over {
+  margin-top: 8px;
+  border-color: var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-weight: 560;
+}
+
+.pair-code-input-start-over-hint {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* "Pairing…" — the worker is waiting for the server, which can take
+   seconds. A moving mark says it is working, not stuck. */
+.pair-code-input-waiting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 12px;
+  padding: 12px;
+  border-radius: var(--bridge-radius);
+  background: var(--surface-sunk);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.pair-code-input-spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--accent-weak);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: pair-code-input-spin 0.8s linear infinite;
+}
+
+.pair-code-input-actions button .pair-code-input-spinner {
+  width: 14px;
+  height: 14px;
+  border-color: color-mix(in srgb, var(--on-accent) 35%, transparent);
+  border-top-color: var(--on-accent);
+}
+
+@keyframes pair-code-input-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Reduced motion: a still ring with a slow fade, so the wait still reads
+   as live without anything turning. */
+@media (prefers-reduced-motion: reduce) {
+  .pair-code-input-spinner {
+    animation: pair-code-input-breathe 2.4s ease-in-out infinite;
+    border-color: var(--accent);
+  }
+
+  @keyframes pair-code-input-breathe {
+    50% {
+      opacity: 0.35;
+    }
+  }
+}

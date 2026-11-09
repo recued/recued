@@ -1,4 +1,5 @@
 import { bootstrapChatRoute, CHAT_ROUTE_STYLES, type ChatRouteConn, type BootstrapChatRouteOptions } from '../../src/chat/bootstrap-chat-route.js';
+import { noticeReplyDraft } from '../../src/chat/quoted-replies.js';
 
 const subscribers = new Map<string, Set<(event: unknown) => void>>();
 const style = document.createElement('style'); style.textContent = CHAT_ROUTE_STYLES; document.head.appendChild(style);
@@ -24,6 +25,13 @@ Object.assign(window, {
     const draft = route.getRecoveryDraft(); route.dispose();
     route = bootstrapChatRoute({ root: document.getElementById('app')!, conn, initialSessionId: 's', subscribe,
       ...(draft ? { initialRecoveryDraft: draft } : {}) });
+    await route.whenLoaded();
+  },
+  // D-343 slice 4 — the chat as Today's "Close the day" opens it: the new conversation, replying to its notice.
+  queueTestOpenClosing: async (notice: { session_id: string; message_id: string; title: string; text: string }) => {
+    route.dispose();
+    route = bootstrapChatRoute({ root: document.getElementById('app')!, conn, initialSessionId: notice.session_id, subscribe,
+      initialRecoveryDraft: { text: '', protected: true, modelSourceId: null, replyTo: noticeReplyDraft(notice) } });
     await route.whenLoaded();
   },
 });

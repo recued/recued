@@ -16,6 +16,7 @@ import type {
   PreflightApprovedTarget,
   RunControlTermination,
   RunDegradation,
+  RunNeed,
   RecipeInvocation,
   ResolvedOutputSection,
 } from '@recued/contracts';
@@ -514,6 +515,13 @@ export interface ExecuteResponse {
    *  the run instead (the `connection_required` rpc error), so it never reaches
    *  here. Present only when ≥1 read warning fired. */
   runnability_warnings?: string[];
+  /** D-321 P2 / C2 — what a failed step needed and did not have, on the owner's
+   *  own runs only (`run-needs.ts`). The agent projection drops it. */
+  run_needs?: RunNeed[];
+  /** D-341 slice A — how many of this run's browser writes ran without asking because the owner's
+   *  chat has "Don't ask about browser actions" on (its request pass). Only the owner's own chat
+   *  has one. The agent projection says it in words (`ran_without_asking`). */
+  request_pass_writes?: number;
 }
 
 /** Attach a trustworthy Logs address without widening the wire response or the

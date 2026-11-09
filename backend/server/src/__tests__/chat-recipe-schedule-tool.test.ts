@@ -253,7 +253,7 @@ describe('recipe.schedule — only the owner, and only while granted', () => {
   it('⛔ an owner who switched off core.schedule.recipe gets a refusal, and nothing is armed', async () => {
     grants.set(OWNER_CONTRACT_ID, opGrantEntry(OP), false, NOW);
     expect(gate.isOwnerGoverned(ownerChat)).toBe(true);
-    expect(await tool()(ARGS)).toEqual(refusedWith('classification_blocked', /not granted to this contract/));
+    expect(await tool()(ARGS)).toEqual(refusedWith('classification_blocked', /^'recipe\.schedule' needs "Schedule recipes", which is turned off for you, so it did not run\. To use it, turn on "Schedule recipes" under Self \(you\) → Ops on the Contracts page\.$/));
     expect(schedules.list()).toEqual([]);
   });
 
@@ -288,7 +288,7 @@ describe('recipe.schedule — only the owner, and only while granted', () => {
 
   it("…and no grant applies to it, as for every op on that connection: the owner's revoke governs their chat", async () => {
     grants.set(OWNER_CONTRACT_ID, opGrantEntry(OP), false, NOW);
-    expect(await tool()(ARGS)).toEqual(refusedWith('classification_blocked', /not granted to this contract/));
+    expect(await tool()(ARGS)).toEqual(refusedWith('classification_blocked', /^'recipe\.schedule' needs "Schedule recipes", which is turned off for you, so it did not run\. To use it, turn on "Schedule recipes" under Self \(you\) → Ops on the Contracts page\.$/));
     expect(await tool()(ARGS, ownerLocalMcp)).toMatchObject({ ok: true });
     expect(schedules.list()).toHaveLength(1);
   });

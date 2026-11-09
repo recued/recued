@@ -31,6 +31,8 @@
  */
 
 import type {
+  ExecutionBrowserFlowEntry,
+  ExecutionBrowserFlowStep,
   ExecutionCaseLearnedEntry,
   InstancePrefs,
 } from '@recued/contracts';
@@ -80,6 +82,16 @@ export const LEARNING_PANEL_DRAFT_PROMPT_ATTR =
   'data-recued-learning-draft-prompt';
 export const LEARNING_PANEL_DRAFT_ERROR_ATTR =
   'data-recued-learning-draft-error';
+/** D-335 slice W4 — the browser flows the owner kept, listed beside the cases. */
+export const LEARNING_PANEL_FLOWS_ATTR = 'data-recued-learning-flows';
+/** One kept flow; the attribute VALUE is its flow id. */
+export const LEARNING_PANEL_FLOW_ATTR = 'data-recued-learning-flow';
+/** A flow's Make a recipe control; the VALUE is its flow id. */
+export const LEARNING_PANEL_FLOW_RECIPE_ATTR = 'data-recued-learning-flow-recipe';
+/** A flow's two-tap Forget; the VALUE is its flow id. */
+export const LEARNING_PANEL_FLOW_FORGET_ATTR = 'data-recued-learning-flow-forget';
+/** Why a flow's recipe or forget did not go through; the VALUE is its flow id. */
+export const LEARNING_PANEL_FLOW_ERROR_ATTR = 'data-recued-learning-flow-error';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams + handle
@@ -95,7 +107,16 @@ export type LearningPrefsSetCaller = (args: {
  *  shows what was learned and cannot unlearn it is worse than one that shows
  *  nothing, because it reads as a control surface and is not one. */
 export type LearningCasesListCaller =
-  () => Promise<{ cases: ExecutionCaseLearnedEntry[] }>;
+  () => Promise<{ cases: ExecutionCaseLearnedEntry[]; browser_flows?: ExecutionBrowserFlowEntry[] }>;
+/** D-335 slice W4 — a kept browser flow's forget, and its recipe built without a model. Wired as
+ *  a set with `onFlowDraftReady`; absent ⇒ the flows are not listed. */
+export type LearningFlowForgetCaller = (args: { flow_id: string }) => Promise<{ removed: boolean }>;
+export type LearningFlowRecipeCaller = (args: { flow_id: string }) => Promise<{
+  ok: boolean;
+  recipe?: unknown;
+  issues: string[];
+  reason?: string;
+}>;
 export type LearningCaseForgetCaller = (args: {
   case_id: string;
 }) => Promise<{ removed: boolean; cases_remaining: number }>;
@@ -150,6 +171,11 @@ export interface MountLearningPanelOptions {
    *  restated here — a surface must not be able to quietly soften what the
    *  owner is agreeing to. */
   draftConfirmation?: string;
+  /** D-335 slice W4 — the kept browser flows' Forget and Make a recipe, and the hand-off of the
+   *  recipe to the Kitchen (false when it could not be made). */
+  runFlowForget?: LearningFlowForgetCaller;
+  runFlowRecipe?: LearningFlowRecipeCaller;
+  onFlowDraftReady?: (draft: { flow_id: string; recipe: unknown; notes: string[] }) => boolean | void;
 }
 
 export interface LearningPanelState {
@@ -175,6 +201,13 @@ export interface LearningPanelState {
   /** ⚠ Carries its CASE id: the panel renders one node per case, so a bare
    *  message would appear under every one of them. */
   draftError: { case_id: string; message: string } | null;
+  /** D-335 slice W4 — the kept browser flows, from the same read as the cases. */
+  flows: ExecutionBrowserFlowEntry[] | null;
+  /** The flow whose Forget is armed (tapped once), or null. */
+  flowArmed: string | null;
+  /** The flow being made into a recipe or forgotten, or null. */
+  flowBusy: string | null;
+  flowError: { flow_id: string; message: string } | null;
 }
 
 export interface LearningPanelMount {
@@ -238,6 +271,10 @@ export const mountLearningPanel = (
     draftArmed: null,
     drafting: null,
     draftError: null,
+    flows: null,
+    flowArmed: null,
+    flowBusy: null,
+    flowError: null,
   };
   let pendingLoad: Promise<void> = Promise.resolve();
   let prefsReading = false;
@@ -392,11 +429,11 @@ export const mountLearningPanel = (
     casesReading = true;
     repaintCases();
     try {
-      const { cases } = await opts.runCasesList();
+      const { cases, browser_flows } = await opts.runCasesList();
       if (disposed || generation !== casesGeneration) return;
       beforeRender?.();
       casesReading = false;
-      state = { ...state, ...settledPatch, cases, casesError: null };
+      state = { ...state, ...settledPatch, cases, flows: browser_flows ?? [], casesError: null };
       repaintCases();
     } catch (err) {
       if (disposed || generation !== casesGeneration) return;
@@ -815,7 +852,8 @@ export const mountLearningPanel = (
       opts.host.appendChild(block);
       return;
     }
-    if (state.cases.length === 0) {
+    const flowsShown = renderFlows(block);
+    if (state.cases.length === 0 && !flowsShown) {
       const empty = doc.createElement('div');
       empty.setAttribute(LEARNING_PANEL_CASES_EMPTY_ATTR, '');
       empty.setAttribute('tabindex', '-1');
@@ -1127,6 +1165,147 @@ export const mountLearningPanel = (
     return button;
   };
 
+  /** D-335 slice W4 — a kept flow's step in the owner's words. */
+  const stepWords = (step: ExecutionBrowserFlowStep): string => {
+    const what = `the ${step.element.role} “${step.element.label}”`;
+    switch (step.do) {
+      case 'type':
+        return step.secret === true ? `Typed into ${what} (what was typed is not kept)` : `Typed “${step.value ?? ''}” into ${what}`;
+      case 'pick':
+        return `Typed “${step.value ?? ''}” into ${what} and picked “${step.pick ?? ''}”`;
+      case 'click':
+        return `Clicked ${what}`;
+      case 'press':
+        return `Pressed ${step.key ?? 'a key'} in ${what}`;
+      case 'submit':
+        return step.secret === true ? `Typed into ${what} (not kept) and sent its form`
+          : step.value !== undefined ? `Typed “${step.value}” into ${what} and sent its form` : `Sent the form of ${what}`;
+    }
+  };
+  const hostOf = (url: string): string => {
+    try {
+      return new URL(url).host;
+    } catch {
+      return url;
+    }
+  };
+
+  /** D-335 slice W4 — the browser flows the owner kept from the "Worth remembering?" ask: their
+   *  steps in the owner's words, Make a recipe and Forget. Whether any were shown. */
+  const renderFlows = (block: HTMLElement): boolean => {
+    const flows = state.flows ?? [];
+    if (flows.length === 0 || !opts.runFlowForget || !opts.runFlowRecipe || !opts.onFlowDraftReady) return false;
+    const section = doc.createElement('div');
+    section.setAttribute(LEARNING_PANEL_FLOWS_ATTR, '');
+    const label = doc.createElement('div');
+    label.className = 'learning-row-label';
+    label.textContent = 'Browser steps you kept';
+    section.appendChild(label);
+    for (const flow of flows) section.appendChild(renderFlow(flow));
+    block.appendChild(section);
+    return true;
+  };
+  const renderFlow = (flow: ExecutionBrowserFlowEntry): HTMLElement => {
+    const item = doc.createElement('div');
+    item.className = 'learning-case';
+    item.setAttribute(LEARNING_PANEL_FLOW_ATTR, flow.flow_id);
+    const title = doc.createElement('div');
+    title.className = 'learning-row-label';
+    title.textContent = `On ${flow.sites.join(', ')}`;
+    item.appendChild(title);
+    const list = doc.createElement('ol');
+    list.className = 'learning-row-detail learning-flow-steps';
+    let page = '';
+    for (const step of flow.steps) {
+      // Where the steps move to another page, it says so.
+      if (step.url !== page) {
+        page = step.url;
+        const where = doc.createElement('li');
+        where.className = 'learning-muted learning-flow-page';
+        where.textContent = `On “${step.title}” (${hostOf(step.url)})`;
+        list.appendChild(where);
+      }
+      const line = doc.createElement('li');
+      line.textContent = stepWords(step);
+      list.appendChild(line);
+    }
+    item.appendChild(list);
+    const meta = doc.createElement('div');
+    meta.className = 'learning-muted';
+    meta.textContent = `Kept on ${new Date(flow.kept_at).toLocaleDateString()}`;
+    item.appendChild(meta);
+    const locked = state.flowBusy !== null || casesReading || state.casesError !== null;
+    const make = doc.createElement('button');
+    make.setAttribute('type', 'button');
+    make.setAttribute(LEARNING_PANEL_FLOW_RECIPE_ATTR, flow.flow_id);
+    make.className = 'rx-btn rx-btn-secondary';
+    make.innerHTML = renderActionLabel('forward', state.flowBusy === flow.flow_id && state.flowArmed !== flow.flow_id
+      ? 'Making the recipe…' : 'Make a recipe');
+    make.setAttribute('aria-label', `Make a recipe of the browser steps on ${flow.sites.join(', ')}`);
+    if (locked) make.setAttribute('aria-disabled', 'true');
+    make.addEventListener('click', () => {
+      if (disposed || state.flowBusy !== null || casesReading) return;
+      pendingForget = doFlowRecipe(flow.flow_id);
+    });
+    item.appendChild(make);
+    const armed = state.flowArmed === flow.flow_id;
+    const forget = doc.createElement('button');
+    forget.setAttribute('type', 'button');
+    forget.setAttribute(LEARNING_PANEL_FLOW_FORGET_ATTR, flow.flow_id);
+    forget.className = 'rx-btn rx-btn-danger';
+    forget.innerHTML = renderActionLabel('delete', armed ? 'Tap again to forget' : 'Forget');
+    forget.setAttribute('aria-label', `${armed ? 'Confirm forgetting' : 'Forget'} the browser steps on ${flow.sites.join(', ')}`);
+    if (locked) forget.setAttribute('aria-disabled', 'true');
+    forget.addEventListener('click', () => {
+      if (disposed || state.flowBusy !== null || casesReading) return;
+      if (state.flowArmed !== flow.flow_id) {
+        const back = elementHasFocus(LEARNING_PANEL_FLOW_FORGET_ATTR, flow.flow_id);
+        setState({ flowArmed: flow.flow_id, flowError: null });
+        if (back) focusByAttribute(LEARNING_PANEL_FLOW_FORGET_ATTR, flow.flow_id);
+        return;
+      }
+      pendingForget = doFlowForget(flow.flow_id);
+    });
+    item.appendChild(forget);
+    if (state.flowError?.flow_id === flow.flow_id) {
+      const error = doc.createElement('div');
+      error.setAttribute(LEARNING_PANEL_FLOW_ERROR_ATTR, flow.flow_id);
+      error.setAttribute('role', 'alert');
+      error.textContent = state.flowError.message;
+      item.appendChild(error);
+    }
+    return item;
+  };
+  const doFlowRecipe = async (flow_id: string): Promise<void> => {
+    setState({ flowBusy: flow_id, flowArmed: null, flowError: null });
+    try {
+      const made = await opts.runFlowRecipe!({ flow_id });
+      if (disposed) return;
+      if (!made.ok || made.recipe === undefined) {
+        setState({ flowBusy: null, flowError: { flow_id, message: `Recued could not make a recipe of it: ${made.issues.join(' ')}` } });
+        return;
+      }
+      const handed = opts.onFlowDraftReady!({ flow_id, recipe: made.recipe, notes: made.issues });
+      setState({ flowBusy: null, ...(handed === false
+        ? { flowError: { flow_id, message: 'Recued made the recipe, but could not open it in Kitchen: try again.' } } : {}) });
+    } catch (err) {
+      if (disposed) return;
+      setState({ flowBusy: null, flowError: { flow_id, message: `Recued could not make a recipe of it: ${humanizeRpcError(err)}` } });
+    }
+  };
+  const doFlowForget = async (flow_id: string): Promise<void> => {
+    setState({ flowBusy: flow_id, flowArmed: null, flowError: null });
+    try {
+      await opts.runFlowForget!({ flow_id });
+      if (disposed) return;
+      // Re-read, as a case's Forget does: the server says what is kept.
+      await loadCases(undefined, { flowBusy: null });
+    } catch (err) {
+      if (disposed) return;
+      setState({ flowBusy: null, flowArmed: flow_id, flowError: { flow_id, message: `Recued could not forget it: ${humanizeRpcError(err)}` } });
+    }
+  };
+
   prefsRetry.addEventListener('click', () => {
     if (disposed || prefsReading || state.phase !== 'error') return;
     pendingLoad = doLoad();
@@ -1145,6 +1324,7 @@ export const mountLearningPanel = (
       && (
         state.saving
         || state.forgetting !== null
+        || state.flowBusy !== null
         || (state.drafting !== null && state.drafting !== handoffCaseId)
       ),
     hasUnsavedChanges: () => !disposed
@@ -1217,5 +1397,15 @@ export const LEARNING_PANEL_STYLES = `
 }
 [${LEARNING_PANEL_HOST_ATTR}] .learning-case button {
   justify-self: start;
+}
+[${LEARNING_PANEL_HOST_ATTR}] .learning-flow-steps {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 18px;
+}
+[${LEARNING_PANEL_HOST_ATTR}] .learning-flow-page {
+  list-style: none;
+  margin-left: -18px;
 }
 `;

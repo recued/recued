@@ -21,6 +21,7 @@ import { SERVER_VERSION } from '../server-version.js';
 import type { CollectionContext } from './compose-collection-context.js';
 import type { StorageContext } from './compose-storage-context.js';
 import type { BaseContext } from './compose-base-context.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 export interface ServeHttpServerRef {
   close(): Promise<void>;
@@ -228,7 +229,9 @@ export const composeServeLifecycle = async (
     });
     // The version rides the lock so `recued status` can name what is RUNNING,
     // which an update leaves behind the binary on disk until the next start.
-    lifecycle.lock.claim({ boot_at: Date.now(), bind_port: base.port, version: SERVER_VERSION });
+    lifecycle.lock.claim({
+      boot_at: Date.now(), bind_port: base.port, version: SERVER_VERSION, supervisor: lifecycle.supervisor.mode,
+    });
     // `bin.ts` took the HOST-wide update lease before it touched an interrupted
     // pair and kept it across the native-addon/database-open graph. The realm is
     // now claimed, so release that early lease: an updater arriving afterwards
@@ -256,7 +259,7 @@ export const composeServeLifecycle = async (
     // the CLI refuses this install's update before it claims — and another install's
     // update is not this server's to wait for.
     const updateLeasePath = updateLeasePathForInstall(process.env, runningAsPackagedBinary);
-    const updateHolder = updateLeasePath === null ? null : inspectUpdateLease(updateLeasePath);
+    const updateHolder = updateLeasePath === null ? null : inspectUpdateLease(updateLeasePath, processStartIdentity);
     if (updateHolder !== null && updateHolder.pid !== process.pid) {
       lifecycle.lock.release();
       console.error(

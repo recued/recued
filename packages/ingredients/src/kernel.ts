@@ -842,6 +842,13 @@ export interface KernelDispatchers {
     filename: string;
     size_bytes: number;
   }>;
+  /** D-345 — back `http-get`, `http-read` and `http-download`: the server's own fetch of a public web
+   *  address (the HTTP Toolkit, `http-toolkit/http-actions.ts`). Each validates its input and answers
+   *  what the op's manifest lists; a download keeps the file among the owner's files, named after the
+   *  run and step that fetched it, and answers its ref, never its bytes. */
+  httpGet?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  httpRead?: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  httpDownload?: (input: Record<string, unknown>, step: { run_id?: string; step_id?: string }) => Promise<Record<string, unknown>>;
   /** D-274 — backs `file-read-temp`. Returns a run-scoped temp file_ref's bytes
    *  to the recipe (CONFINED by `run_id`), for drawing a file the owner keeps on
    *  disk without copying it. `filePersist` is the copying sibling. */
@@ -2817,6 +2824,23 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           );
         }
         return dispatchers.fileReadTemp({ ref: input.ref, run_id });
+      }
+      case 'http-get':
+      case 'http-read':
+      case 'http-download': {
+        // D-345 — the server's own fetch; its handlers check the address and say what is wrong with it.
+        const input = call.input !== null && typeof call.input === 'object' && !Array.isArray(call.input)
+          ? call.input as Record<string, unknown> : {};
+        if (slug === 'http-download') {
+          if (!dispatchers.httpDownload) throw new IngredientError('SERVER_NOT_REACHABLE', 'Downloading a web address requires a paired server', { slug });
+          return dispatchers.httpDownload(input, {
+            ...(call.stepMeta?.run_id ? { run_id: call.stepMeta.run_id } : {}),
+            ...(call.stepMeta?.step_id ? { step_id: call.stepMeta.step_id } : {}),
+          });
+        }
+        const fetchOne = slug === 'http-get' ? dispatchers.httpGet : dispatchers.httpRead;
+        if (!fetchOne) throw new IngredientError('SERVER_NOT_REACHABLE', 'Fetching a web address requires a paired server', { slug });
+        return fetchOne(input);
       }
       case 'csv-inspect': {
         if (!dispatchers.csvInspect) throw new IngredientError('SERVER_NOT_REACHABLE', 'CSV inspection requires a paired server', { slug });

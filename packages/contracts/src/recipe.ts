@@ -941,6 +941,11 @@ export interface RecipeMetadata {
    *  tracking. Entered in the marketplace publish flow (Kitchen renders
    *  it read-only) and never inherited across fork-and-publish. */
   repo?: string;
+  /** D-335 slice AG — the recipe may run beside other calls of the same chat round, at the same
+   *  time, as Tier-1 reads do: it reads, or acts only where nothing else in the round can (a page it
+   *  opens). Honored for recued-core's recipes and the owner's Kitchen copies of them, never a third
+   *  party's, whose writes could race; one that may ask the owner still asks one at a time. */
+  concurrency_safe?: boolean;
   /** Wall-clock execution budget in milliseconds. When set, the engine
    *  aborts the run with RECIPE_BUDGET_EXCEEDED if the recipe hasn't
    *  completed within this many ms of start. Approval waits are excluded

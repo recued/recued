@@ -481,6 +481,14 @@ export type ExecutionSource =
        *  server-INTERNAL reactive fire (a reception materialize) runs contract-free.
        *  Optional — the `reactive` channel spans both. */
       contract_id?: string;
+      /** D-341 slice B1 — the event trigger that started the run, set by the host as it fires
+       *  one: what that trigger's own pre-approval names (`triggerOfExecutionSource`). Absent on
+       *  every other reactive run (an auto-run, a server-internal fire). */
+      trigger_id?: string;
+      /** D-341 slice B1b — the dish whose timer started the run (an armed auto-run's tick, its
+       *  `event_kind` `auto_run_tick`), set by the scheduler: what that auto-run's own pre-approval
+       *  names. A timer is one dish's (D-319). Absent on every other reactive run. */
+      dish_id?: string;
     }
   | {
       channel: 'housekeeping';
@@ -580,7 +588,9 @@ export const isExecutionSource = (value: unknown): value is ExecutionSource => {
       return actor === 'system'
         && isString(v.event_kind)
         && isString(v.source_recipe)
-        && isOptString(v.contract_id);
+        && isOptString(v.contract_id)
+        && isOptString(v.trigger_id)
+        && isOptString(v.dish_id);
     case 'housekeeping':
       return actor === 'system'
         && isString(v.cycle_id)
@@ -1005,6 +1015,10 @@ export interface Commit {
   preapproval?: {
     future_execution_ref: string; grant_id: string; member_id: string; action_ref: string;
   };
+  /** D-341 slice B1 — the trigger's standing pre-approval that let this write through without
+   *  asking, by its id: the write's own record names what allowed it, after the pre-approval has
+   *  ended. Absent on every write that asked, or needed no asking. */
+  trigger_preapproval?: { id: string };
   // ────────────────────────────────────────────────────────────────
   // D-177 P1b — canonical action identity, stamped at canonicalization.
   // Computed from the RESOLVED-minus-vault payload (post-`{{config.*}}`/
@@ -1145,6 +1159,10 @@ export const isCommit = (value: unknown): value is Commit => {
     const origin = v.preapproval as Record<string, unknown>;
     if (!['future_execution_ref', 'grant_id', 'member_id', 'action_ref'].every(key => nonEmpty(origin[key]))) return false;
   }
+  if (v.trigger_preapproval !== undefined) {
+    if (v.trigger_preapproval === null || typeof v.trigger_preapproval !== 'object' || Array.isArray(v.trigger_preapproval)) return false;
+    if (!nonEmpty((v.trigger_preapproval as Record<string, unknown>).id)) return false;
+  }
   // D-177 P1b — stamped action identity (optional; absent on degraded rows).
   if (!optString(v.arg_shape_hash)) return false;
   if (!optString(v.canonical_payload_hash)) return false;
@@ -1195,5 +1213,6 @@ function isScheduledPromptSource(v: Record<string, unknown>): boolean {
     && typeof p.occurrence_id === 'string' && typeof p.cron === 'string' && p.cron === v.cron
     && Number.isSafeInteger(p.revision) && Number(p.revision) > 0
     && typeof p.due_at === 'number' && Number.isFinite(p.due_at)
-    && (p.trigger === undefined || p.trigger === 'manual');
+    && (p.trigger === undefined || p.trigger === 'manual')
+    && (p.prompt_sha256 === undefined || (typeof p.prompt_sha256 === 'string' && /^[0-9a-f]{64}$/u.test(p.prompt_sha256)));
 }

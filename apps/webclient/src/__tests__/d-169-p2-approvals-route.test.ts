@@ -15,7 +15,8 @@
  *  extended (like the reception-bootstrap test) with a `head` that tracks
  *  injected `<style>` tags. The webclient ships no jsdom in vitest. */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { __resetServerPauseSignal, noteServerPaused } from '../shell/server-pause-signal.js';
 
 import {
   bootstrapApprovalsRoute,
@@ -424,6 +425,28 @@ describe('D-169 P2 — bootstrapApprovalsRoute: chrome', () => {
 // ════════════════════════════════════════════════════════════════
 // Re-hosts the placement-agnostic asks mount
 // ════════════════════════════════════════════════════════════════
+
+// D-188 — an approval the server's pause holds back reads so, decided when the server lists the
+// asks: the route reads them again when the pause turns on or off, and stops once disposed.
+describe('D-188 — bootstrapApprovalsRoute: re-reads its asks when the pause changes', () => {
+  afterEach(() => {
+    __resetServerPauseSignal();
+  });
+
+  it('re-reads on a change, not on the first report, and never after dispose', async () => {
+    const runList = vi.fn(async () => ({ asks: [ask('a1')] }));
+    noteServerPaused(false);
+    const { route } = mountFor({ runList });
+    await route.asksPanel().whenLoaded();
+    expect(runList).toHaveBeenCalledTimes(1);
+    noteServerPaused(true);
+    await route.asksPanel().whenLoaded();
+    expect(runList).toHaveBeenCalledTimes(2);
+    route.dispose();
+    noteServerPaused(false);
+    expect(runList).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('D-169 P2 — bootstrapApprovalsRoute: re-hosts the asks panel', () => {
   it('mounts the asks panel + renders each ask via the SHARED approval card', async () => {

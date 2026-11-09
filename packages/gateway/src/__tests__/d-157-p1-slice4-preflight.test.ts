@@ -412,6 +412,21 @@ describe('wrapWithCommitGateway with evaluateAdmission', () => {
     expect(inner).not.toHaveBeenCalled();
   });
 
+  // D-346 follow-up (2026-11-08) — a grant refusal reads as its own words, which say who turns
+  // it on and where; any other refusal keeps the probe's framing.
+  it('a grant refusal carries its plain words; any other keeps the probe framing', () => {
+    const grant = new PreflightDeniedError('crm.deal', 'op_not_granted',
+      "'recued-core.crm.deal.create' is turned off for you, so it did not run. To use it, turn it on under Self (you) → Ops on the Contracts page.");
+    expect(grant.message).toBe(
+      "'recued-core.crm.deal.create' is turned off for you, so it did not run. To use it, turn it on under Self (you) → Ops on the Contracts page.",
+    );
+    expect(grant).toMatchObject({ code: 'RECIPE_POLICY_DENIED', admission_code: 'op_not_granted', slug: 'crm.deal' });
+    const other = new PreflightDeniedError('file.read', 'kind_not_allowed', 'cli kind is not allowed');
+    expect(other.message).toBe(
+      "Gateway refused dispatch — preflight admission probe denied tool 'file.read' (kind_not_allowed: cli kind is not allowed)",
+    );
+  });
+
   it('fires the probe even when commit identity is absent', async () => {
     const askStore = commitStore();
     const askInner = vi.fn<GatewayInner>().mockResolvedValue({ ok: true });

@@ -148,11 +148,21 @@ describe('tier1CallTitle — one call of an AI tool, in the owner\'s words', () 
     expect(tier1CallTitle('work.update', { kind: 'commitment', id: 'c1' })).toBe('Change a commitment');
     expect(tier1CallTitle('work.update', { kind: 'task', id: 't1', done: true })).toBe('Tick a task off');
     expect(tier1CallTitle('work.update', { kind: 'task', id: 't1', done: false })).toBe('Change a task');
+    // D-343 slice 1 — a booking: how it went, or its new time.
+    expect(tier1CallTitle('work.update', { kind: 'booking', id: 'b1', state: 'no_show' })).toBe('Mark a booking a no-show');
+    expect(tier1CallTitle('work.update', { kind: 'booking', id: 'b1', state: 'confirmed' })).toBe('Change a booking');
+    expect(tier1CallTitle('work.update', { kind: 'booking', id: 'b1', starts_at: '2026-11-12T10:00+00:00' })).toBe('Move a booking');
+    // D-343 slice 1 — an occasion, and a mail fact closed.
+    expect(tier1CallTitle('work.update', { kind: 'occasion', id: 'o1', muted: true })).toBe('Stop an occasion’s reminders');
+    expect(tier1CallTitle('work.update', { kind: 'occasion', id: 'o1', on: '2027-06-27' })).toBe('Change an occasion');
+    expect(tier1CallTitle('work.update', { kind: 'mail_fact', id: 'f1', done: true })).toBe('Mark a mail fact done');
+    expect(tier1CallTitle('work.update', { kind: 'mail_fact', id: 'f1', state: 'cancelled' })).toBe('Mark a mail fact cancelled');
+    expect(tier1CallTitle('work.update', { kind: 'mail_fact', id: 'f1', state: 'no_show' })).toBe('Mark a reservation a no-show');
   });
 
   it('keeps the tool\'s own title where the call names no kind it knows, or the tool has none', () => {
     expect(tier1CallTitle('work.create', {})).toBe('Add a task, note or more');
-    expect(tier1CallTitle('work.update', { kind: 'booking' })).toBe('Change a task, note or more');
+    expect(tier1CallTitle('work.update', { kind: 'invoice' })).toBe('Change a task, note or more');
     expect(tier1CallTitle('work.update', null)).toBe('Change a task, note or more');
     expect(tier1CallTitle('calendar.create', { kind: 'task' })).toBe('Add a calendar event');
     expect(tier1CallTitle('mail.send', {})).toBeUndefined();
@@ -169,13 +179,19 @@ describe('tier1CallDetails — a held call\'s arguments as its approval lists th
     expect(tier1CallDetails('work.create', { kind: 'asset', title: 'Lock', belongs_to: 'b1' }, { belongs_to: { b1: 'Road bike' } }))
       .toEqual({ args: { title: 'Lock', 'Part of': 'b1' }, labels: { 'Part of': { b1: 'Road bike' } } });
     expect(tier1CallDetails('work.update', { kind: 'task', id: 't1', done: true })).toEqual({ args: { Task: 't1', done: true } });
+    // D-343 slice 1 — a booking, an occasion and a mail fact the chat changes.
+    expect(tier1CallDetails('work.update', { kind: 'booking', id: 'b1', state: 'completed' }, { id: { b1: 'Haircut' } }))
+      .toEqual({ args: { Booking: 'b1', state: 'completed' }, labels: { Booking: { b1: 'Haircut' } } });
+    expect(tier1CallDetails('work.update', { kind: 'occasion', id: 'o1', muted: true })).toEqual({ args: { Occasion: 'o1', muted: true } });
+    expect(tier1CallDetails('work.update', { kind: 'mail_fact', id: 'f1', done: true }, { id: { f1: 'Bill: City Water' } }))
+      .toEqual({ args: { 'Mail fact': 'f1', done: true }, labels: { 'Mail fact': { f1: 'Bill: City Water' } } });
     expect(tier1CallDetails('calendar.update', { source_id: 'e1', summary: 'Dentist' }, { source_id: { e1: 'Dentist, 10:00' } }))
       .toEqual({ args: { Event: 'e1', summary: 'Dentist' }, labels: { Event: { e1: 'Dentist, 10:00' } } });
   });
 
   it('leaves what it cannot name as the call has it', () => {
     // A kind no title names keeps its row.
-    expect(tier1CallDetails('work.update', { kind: 'booking', id: 'b1' })).toEqual({ args: { kind: 'booking', id: 'b1' } });
+    expect(tier1CallDetails('work.update', { kind: 'invoice', id: 'b1' })).toEqual({ args: { kind: 'invoice', id: 'b1' } });
     expect(tier1CallDetails('memory.forget', { id: 'm1' }, { id: { m1: 'M' } })).toEqual({ args: { id: 'm1' }, labels: { id: { m1: 'M' } } });
     // Only a work tool's title says its kind.
     expect(tier1CallDetails('calendar.create', { kind: 'task', id: 'x' })).toEqual({ args: { kind: 'task', id: 'x' } });

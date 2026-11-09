@@ -30,6 +30,8 @@ import {
   ASK_CARD_BODY_ATTR,
   ASK_CARD_STYLES,
   ASK_CARD_CONFIRM_ATTR,
+  ASK_CARD_PAUSED_ATTR,
+  ASK_CARD_PAUSED_OPTION_ATTR,
   ASK_CARD_DETAILS_ATTR,
   ASK_CARD_NOTE_ATTR,
   ASK_CARD_OPTION_ATTR,
@@ -37,6 +39,7 @@ import {
   ASK_CARD_LINK_ATTR,
   ASK_CARD_CHAT_LINK_ATTR,
   ASK_CARD_SUMMARY_ATTR,
+  ASK_CARD_SECRET_ATTR,
   type AskCardModel,
   type AskCardOptions,
   CHAT_PLAN_CARD_ACTION_ATTR,
@@ -1380,5 +1383,128 @@ describe('D-336 slice N — a held chat write\'s card in Chat', () => {
       expect(chatLink(renderWithDocument(model(), () => {}, { chatHref: hostile, chatChangeable: true }).card), hostile)
         .toBeUndefined();
     }
+  });
+});
+
+describe('D-335 slice Z — an ask for a browser step\'s secret takes it in a field of its own', () => {
+  const secretModel = (kind: 'password' | 'sign-in code' = 'password'): AskCardModel => model({
+    title: kind === 'password' ? 'Your password for login.live.com' : 'The sign-in code for login.live.com',
+    text: 'A step in your browser needs it.',
+    options: [{ id: 'browser_secret_stop', label: 'Stop the task' }],
+    secret_prompt: { kind, site: 'login.live.com', field: 'Password', remember: kind !== 'sign-in code', expires_at: 1 },
+  });
+  /** The fake document, with the text nodes a label's words are; and a submit that carries its event. */
+  const renderSecret = (m: AskCardModel, onSecret?: (value: string, remember: boolean) => Promise<boolean>) => {
+    const base = makeFakeDocument();
+    const doc = Object.assign(base, { createTextNode: (words: string) => {
+      const node = base.createElement('#text');
+      node.textContent = words;
+      return node;
+    } });
+    const onAnswer = vi.fn();
+    const card = renderAskCard(doc as unknown as Document, m, { onAnswer, ...(onSecret !== undefined ? { onSecret } : {}) }) as unknown as FakeEl;
+    const byClass = (root: FakeEl, name: string): FakeEl | undefined => root.className === name ? root
+      : root.children.map((child) => byClass(child, name)).find((found) => found !== undefined);
+    const words = (root: FakeEl): string => [root.textContent, ...root.children.map(words)].join('');
+    const form = collectByAttr(card, ASK_CARD_SECRET_ATTR)[0]!;
+    const submit = async () => {
+      for (const fn of form.listeners.get('submit') ?? []) (fn as (event: unknown) => void)({ preventDefault: () => undefined });
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    };
+    return { card, form, onAnswer, submit, words, input: byClass(card, 'rx-ask-card-secret-input'),
+      status: byClass(card, 'rx-ask-card-secret-status'), remember: byClass(card, 'rx-ask-card-secret-remember') };
+  };
+
+  it('a password: a masked field, a box to remember it for that field, and its own button, above the one option', async () => {
+    const onSecret = vi.fn(async () => true);
+    const t = renderSecret(secretModel(), onSecret);
+    expect(t.form.getAttribute(ASK_CARD_SECRET_ATTR)).toBe('ask-1');
+    expect(t.words(t.form)).toContain('Your password for login.live.com, for the field “Password”');
+    expect(t.input).toMatchObject({ type: 'password', maxLength: 1_000, autocomplete: 'off' });
+    expect(t.words(t.remember!)).toBe(' Remember it for this field on login.live.com');
+    expect(optionButtons(t.card).map((button) => button.textContent)).toEqual(['Stop the task']);
+    t.input!.value = 'hunter2';
+    await t.submit();
+    expect(onSecret).toHaveBeenCalledWith('hunter2', false);
+    // Sent, and gone from the field; never an answer to the ask.
+    expect(t.input!.value).toBe('');
+    expect(t.onAnswer).not.toHaveBeenCalled();
+    t.input!.value = 'hunter2';
+    (t.remember!.children[0] as FakeEl & { checked?: boolean }).checked = true;
+    await t.submit();
+    expect(onSecret).toHaveBeenLastCalledWith('hunter2', true);
+  });
+
+  it('says so when nothing was typed, when no step waits any longer, and when it could not be sent', async () => {
+    const onSecret = vi.fn(async () => false);
+    const t = renderSecret(secretModel(), onSecret);
+    await t.submit();
+    expect(onSecret).not.toHaveBeenCalled();
+    expect(t.status).toMatchObject({ hidden: false, textContent: 'Type it first.' });
+    t.input!.value = 'hunter2';
+    await t.submit();
+    expect(t.status!.textContent).toBe('The step was no longer waiting for it, so it was not given.');
+    const failing = renderSecret(secretModel(), async () => { throw new Error('offline'); });
+    failing.input!.value = 'hunter2';
+    await failing.submit();
+    expect(failing.status!.textContent).toBe('Recued could not give it. Try again.');
+  });
+
+  it('a sign-in code is never offered to be remembered; a card that cannot give one says where to', () => {
+    const code = renderSecret(secretModel('sign-in code'), vi.fn(async () => true));
+    expect(code.words(code.form)).toContain('The sign-in code for login.live.com');
+    expect(code.remember).toBeUndefined();
+    expect(code.input).toMatchObject({ type: 'password', autocomplete: 'one-time-code' });
+    const elsewhere = renderSecret(secretModel());
+    expect(elsewhere.input).toBeUndefined();
+    expect(elsewhere.words(elsewhere.form)).toBe('Give it on the Approvals page of the Recued app.');
+  });
+});
+
+// D-188 — the owner's ruling of 2026-11-08: an approval the server's pause holds back says so
+// above its buttons and offers only the answers that still work (declining); the others stay
+// visible but send nothing until Resume, whatever happens to the card in between.
+describe('D-188 — an approval the pause holds back', () => {
+  const PAUSED = { message: 'The server is paused. Resume it to approve this; you can still deny it.', allowed_options: ['no'] };
+
+  it('says why above the buttons and holds back every answer but declining', () => {
+    const card = render(model({ paused: PAUSED }), vi.fn());
+    const note = collectByAttr(card, ASK_CARD_PAUSED_ATTR)[0]!;
+    expect(note.getAttribute(ASK_CARD_PAUSED_ATTR)).toBe('ask-1');
+    expect(note.getAttribute('role')).toBe('status');
+    expect(note.textContent).toBe(PAUSED.message);
+    const [send, discard] = optionButtons(card);
+    expect(send!.getAttribute('aria-disabled')).toBe('true');
+    expect(send!.attrs.has(ASK_CARD_PAUSED_OPTION_ATTR)).toBe(true);
+    expect(discard!.getAttribute('aria-disabled')).toBeNull();
+    expect(discard!.attrs.has(ASK_CARD_PAUSED_OPTION_ATTR)).toBe(false);
+    const actions = card.children.find((child) => child.children.includes(send!))!;
+    expect(card.children.indexOf(note)).toBe(card.children.indexOf(actions) - 1);
+  });
+
+  it('sends nothing for a held answer, and declines as ever', () => {
+    const onAnswer = vi.fn();
+    const card = render(model({ paused: PAUSED }), onAnswer);
+    const [send, discard] = optionButtons(card);
+    send!.click();
+    send!.click();
+    expect(onAnswer).not.toHaveBeenCalled();
+    discard!.click();
+    expect(onAnswer).toHaveBeenCalledWith('no');
+  });
+
+  it('keeps a held answer held when a failed decline frees the buttons again', async () => {
+    const card = render(model({ paused: PAUSED }), vi.fn(async () => { throw new Error('offline'); }));
+    const [send, discard] = optionButtons(card);
+    discard!.click();
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(discard!.getAttribute('aria-disabled')).toBeNull();
+    expect(send!.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('renders as before without it', () => {
+    const card = render(model(), vi.fn());
+    expect(collectByAttr(card, ASK_CARD_PAUSED_ATTR)).toEqual([]);
+    expect(optionButtons(card).every((button) => !button.attrs.has(ASK_CARD_PAUSED_OPTION_ATTR))).toBe(true);
   });
 });

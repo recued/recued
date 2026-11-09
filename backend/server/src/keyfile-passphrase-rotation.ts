@@ -51,6 +51,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { createServerBundleStore } from './server-bundle-store.js';
 import { createInstanceLock } from './lifecycle/instance-lock.js';
+import { pidWasReused } from './lifecycle/process-identity.js';
 import { resolveIdentityKeysPath } from './identity/boot.js';
 import {
   createFileServerKeyStore,
@@ -190,7 +191,7 @@ export const rotateKeyfilePassphrase = async (args: {
   // that a start raced their rotation rather than that they forgot to stop it.
   const refuseIfServerRunning = (phase: 'before' | 'during'): void => {
     const holder = lock.inspect();
-    if (!holder || !isProcessAlive(holder.pid)) return;
+    if (!holder || !isProcessAlive(holder.pid) || pidWasReused(holder.pid, holder.proc_start)) return;
     throw new PassphraseRotationError(
       'server_running',
       phase === 'before'

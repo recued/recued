@@ -194,6 +194,10 @@ export const packTreeFingerprint = (dir: string): string => {
 interface RosterCacheEntry {
   fingerprint: string;
   manifests: readonly BulkPackManifest[];
+  /** D-145 PA10 — the core features the same sources hold, slug → publisher.
+   *  The roster leaves them out, but the boot installs them, so a caller that
+   *  lists installed rows has to know which ones to leave out too. */
+  core: ReadonlyMap<string, string>;
 }
 const rosterCache = new Map<string, RosterCacheEntry>();
 
@@ -226,10 +230,7 @@ export const clearBundledPackRosterCache = (): void => {
   slugIndexCache.clear();
 };
 
-export const loadBundledPackManifests = (
-  packDir?: string,
-  moduleDir?: string,
-): BulkPackManifest[] => {
+const loadRoster = (packDir?: string, moduleDir?: string): RosterCacheEntry => {
   const dir = packDir ?? findCommunityPackDir(moduleDir);
   // ⛔ The embed union is keyed into the cache, not just the directory: the
   // SAME dir yields a different roster depending on whether `packDir` was
@@ -239,12 +240,7 @@ export const loadBundledPackManifests = (
   const key = `${packDir === undefined ? 'default' : 'explicit'}\u0000${dir}`;
   const fingerprint = packTreeFingerprint(dir);
   const hit = rosterCache.get(key);
-  // 🔑 A COPY, ALWAYS. `handlePacksList` sorts the returned array IN PLACE, so
-  // handing back the cached array would let one caller reorder every later
-  // caller's roster. The manifests inside are shared and must be treated as
-  // read-only — every caller today either reads fields or spreads them into
-  // fresh arrays.
-  if (hit !== undefined && hit.fingerprint === fingerprint) return [...hit.manifests];
+  if (hit !== undefined && hit.fingerprint === fingerprint) return hit;
 
   const bySlug = new Map<string, BulkPackManifest>();
   for (const file of walkJsonFiles(dir)) {
@@ -257,10 +253,33 @@ export const loadBundledPackManifests = (
       if (!bySlug.has(manifest.slug)) bySlug.set(manifest.slug, manifest);
     }
   }
-  const manifests = [...bySlug.values()].filter((manifest) => !isCoreFeaturePack(manifest));
-  rosterCache.set(key, { fingerprint, manifests });
-  return [...manifests];
+  const all = [...bySlug.values()];
+  const entry: RosterCacheEntry = {
+    fingerprint,
+    manifests: all.filter((manifest) => !isCoreFeaturePack(manifest)),
+    core: new Map(all.filter(isCoreFeaturePack).map((manifest) => [manifest.slug, manifest.publisher])),
+  };
+  rosterCache.set(key, entry);
+  return entry;
 };
+
+export const loadBundledPackManifests = (
+  packDir?: string,
+  moduleDir?: string,
+): BulkPackManifest[] =>
+  // 🔑 A COPY, ALWAYS. `handlePacksList` sorts the returned array IN PLACE, so
+  // handing back the cached array would let one caller reorder every later
+  // caller's roster. The manifests inside are shared and must be treated as
+  // read-only — every caller today either reads fields or spreads them into
+  // fresh arrays.
+  [...loadRoster(packDir, moduleDir).manifests];
+
+/** D-145 PA10 — the core features among the bundled packs, slug → publisher,
+ *  read from the same sources and cache as the roster. */
+export const coreFeaturePackPublishers = (
+  packDir?: string,
+  moduleDir?: string,
+): ReadonlyMap<string, string> => loadRoster(packDir, moduleDir).core;
 
 /** D-319 — the packs on the bundled roster that ship a recipe, as
  *  `<publisher>.<slug>` (the `missing_packs` form) with their names. The

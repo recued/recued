@@ -16,6 +16,17 @@ describe('binding argument interpretation', () => {
     expect(() => assertBindingArgumentRename(row,'source','input')).not.toThrow(); expect(() => assertBindingArgumentRename(row,'source','output_dir')).toThrow('Engine-owned');
     const opaque = operationBindingArgumentReferences({...row,bind:{kind:'rest',method:'GET',path_template:'/items/{{source}}',static_body:{literal:'{{source}}'}}}); expect(opaque.references.filter(site => site.path[0] === 'bind')).toHaveLength(1);
   });
+  it('renames an argument inside existing_paths with the argv (D-346 § 9), and refuses a malformed entry', () => {
+    const row = {op:'search',ingredient:'rg',args:['root_dir'],editable_args:[{key:'root_dir',type:'string'}],bind:{kind:'cli_invocation',argv_template:['rg','--files','{root_dir}'],existing_paths:[{arg:'{root_dir}'}],exit_code_handling:'zero_is_success'}};
+    const result = operationBindingArgumentReferences(row); expect(result.complete).toBe(true);
+    expect(result.references.filter(site => site.key === 'root_dir' && site.path.join('.') === 'bind.existing_paths.0.arg')).toHaveLength(1);
+    expect(() => assertBindingArgumentRename(row,'root_dir','folder')).not.toThrow();
+    expect(() => assertBindingArgumentRename({...row,bind:{...row.bind,existing_paths:[{arg:'{root_dir}',kind:'folder'}]}},'root_dir','folder')).toThrow('explicit reference support');
+    // `accepts` names a form, not an argument: the rename keeps it and follows `arg`.
+    const glob = {...row,bind:{...row.bind,existing_paths:[{arg:'{root_dir}',accepts:'glob'}]}};
+    expect(operationBindingArgumentReferences(glob).complete).toBe(true);
+    expect(() => assertBindingArgumentRename(glob,'root_dir','folder')).not.toThrow();
+  });
   it('refuses rename for unsupported schemas, metadata, transport keys, nested paths and partial reference discovery', () => {
     const row = {op:'read',ingredient:'api',args:['id'],bind:{kind:'rest',method:'GET',path_template:'/items/{{id}}'}};
     for (const extra of [{request_schema:{}},{authority_args:['id']},{path_scope:{target_path_template:'{{id}}'}}]) expect(() => assertBindingArgumentRename({...row,...extra},'id','item_id')).toThrow('explicit reference support');

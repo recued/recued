@@ -74,9 +74,13 @@ describe('D-325 — the composed Agenda reads the calendar and the prep notes th
       app.enrichmentStoreRef!.upsert({ topic: 'preparation_notes', scope: 'calendar', target_id: briefing.record_id, value: prep,
         authored_by: 'housekeeping:preparation_notes' });
 
-      scheduled.setAgenda({ day: 'tomorrow' }); await scheduled.sendAgendaNow();
-      expect(scheduled.agendaStatus().last_run!.text.split('\n'))
-        .toEqual(['06:30 Jogging', '09:00 Morning briefing · prep notes ready', '12:30 Lunch with Ana']);
+      // D-340 slice 2 — the composed server's streams took over at start: the Agenda is the daily
+      // stream's part, its lines under "Agenda" in "Your day".
+      expect(scheduled.streamsActive()).toBe(true);
+      scheduled.setStream('daily', { enabled: true, day: 'tomorrow', agenda: true, coming_up: false, due_today: false });
+      await scheduled.sendStreamNow('daily');
+      expect(scheduled.streamStatus('daily').last_run!.text.split('\n'))
+        .toEqual(['Agenda', '06:30 Jogging', '09:00 Morning briefing · prep notes ready', '12:30 Lunch with Ana']);
 
       // §15.7 amendment (2026-11-03): a week reads the same calendar over seven days, a day at a time.
       const later = new Date(Date.now() + 4 * 86_400_000).toISOString().slice(0, 10);
@@ -84,9 +88,9 @@ describe('D-325 — the composed Agenda reads the calendar and the prep notes th
         end_at: Date.parse(`${later}T10:30:00Z`) }, size_bytes: 0 });
       const title = (day: string) => new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
         .format(Date.parse(`${day}T00:00:00Z`));
-      scheduled.setAgenda({ frequency: 'weekly' }); await scheduled.sendAgendaNow();
-      expect(scheduled.agendaStatus().last_run!.text.split('\n')).toEqual([title(tomorrow), '06:30 Jogging', '09:00 Morning briefing · prep notes ready',
-        '12:30 Lunch with Ana', '', title(later), '10:00 Dentist']);
+      scheduled.setStream('weekly', { enabled: true, day: 'tomorrow', agenda: true, coming_up: false }); await scheduled.sendStreamNow('weekly');
+      expect(scheduled.streamStatus('weekly').last_run!.text.split('\n')).toEqual(['Agenda', title(tomorrow), '06:30 Jogging',
+        '09:00 Morning briefing · prep notes ready', '12:30 Lunch with Ana', '', title(later), '10:00 Dentist']);
     } finally { storage.db?.close(); }
   });
 });

@@ -303,6 +303,12 @@ export const validateMetadata = (r: Record<string, unknown>, add: AddFn): void =
       `min_recued_version must be a Recued version such as 26.10.12; got ${JSON.stringify(meta.min_recued_version)}`);
   }
 
+  // D-335 slice AG — a recipe that may run beside the other calls of its chat round says so with true.
+  if (meta.concurrency_safe !== undefined && typeof meta.concurrency_safe !== 'boolean') {
+    add('error', 'concurrency_safe_invalid', 'metadata.concurrency_safe',
+      `concurrency_safe is true or false; got ${JSON.stringify(meta.concurrency_safe)}`);
+  }
+
   // D-200 — this deployment block is optional and does not gate ordinary
   // recipes merely by being absent. Once an author supplies the recognized
   // typed field, however, the standard parser must uphold RecipeMetadata's

@@ -20,6 +20,8 @@ import {
   ATTENTION_ERROR_ANNOUNCER_ATTR,
   ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR,
   ATTENTION_GATEWAY_ASK_DETAILS_ATTR,
+  ATTENTION_GATEWAY_ASK_PAUSED_ATTR,
+  ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR,
   ATTENTION_GATEWAY_ASK_ROW_ATTR,
   ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR,
   ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
@@ -3123,6 +3125,53 @@ describe('D-174 - approval attention top-bar adapter', () => {
       `${ATTENTION_GATEWAY_ASK_ROW_ATTR}="gw-submit"`,
     );
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    handle.dispose();
+  });
+
+  // D-188 — the owner's ruling of 2026-11-08: an approval the server's pause holds back says
+  // so in its row and its held answers send nothing; declining still works.
+  it('D-188 — says why a held approval waits, and sends only the answers that still work', async () => {
+    const paused = {
+      message: 'The server is paused. Resume it to approve this; you can still deny it.',
+      allowed_options: ['reject'],
+    };
+    const runPendingAskSubmitAnswer = vi.fn(async () => ({ ok: true as const }));
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      runPendingAsksList: vi.fn(async () => ({ asks: [ask('gw-paused', { paused })] })),
+      runPendingAskSubmitAnswer,
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(`${ATTENTION_GATEWAY_ASK_PAUSED_ATTR}="gw-paused"`);
+    expect(topbar.innerHTML).toContain(paused.message);
+    const approveButton = topbar.innerHTML.slice(
+      topbar.innerHTML.lastIndexOf('<button', topbar.innerHTML.indexOf('data-option-id="approve"')),
+      topbar.innerHTML.indexOf('</button>', topbar.innerHTML.indexOf('data-option-id="approve"')),
+    );
+    expect(approveButton).toContain(`${ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR}=""`);
+    expect(approveButton).toContain('aria-disabled="true"');
+    const rejectButton = topbar.innerHTML.slice(
+      topbar.innerHTML.lastIndexOf('<button', topbar.innerHTML.indexOf('data-option-id="reject"')),
+      topbar.innerHTML.indexOf('</button>', topbar.innerHTML.indexOf('data-option-id="reject"')),
+    );
+    expect(rejectButton).not.toContain(ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR);
+
+    topbar.fireAction({
+      'data-action': 'gateway-ask-answer',
+      'data-ask-id': 'gw-paused',
+      'data-option-id': 'approve',
+      [ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR]: '',
+    });
+    await tick();
+    expect(runPendingAskSubmitAnswer).not.toHaveBeenCalled();
+    topbar.fireAction({
+      'data-action': 'gateway-ask-answer',
+      'data-ask-id': 'gw-paused',
+      'data-option-id': 'reject',
+    });
+    await tick();
+    expect(runPendingAskSubmitAnswer).toHaveBeenCalledWith({ ask_id: 'gw-paused', option_id: 'reject' });
     handle.dispose();
   });
 

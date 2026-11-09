@@ -283,6 +283,10 @@ export interface MailChatSentProofDeps {
   /** The audit — checks pause while the vault is locked (the mailboxes' keys are
    *  in it), and the waits start again when it opens. Absent ⇒ never locked. */
   readonly isUnlocked?: () => boolean;
+  /** D-188 — true while the owner's pause holds: nothing is checked at the provider or handed
+   *  over until Resume, as while the vault is locked (the emergency stop: nothing comes in).
+   *  Absent ⇒ never paused. */
+  readonly isPaused?: () => boolean;
   /** One mailbox (§8.18) — an email of the chat mailbox settled as not the
    *  owner's request (not proven, or set aside), by its stored row. Called once,
    *  best-effort. Absent ⇒ nobody is told. */
@@ -976,7 +980,7 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
       // The mailboxes' keys and the chat queue are behind the vault: nothing is
       // checked or handed over while it is locked, and the waits start again
       // when it opens.
-      if (deps.isUnlocked !== undefined && !deps.isUnlocked()) {
+      if ((deps.isUnlocked !== undefined && !deps.isUnlocked()) || deps.isPaused?.() === true) {
         locked = true;
         return;
       }

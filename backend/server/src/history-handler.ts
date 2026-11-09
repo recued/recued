@@ -43,7 +43,10 @@ import type {
 // D-161 P3 — actor-lane default + wire-input sanitizer for the aggregate
 // "Recent activity" feed (`execution.recent`).
 import {
+  BROWSER_SECRET_ASK_KIND,
+  BROWSER_SECRET_MAX_CHARS,
   PREAPPROVAL_NOTIFICATION_HANDLER,
+  readBrowserSecretPrompt,
   TIMELINE_DEFAULT_ORIGIN_ACTORS,
   provenanceAttributionFromSource,
   sanitizeTimelineOriginFilter,
@@ -51,6 +54,7 @@ import {
 import type { AuditLogStore } from '@recued/storage';
 import { PREFLIGHT_HANDLER_KIND, type planApproval } from '@recued/gateway';
 import type { PendingAsk } from '@recued/notification';
+import { PAUSED_APPROVAL_ANSWERS, PAUSED_APPROVAL_REFUSAL } from './pause-approval.js';
 
 import type { WsClient } from './ws-server.js';
 
@@ -100,6 +104,9 @@ export interface HistoryDeps {
   /** D-336 slice N — the card in Chat of a held chat write's ask, or null
    *  (`createAskChatPlanFinder`). Absent ⇒ no ask carries `chat_plan`. */
   findAskChatPlan?: (ask: PendingAsk) => Promise<ServerPendingAsk['chat_plan'] | null>;
+  /** D-188 — is this ask an approval the owner's pause holds back until Resume
+   *  (`pause-approval.ts askWaitsForResume`)? Absent ⇒ no ask carries `paused`. */
+  askWaitsForResume?: (ask: PendingAsk) => Promise<boolean>;
   /** D-158 ask-store read — backs `notification.pending_asks`. Injected
    *  as a thunk over `NotificationBlock.listOpenAsks` so the handler
    *  never holds the ask store directly. Absent → returns `[]`. */
@@ -111,6 +118,9 @@ export interface HistoryDeps {
    *  never names a channel or holds the block. Absent (partially-composed
    *  boot) → the rpc is a no-op that still resolves `{ ok: true }`. */
   submitAnswer?: (ask_id: string, option_id: string, note?: string) => Promise<void>;
+  /** D-335 slice Z — give the secret a browser step waits for (`browserSecrets.give`). True when
+   *  a step took it. Absent ⇒ no step ever takes one. */
+  giveSecret?: (ask_id: string, value: string, remember: boolean) => Promise<boolean>;
 }
 
 /** Parse a `notification_fired` activity row's JSON `detail` into the
@@ -301,6 +311,17 @@ export const handlePendingAsks = async (
       }
     }))
     : undefined;
+  // D-188 — and whether each waits for Resume: no read at all while the server runs, one for a
+  // preflight ask while it is paused. One that cannot be read is shown as it was.
+  const waits = deps.askWaitsForResume !== undefined
+    ? await Promise.all(sorted.map(async (p) => {
+      try {
+        return await deps.askWaitsForResume!(p);
+      } catch {
+        return false;
+      }
+    }))
+    : undefined;
   return {
     asks: sorted.map((p, i) => ({
       ask_id: p.ask_id,
@@ -335,6 +356,19 @@ export const handlePendingAsks = async (
       ...actionNameOf(deps, p),
       // And the held chat write's card in Chat, for the same reason.
       ...(chatPlans?.[i] ? { chat_plan: chatPlans[i]! } : {}),
+      // D-335 slice Z — and what a secret ask asks for, so its card takes the value in a field of its
+      // own: named here for the same reason again.
+      ...secretPromptOf(p),
+      // D-188 — and an approval the owner's pause holds back: the card says why and offers only
+      // the answers that still work (declining), named here for the same reason again.
+      ...(waits?.[i] === true
+        ? {
+            paused: {
+              message: PAUSED_APPROVAL_REFUSAL,
+              allowed_options: p.options.filter((o) => PAUSED_APPROVAL_ANSWERS.has(o.id)).map((o) => o.id),
+            },
+          }
+        : {}),
     })),
   };
 };
@@ -354,6 +388,13 @@ export const createAskChatPlanFinder = (
   if (plan === undefined || plan.status !== 'proposed') return null;
   const changeable = (plan.editable_args?.length ?? 0) > 0 && plan.args !== null && typeof plan.args === 'object';
   return { session_id: plan.session_id, plan_id: plan.plan_id, ...(changeable ? { changeable: true } : {}) };
+};
+
+/** D-335 slice Z — `{ secret_prompt }` for an ask for a browser step's secret, else nothing. */
+const secretPromptOf = (ask: PendingAsk): { secret_prompt?: NonNullable<ServerPendingAsk['secret_prompt']> } => {
+  if (ask.handler_kind !== BROWSER_SECRET_ASK_KIND) return {};
+  const prompt = readBrowserSecretPrompt(ask.handler_payload);
+  return prompt !== undefined ? { secret_prompt: prompt } : {};
 };
 
 /** `{ action_name }` for an ask whose held action has a name, else nothing. A
@@ -419,11 +460,27 @@ export const handleSubmitAnswer = async (
   return { ok: true };
 };
 
+/** D-335 slice Z — give the secret a browser step waits for, from its ask's card. The value goes to
+ *  the step and nowhere else: a malformed call is `{ given: false }`, never an error, since an
+ *  error is where a request's arguments could be reported. */
+export const handleGiveSecret = async (
+  deps: HistoryDeps,
+  req: { ask_id: string; value: string; remember?: boolean },
+): Promise<{ given: boolean }> => {
+  const args = req as { ask_id?: unknown; value?: unknown; remember?: unknown } | null | undefined;
+  if (deps.giveSecret === undefined || args == null || typeof args.ask_id !== 'string' || args.ask_id === ''
+    || typeof args.value !== 'string' || args.value === '' || args.value.length > BROWSER_SECRET_MAX_CHARS) {
+    return { given: false };
+  }
+  return { given: await deps.giveSecret(args.ask_id, args.value, args.remember === true).catch(() => false) };
+};
+
 type HistoryMethods =
   | 'execution.recent'
   | 'notification.recent'
   | 'notification.pending_asks'
-  | 'notification.submitAnswer';
+  | 'notification.submitAnswer'
+  | 'notification.giveSecret';
 
 /** Compose the historical-view handler slice. Returns `undefined` when no
  *  deps are wired (the caller drops the slice); each handler self-gates
@@ -438,12 +495,14 @@ export const makeHistoryHandlers = (
       'notification.recent',
       'notification.pending_asks',
       'notification.submitAnswer',
+      'notification.giveSecret',
     ],
     handlers: {
       'execution.recent': async (req) => handleExecutionRecent(deps, req),
       'notification.recent': async (req) => handleNotificationRecent(deps, req),
       'notification.pending_asks': async () => handlePendingAsks(deps),
       'notification.submitAnswer': async (req) => handleSubmitAnswer(deps, req),
+      'notification.giveSecret': async (req) => handleGiveSecret(deps, req),
     },
   };
 };

@@ -8,7 +8,11 @@ export interface ChatReplyDraft {
   preview?: { role: 'user' | 'assistant' | 'notice'; text: string; title?: string };
 }
 
-export const replyDraftForMessage = (message: ChatMessage): ChatReplyDraft => {
+/** What a reply draft reads of a message: a whole row, or the notice Today's "Close the day" opens its
+ *  conversation with, which has no row here yet. */
+type DraftedMessage = Pick<ChatMessage, 'id' | 'session_id' | 'role' | 'content' | 'attachments' | 'notice'>;
+
+export const replyDraftForMessage = (message: DraftedMessage): ChatReplyDraft => {
   const text = message.content.replace(/\s+/gu, ' ').trim()
     || (message.attachments?.length ? 'Attachment' : 'Recued cannot show this message');
   const chars = Array.from(text);
@@ -18,6 +22,12 @@ export const replyDraftForMessage = (message: ChatMessage): ChatReplyDraft => {
     ...(message.role === 'notice' && message.notice?.title ? { title: message.notice.title } : {}),
   } };
 };
+
+/** D-343 slice 4 (ruling 20) — the reply Today's "Close the day" opens its conversation with: to the
+ *  notice the server just put in it, previewed as Reply on that notice's card would preview it. */
+export const noticeReplyDraft = (notice: { session_id: string; message_id: string; title: string; text: string }): ChatReplyDraft =>
+  replyDraftForMessage({ id: notice.message_id, session_id: notice.session_id, role: 'notice', content: notice.text,
+    notice: { vendor: 'app', title: notice.title } });
 
 export const buildChatQuote = (
   doc: Document, reply: ChatMessageReply, open: (messageId: string) => void, draft = false,

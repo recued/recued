@@ -11,6 +11,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import type Database from 'better-sqlite3';
 import { droppedVariables, type RecipeDefinition } from '@recued/contracts';
 
 import { BUNDLED_FOUNDATION_RECIPES } from './bundled-foundation.generated.js';
@@ -349,11 +350,14 @@ export const createRecipeStore = (
     `);
   }
 
+  // Compiled once, on first use: a chat catalog listing reads every recipe's row twice (`get`, then
+  // `getStored`), 2,484 rows on the bench corpus, and compiling the statement each time was a share of it.
+  // A type-only import: D-212 allows no runtime import of the driver outside `openDatabase`.
+  let rowByIdStmt: Database.Statement | undefined;
   const getFromDb = (recipe_id: string): StoredRecipe | undefined => {
     if (!db) return undefined;
-    return db
-      .prepare('SELECT * FROM recipes WHERE recipe_id = ?')
-      .get(recipe_id) as StoredRecipe | undefined;
+    rowByIdStmt ??= db.prepare('SELECT * FROM recipes WHERE recipe_id = ?');
+    return rowByIdStmt.get(recipe_id) as StoredRecipe | undefined;
   };
 
   const parseStored = (row: StoredRecipe): RecipeDefinition => {

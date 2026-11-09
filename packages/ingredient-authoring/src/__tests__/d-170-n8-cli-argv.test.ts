@@ -181,6 +181,53 @@ describe('D-170 N.8 CLI argv_template guards', () => {
     expect(issuesWithCode(result, 'composition_cli_cwd_target_arg')).toEqual([]);
   });
 
+  // D-346 § 9 — existing_paths: caller arguments naming a folder or file the
+  // program reads, checked on the server before it starts.
+  it('allows existing_paths naming a single {arg} token the argv passes', () => {
+    const result = validateComposition(cliComposition(
+      ['rg', '--files', '{root_dir}'],
+      { existing_paths: [{ arg: '{root_dir}' }] },
+      { editable_args: [{ key: 'root_dir', type: 'string', label: 'Root directory', required: true, affects_target: true }] },
+      'rg',
+    ));
+    expect(result.valid).toBe(true);
+    for (const code of ['shape', 'arg', 'not_in_argv', 'engine_owned']) {
+      expect(issuesWithCode(result, `composition_cli_existing_paths_${code}`)).toEqual([]);
+    }
+  });
+
+  it('rejects existing_paths that are malformed, not a token, not passed, or a path the engine makes', () => {
+    const rootArg: Partial<PackOperationRow> = { editable_args: [{ key: 'root_dir', type: 'string', label: 'Root directory', required: true, affects_target: true }] };
+    const check = (bind: Partial<CliMethodBinding>, argv: CliArgvTemplateEntry[] = ['rg', '--files', '{root_dir}']) =>
+      validateComposition(cliComposition(argv, bind, rootArg, 'rg'));
+
+    expect(issuesWithCode(check({ existing_paths: [] }), 'composition_cli_existing_paths_shape')).toHaveLength(1);
+    expect(issuesWithCode(check({ existing_paths: [{ arg: '{root_dir}', kind: 'folder' }] as unknown as CliMethodBinding['existing_paths'] }), 'composition_cli_existing_paths_shape')).toHaveLength(1);
+    expect(issuesWithCode(check({ existing_paths: [{ arg: '/tmp/{root_dir}' }] }), 'composition_cli_existing_paths_arg')).toHaveLength(1);
+    expect(issuesWithCode(check({ existing_paths: [{ arg: '{other_dir}' }] }), 'composition_cli_existing_paths_not_in_argv')).toHaveLength(1);
+    const engine = check(
+      { existing_paths: [{ arg: '{out_dir}' }], output_capture: { dir_arg: 'out_dir', mime_type: 'text/plain' }, shape: 'ref' },
+      ['rg', '--files', '{root_dir}', '{out_dir}/list.txt'],
+    );
+    expect(issuesWithCode(engine, 'composition_cli_existing_paths_engine_owned')).toHaveLength(1);
+    expect(check({ existing_paths: [{ arg: '{other_dir}' }] }).valid).toBe(false);
+  });
+
+  it('allows accepts from its closed list beside arg, and rejects any other form', () => {
+    const rootArg: Partial<PackOperationRow> = { editable_args: [{ key: 'root_dir', type: 'string', label: 'Root directory', required: true, affects_target: true }] };
+    const check = (existing_paths: unknown) =>
+      validateComposition(cliComposition(['rg', '--files', '{root_dir}'], { existing_paths } as Partial<CliMethodBinding>, rootArg, 'rg'));
+
+    for (const accepts of ['glob', 'line']) {
+      const result = check([{ arg: '{root_dir}', accepts }]);
+      expect(result.valid).toBe(true);
+      expect(issuesWithCode(result, 'composition_cli_existing_paths_accepts')).toEqual([]);
+    }
+    expect(issuesWithCode(check([{ arg: '{root_dir}', accepts: 'node' }]), 'composition_cli_existing_paths_accepts')).toHaveLength(1);
+    expect(issuesWithCode(check([{ arg: '{root_dir}', accepts: true }]), 'composition_cli_existing_paths_accepts')).toHaveLength(1);
+    expect(issuesWithCode(check([{ accepts: 'glob' }]), 'composition_cli_existing_paths_shape')).toHaveLength(1);
+  });
+
   it('rejects cli cwd that is not a single target-affecting runtime arg token', () => {
     const freeform = validateComposition(cliComposition(
       ['vitest', 'run'],

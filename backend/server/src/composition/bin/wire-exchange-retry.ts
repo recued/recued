@@ -64,6 +64,9 @@ export interface ExchangeRetryDeps {
   readonly now?: () => number;
   readonly intervalMs?: number;
   readonly log?: (line: string) => void;
+  /** D-188 — true while the owner's pause holds: no exchange is re-sent to a peer until
+   *  Resume (the emergency stop: nothing leaves). Absent ⇒ never paused. */
+  readonly isPaused?: () => boolean;
 }
 
 export const EXCHANGE_RETRY_INTERVAL_MS = 60_000;
@@ -78,7 +81,7 @@ export const composeExchangeRetry = (deps: ExchangeRetryDeps): void => {
   let inFlight = false;
 
   const tick = async (): Promise<void> => {
-    if (inFlight) return;
+    if (inFlight || deps.isPaused?.() === true) return;
     inFlight = true;
     try {
       for (const ref of await deps.pendingRefs()) {

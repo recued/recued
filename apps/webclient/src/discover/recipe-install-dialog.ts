@@ -89,6 +89,20 @@ export interface MountRecipeInstallDialogOptions {
   returnFocus?: (recipe_id: string) => void;
   /** Humanize a service_kind slug for the type badge. */
   serviceKindLabel?: (kind: string) => string;
+  /** D-182 §7.1 — the program-access dialog (`cli-grant-dialog.ts`), so a pack
+   *  this install brings in that runs a program on the server asks which of its
+   *  actions to allow, as an install from Packs does. Without it those actions
+   *  stay off (cli reachability fails closed) until the owner turns them on in
+   *  the pack's Access tab, and the recipe's first run is refused. */
+  programAccess?: RecipeInstallProgramAccess;
+}
+
+/** The two calls of `CliGrantDialogMount` this dialog uses. */
+export interface RecipeInstallProgramAccess {
+  /** The program actions there are before the install; null when unreadable. */
+  snapshot(): Promise<ReadonlySet<string> | null>;
+  /** After a successful install: ask about every program action added since. */
+  openForNewTools(before: ReadonlySet<string>): Promise<void>;
 }
 
 export interface RecipeInstallDialogMount {
@@ -123,6 +137,10 @@ export const mountRecipeInstallDialog = (
 
   let recipe: RecipeDialogRecipe | null = null;
   let deps: readonly ResolvedDep[] = [];
+  /** The program actions before this recipe's packs install: taken when the
+   *  dialog opens with packs to bring in, so a retry after a failed step still
+   *  diffs against the state before the first pack landed. */
+  let programsBefore: Promise<ReadonlySet<string> | null> | undefined;
   let selected = new Set<string>();
   let busy = false;
   let error: string | null = null;
@@ -528,6 +546,9 @@ export const mountRecipeInstallDialog = (
     );
     accessPicks.clear();
     audiencePicks.clear();
+    programsBefore = opts.programAccess !== undefined && selected.size > 0
+      ? opts.programAccess.snapshot().catch(() => null)
+      : undefined;
     busy = false;
     error = null;
     render();
@@ -544,6 +565,7 @@ export const mountRecipeInstallDialog = (
     focusTrap = null;
     recipe = null;
     deps = [];
+    programsBefore = undefined;
     selected = new Set();
     grantModels = new Map();
     accessPicks.clear();
@@ -624,7 +646,17 @@ export const mountRecipeInstallDialog = (
     }
     if (disposed) return; // torn down mid-install → don't fire callbacks / render
     opts.onInstalled?.(r.recipe_id);
+    // As an install from Packs: once the packs are in, ask about the program
+    // actions they added. Read pre-selected, writes off, "Skip for now" grants
+    // nothing; the dialog opens only for a tool that gained an action.
+    const before = programsBefore;
+    const programAccess = opts.programAccess;
     close();
+    if (before !== undefined && programAccess !== undefined) {
+      void before.then((snapshot) => {
+        if (snapshot !== null && !disposed) void programAccess.openForNewTools(snapshot);
+      });
+    }
   };
 
   return {

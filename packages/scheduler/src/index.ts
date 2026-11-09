@@ -9,9 +9,10 @@ export {
 } from './types.js';
 export { createInMemoryScheduleStore } from './store.js';
 export { createIDBScheduleStore, type ScheduleCollection } from './idb-store.js';
-export { MIN_CRON_INTERVAL_MS, cronIntervalMs, validateCronInterval, nextCronMatch, cronMatchesAt, formatNextFire } from './cron-interval.js';
+export { MIN_CRON_INTERVAL_MS, cronIntervalMs, validateCronInterval, nextCronMatch, cronMatchesAt, formatNextFire, isFixedTimeCron, localMinuteAt } from './cron-interval.js';
 export {
   BACKFILL_WINDOW_MIN,
+  scheduleCronZone,
   shouldCatchUp,
   countMissedCycles,
   buildBackfillMetadata,

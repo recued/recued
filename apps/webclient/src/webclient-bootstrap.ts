@@ -181,6 +181,9 @@ import {
 } from './record-ref-search.js';
 import {
   RunModal, Upload } from '@recued/ui-shared';
+import { setRunModalProgramSwitch, setRunModalProgramSwitchReads, setRunModalToolStatus, wireRunModal } from './shell/run-modal.js';
+import { setChatFixActions } from './chat/chat-fixes.js';
+import { noteServerPaused, onServerPauseChange } from './shell/server-pause-signal.js';
 
 import {
   createBroadcastSubscriber,
@@ -547,6 +550,9 @@ import {
   type ChatRouteRecoveryDraft,
   type ChatRouteConn,
 } from './chat/bootstrap-chat-route.js';
+import type { SituationCloseDaySettings, SituationStreamKind, SituationStreamSettings } from '@recued/contracts';
+import { streamChannelsOf } from './today/stream-panel.js';
+import { noticeReplyDraft } from './chat/quoted-replies.js';
 import {
   parseConnectedSourceChatSetup,
   parseChatConnectedSource,
@@ -656,6 +662,7 @@ import type {
   SupervisionSetCaller,
 } from './settings/supervision-controls.js';
 import type {
+  AsksGiveSecretCaller,
   AsksListCaller,
   AsksSubmitAnswerCaller,
 } from './approvals/asks-panel.js';
@@ -831,16 +838,22 @@ import {
   type LearningCaseForgetCaller,
   type LearningCasesListCaller,
   type LearningDraftRecipeCaller,
+  type LearningFlowForgetCaller,
+  type LearningFlowRecipeCaller,
   type LearningPrefsGetCaller,
   type LearningPrefsSetCaller,
 } from './settings/learning-panel.js';
 import {
+  CLI_REACHABILITY_OWNER_PRINCIPAL,
+  OWNER_CONTRACT_ID,
   RECIPE_DRAFT_CONFIRMATION,
   RECIPE_REFINE_CONFIRMATION,
   getPref,
   packCopyFor,
 } from '@recued/contracts';
 import {
+  BROWSER_FLOW_DRAFT_PREFIX,
+  isBrowserFlowDraft,
   readExecutionCaseDraft,
   stashExecutionCaseDraft,
   type ExecutionCaseDraftStorage,
@@ -3321,6 +3334,9 @@ export const bootstrapWebclient = async (
         const payload = (message as { payload?: unknown }).payload;
         if (isServerHeartbeatSnapshot(payload)) {
           serverPill?.noteSnapshot(payload);
+          // D-188 — and the pause, so an approval list reads its asks again when it turns on
+          // or off (an approval the pause holds back reads so).
+          noteServerPaused(payload.paused);
         }
         return;
       }
@@ -3630,7 +3646,9 @@ export const bootstrapWebclient = async (
       : options.reauthRecovery;
   let pendingChatRecovery = reauthRecovery;
   let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
-  let pendingAssetChatDraft: { hash: string; draft: ChatRouteRecoveryDraft } | undefined;
+  /** A draft another surface hands to Chat, for the address it goes to: an asset's question, or
+   *  D-343's reply to today's evening notice. Taken by the mount for that address only. */
+  let pendingChatHandoff: { hash: string; draft: ChatRouteRecoveryDraft } | undefined;
   let pendingYoursFileAttachment: { assetId: string; assetName: string } | undefined;
   let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest } | undefined;
   const navigateHash = (hash: string): void => {
@@ -8297,6 +8315,11 @@ export const bootstrapWebclient = async (
     options.enableApprovalsRoute === false
       ? undefined
       : () => rpcConn.call('notification.pending_asks', undefined);
+  // D-335 slice Z — the secret a browser step waits for, given from its ask's card.
+  const notificationGiveSecretCaller: AsksGiveSecretCaller | undefined =
+    options.enableApprovalsRoute === false
+      ? undefined
+      : (args) => rpcConn.call('notification.giveSecret', args);
   const notificationAsksSubmitAnswerCaller: AsksSubmitAnswerCaller | undefined =
     options.enableApprovalsRoute === false
       ? undefined
@@ -8560,6 +8583,11 @@ export const bootstrapWebclient = async (
             : {}),
         })
       : null;
+  // D-188 — the tray's approvals read their pause hold-back afresh when the pause turns on
+  // or off (`server-pause-signal.ts`).
+  const detachPauseRefresh = onServerPauseChange(() => {
+    void approvalAttentionPopover?.refreshAsks();
+  });
 
   if (
     approvalAttentionPopover === null
@@ -9476,13 +9504,51 @@ export const bootstrapWebclient = async (
     remove: (args) => rpcConn.call('packs.connections.remove', args),
     setDefault: (args) => rpcConn.call('packs.connections.set_default', args),
     removal: (args) => rpcConn.call('packs.connections.removal', args),
+    // D-321 P4 — every installed pack's own list, for the pack list's badges.
+    signins: () => rpcConn.call('packs.connections.signins', {}),
   };
+  // D-321 C2 — every run dialog says, before a run, when a program the recipe's
+  // pack runs would stop it.
+  setRunModalToolStatus((args) => rpcConn.call('packs.tool_status', args));
+  // D-346 follow-up (2026-11-08) — "Turn it on": a run that stopped on a program switched
+  // off for the owner turns it on from the dialog, as Self (you) on its pack's Access tab.
+  setRunModalProgramSwitch(options.enableCliReachability === false
+    ? null
+    : async ({ ingredient_id, operation_id }) => {
+        await rpcConn.call('cli.reachability.set', {
+          principal: CLI_REACHABILITY_OWNER_PRINCIPAL, ingredient_id, operation_id, allowed: true,
+        });
+      });
+  // D-346 follow-up (2026-11-08) — "Turn it on" under a chat answer: the owner's own switch
+  // that refused a call (their contract's grant), or a program's switch.
+  setChatFixActions({
+    grant: async (entry_key) => {
+      await rpcConn.call('contract.grant.write', { contract_id: OWNER_CONTRACT_ID, entry_key, granted: true });
+    },
+    program: async ({ ingredient_id, operation_id }) => {
+      await rpcConn.call('cli.reachability.set', {
+        principal: CLI_REACHABILITY_OWNER_PRINCIPAL, ingredient_id, operation_id, allowed: true,
+      });
+    },
+  });
+  // …and says before a run which of the recipe's programs are switched off for the owner.
+  setRunModalProgramSwitchReads(options.enableCliReachability === false
+    ? null
+    : {
+        universe: () => rpcConn.call('cli.reachability.universe', undefined),
+        list: () => rpcConn.call('cli.reachability.list', undefined),
+        // A list row carries no steps; the dialog reads the recipe whole to name its actions.
+        recipeBody: async (recipe_id) => (await rpcConn.call('recipe.get', { recipe_id })).recipe?.recipe,
+      });
   // D-321 — the pack list's program badge and the DETAIL tab's Programs block:
   // whether each pack's programs are ready, and the owner's Refuse / Warn.
   const packProgramsCallers: Required<PackProgramsCallers> = {
     status: (args) => rpcConn.call('packs.tool_status', args),
     setOutside: (args) => rpcConn.call('collection.operation.upsertOwnerToolVersion', args),
     clearOutside: (args) => rpcConn.call('collection.operation.deleteOwnerToolVersion', args),
+    // D-321 — where the owner sets a program, or goes back to the server's PATH.
+    setPath: (args) => rpcConn.call('collection.operation.upsertOwnerToolPath', args),
+    clearPath: (args) => rpcConn.call('collection.operation.deleteOwnerToolPath', args),
   };
   const grantCatalogOperationsCaller: GrantCatalogOperationsCaller | undefined =
     options.enableContractsPanel === false
@@ -9593,6 +9659,16 @@ export const bootstrapWebclient = async (
           dismiss: (args: { key_hash: string }) => rpcConn.call('collection.contract.dismissBrowserPassSuggestion', args),
           listPasses: () => rpcConn.call('collection.contract.listBrowserPasses', undefined),
           revoke: (args: { pass_id: string }) => rpcConn.call('collection.contract.revokeBrowserPass', args),
+        },
+        // D-335 slice Z — the logins remembered for browser steps, listed after the passes.
+        logins: {
+          list: () => rpcConn.call('collection.contract.listBrowserLogins', undefined),
+          forget: (args: { origin: string; field: string }) => rpcConn.call('collection.contract.forgetBrowserLogin', args),
+        },
+        // D-341 slice B2 — the triggers' pre-approvals, ended here, listed after the passes.
+        triggers: {
+          list: () => rpcConn.call('collection.contract.listTriggerPreapprovals', undefined),
+          revoke: (args: { id: string }) => rpcConn.call('collection.contract.revokeTriggerPreapproval', args),
         },
       };
   // D-177 rule 5 (5.c, slice C) — the scoped-grant proposal section (same
@@ -9984,6 +10060,15 @@ export const bootstrapWebclient = async (
       : (args) => rpcConn.call('chat.execution.draft_recipe', args, {
           timeout: LEARNING_DRAFT_RPC_TIMEOUT_MS,
         });
+  // D-335 slice W4 — a kept browser flow's Forget, and its recipe, built on the server without a model.
+  const learningFlowForgetCaller: LearningFlowForgetCaller | undefined =
+    options.enableTransparencyPanel === false
+      ? undefined
+      : (args) => rpcConn.call('chat.execution.browser_flow.forget', args);
+  const learningFlowRecipeCaller: LearningFlowRecipeCaller | undefined =
+    options.enableTransparencyPanel === false
+      ? undefined
+      : (args) => rpcConn.call('chat.execution.browser_flow.recipe', args);
   /** Same-tab carrier for an AI-written draft between Settings and the Kitchen.
    *  ⚠ sessionStorage by default, so a refresh keeps a draft the owner paid
    *  for; absent storage degrades to no hand-off rather than throwing. */
@@ -10340,7 +10425,7 @@ export const bootstrapWebclient = async (
     route: WebclientRouteId,
     chatFile?: import('@recued/contracts').FileAttachmentSelection,
     workPrompt?: { prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest },
-    assetDraft?: ChatRouteRecoveryDraft,
+    handoffDraft?: ChatRouteRecoveryDraft,
   ): RecoveryContextProbe & RunPageContextProvider & {
     /** Child read boundary for a keyboard return, without claiming general
      * recovery freshness for a composition wrapper. */
@@ -11004,6 +11089,14 @@ export const bootstrapWebclient = async (
               webhooksRetentionPruneCaller: switchWorkTracker.track(
                 webhooksRetentionPruneCaller,
               ),
+              // D-341 slice B2b — "What it may do without asking" on each webhook's card.
+              webhooksTriggerPreapprovals: {
+                choices: (args) => rpcConn.call('collection.contract.triggerPreapprovalChoices', args),
+                grant: switchWorkTracker.track(
+                  (args) => rpcConn.call('collection.contract.grantTriggerPreapproval', args)),
+                revoke: switchWorkTracker.track(
+                  (args) => rpcConn.call('collection.contract.revokeTriggerPreapproval', args)),
+              },
             }
           : {}),
         subscribe: subscriber.on,
@@ -11153,6 +11246,13 @@ export const bootstrapWebclient = async (
         // would be a second place for run semantics to drift.
         recipesListCaller,
         recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
+        // D-321 W1 — Use's "Runs on its own": the dishes Automation reads and
+        // makes, so a pack's page and Automation say the same of each one.
+        automationDishesCallers: {
+          list: automationDishesListCaller,
+          defaults: (args) => rpcConn.call('dishes.defaults', args),
+          create: switchWorkTracker.track(automationDishesCreateCaller),
+        },
         // The SAME owner file read the recipes route uses — a verified file
         // card opens on identical terms wherever it renders.
         fileReadCaller: (args) => rpcConn.call('data.file.read', args),
@@ -11209,7 +11309,7 @@ export const bootstrapWebclient = async (
             recordRefSearchCaller,
             entry.recipe,
           );
-          packsRunModal = RunModal.wireRunModal({
+          packsRunModal = wireRunModal({
         // D-269 — the SERVER's zone for durable, server-evaluated stamps.
         serverTimeZone: getServerTimeZone,
             recipe: entry,
@@ -11328,11 +11428,15 @@ export const bootstrapWebclient = async (
           ? { accessContractsCaller: grantListContractsCaller }
           : {}),
         packConnectionsCallers: packRouteConnectionCallers(packConnectionsCallers, switchWorkTracker),
+        // ⛔ EVERY caller, so one added to `PackProgramsCallers` cannot be left
+        // out here: D-321's location writes were, and the Programs block hid them.
         packProgramsCallers: {
           status: packProgramsCallers.status,
           setOutside: switchWorkTracker.track(packProgramsCallers.setOutside),
           clearOutside: switchWorkTracker.track(packProgramsCallers.clearOutside),
-        },
+          setPath: switchWorkTracker.track(packProgramsCallers.setPath),
+          clearPath: switchWorkTracker.track(packProgramsCallers.clearPath),
+        } satisfies Required<PackProgramsCallers>,
         // D-282 slice C — the drawer pins, read and written from the pack's own
         // detail. The route holds no pin state; it forwards.
         pinnedApps: () => pinnedAppSlugs,
@@ -11508,6 +11612,17 @@ export const bootstrapWebclient = async (
                   installPack: switchWorkTracker.track(
                     packsInstallBySlugCaller,
                   ),
+                }
+              : {}),
+            // D-182 §7.1 — a pack the recipe brings in that runs a program on the
+            // server asks which actions to allow, as an install from Packs does.
+            ...(localToolsUniverseCaller !== undefined && localToolsSetCaller !== undefined
+              ? {
+                  programAccess: {
+                    runUniverse: localToolsUniverseCaller,
+                    runSet: switchWorkTracker.track(localToolsSetCaller),
+                    runToolStatus: () => packProgramsCallers.status({}),
+                  },
                 }
               : {}),
             ...(recipeInstallIntent !== undefined
@@ -11944,7 +12059,7 @@ export const bootstrapWebclient = async (
         prepareFileUpload: asset => { pendingYoursFileAttachment = { assetId: asset.id, assetName: asset.name }; },
         askAsset: assetContext => {
           const hash = serializeShellRoute('chat', 'new');
-          pendingAssetChatDraft = { hash, draft: { text: 'What should I know about this asset?', protected: true, modelSourceId: null, assetContext } };
+          pendingChatHandoff = { hash, draft: { text: 'What should I know about this asset?', protected: true, modelSourceId: null, assetContext } };
           navigateHash(hash);
         },
         change: input => switchWorkTracker.track((args: typeof input) => rpcConn.call('yours.change', args))(input),
@@ -11970,7 +12085,8 @@ export const bootstrapWebclient = async (
     }
     if (route === 'today') {
       activeSettingsRoute = null;
-      return withTrackedServerSwitchWork(bootstrapTodayRoute({
+      // D-340 slice 2 — `#today/stream`, reached from Today itself, opens the streams' settings in place.
+      const todayRoute = bootstrapTodayRoute({
         container: appShell.contentRoot,
         callers: {
           proactiveTodayCaller: input => rpcConn.call('yours.today', input),
@@ -11988,8 +12104,40 @@ export const bootstrapWebclient = async (
           situationChangeCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
           occurrenceAcknowledgeCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
           situationOpenedCaller: input => { void rpcConn.call('yours.change', input).catch(() => {}); },
+          // D-343 slice 4 (ruling 20) — a new conversation holding today's evening notice, opened
+          // with the reply already quoting it, as Reply on the notice's card would.
+          closeDayCaller: async () => {
+            const { conversation } = await switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.open' }))();
+            if (!conversation) throw new Error('Recued could not open the conversation. Refresh Today and try again.');
+            const hash = serializeChatSessionAddress({ sessionId: conversation.session_id });
+            pendingChatHandoff = { hash, draft: { text: '', protected: true, modelSourceId: null, replyTo: noticeReplyDraft(conversation) } };
+            navigateHash(hash);
+          },
+          // D-340 slice 2 (§3.7) — the streams' settings over Today. They read the Agenda's status,
+          // which names them on a server that keeps them, and Send to offers the channels set up.
+          stream: {
+            read: () => rpcConn.call('yours.agenda', undefined),
+            save: switchWorkTracker.track((stream: SituationStreamKind, settings: Partial<SituationStreamSettings>) =>
+              rpcConn.call('yours.change', { action: 'stream.update', stream, settings })),
+            sendNow: switchWorkTracker.track((stream: SituationStreamKind) => rpcConn.call('yours.change', { action: 'stream.send_now', stream })),
+            preview: async (stream: SituationStreamKind) => {
+              const { preview } = await rpcConn.call('yours.change', { action: 'stream.preview', stream });
+              if (!preview) throw new Error('Recued could not preview it just now.');
+              return preview;
+            },
+            channels: async () => streamChannelsOf((await rpcConn.call('notifications.describe', undefined)).rows),
+            closeDay: { save: switchWorkTracker.track((settings: SituationCloseDaySettings) => rpcConn.call('yours.change', { action: 'close_day.update', settings })),
+              sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.send_now' })) },
+          },
         },
         subscribe: subscriber.on,
+        openStream: hashSource ? parseShellRoute(hashSource.getHash()).segments[0] === 'stream' : false,
+      });
+      return withTrackedServerSwitchWork(Object.assign(todayRoute, {
+        navigateDeepLink: (hash: string): boolean => {
+          if (parseShellRoute(hash).segments[0] === 'stream') todayRoute.openStream();
+          return true;
+        },
       }));
     }
     if (route === 'stats') {
@@ -12154,6 +12302,12 @@ export const bootstrapWebclient = async (
       const chatRoute = bootstrapChatRoute({
         root: appShell.contentRoot,
         conn: chatConn,
+        // D-341 slice A — the switch beside Send: this conversation's browser actions run without
+        // asking while it is on (owner-only `collection.contract.` methods).
+        browserActions: {
+          get: args => rpcConn.call('collection.contract.getRequestPass', args),
+          set: args => rpcConn.call('collection.contract.setRequestPass', args),
+        },
         localUndo: {
           get: args => rpcConn.call('local_undo.get', args),
           review: args => rpcConn.call('local_undo.review', args),
@@ -12190,7 +12344,7 @@ export const bootstrapWebclient = async (
         reconnect,
         ...(chatRecovery !== undefined
           ? { initialRecoveryDraft: chatRecovery }
-          : assetDraft !== undefined ? { initialRecoveryDraft: assetDraft }
+          : handoffDraft !== undefined ? { initialRecoveryDraft: handoffDraft }
           : workPrompt !== undefined && chatSessionId !== undefined ? {
             initialRecoveryDraft: { text: workPrompt.prompt, protected: true, modelSourceId: null },
             initialWorkSubmission: { sessionId: chatSessionId, message: workPrompt.prompt, repeat: workPrompt.repeat, mailWork: workPrompt.mailWork },
@@ -12594,6 +12748,10 @@ export const bootstrapWebclient = async (
         agendaDelivery: { read: () => rpcConn.call('yours.agenda', undefined),
           save: switchWorkTracker.track(settings => rpcConn.call('yours.change', { action: 'agenda.update', settings })),
           sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'agenda.send_now' })) },
+        // D-343 slice 4 — Close the day reads the Agenda's status, which names it on a server that has it.
+        closeDayDelivery: { read: () => rpcConn.call('yours.agenda', undefined),
+          save: switchWorkTracker.track(settings => rpcConn.call('yours.change', { action: 'close_day.update', settings })),
+          sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.send_now' })) },
         lastTime: { read: () => rpcConn.call('yours.learning', undefined),
           save: switchWorkTracker.track(last_time => rpcConn.call('yours.change', { action: 'settings.update', last_time })) },
         householdDelivery: { read: async () => {
@@ -13010,6 +13168,29 @@ export const bootstrapWebclient = async (
               learningCaseForgetCaller,
             }
           : {}),
+        // D-335 slice W4 — a kept browser flow's recipe opens in the Kitchen as a case's draft does,
+        // through the same slot, named as the flow's (`browser-flow:`), with its notes above it.
+        ...(learningFlowForgetCaller !== undefined && learningFlowRecipeCaller !== undefined
+          ? {
+              learningFlowForgetCaller,
+              learningFlowRecipeCaller,
+              onLearningFlowDraftReady: (draft: { flow_id: string; recipe: unknown; notes: string[] }) => {
+                const draft_key = stashExecutionCaseDraft(draftStashStorage, {
+                  case_id: `${BROWSER_FLOW_DRAFT_PREFIX}${draft.flow_id}`,
+                  recipe: draft.recipe,
+                  // No AI saw anything: nothing was withheld from one.
+                  request_aliased: true,
+                  notes: draft.notes,
+                });
+                if (draft_key === null) return false;
+                if (hashSource?.setHash === undefined) return false;
+                const here = hashSource.getHash?.() ?? '';
+                if (!here.startsWith('#settings')) return true;
+                hashSource.setHash(serializeShellRoute('kitchen', 'new', 'execution-case', draft_key));
+                return true;
+              },
+            }
+          : {}),
         ...(learningDraftRecipeCaller !== undefined
           ? {
               learningDraftRecipeCaller,
@@ -13323,6 +13504,7 @@ export const bootstrapWebclient = async (
         onApprovalChanged,
         runList: notificationAsksListCaller,
         runSubmitAnswer: notificationAsksSubmitAnswerCaller,
+        ...(notificationGiveSecretCaller !== undefined ? { runGiveSecret: notificationGiveSecretCaller } : {}),
         subscribe: subscriber.on,
         reconnect,
         // D-174 #4 — resolve recipe_id → name + initiator_instance → device
@@ -13584,6 +13766,9 @@ export const bootstrapWebclient = async (
           draftStashStorage,
           kitchenRecipeSeed.draft_key,
         );
+        // D-335 slice W4 — a draft built from a kept browser flow: no AI made it, so none revises
+        // it, and there is no case to say a recipe was made from.
+        const fromFlow = stashed !== null && isBrowserFlowDraft(stashed);
         editor = mountExecutionCaseDraftRoute({
           recovery: kitchenDraftRecovery,
           root: kitchenChrome.contentRoot,
@@ -13599,15 +13784,15 @@ export const bootstrapWebclient = async (
           // D-219 — annotate the Learning list with "you already made one".
           // ⚠ Fire-and-forget with a swallowed rejection: the save succeeded,
           // and losing the annotation must not read as losing the recipe.
-          onAuthored: (input) => {
+          ...(fromFlow ? {} : { onAuthored: (input: { case_id: string; recipe_id: string }) => {
             void rpcConn.call('chat.execution.authored', input).catch(() => {});
-          },
+          } }),
           // D-219 — iterative refinement, wired as the same PAIR the panel uses.
           // ⛔ Re-stash under a NEW key and reopen: the route reads its draft
           // from the slot, so a revision becomes visible the same way the first
           // draft did, and the old key stops resolving rather than lingering as
           // a second openable draft.
-          ...(learningDraftRecipeCaller !== undefined
+          ...(learningDraftRecipeCaller !== undefined && !fromFlow
             ? {
                 runDraftRecipe: (args) => rpcConn.call(
                   'chat.execution.draft_recipe', args,
@@ -15420,8 +15605,8 @@ export const bootstrapWebclient = async (
     ? hashSource.onChange((hash) => {
         const chatFile = pendingChatFile?.hash === hash ? pendingChatFile.file : undefined;
         pendingChatFile = undefined;
-        const assetDraft = pendingAssetChatDraft?.hash === hash ? pendingAssetChatDraft.draft : undefined;
-        pendingAssetChatDraft = undefined;
+        const handoffDraft = pendingChatHandoff?.hash === hash ? pendingChatHandoff.draft : undefined;
+        pendingChatHandoff = undefined;
         const workPrompt = pendingWorkPrompt?.hash === hash ? pendingWorkPrompt : undefined;
         pendingWorkPrompt = undefined;
         if (
@@ -15530,7 +15715,7 @@ export const bootstrapWebclient = async (
         activeRoute = next;
         activeHash = hash;
         appShell.setActiveRoute(next, parseShellRoute(hash).segments);
-        mountedRouteHandle = mountRoute(next, chatFile, workPrompt, assetDraft);
+        mountedRouteHandle = mountRoute(next, chatFile, workPrompt, handoffDraft);
         const arrivalHandle = mountedRouteHandle;
         cancelRunReviewReturnFocus = doc === undefined ? () => {} : focusRunReviewReturn({
           document: doc, root: appShell.contentRoot, fromHash: previousHash, toHash: hash,
@@ -15753,6 +15938,7 @@ export const bootstrapWebclient = async (
       closeServerSwitchConvergence();
       appShell.dispose();
       detachExposureChanged();
+      detachPauseRefresh();
       detachPinnedAppRoster();
       receptionShell.dispose();
       certPin.dispose();

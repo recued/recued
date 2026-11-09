@@ -78,6 +78,11 @@ import type { Checkpoint } from '@recued/contracts';
 
 export interface ComposeRetentionPrunersDeps {
   readonly backgroundServices: BackgroundServiceRegistry;
+  /** D-188 — true while the owner's pause holds: the stale-approval sweep waits for Resume. It
+   *  withdraws prompts from Slack and Telegram and tells the owner, and an approval cannot be
+   *  approved during a pause, so expiring one then would end it without a chance (the
+   *  emergency stop: nothing leaves). Absent ⇒ never paused. */
+  readonly isPaused?: () => boolean;
   readonly runtimeConfig: RuntimeConfigStore;
   readonly auditRetention: AuditRetention | undefined;
   readonly s2sPreviewStore: S2SPreviewStore | undefined;
@@ -429,6 +434,7 @@ export const composeRetentionPruners = (
       name: 'checkpoint-stale-prune',
       intervalMs: HOUR_MS,
       tick: async () => {
+        if (deps.isPaused?.() === true) return;
         try {
           const result = await retention.runSafe();
           // ⛔ TELL THE OWNER THEIR APPROVAL EXPIRED. Until this line, the

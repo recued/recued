@@ -56,6 +56,7 @@ import {
   type WatchedFolders,
   type WatchedFoldersAttachment,
 } from './watched-folders.js';
+import { isServerPausedIn } from '../../server-state.js';
 
 export type FileKernelDispatchers = Required<
   Pick<
@@ -284,6 +285,8 @@ export const composeFileStack = (
         onEvent: deliver,
         ...(folder ? { onRescanNeeded: () => requestRescan(row.slug) } : {}),
         log,
+        // D-188 — read from the database: this stack is composed before the server state is.
+        isPaused: () => isServerPausedIn(db),
       });
     } catch (err) {
       log('error', `file-stack: factory.create failed for '${row.slug}'`, {

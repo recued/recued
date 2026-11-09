@@ -1,4 +1,4 @@
-import { validateAssetRule, type Asset, type AssetRule } from '@recued/contracts';
+import { assetConditionHolds, validateAssetRule, type Asset, type AssetRule } from '@recued/contracts';
 
 export const parseReminderOffsets = (value: string): AssetRule['schedule']['before'] => value.trim() ? value.split(',').map(part => {
   const match = /^\s*(\d+)\s+(days?|weeks?|months?)\s*$/u.exec(part);
@@ -83,8 +83,19 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
   const onDay = check(host, 'On the day', 'on-day', own?.schedule.on_day ?? true);
   const consequence = select(host, 'Consequence', 'consequence', [['routine', 'Routine'], ['floor', 'Safety, legal or travel']], own?.consequence ?? 'routine');
   const expiry = select(host, 'Expiry', 'expiry', [['strict_expire', 'Lapse on the due day'], ['escalate_overdue', 'Keep overdue'], ['indefinite', 'No expiry']], own?.expiry_policy ?? 'strict_expire');
-  const reaction = select(host, 'Creates', 'reaction', [['action', 'An action to complete'], ['notice', 'A notice with nothing to complete'], ['', 'Nothing under Due']], own?.reaction.occurrence ?? (own ? '' : 'action'));
+  // D-340 §4 — "Show while it holds": a condition shown while it holds, never under Due and
+  // never a reminder, so it only fits a condition rule and never notifies.
+  const reaction = select(host, 'Creates', 'reaction', [['action', 'An action to complete'], ['notice', 'A notice with nothing to complete'],
+    ['state', 'Show while it holds'], ['', 'Nothing under Due']], own?.reaction.state ? 'state' : own?.reaction.occurrence ?? (own ? '' : 'action'));
   const notify = check(host, 'Notify', 'notify', own?.reaction.notify ?? true);
+  const stateOption = [...reaction.options].find(option => option.value === 'state')!;
+  const updateState = () => {
+    stateOption.disabled = kind.value !== 'condition';
+    if (stateOption.disabled && reaction.value === 'state') reaction.value = '';
+    if (reaction.value === 'state') notify.checked = false;
+    // A state never reminds, so its reminder times don't apply.
+    notify.disabled = before.disabled = onDay.disabled = reaction.value === 'state';
+  };
   const more = node('details', host); more.dataset.yoursRuleMore = ''; node('summary', more, 'More rule options');
   const date = group(more, 'Earlier deadline', 'expiry');
   const offset = amount(date, 'Date offset before its field (blank for the field date)', 'date-offset', when?.kind === 'expiry' && when.offset ? String(when.offset.amount) : '', 0, true);
@@ -141,7 +152,7 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
   };
   const updateKind = () => {
     for (const group of groups) { const active = group.kinds.includes(kind.value); group.node.hidden = !active; group.node.disabled = !active; }
-    updateUsage();
+    updateUsage(); updateState();
     const key = category(kind.value);
     const name = key === 'dates' ? 'Asset date' : key === 'readings' ? 'Asset reading' : 'Asset condition';
     factLabel.firstChild!.textContent = name; fact.setAttribute('aria-label', name); fact.replaceChildren();
@@ -149,7 +160,8 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
     if (!entries.length) { const empty = node('option', fact, `No ${key === 'observations' ? 'conditions' : key} available`); empty.value = ''; }
     for (const field of entries) {
       const value = key === 'dates' ? asset.dates[field] : key === 'readings' ? asset.readings[field] : asset.observations[field];
-      const detail = value == null ? 'Unknown' : typeof value === 'string' ? value : 'value' in value ? `${value.value} ${value.unit}` : value.active ? 'Active' : 'Clear';
+      const detail = value == null ? 'Unknown' : typeof value === 'string' ? value : 'value' in value ? `${value.value} ${value.unit}`
+        : assetConditionHolds(value, Date.now()) ? 'Active' : value.active ? 'Ended' : 'Clear';
       const option = node('option', fact, `${readable(field)} · ${detail}`); option.value = field;
     }
     const selected = savedFields.get(key);
@@ -160,6 +172,7 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
     updateFactHint();
   };
   fact.addEventListener('change', () => { savedFields.set(category(kind.value), fact.value); updateFactHint(); });
+  reaction.addEventListener('change', updateState);
   kind.addEventListener('change', updateKind); updateKind();
   if (scheduleRule) {
     const editable = new Set(['before', 'on-day', 'after', 'after-unit']);
@@ -177,7 +190,8 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
     }
     const reminders = [before.value.trim() ? `${before.value.trim()} before` : '', onDay.checked ? 'on the day' : ''].filter(Boolean).join(', ');
     const repeats = reaction.value === 'action' && expiry.value !== 'strict_expire' && after.value ? ` Then every ${ruleOffsetWords({ amount: Number(after.value), unit: afterUnit.value as 'days' | 'weeks' | 'months' })} while open.` : '';
-    preview.textContent = `${!enabled.checked ? 'Rule disabled. ' : own?.muted ? 'Reminders are muted. ' : ''}${trigger}. ${reaction.value === 'action' ? 'Create a task' : reaction.value === 'notice' ? 'Create a notice' : 'Nothing under Due'}${notify.checked ? ' and notify you' : ''}.${reminders ? ` Remind ${reminders}.` : ' No scheduled reminder.'}${repeats}`;
+    preview.textContent = `${!enabled.checked ? 'Rule disabled. ' : own?.muted ? 'Reminders are muted. ' : ''}${trigger}. ${reaction.value === 'action' ? 'Create a task' : reaction.value === 'notice' ? 'Create a notice' : reaction.value === 'state' ? 'Show while it holds' : 'Nothing under Due'}${notify.checked ? ' and notify you' : ''}.${reaction.value === 'state' ? ' It ends when the condition clears or its time runs out.'
+      : reminders ? ` Remind ${reminders}.` : ' No scheduled reminder.'}${repeats}`;
   };
   host.addEventListener('input', updatePreview); host.addEventListener('change', updatePreview); updatePreview();
   return { read(): AssetRule {
@@ -191,11 +205,14 @@ export const mountAssetRuleEditor = (host: HTMLFormElement, asset: Asset, own: A
     try {
       if (!scheduleRule && kind.value === 'objective' && !target.value.trim()) throw new Error('Enter the actual target; unknown is not zero.');
       if (after.value.trim() && (scheduleRule ? scheduleRule.reaction.occurrence : reaction.value) !== 'action') throw new Error('Only an action can repeat after its date. Clear Repeat after or choose an action.');
-      const schedule: AssetRule['schedule'] = { before: parseReminderOffsets(before.value), on_day: onDay.checked,
-        ...(after.value.trim() ? { after: { amount: Number(after.value), unit: afterUnit.value as 'days' | 'weeks' | 'months' } } : {}) };
+      // A state never reminds: it keeps no reminder times rather than ones that would never be used.
+      const schedule: AssetRule['schedule'] = !scheduleRule && reaction.value === 'state' ? { before: [], on_day: false }
+        : { before: parseReminderOffsets(before.value), on_day: onDay.checked,
+          ...(after.value.trim() ? { after: { amount: Number(after.value), unit: afterUnit.value as 'days' | 'weeks' | 'months' } } : {}) };
       const rule: AssetRule = scheduleRule ? { ...scheduleRule, schedule } : { ...own, id, title: title.value, when: ruleWhen, enabled: enabled.checked, muted: own?.muted ?? false, pinned: true,
         consequence: consequence.value as AssetRule['consequence'], expiry_policy: expiry.value as AssetRule['expiry_policy'],
-        reaction: { notify: notify.checked, emit: emit.checked, occurrence: reaction.value as 'action' | 'notice' || null },
+        reaction: reaction.value === 'state' ? { notify: false, emit: emit.checked, occurrence: null, state: true }
+          : { notify: notify.checked, emit: emit.checked, occurrence: reaction.value as 'action' | 'notice' || null },
         schedule };
       validateAssetRule(rule, asset); return rule;
     } catch (error) { more.open = true; throw error; }

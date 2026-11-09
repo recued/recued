@@ -457,6 +457,37 @@ describe('composeListeners', () => {
     } finally { await result.server.close(); }
   });
 
+  it('D-188 — holds each messenger at the owner\'s pause and lets it run again at Resume, through the pause\'s own hook', async () => {
+    // The emergency stop: nothing comes in. The supervisor reads the pause when it reconciles;
+    // the hook the toggle calls runs that reconcile beside the work the hook already did. A
+    // polled Telegram, so there is a runner to hold. ⚠ It never reaches Telegram: it starts
+    // paused, and Resume finds the vault locked (which the reconcile reads first).
+    const base = makeOptions(); const connectionStore = createConnectionStore(storageDb);
+    connectionStore.upsert({ kind: 'notification', name: 'telegram', subtype: 'telegram', display_name: 'Telegram',
+      config_json: JSON.stringify({ chat_id: '1', ingress_mode: 'poll' }),
+      auth_ciphertext: Buffer.from(JSON.stringify({ type: 'bearer', token: 'fixture-token' })).toString('base64'),
+      enrolled_at: 1, updated_at: 1 });
+    let paused = true; let locked = false;
+    const applied: boolean[] = [];
+    const bootstrapDeps: { onPauseChanged?: (paused: boolean) => Promise<void> } = {
+      onPauseChanged: async (next) => { applied.push(next); },
+    };
+    const result = await composeListeners(makeOptions({ bootstrapDeps,
+      app: { ...base.app, connectionStoreRef: connectionStore, isVaultUnlocked: () => !locked,
+        serverState: { isPaused: () => paused } } }));
+    const state = () => result.messengerIngressSupervisor?.status('telegram', 'telegram')?.state;
+    try {
+      await vi.waitFor(() => expect(state()).toBe('paused'));
+      paused = false; locked = true;
+      await bootstrapDeps.onPauseChanged!(false);
+      expect(state()).toBe('locked');
+      paused = true; locked = false;
+      await bootstrapDeps.onPauseChanged!(true);
+      expect(state()).toBe('paused');
+      expect(applied).toEqual([false, true]);
+    } finally { await result.server.close(); }
+  });
+
   it('starts the messengers only once the boot completes, and never when the listeners close first', async () => {
     // A Slack or Telegram message goes into the chat, which the rest of the boot is still wiring.
     const base = makeOptions(); const connectionStore = createConnectionStore(storageDb);
@@ -1016,6 +1047,33 @@ describe('composeListeners', () => {
     }
     expect(stopListening).toHaveBeenCalledTimes(1);
     expect(stopContinued).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-340 slice 4 — hands the streams what reads a scheduled run\'s answer, and the server\'s public address', async () => {
+    ensureChatSchema(storageDb);
+    const store = createChatStore(storageDb);
+    const bindSuggestionAnswers = vi.fn();
+    const base = makeOptions();
+    const options = makeOptions({
+      app: {
+        ...(base.app as unknown as Record<string, unknown>),
+        chatOrchestratorRef: { turnQueue: { register: vi.fn() }, runMessengerTurn: vi.fn(), sessionStore: {}, promptSchedules: { heldNoticeIds: () => new Set() } },
+        chatStoreRef: store,
+      },
+      collection: { ...(base.collection as unknown as Record<string, unknown>), scheduledSituations: { bindSuggestionAnswers, agendaDoneGate: () => 'notify' } },
+    });
+    const result = await composeListeners(options);
+    try {
+      expect(bindSuggestionAnswers).toHaveBeenCalledTimes(1);
+      const [reader] = bindSuggestionAnswers.mock.calls[0]! as [{ readAnswer: (session_id: string, message_id: string) => Promise<unknown>; publicBaseUrl: () => string | null }];
+      store.createSession({ id: 'suggestions' });
+      await store.appendMessage({ id: 'answer:1', session_id: 'suggestions', role: 'assistant', content: 'Leave at 08:10.', turn_id: 'turn-1', target_server: 'self', ts: 1,
+        picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: '1', instance_id: 'listeners' } }, model_used: { provider: 'fixture', model_id: 'fixture' } });
+      expect(await reader.readAnswer('suggestions', 'answer:1')).toMatchObject({ role: 'assistant', content: 'Leave at 08:10.' });
+      expect(reader.publicBaseUrl()).toBe(options.storage.publicAddress.baseUrl('root'));
+    } finally {
+      await result.server.close().catch(() => undefined);
+    }
   });
 
   it('D-318 step 3 — without chat, nothing is bound and the proof still starts', async () => {
@@ -3887,6 +3945,16 @@ describe('composeListeners — the port-mapping supervisor is wired to teardown'
         applyCalls: () => listenerMocks.coordinator.apply.mock.calls.filter(
           (c: unknown[]) => (c[0] as { ports?: unknown })?.ports !== undefined,
         ),
+        /** What the coordinator reports after an apply someone else made (an exposure flip). */
+        reportApplied: (pub: { listening: boolean; port: number }) => {
+          const options = (listenerMocks.createProductionPathListenerCoordinator.mock.calls.at(-1) as unknown as [
+            { on_applied?: (statuses: unknown[]) => void },
+          ])[0];
+          options.on_applied?.([
+            { listener: 'lan', listening: true, port: 4711, bind_address: '192.168.1.10', tls: false },
+            { listener: 'public', bind_address: pub.listening ? '0.0.0.0' : null, tls: false, ...pub },
+          ]);
+        },
         /** What `network.local_urls` would hand a client, via networkDeps. */
         advertisedPort: () => {
           const cfg = (
@@ -3967,6 +4035,67 @@ describe('composeListeners — the port-mapping supervisor is wired to teardown'
           expect.stringContaining('did not bind'),
         );
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('443'));
+      } finally {
+        warnSpy.mockRestore();
+        logSpy.mockRestore();
+      }
+    });
+
+    it('⛔ a port an exposure flip binds is advertised, and only a bound one (D-341 drive, 2026-11-08)', async () => {
+      // A flip binds the port last asked for, which the advertised one may not be yet: asked for
+      // while no path was public, or after a move that failed. The coordinator reports every apply.
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const h = await composeWithConfigWatcher({
+          initialPort: 443,
+          applyResult: () => ({ public: { listening: false } }),
+        });
+        h.reportApplied({ listening: true, port: 8443 });
+        expect(h.advertisedPort(), 'a port an exposure flip bound was never advertised').toBe(8443);
+        h.reportApplied({ listening: false, port: 9443 });
+        expect(h.advertisedPort(), 'a listener that did not bind moved the advertised port').toBe(8443);
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it('⛔ setting the port back after a failed move asks for it again', async () => {
+      // The listener is down after the failed move. The port set back is the one advertised, which
+      // used to read as "nothing to do": the old port was never asked for again.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const h = await composeWithConfigWatcher({
+          initialPort: 443,
+          applyResult: (ports) => ({ public: (ports as { public: number }).public === 8443
+            ? { listening: false, failure: 'EADDRINUSE' } : { listening: true } }),
+        });
+        await h.setPort(8443);
+        await h.setPort(443);
+        expect(h.applyCalls().map((c) => (c[0] as { ports: unknown }).ports)).toEqual([{ public: 8443 }, { public: 443 }]);
+        expect(h.advertisedPort()).toBe(443);
+        // And once it is both asked for and bound, an unrelated write rebinds nothing.
+        await h.setPort(443);
+        expect(h.applyCalls()).toHaveLength(2);
+      } finally {
+        warnSpy.mockRestore();
+        logSpy.mockRestore();
+      }
+    });
+
+    it('a port set while no path is public waits for one, and says so rather than that it failed', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const h = await composeWithConfigWatcher({
+          initialPort: 443,
+          applyResult: () => ({ public: { listening: false } }),
+        });
+        await h.setPort(8443);
+        expect(h.applyCalls()).toHaveLength(1);
+        expect(h.advertisedPort()).toBe(443);
+        expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('binds it once a path is public'));
+        expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('did not bind'));
       } finally {
         warnSpy.mockRestore();
         logSpy.mockRestore();

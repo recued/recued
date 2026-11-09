@@ -231,6 +231,22 @@ export interface MailRpcDep {
   sendToOwner?(args: Omit<MailRpcSendInput, 'to'> & { to?: string[] }): Promise<MailRpcSendResult>;
 }
 
+/** D-338 — what the host asks before a notify goes to a messenger: whether it is a notice in the
+ *  owner's chat with Recued there, and, once the messenger accepts it, the call that records it with
+ *  the message id the messenger gave it. The shape of `@recued/notification`'s `RemoteNoticeHook`,
+ *  restated so this portable package does not depend on it; the host passes the same hook to both,
+ *  so a notification is a notice whichever path sends it. `token` identifies the bot and never
+ *  leaves the process. */
+export interface ConnectionNoticeHook {
+  prepare(input: {
+    readonly vendor: string;
+    readonly recipient: string;
+    readonly token: string;
+    readonly message: { readonly text: string; readonly title?: string; readonly link_url?: string };
+  }): Promise<{ readonly title: string; readonly text: string; sent(vendor_message_id: string | undefined): Promise<void> } | undefined>;
+}
+type ConnectionNotice = NonNullable<Awaited<ReturnType<ConnectionNoticeHook['prepare']>>>;
+
 export interface ConnectionNotificationHandlerDeps {
   /** Decrypt at-rest `auth_ciphertext` to a typed `ConnectionAuth`.
    *  Boot site closes over `decodeAuthFromStorage` from the connection
@@ -265,6 +281,12 @@ export interface ConnectionNotificationHandlerDeps {
   /** Wall-clock source. Defaults to `Date.now`. Tests inject a
    *  deterministic stub for duration math + future scheduling tests. */
   now?: () => number;
+
+  /** D-338 — a notify to the owner's Telegram, Slack or Discord chat with Recued is a notice
+   *  there, which the owner can quote back. The Agenda, "Due today", the Overview and a recipe's
+   *  notification send through this handler, not through the remote channels, so without it none
+   *  of them was ever a notice. Absent ⇒ every notify goes as before. */
+  notices?: ConnectionNoticeHook;
 }
 
 interface SlackPostResponse {
@@ -508,6 +530,31 @@ const buildSlackBody = (
   return JSON.stringify({ channel, text: composed });
 };
 
+/** D-338 — this notify as a notice, when the host says it is one. A hook that fails costs the
+ *  notice, never the notification (as in the remote channel). */
+const noticeFor = async (
+  notices: ConnectionNoticeHook | undefined,
+  input: { vendor: string; recipient: string; token: string; text: string; title: string | undefined; link_url: string | undefined },
+): Promise<ConnectionNotice | undefined> => {
+  if (notices === undefined) return undefined;
+  try {
+    return await notices.prepare({ vendor: input.vendor, recipient: input.recipient, token: input.token, message: {
+      text: input.text,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.link_url !== undefined ? { link_url: input.link_url } : {}),
+    } });
+  } catch {
+    return undefined;
+  }
+};
+
+/** D-338 — records a notice the messenger accepted. The message went out either way; a failure
+ *  here loses only its record in the chat, and a reply that quotes it is answered without it. */
+const recordNotice = async (notice: ConnectionNotice | undefined, vendor_message_id: string | undefined): Promise<void> => {
+  if (notice === undefined) return;
+  try { await notice.sent(vendor_message_id); } catch { /* the notification itself was sent */ }
+};
+
 const sendSlack = async (
   record: ConnectionRow,
   auth: ConnectionAuth,
@@ -515,6 +562,7 @@ const sendSlack = async (
   call: ResolvedCall,
   fetchImpl: typeof fetch,
   ctx?: ConnectionHandlerCtx,
+  notices?: ConnectionNoticeHook,
 ): Promise<NotificationResponse<{ ts?: string; channel?: string }>> => {
   if (auth.type !== 'bearer') {
     throw new IngredientError(
@@ -537,8 +585,9 @@ const sendSlack = async (
     : undefined;
   const channel = recipientOverride
     ?? requireString(config.channel_id, 'channel_id', record, "config field 'channel_id'");
+  const notice = await noticeFor(notices, { vendor: 'slack', recipient: channel, token, text, title, link_url });
 
-  const body = buildSlackBody(channel, text, title, link_url);
+  const body = buildSlackBody(channel, notice ? notice.text : text, notice ? notice.title : title, link_url);
   const bodyBytesOut = new TextEncoder().encode(body).byteLength;
   const url = new URL('https://slack.com/api/chat.postMessage');
   const timeoutMs = resolveTimeoutMs(params.timeout_ms ?? CONNECTION_API_TIMEOUT_MS);
@@ -572,6 +621,7 @@ const sendSlack = async (
       headers: undefined,
     };
   }
+  await recordNotice(notice, env?.ts);
   return {
     status: 'ok' as const,
     result: {
@@ -589,6 +639,7 @@ const sendTelegram = async (
   call: ResolvedCall,
   fetchImpl: typeof fetch,
   ctx?: ConnectionHandlerCtx,
+  notices?: ConnectionNoticeHook,
 ): Promise<NotificationResponse<{ message_id?: number }>> => {
   if (auth.type !== 'bearer') {
     throw new IngredientError(
@@ -621,9 +672,12 @@ const sendTelegram = async (
       { name: record.name },
     );
   }
-  const composed = title
-    ? `${title}\n\n${text}${link_url ? `\n${link_url}` : ''}`
-    : `${text}${link_url ? `\n${link_url}` : ''}`;
+  const notice = await noticeFor(notices, { vendor: 'telegram', recipient: String(chatIdRaw), token, text, title, link_url });
+  const heading = notice ? notice.title : title;
+  const message = notice ? notice.text : text;
+  const composed = heading
+    ? `${heading}\n\n${message}${link_url ? `\n${link_url}` : ''}`
+    : `${message}${link_url ? `\n${link_url}` : ''}`;
   const body = JSON.stringify({ chat_id: chatIdRaw, text: composed });
   const bodyBytesOut = new TextEncoder().encode(body).byteLength;
   const url = new URL(`https://api.telegram.org/bot${token}/sendMessage`);
@@ -656,6 +710,7 @@ const sendTelegram = async (
     };
   }
   const message_id = env?.result?.message_id;
+  await recordNotice(notice, typeof message_id === 'number' ? String(message_id) : undefined);
   return {
     status: 'ok' as const,
     result: {
@@ -686,6 +741,7 @@ const sendDiscord = async (
   call: ResolvedCall,
   fetchImpl: typeof fetch,
   ctx?: ConnectionHandlerCtx,
+  notices?: ConnectionNoticeHook,
 ): Promise<NotificationResponse<{ id?: string }>> => {
   if (auth.type !== 'bearer') {
     throw new IngredientError(
@@ -708,11 +764,14 @@ const sendDiscord = async (
     : (typeof params.recipient === 'number' ? String(params.recipient) : undefined);
   const channel = recipientOverride
     ?? requireString(config.channel_id, 'channel_id', record, "config field 'channel_id'");
+  const notice = await noticeFor(notices, { vendor: 'discord', recipient: channel.trim(), token, text, title, link_url });
+  const heading = notice ? notice.title : title;
+  const message = notice ? notice.text : text;
   // Discord markdown: a bold title heading, the body, then the deep link on its
   // own line — the exact shape of the transport's `composeDiscordText`.
-  const composed = title
-    ? `**${title}**\n${text}${link_url ? `\n${link_url}` : ''}`
-    : `${text}${link_url ? `\n${link_url}` : ''}`;
+  const composed = heading
+    ? `**${heading}**\n${message}${link_url ? `\n${link_url}` : ''}`
+    : `${message}${link_url ? `\n${link_url}` : ''}`;
   const body = JSON.stringify({ content: composed });
   const bodyBytesOut = new TextEncoder().encode(body).byteLength;
   // `v10` mirrors `DISCORD_API_VERSION` in `@recued/transport`'s discord adapter
@@ -742,6 +801,7 @@ const sendDiscord = async (
   });
 
   const env = envelope as DiscordPostResponse;
+  await recordNotice(notice, env?.id);
   return {
     status: 'ok' as const,
     result: {
@@ -982,15 +1042,15 @@ export const createConnectionNotificationHandler = (
     switch (subtype) {
       case 'slack': {
         const auth = await deps.decodeAuth(record);
-        return sendSlack(record, auth, params, call, fetchImpl, ctx);
+        return sendSlack(record, auth, params, call, fetchImpl, ctx, deps.notices);
       }
       case 'telegram': {
         const auth = await deps.decodeAuth(record);
-        return sendTelegram(record, auth, params, call, fetchImpl, ctx);
+        return sendTelegram(record, auth, params, call, fetchImpl, ctx, deps.notices);
       }
       case 'discord': {
         const auth = await deps.decodeAuth(record);
-        return sendDiscord(record, auth, params, call, fetchImpl, ctx);
+        return sendDiscord(record, auth, params, call, fetchImpl, ctx, deps.notices);
       }
       case 'in-app':
         return sendInApp(record, params, deps.emitInApp, ctx);

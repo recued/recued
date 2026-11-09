@@ -12,7 +12,7 @@ export interface FileExportRepresentation {
 /** A bounded, transient owner preview over the existing file-read contract. */
 export const FILE_PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
 export const FILE_PREVIEW_TEXT_CHARACTERS = 100_000;
-export type FilePreviewKind = 'image' | 'pdf' | 'text' | 'docx';
+export type FilePreviewKind = 'image' | 'pdf' | 'text' | 'docx' | 'xlsx';
 /** Recorded provenance only; an absent origin must not be inferred from a name. */
 export interface FilePreviewOrigin {
   label: string;
@@ -72,11 +72,13 @@ export interface FilePreviewConversionResult {
 
 /** Format adapters are independent of the provider that supplied the bytes.
  * HTML, XML and SVG are shown as text, never executed or embedded. */
-export const filePreviewKind = (mime: string): FilePreviewKind | undefined => {
+export const filePreviewKind = (mime: string, filename?: string): FilePreviewKind | undefined => {
   const type = mime.toLowerCase().split(';')[0]!.trim();
   if (['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'].includes(type)) return 'image';
   if (type === 'application/pdf') return 'pdf';
   if (type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
+  if (type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    || type === 'application/octet-stream' && /\.xlsx$/i.test(filename ?? '')) return 'xlsx';
   if (type.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript', 'application/csv',
     'application/x-ndjson', 'application/yaml', 'application/x-yaml', 'image/svg+xml'].includes(type)
     || type.endsWith('+json') || type.endsWith('+xml')) return 'text';

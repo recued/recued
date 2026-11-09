@@ -11,7 +11,10 @@ import { createInstanceStore } from '../../instance-store.js';
 import { createCalendarCollection, type CalendarCollection } from '../calendar-collection.js';
 import { createLocalCalendarProvider, LOCAL_CALENDAR_CAPS } from '../local-provider.js';
 import type { CalendarProvider, ProviderEventPayload } from '../provider.js';
-import { getOwnerCalendarEvent, respondToCalendarEvent } from '../invitation-handler.js';
+import { CALENDAR_EVENT_PAUSED, getOwnerCalendarEvent, respondToCalendarEvent } from '../invitation-handler.js';
+import { createCollectionRegistry } from '../../registry.js';
+import { makeCollectionHandlers } from '../../collection-handler.js';
+import type { WsClient } from '../../../ws-server.js';
 
 const NOW = Date.parse('2026-10-28T16:00:00Z');
 const ref = { slug: 'work', source_id: 'invitation' };
@@ -89,6 +92,31 @@ it('keeps the saved event readable when its provider is unavailable without cert
   expect(fresh.provider_verified).toBe(true);
   expect(fresh.invitation?.can_respond).toBe(true);
   expect(provider.rsvpEvent).not.toHaveBeenCalled();
+});
+
+// D-188 — the emergency stop: nothing reaches the calendar, yet the owner still sees the event.
+it('shows the event as last synced, read-only, while the server is paused, and reads no calendar', async () => {
+  let paused = true;
+  const view = await getOwnerCalendarEvent({ ...deps(), isPaused: () => paused }, ref);
+  expect(view.event).toMatchObject({ summary: 'Planning', start_at: NOW });
+  expect(view).toMatchObject({ editable: false, editable_fields: [], read_only_reason: CALENDAR_EVENT_PAUSED.edit,
+    refresh_error: CALENDAR_EVENT_PAUSED.refresh,
+    invitation: { can_respond: false, response: 'needs_action', unavailable_reason: CALENDAR_EVENT_PAUSED.respond } });
+  expect(view.provider_verified).toBeUndefined();
+  expect(provider.readInvitation).not.toHaveBeenCalled();
+  paused = false;
+  expect((await getOwnerCalendarEvent({ ...deps(), isPaused: () => paused }, ref)).provider_verified).toBe(true);
+});
+
+it('hands the owner\'s pause to an opened event through the collection rpc', async () => {
+  const registry = createCollectionRegistry(); registry.register(collection);
+  let paused = true;
+  const slice = makeCollectionHandlers({ registry, calendarEnroll: { instances } as never, isServerPaused: () => paused })!;
+  const owner: WsClient = { ws: null, realm: 'test', instance_id: 'owner', client_kind: 'webclient', display_name: 'owner', connected_at: 0 };
+  expect(await slice.handlers['collection.calendar.event.get'](ref, owner)).toMatchObject({ refresh_error: CALENDAR_EVENT_PAUSED.refresh });
+  expect(provider.readInvitation).not.toHaveBeenCalled();
+  paused = false;
+  expect((await slice.handlers['collection.calendar.event.get'](ref, owner)).provider_verified).toBe(true);
 });
 
 it('rejects stale views and refreshes changed provider details before any response', async () => {

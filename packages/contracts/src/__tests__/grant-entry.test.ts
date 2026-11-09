@@ -138,6 +138,7 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       'core.memory.write',
       'core.situation.prefetch',
       'core.situation.read',
+      'core.situation.record',
       'core.webhook.event.get',
       // Continuing a customer-accepted workflow resolves a task or commitment,
       // or starts a saved recipe; the owner reviews each one, never by default.

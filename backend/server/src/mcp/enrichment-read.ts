@@ -56,6 +56,7 @@ import {
   isPlatformReferenceScope,
   parseVendorEntityScope,
   ENRICHMENT_PINNED_AUTHOR_PREFIX,
+  contractUnavailableSentence,
   type EnrichmentReadFallThroughHint,
   type EnrichmentReadRpcInput,
   type EnrichmentReadRpcOutput,
@@ -271,7 +272,7 @@ const validateInput = (
   ) {
     throw new RpcError(
       'bad_request',
-      `mcp.enrichment.read: topic '${input.topic}' is not read-granted to this contract (read rejected)`,
+      `mcp.enrichment.read: ${contractUnavailableSentence(`topic '${input.topic}'`)}`,
       400,
     );
   }

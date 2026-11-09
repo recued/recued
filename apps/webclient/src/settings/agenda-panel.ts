@@ -57,7 +57,7 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
     return element;
   };
   // "Agenda" is the word its messages arrive under ("Agenda · Tue 3 Nov"), as "Coming up" is the Digest's.
-  node('h3', 'Agenda');
+  const heading = node('h3', 'Agenda');
   // A server whose Agenda is daily only keeps the daily words: it offers no week.
   const lede = node('p', DAILY_LEDE, root, 'sd-lede');
   const editor = node('div');
@@ -197,6 +197,15 @@ export const mountAgendaPanel = (opts: AgendaPanelOptions) => {
   const paint = () => {
     if (!agenda || disposed) return;
     root.hidden = false;
+    // D-340 slice 2 — on a server whose streams took over, the Agenda is a part of them, and its own
+    // settings here send nothing: the card's lede says where they went instead.
+    if (agenda.streams) {
+      heading.textContent = 'Daily stream'; editor.hidden = true; results.hidden = true;
+      lede.replaceChildren('Your Agenda, Coming up and Close the day are now part of your daily and weekly streams. ');
+      node('a', 'Set them on Today', lede).href = '#today/stream'; lede.append('.');
+      lede.setAttribute('data-agenda-moved', '');
+      return;
+    }
     editor.hidden = false;
     if (time.validity.badInput) dirty = true;
     // A refreshed read can also confirm a save whose acknowledgement read failed. It must

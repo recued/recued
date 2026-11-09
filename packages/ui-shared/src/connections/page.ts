@@ -283,7 +283,11 @@ const renderPackUsage = (
       const members = u.members.length === 0
         ? ''
         : ` <span class="connections-pack-usage-members" data-pack-usage-members="${u.members.length}" title="${e(u.members.join(', '))}">and ${u.members.length} ${u.members.length === 1 ? 'pack that signs' : 'packs that sign'} in through it</span>`;
-      return `<li class="connections-pack-usage-item" data-pack-usage="${e(u.pack_slug)}" data-pack-usage-tone="${tone}"><span class="connections-pack-usage-name">${e(u.pack_name)}</span>${members}${status === null ? '' : ` <span class="connections-pack-usage-status">— ${e(status)}</span>`}${isDefault}</li>`;
+      // D-321 P8 — the pack's page, when the host gave it: the name is the way there.
+      const name = u.href !== undefined
+        ? `<a class="connections-pack-usage-name rx-link" href="${e(u.href)}" data-pack-usage-link>${e(u.pack_name)}</a>`
+        : `<span class="connections-pack-usage-name">${e(u.pack_name)}</span>`;
+      return `<li class="connections-pack-usage-item" data-pack-usage="${e(u.pack_slug)}" data-pack-usage-tone="${tone}">${name}${members}${status === null ? '' : ` <span class="connections-pack-usage-status">— ${e(status)}</span>`}${isDefault}</li>`;
     })
     .join('');
   return `
@@ -741,9 +745,13 @@ const renderRecentProbe = (
     : p.status === 'unreachable' ? 'The service could not be reached. This does not prove the credentials are wrong.'
     : p.last_error ?? 'Review the connection before relying on access.';
   const message = `Last checked for ${p.kind}/${p.name}: ${httpStatus ? 'needs attention' : p.status}. ${detail}`;
-  if (tone === 'ok') return inlineOk(message);
-  if (tone === 'warn') return inlineError(message);
-  return inlineHint(message);
+  // D-321 P8 — set up from a pack: the way back to it.
+  const back = p.return_to !== undefined && p.return_to.href.startsWith('#')
+    ? `<p class="rx-msg connections-return"><a class="rx-link" href="${e(p.return_to.href)}" data-connections-return-to>Back to ${e(p.return_to.label)} →</a></p>`
+    : '';
+  if (tone === 'ok') return inlineOk(message) + back;
+  if (tone === 'warn') return inlineError(message) + back;
+  return inlineHint(message) + back;
 };
 
 const renderPostSafeStopProfileHandoff = (

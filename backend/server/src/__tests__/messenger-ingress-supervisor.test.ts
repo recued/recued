@@ -96,6 +96,9 @@ describe('messenger ingress supervisor', () => {
     paused = true;
     await expect(telegramOptions!.dispatch({ connection_name: 'telegram', payload: {} }))
       .rejects.toThrow(/paused/);
+    // A message already on its way at the pause is refused; the runner itself stops on the
+    // pause's reconcile (its own test below). Resumed for the rest of this one.
+    paused = false;
 
     vaultState = 'locked';
     vaultListener('locked', 'unlocked');
@@ -137,6 +140,64 @@ describe('messenger ingress supervisor', () => {
     connectionStore.delete('notification', 'telegram');
     await eventually(() => supervisor.status('slack', 'telegram') === null);
 
+    await supervisor.stop();
+    db.close();
+  });
+
+  // D-188 — the owner's pause stops the runner as a locked vault does (the emergency stop: nothing
+  // comes in), with its own status, and the reconcile after Resume starts it again.
+  const pollRow = {
+    kind: 'notification' as const, name: 'telegram', subtype: 'telegram', display_name: 'Telegram',
+    config_json: JSON.stringify({ chat_id: '1', ingress_mode: 'poll' }),
+    auth_ciphertext: 'cipher-a', enrolled_at: 1, updated_at: 1,
+  };
+  const pausable = (paused: () => boolean) => {
+    const db = new Database(':memory:');
+    const connectionStore = createConnectionStore(db);
+    const localStart = vi.fn();
+    const localStop = vi.fn(async () => undefined);
+    const supervisor = createMessengerIngressSupervisor({
+      connectionStore,
+      stateStore: createMessengerIngressStateStore(db),
+      dispatchers: { telegram: vi.fn(async () => undefined) },
+      decodeAuth: async () => ({ type: 'bearer', token: 'bot-token' }),
+      isPaused: paused,
+      runnerFactory: {
+        telegram() { return { start: localStart, stop: localStop }; },
+        slack() { throw new Error('unexpected Slack runner'); },
+        discord() { throw new Error('unexpected Discord runner'); },
+        teams() { throw new Error('unexpected Teams runner'); },
+      },
+    });
+    connectionStore.upsert(pollRow);
+    return { db, supervisor, localStart, localStop };
+  };
+
+  it('stops a local runner while the server is paused, and starts it again once resumed', async () => {
+    let paused = false;
+    const { db, supervisor, localStart, localStop } = pausable(() => paused);
+    await supervisor.start();
+    await eventually(() => localStart.mock.calls.length === 1);
+
+    paused = true;
+    await supervisor.reconcile();
+    await eventually(() => localStop.mock.calls.length === 1);
+    expect(supervisor.status('telegram', 'telegram')).toMatchObject({ state: 'paused', detail: 'server is paused' });
+
+    paused = false;
+    await supervisor.reconcile();
+    await eventually(() => localStart.mock.calls.length === 2);
+
+    await supervisor.stop();
+    db.close();
+  });
+
+  it('starts no runner when it starts while the server is paused', async () => {
+    const { db, supervisor, localStart } = pausable(() => true);
+    await supervisor.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(localStart).not.toHaveBeenCalled();
+    expect(supervisor.status('telegram', 'telegram')?.state).toBe('paused');
     await supervisor.stop();
     db.close();
   });

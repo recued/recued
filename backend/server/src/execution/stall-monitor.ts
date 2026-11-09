@@ -49,8 +49,18 @@ export interface StallMonitorOptions {
   onSignal?: (at: number) => void;
   /** Poll cadence; default `DEFAULT_PROGRESS_POLL_MS`. */
   pollMs?: number;
-  /** Injectable clock (tests). Default `Date.now`. */
+  /** The clock no-progress time and run time are measured on. Default
+   *  `performance.now()`, which stops while the machine sleeps.
+   *
+   *  ⛔ IT WAS `Date.now`, AND A CLOSED LID READ AS A STALL. The wall clock
+   *  jumps by the time slept, so the first poll after waking saw an agent CLI
+   *  "idle" for the whole sleep and killed it: 45 minutes for the coding-agent
+   *  ops, 90 seconds for yt-dlp. A process that cannot run cannot be blamed for
+   *  not progressing. Tests inject a fake. */
   now?: () => number;
+  /** The wall clock a progress signal is reported at (`onSignal`), for the
+   *  active list. Default `Date.now`, or `now` when only that is injected. */
+  wallNow?: () => number;
   /** Injectable timer (tests). Defaults to `setTimeout`/`clearTimeout`.
    *  `setTimer` returns an opaque handle passed back to `clearTimer`. */
   setTimer?: (fn: () => void, ms: number) => unknown;
@@ -69,6 +79,7 @@ export class StallMonitor {
   private readonly onSignal?: (at: number) => void;
   private readonly pollMs: number;
   private readonly now: () => number;
+  private readonly wallNow: () => number;
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
 
@@ -90,7 +101,8 @@ export class StallMonitor {
     this.flagOnly = opts.flagOnly;
     this.onSignal = opts.onSignal;
     this.pollMs = opts.pollMs ?? DEFAULT_PROGRESS_POLL_MS;
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? (() => performance.now());
+    this.wallNow = opts.wallNow ?? opts.now ?? Date.now;
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.startedAt = this.now();
@@ -117,7 +129,7 @@ export class StallMonitor {
     // no-progress episode, bounded by k·T (3 min in production), not one ever.
     this.flaggedFired = false;
     try {
-      this.onSignal?.(this.lastSignalAt);
+      this.onSignal?.(this.wallNow());
     } catch {
       /* telemetry/read-model observers never become execution authority */
     }

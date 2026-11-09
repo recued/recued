@@ -29,9 +29,11 @@ import {
   clearUnfoldedUserMessages,
   __clearUnfoldedUserMessages,
   UNFOLDED_MESSAGE_LIMIT,
-  MAX_PENDING_STATEMENT_TURNS,
+  UNFOLDED_MESSAGE_BYTES,
   oldestPendingStatementAge,
-  hasStalePendingStatement,
+  pendingStatementsFull,
+  restoreUnfoldedUserMessages,
+  statementsRestoreNeeded,
   __clearSessionBriefs,
   clearSessionBrief,
   getSessionBrief,
@@ -1603,41 +1605,78 @@ describe('the backlog is a holding pen with a DEADLINE', () => {
     expect(oldestPendingStatementAge('s')).toBe(2);
   });
 
-  it('goes stale at the deadline, and not before', () => {
-    appendUnfoldedUserMessage('s', 'the levy is 318');
-    for (let i = 1; i < MAX_PENDING_STATEMENT_TURNS; i += 1) {
-      appendUnfoldedUserMessage('s', `filler ${String(i)}`);
-      // ⛔ The PERMITTING WITNESS lives inside the loop: if this ever reports
-      //   stale early, the deadline is decoration and the fold fires on
-      //   everything.
-      expect(hasStalePendingStatement('s')).toBe(false);
-    }
-    appendUnfoldedUserMessage('s', 'one more');
-    expect(hasStalePendingStatement('s')).toBe(true);
-  });
-
-  it('an empty pen is never stale', () => {
-    expect(oldestPendingStatementAge('s')).toBe(0);
-    expect(hasStalePendingStatement('s')).toBe(false);
-  });
-
-  it('clearing resets the age — a fold classified it, the pen is empty', () => {
-    for (let i = 0; i <= MAX_PENDING_STATEMENT_TURNS; i += 1) {
+  // D-347 follow-up 3 (the owner, 2026-11-08: "Rebuild, fold when full") — the deadline that forced a fold on
+  // a statement's third turn is gone; a full list forces it.
+  it('is full at its limit of statements, and not before', () => {
+    for (let i = 1; i < UNFOLDED_MESSAGE_LIMIT; i += 1) {
       appendUnfoldedUserMessage('s', `line ${String(i)}`);
+      // The permitting witness inside the loop: full early would fold on everything.
+      expect(pendingStatementsFull('s')).toBe(false);
     }
-    expect(hasStalePendingStatement('s')).toBe(true);
+    appendUnfoldedUserMessage('s', 'the twelfth');
+    expect(pendingStatementsFull('s')).toBe(true);
+  });
+
+  it('is full at three quarters of its bytes, so the next message still fits', () => {
+    appendUnfoldedUserMessage('s', 'x'.repeat(UNFOLDED_MESSAGE_BYTES * 0.75 - 10));
+    expect(pendingStatementsFull('s')).toBe(false);
+    appendUnfoldedUserMessage('s', 'y'.repeat(20));
+    expect(pendingStatementsFull('s')).toBe(true);
+  });
+
+  it('an empty list is never full, and a fold empties it', () => {
+    expect(pendingStatementsFull('s')).toBe(false);
+    for (let i = 0; i < UNFOLDED_MESSAGE_LIMIT; i += 1) appendUnfoldedUserMessage('s', `line ${String(i)}`);
+    expect(pendingStatementsFull('s')).toBe(true);
     clearUnfoldedUserMessages('s');
     appendUnfoldedUserMessage('s', 'fresh');
-    expect(hasStalePendingStatement('s')).toBe(false);
+    expect(pendingStatementsFull('s')).toBe(false);
   });
 
-  it('is per-session — one session going stale does not age another', () => {
-    appendUnfoldedUserMessage('a', 'old');
-    for (let i = 0; i <= MAX_PENDING_STATEMENT_TURNS; i += 1) {
-      appendUnfoldedUserMessage('a', `x${String(i)}`);
-    }
+  it('is per-session — one session filling does not fill another', () => {
+    for (let i = 0; i < UNFOLDED_MESSAGE_LIMIT; i += 1) appendUnfoldedUserMessage('a', `x${String(i)}`);
     appendUnfoldedUserMessage('b', 'new');
-    expect(hasStalePendingStatement('a')).toBe(true);
-    expect(hasStalePendingStatement('b')).toBe(false);
+    expect(pendingStatementsFull('a')).toBe(true);
+    expect(pendingStatementsFull('b')).toBe(false);
   });
 });
+
+// D-347 follow-up 3 — a restarted server rebuilds a session's waiting statements from its saved messages.
+describe('waiting statements rebuilt from the saved conversation', () => {
+  beforeEach(() => { __clearUnfoldedUserMessages(); });
+  const saved = [
+    { text: 'The bonded-warehouse levy is 318 units.', ts: 100 },
+    { text: 'Read blocks 01 and 02.', ts: 200 },
+    { text: 'The pilot-boat retainer is 274 units.', ts: 300 },
+    { text: 'Now blocks 03 and 04.', ts: 400 },
+  ];
+  const brief = (findings: string[]) => ({ intent: 'Price the job', constraints: [], pending: [], findings, completed: [] }) as never;
+
+  it('takes every message after the last fold, and before it those whose figures the brief does not carry', () => {
+    expect(statementsRestoreNeeded('s')).toBe(true);
+    // Folded at 250: 318 is in the brief, so only the later two and nothing before.
+    expect(restoreUnfoldedUserMessages('s', saved, 250, brief(['The levy is 318 units.']))).toBe(2);
+    expect(peekUnfoldedUserMessages('s')).toEqual(['The pilot-boat retainer is 274 units.', 'Now blocks 03 and 04.']);
+    expect(statementsRestoreNeeded('s')).toBe(false);
+    // The same fold with 318 not carried: the levy comes back, oldest first.
+    __clearUnfoldedUserMessages();
+    restoreUnfoldedUserMessages('s', saved, 250, brief(['Blocks 01 and 02 were read.']));
+    expect(peekUnfoldedUserMessages('s')).toEqual(['The bonded-warehouse levy is 318 units.',
+      'The pilot-boat retainer is 274 units.', 'Now blocks 03 and 04.']);
+  });
+
+  it('with no fold recorded: nothing when a brief exists (which messages it took is unknown), all when none does', () => {
+    expect(restoreUnfoldedUserMessages('s', saved, null, brief([]))).toBe(0);
+    expect(peekUnfoldedUserMessages('s')).toEqual([]);
+    expect(statementsRestoreNeeded('s')).toBe(false);
+    expect(restoreUnfoldedUserMessages('t', saved, null, null)).toBe(4);
+  });
+
+  it('keeps the oldest within the list\'s limits, as an append does', () => {
+    const many = Array.from({ length: UNFOLDED_MESSAGE_LIMIT + 5 }, (_, i) => ({ text: `statement ${String(i)}`, ts: 1000 + i }));
+    expect(restoreUnfoldedUserMessages('s', [...many].reverse(), 0, null)).toBe(UNFOLDED_MESSAGE_LIMIT);
+    expect(peekUnfoldedUserMessages('s')[0]).toBe('statement 0');
+    expect(pendingStatementsFull('s')).toBe(true);
+  });
+});
+

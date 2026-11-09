@@ -36,6 +36,8 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
     const row = db.prepare(`SELECT value FROM ${table} WHERE id=?`).get(id) as { value: string } | undefined; return row ? JSON.parse(row.value) : null;
   };
   const episode = (id: string): Episode | null => get('proactive_episodes', id);
+  /** The episodes the owner hid from their lists (P44), as the JSON a query's `json_each` reads. */
+  const hiddenEpisodes = (): string => JSON.stringify(proposals.suppressions().flatMap(row => row.kind === 'episode' && row.value && !row.of ? [row.value] : []));
   const occasion = (id: string): Occasion | null => get('proactive_occasions', id);
   const saveEpisode = (input: EpisodeInput, at: number): Episode => {
     if (!input || !validText(input.title, 500) || !input.when || !validTime(input.when.from) || !validTime(input.when.to) || input.when.from > input.when.to
@@ -48,6 +50,7 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
     if (input.where && (!validText(input.where.key, 2000) || !validText(input.where.name, 500))) throw new Error('Invalid episode place');
     if (input.evidence.length > 100 || input.subjects.length > 100 || [...input.evidence, ...input.subjects].some(ref => !validText(ref.collection, 200) || !validText(ref.id, 2000))) throw new Error('Invalid episode evidence');
     if (input.sphere !== undefined && !['personal', 'professional'].includes(input.sphere)) throw new Error('Invalid episode sphere');
+    if (input.outcome !== undefined && !['done', 'skipped'].includes(input.outcome)) throw new Error('Invalid episode outcome');
     const old = input.id ? episode(input.id) : null;
     const id = input.id ?? `episode-${randomUUID()}`;
     const value: Episode = { ...structuredClone(input), id, created_at: old?.created_at ?? at, updated_at: at };
@@ -73,18 +76,31 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
   return {
     episode, occasion, saveEpisode, suppressed, suppressEpisode,
     /** P44 — the owner's lists of stored episodes (Episodes, a contact's page, an
-     * occasion's history) leave out one hidden there. It stays stored: assembly and
-     * retention still read it, and the exclusion list names it. */
-    listedEpisodes: (scope: { person?: string; occasion?: string }, limit = 50, offset = 0): Episode[] => {
+     * occasion's history, a pursuit's) leave out one hidden there. It stays stored: assembly and
+     * retention still read it, and the exclusion list names it. D-343 slice 5: they read in the
+     * order things happened, the latest first, so a day closed days later sits on its own day
+     * (Episodes groups them by day). `subject` keeps the episodes that cite an item. */
+    listedEpisodes: (scope: { person?: string; occasion?: string; subject?: SituationRef }, limit = 50, offset = 0): Episode[] => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid history page');
-      const hidden = JSON.stringify(proposals.suppressions().flatMap(row => row.kind === 'episode' && row.value && !row.of ? [row.value] : []));
       return (db.prepare(`SELECT p.value FROM proactive_episodes p WHERE p.id NOT IN (SELECT value FROM json_each(@hidden))
         ${scope.person !== undefined ? "AND EXISTS (SELECT 1 FROM json_each(p.value,'$.people') WHERE json_each.value=@person)" : ''}
         ${scope.occasion !== undefined ? "AND json_extract(p.value,'$.occasion_id')=@occasion" : ''}
-        ORDER BY p.updated_at DESC,p.id LIMIT @limit OFFSET @offset`)
-        .all({ hidden, limit, offset, ...(scope.person !== undefined ? { person: scope.person } : {}), ...(scope.occasion !== undefined ? { occasion: scope.occasion } : {}) }) as { value: string }[])
+        ${scope.subject !== undefined ? `AND EXISTS (SELECT 1 FROM json_each(p.value,'$.subjects') s
+          WHERE json_extract(s.value,'$.collection')=@subject_collection AND json_extract(s.value,'$.id')=@subject_id)` : ''}
+        ORDER BY json_extract(p.value,'$.when.from') DESC,p.updated_at DESC,p.id LIMIT @limit OFFSET @offset`)
+        .all({ hidden: hiddenEpisodes(), limit, offset, ...(scope.person !== undefined ? { person: scope.person } : {}), ...(scope.occasion !== undefined ? { occasion: scope.occasion } : {}),
+          ...(scope.subject !== undefined ? { subject_collection: scope.subject.collection, subject_id: scope.subject.id } : {}) }) as { value: string }[])
         .map(row => JSON.parse(row.value));
     },
+    /** D-343 slice 5 — when the owner did each of these items (a pursuit): the start of every stored
+     * episode that cites one and says it was done (a closing record's `outcome`, or none), the
+     * latest first. A skipped record is not done, and one hidden in their lists counts for nothing. */
+    doneFor: (collection: string, ids: readonly string[]): Array<{ id: string; from: number }> => ids.length === 0 ? []
+      : db.prepare(`SELECT json_extract(s.value,'$.id') AS id,json_extract(p.value,'$.when.from') AS "from"
+        FROM proactive_episodes p,json_each(p.value,'$.subjects') s
+        WHERE json_extract(s.value,'$.collection')=@collection AND json_extract(s.value,'$.id') IN (SELECT value FROM json_each(@ids))
+          AND IFNULL(json_extract(p.value,'$.outcome'),'done')='done' AND p.id NOT IN (SELECT value FROM json_each(@hidden))
+        ORDER BY "from" DESC`).all({ collection, ids: JSON.stringify(ids), hidden: hiddenEpisodes() }) as Array<{ id: string; from: number }>,
     walkOccasions: (after = '', limit = 100): Occasion[] => (db.prepare('SELECT value FROM proactive_occasions WHERE id>? ORDER BY id LIMIT ?')
       .all(after, limit) as { value: string }[]).map(row => JSON.parse(row.value)),
     occasionDeleted: (id: string): boolean => Boolean(db.prepare('SELECT 1 FROM proactive_history_receipts WHERE source_key=?').get(`deleted-occasion:${id}`)),

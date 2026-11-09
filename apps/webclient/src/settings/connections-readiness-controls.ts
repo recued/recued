@@ -37,7 +37,7 @@ import {
   type PackListEntry,
 } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
-import { connectionsEnrollAddress } from '../connections/connections-navigation.js';
+import { connectionsEnrollAddress, connectionsReviewAccessAddress } from '../connections/connections-navigation.js';
 
 /** `collection.connection.list` caller (unfiltered — we filter to `api`
  *  client-side). Shape matches the connections route's enroll-list caller. */
@@ -86,7 +86,9 @@ type SlotStatus =
       /** The connection is a pasted key (`bearer`), not an app sign-in. */
       key?: true;
     }
-  | { status: 'unverified'; label: string };
+  | { status: 'unverified'; label: string }
+  /** D-321 P3 — every connection here had its sign-in turned down. */
+  | { status: 'rejected'; label: string; name: string };
 
 /** The connection list is keyed by name; the readiness layer keys by VENDOR.
  *  Mirror `resolveConnectionVendor` (config.vendor, else subtype). `vendor`
@@ -143,8 +145,45 @@ const reduceStatus = (
   return { status: 'unverified', label: firstUnverified ?? viewLabel(backing[0]) };
 };
 
+/** D-321 P3 — the service did not accept this connection's sign-in, on its last
+ *  call or check. `collection.connection.list` stamps `health` (D-232 § 22): a run's
+ *  own call writes it (`connection-access-observer.ts`), and a failure stands until
+ *  something succeeds. */
+const signInRejected = (v: ConnectionView): boolean => {
+  const health = v.health;
+  return health !== null && typeof health === 'object'
+    && (health as { status?: unknown }).status === 'auth_failed';
+};
+
+/** D-321 P4 — what keeps one set-up connection from working for a sign-in that
+ *  needs `needed` scopes, or null: its sign-in was turned down (P3), or it was
+ *  granted too little. The rows here and the pack's own Connections block
+ *  (`pack-connections-controls.ts`) read this one rule, so they cannot disagree. */
+export type ConnectionProblem =
+  | { problem: 'rejected' }
+  | { problem: 'under_scoped'; missing: string[]; /** A pasted key, not a sign-in. */ key?: true };
+
+export const connectionProblem = (
+  view: ConnectionView,
+  needed: readonly string[],
+): ConnectionProblem | null => {
+  if (signInRejected(view)) return { problem: 'rejected' };
+  if (needed.length === 0) return null;
+  const coverage = scopeCoverage([...needed], view.granted_scopes);
+  if (!coverage.known || coverage.covered) return null;
+  return {
+    problem: 'under_scoped',
+    missing: coverage.missing,
+    ...(view.auth_type === 'bearer' ? { key: true as const } : {}),
+  };
+};
+
 /** Resolve one slot's status from the loaded list (or `unknown_enrollment`
- *  when the list is unavailable). Exported for unit tests. */
+ *  when the list is unavailable). Exported for unit tests.
+ *
+ *  D-321 P3 — a connection whose sign-in was turned down does not back the slot:
+ *  the page said "connected" while every run on it failed. One that works still
+ *  wins; with none, the row says so and offers to reconnect. */
 export const resolveSlotStatus = (
   slot: string,
   needed: string[],
@@ -154,7 +193,88 @@ export const resolveSlotStatus = (
   const backing = connections.filter(
     (c) => c.kind === 'api' && viewVendor(c) === slot,
   );
-  return reduceStatus(needed, backing);
+  const working = backing.filter((c) => !signInRejected(c));
+  if (working.length === 0 && backing.length > 0) {
+    const rejected = backing[0]!;
+    return { status: 'rejected', label: viewLabel(rejected), name: rejected.name };
+  }
+  return reduceStatus(needed, working);
+};
+
+/** D-321 — the connection slots of a `packs.list` row that no enrolled
+ *  connection backs yet: what its badge in the pack list counts. A row carries
+ *  no manifest (about 36 KB each), so the slots come from what it does carry:
+ *  the vendor of each connection requirement (every connection the pack signs
+ *  in to, an API-key one too, which `required_scopes_by_connection` alone would
+ *  miss) and the scopes each needs. Each slot's status is this block's own rule
+ *  (`resolveSlotStatus`). No connection list counts none: unknown is not
+ *  missing. */
+export const unsetConnectionSlots = (
+  row: Pick<PackListEntry, 'connection_requirements' | 'required_scopes_by_connection'>,
+  connections: ReadonlyArray<ConnectionView> | null,
+): string[] => slotsWith('not_set_up', row, connections);
+
+/** D-321 P3 — the slots of a `packs.list` row whose every connection had its
+ *  sign-in turned down: what the list's "Sign-in not accepted" badge counts. */
+export const rejectedConnectionSlots = (
+  row: Pick<PackListEntry, 'connection_requirements' | 'required_scopes_by_connection'>,
+  connections: ReadonlyArray<ConnectionView> | null,
+): string[] => slotsWith('rejected', row, connections);
+
+/** D-321 P4 — the pack list's badges from each pack's OWN list
+ *  (`packs.connections.signins`), which is what its runs use, so the list and the
+ *  pack's page cannot disagree: a sign-in whose list holds no set-up connection is
+ *  `unset`; one whose every listed connection had its sign-in turned down is
+ *  `rejected`. A pack that signs in through another's list (ruling 9) follows it.
+ *  By pack slug; a pack with nothing to fix is absent. */
+export const connectionNeedsFromSignIns = (
+  signins: ReadonlyArray<{
+    slot: string;
+    rows: ReadonlyArray<{
+      pack_slug: string;
+      members: ReadonlyArray<{ pack_slug: string }>;
+      cells: Readonly<Record<string, string>>;
+    }>;
+  }>,
+  connections: ReadonlyArray<ConnectionView>,
+): Map<string, { unset: string[]; rejected: string[] }> => {
+  const byName = new Map(connections.filter((c) => c.kind === 'api').map((c) => [c.name, c]));
+  const out = new Map<string, { unset: string[]; rejected: string[] }>();
+  for (const signin of signins) {
+    for (const row of signin.rows) {
+      const listed = Object.entries(row.cells)
+        .filter(([, cell]) => cell === 'default' || cell === 'listed')
+        .map(([name]) => name);
+      const working = listed.filter((name) => {
+        const view = byName.get(name);
+        return view === undefined || !signInRejected(view);
+      });
+      const need = listed.length === 0 ? 'unset' : working.length === 0 ? 'rejected' : null;
+      if (need === null) continue;
+      for (const slug of [row.pack_slug, ...row.members.map((member) => member.pack_slug)]) {
+        const needs = out.get(slug) ?? { unset: [], rejected: [] };
+        if (!needs[need].includes(signin.slot)) needs[need].push(signin.slot);
+        out.set(slug, needs);
+      }
+    }
+  }
+  return out;
+};
+
+const slotsWith = (
+  status: SlotStatus['status'],
+  row: Pick<PackListEntry, 'connection_requirements' | 'required_scopes_by_connection'>,
+  connections: ReadonlyArray<ConnectionView> | null,
+): string[] => {
+  if (connections === null) return [];
+  const scopes = row.required_scopes_by_connection ?? {};
+  const slots = new Set([
+    ...(row.connection_requirements ?? []).map((requirement) => requirement.vendor),
+    ...Object.keys(scopes),
+  ]);
+  return [...slots].filter((slot) => slot.length > 0).sort().filter(
+    (slot) => resolveSlotStatus(slot, [...(scopes[slot] ?? [])], connections).status === status,
+  );
 };
 
 /** Status → user-facing line + whether a CTA shows + its verb. */
@@ -173,6 +293,7 @@ const STATUS_COPY: Record<
   },
   not_set_up: { suffix: () => 'not set up', cta: 'Set up' },
   unknown_enrollment: { suffix: () => '', cta: 'Set up' },
+  rejected: { suffix: () => 'sign-in not accepted', cta: 'Reconnect' },
 };
 
 export const CONNECTIONS_READINESS_STYLES = `
@@ -306,11 +427,16 @@ export const createConnectionsReadinessController = (
         // this vendor (Set up AND Re-authorize — the pre-filled scope union
         // is exactly the re-authorize flow; granted scopes re-persist via
         // enroll).
+        // D-321 P3 — a turned-down sign-in opens that connection's own editor,
+        // where a key is replaced and an OAuth sign-in starts again, as a run
+        // that failed on it offers (`run-needs-offer.ts`).
         cta.setAttribute(
           'href',
-          keyFix
-            ? serializeShellRoute('connections', 'others')
-            : connectionsEnrollAddress(pack.connection_requirements?.[0]?.vendor ?? slot, { slug: pack.slug, slot }).hash,
+          status.status === 'rejected'
+            ? connectionsReviewAccessAddress(status.name).hash
+            : keyFix
+              ? serializeShellRoute('connections', 'others')
+              : connectionsEnrollAddress(pack.connection_requirements?.[0]?.vendor ?? slot, { slug: pack.slug, slot }).hash,
         );
         cta.textContent = keyFix
           ? `Add ${status.missing.length === 1 ? 'it' : 'them'} to the key, then Probe →`

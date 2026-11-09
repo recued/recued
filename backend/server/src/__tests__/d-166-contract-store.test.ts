@@ -183,6 +183,8 @@ describe('createContractStore — seedSchema', () => {
       ['composite_keys', 'installed_reception_template'],
       ['composite_keys', 'override'],
       ['composite_keys', 'owner_operation'],
+      // D-321 — one owner location per cli catalog's program ('owner_tool_p' < 'owner_tool_v').
+      ['composite_keys', 'owner_tool_path'],
       // D-321 — one owner choice per cli catalog's tool ('owner_o' < 'owner_t').
       ['composite_keys', 'owner_tool_version'],
       // D-320 — a pack's default connection per slot.

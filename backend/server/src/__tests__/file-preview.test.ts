@@ -211,7 +211,7 @@ describe('explicit paired preview conversions', () => {
       if (inventoryUnavailable) throw new Error('private-inventory-diagnostic');
       return installed ? [reader] : [];
     }, execute });
-    const file = await f.ingest('workbook bytes', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Budget.xlsx');
+    const file = await f.ingest('workbook bytes', 'application/vnd.oasis.opendocument.spreadsheet', 'Budget.ods');
     const get = vi.spyOn(f.blobs, 'get');
     expect(await f.preview(file.record_id)).toMatchObject({ can_download: true, conversion: { readers: [] } });
     const args = { action: 'start' as const, record_id: file.record_id, selection_revision: f.lifecycle.selection(file.record_id).selection_revision,
@@ -228,7 +228,7 @@ describe('explicit paired preview conversions', () => {
     inventoryUnavailable = false;
     installed = true;
     expect(await f.preview(file.record_id)).toMatchObject({ conversion: { readers: ['markitdown'] } });
-    await f.ingest('new source', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Budget.xlsx');
+    await f.ingest('new source', 'application/vnd.oasis.opendocument.spreadsheet', 'Budget.ods');
     await expect(convert(args, client)).rejects.toMatchObject({ code: 'file_selection_changed' });
     expect(get).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
     expect(isReservedLocalRpc('data.file.attachments.convert')).toBe(true);

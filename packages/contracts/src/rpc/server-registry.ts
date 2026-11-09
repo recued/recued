@@ -13,7 +13,14 @@
 
 import type { RpcMethodSpec } from './types.js';
 import type { WriteRuleRow, WriteRuleSuggestionRow } from '../write-approval-rule.js';
-import type { BrowserPassRow, BrowserPassSuggestionRow } from '../browser-pass.js';
+import type { BrowserPassRow, BrowserPassSuggestionRow, BrowserRequestPass } from '../browser-pass.js';
+import type { BrowserLoginRow, BrowserSecretPrompt } from '../browser-secret.js';
+import type {
+  TriggerPreapprovalChoice,
+  TriggerPreapprovalGrantRequest,
+  TriggerPreapprovalTrigger,
+  TriggerPreapprovalView,
+} from '../trigger-preapproval.js';
 import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget, ArchiveUnattendedSettings, ArchiveUnattendedStatus, ArchiveRestoreDrill, ArchiveBackupHealthPolicy, ArchiveBackupIntegrityPolicy, ArchiveBackupIntegrityStatus, ArchiveBackupHealthStatus } from '../archive-remote.js';
 import type { BackupWatchdogDrillStart, BackupWatchdogDrillUpdate, BackupWatchdogSave, BackupWatchdogStatus } from '../backup-watchdog.js';
 import type {
@@ -298,6 +305,7 @@ import type {
 } from '../owner-operation-override.js';
 import type { CliVersionOutside } from '../cli-tool-version.js';
 import type { OwnerToolVersionView } from '../owner-tool-version.js';
+import type { OwnerToolPathView } from '../owner-tool-path.js';
 import type {
   ContractDefinitionView,
   ContractListRequest,
@@ -1064,6 +1072,10 @@ export interface ServerPendingAsk {
    *  no-ops — the answer looks sent, the ask stays open, and nothing reports a
    *  fault. Naming it here is what makes the client able to collect it at all. */
   note_prompt?: 'optional' | 'required';
+  /** D-335 slice Z — this ask is for a secret a browser step types: the card takes the value in a
+   *  field of its own and gives it with `notification.giveSecret`, never as an answer or a note.
+   *  Named here for the same reason as `note_prompt`: the projection copies only what it names. */
+  secret_prompt?: BrowserSecretPrompt;
   /** D-270 — the resolved "what will happen" rows, so the decision is made with
    *  the VALUES in view rather than from the prose alone. The `/ask` landing page
    *  has had this since D-210 A.8 3d-2b; the card rendered only prose, a
@@ -1111,6 +1123,13 @@ export interface ServerPendingAsk {
    *  stays read-only (D-270: the link owns editing). Absent for any other ask, and from a
    *  server before slice N. */
   chat_plan?: { session_id: string; plan_id: string; changeable?: boolean };
+  /** D-188 — the owner paused the server, and this approval's held action is one the pause
+   *  stops (an app's, a door's, the owner's AI's, an automation's), so it waits for Resume
+   *  (the owner's ruling of 2026-11-08). `message` says so; `allowed_options` are the answers
+   *  that still work (declining). The server refuses any other answer while paused, whatever
+   *  the surface. Absent while the server runs, for the owner's own run by hand, and from a
+   *  server before this. */
+  paused?: { message: string; allowed_options: string[] };
 }
 
 /** One row from `pair.list`. Mirrors `PairedInstance` from the server
@@ -1229,6 +1248,10 @@ export interface ServerExecuteResponse {
    *  closed pre-run (`connection_required`) instead. Present only when ≥1
    *  fired. */
   runnability_warnings?: string[];
+  /** D-321 P2 / C2 — what a failed step needed and did not have (a program, or
+   *  a connection to set up or reconnect), on the owner's own runs only. Never
+   *  sent to a model. Present only when ≥1. */
+  run_needs?: import('../run-needs.js').RunNeed[];
 }
 
 /** Migration progress snapshot. Mirrors `MigrationResult` from
@@ -1441,6 +1464,11 @@ export interface ServerRecipeListEntry {
    *  recipes report install time; inline recipes report 0 since they
    *  aren't really "installed". */
   installed_at: number;
+  /** D-321 W1 — the pack that installed it (`StoredRecipe.pack_slug`). A pack's
+   *  page reads the recipes of the packs it uses through this, which their own
+   *  manifests would otherwise have to be fetched for. Absent for a recipe no
+   *  pack installed, a bundled one, and from a server that does not project it. */
+  pack_slug?: string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2452,6 +2480,16 @@ export type ServerRpcRegistry = {
       note?: string;
     },
     { ok: true }
+  >;
+  /** D-335 slice Z — the owner gives the secret a browser step waits for, from the card of its ask
+   *  (`ServerPendingAsk.secret_prompt`). The value goes to the waiting step and on to the Browser
+   *  Bridge in that step's command, and is kept nowhere else: not in the ask, the run, an audit row
+   *  or a log. With `remember` (a password or a PIN only), it is also saved, sealed, for that field
+   *  on that site. `given: false` when no step waits on the ask any longer (it stopped, or its five
+   *  minutes ran out). Local-UI only, as `notification.submitAnswer` is: an AI never gives one. */
+  'notification.giveSecret': RpcMethodSpec<
+    { ask_id: string; value: string; remember?: boolean },
+    { given: boolean }
   >;
 
   // ── Paired-device fleet (for the "new device or replace" UX) ──
@@ -4175,6 +4213,22 @@ export type ServerRpcRegistry = {
     { deleted: boolean }
   >;
 
+  /** D-321 — where a cli catalog's program is, as the owner set it on the pack's
+   * page: the server runs that file instead of looking on its PATH, with its
+   * folder added at the end of that program's PATH. The file must be named like
+   * the program and be one the server can run; never parameters
+   * (`owner-tool-path.ts`). */
+  'collection.operation.upsertOwnerToolPath': RpcMethodSpec<
+    { ingredient_id: string; path: string },
+    OwnerToolPathView
+  >;
+
+  /** D-321 — remove the location; the server looks on its PATH again. */
+  'collection.operation.deleteOwnerToolPath': RpcMethodSpec<
+    { ingredient_id: string },
+    { deleted: boolean }
+  >;
+
   /** D-166 contract_id lifecycle — mint a `contract.contract_definition.<id>`
    *  row (the gating piece: until a contract is minted, the use-resolution
    *  overlay over `.<contract_id>` rows is inert). The user supplies
@@ -4491,6 +4545,66 @@ export type ServerRpcRegistry = {
   'collection.contract.dismissBrowserPassSuggestion': RpcMethodSpec<
     { key_hash: string },
     { key_hash: string }
+  >;
+  /** D-341 slice A — whether the switch beside Send is on in this chat conversation: its request
+   *  approved ahead, while live (eight hours at most). Owner surface only, reserved out of MCP with the
+   *  rest of `collection.contract.`: an AI never sees or sets one. */
+  'collection.contract.getRequestPass': RpcMethodSpec<
+    { session_id: string },
+    { pass?: BrowserRequestPass }
+  >;
+  /** D-341 slice A — turn the switch on (a live one is kept, else one starts now) or off. While on,
+   *  every Browser Toolkit write the conversation's chat makes runs without asking, on any site its
+   *  tabs go; the owner's listed sites are still refused and a secret is still asked for. Audited
+   *  `browser_request_pass_started` / `_ended`, and each write it lets through `browser_pass_used`. */
+  'collection.contract.setRequestPass': RpcMethodSpec<
+    { session_id: string; allow: boolean },
+    { pass?: BrowserRequestPass }
+  >;
+  /** D-335 slice Z — the logins the owner chose to remember for browser steps, newest first: the
+   *  site, the field and the kind of secret, never the secret. */
+  'collection.contract.listBrowserLogins': RpcMethodSpec<
+    void,
+    { logins: BrowserLoginRow[] }
+  >;
+  /** D-335 slice Z — forget a remembered login: the next step that needs it asks again. Audited
+   *  `browser_login_forgotten`; `not_found` for one not remembered. */
+  'collection.contract.forgetBrowserLogin': RpcMethodSpec<
+    { origin: string; field: string },
+    { forgotten: true }
+  >;
+  /** D-341 slice B1 — let a webhook, a schedule or an event trigger run one recipe's named writes
+   *  without asking: for the recipe's installed version (pinned here; any change ends it), once a run
+   *  unless `max_per_run` says more (100 at most), `max_uses` times (100 at most) for `ttl_ms` (30
+   *  days at most), the ceilings when absent. `bad_request` when a write is not one of the recipe's
+   *  own steps' ops or the trigger does not start the recipe; `not_found` when the recipe is not
+   *  installed. Never covers a `destructive` op or one held at `approval: 'always'`. Owner surface
+   *  only, reserved out of MCP with the rest of `collection.contract.`. Audited
+   *  `trigger_preapproval_granted`; each write it lets through `trigger_preapproval_used`. */
+  'collection.contract.grantTriggerPreapproval': RpcMethodSpec<
+    TriggerPreapprovalGrantRequest,
+    { preapproval: TriggerPreapprovalView }
+  >;
+  /** D-341 slice B1 — every trigger pre-approval, newest first, each with its state (`live`,
+   *  `ended`, `used_up`, `revoked`, `outdated` when the recipe changed or is gone) and its words. */
+  'collection.contract.listTriggerPreapprovals': RpcMethodSpec<
+    void,
+    { preapprovals: TriggerPreapprovalView[] }
+  >;
+  /** D-341 slice B1 — end a trigger pre-approval now; its trigger's next write asks again. Audited
+   *  `trigger_preapproval_revoked`; `not_found` for an unknown id. */
+  'collection.contract.revokeTriggerPreapproval': RpcMethodSpec<
+    { id: string },
+    { preapproval: TriggerPreapprovalView }
+  >;
+  /** D-341 slice B2b — what a trigger's page offers to grant: each recipe the trigger starts (a
+   *  schedule's or an event trigger's one, every one a webhook runs), the writes its steps make in
+   *  the owner's words and whether a pre-approval may name each (never a destructive one, or one
+   *  that always asks), the steps that ask an AI (none of its writes can be pre-approved yet), and
+   *  this trigger's pre-approvals for it. Owner surface only, like the rest of `collection.contract.`. */
+  'collection.contract.triggerPreapprovalChoices': RpcMethodSpec<
+    { trigger: TriggerPreapprovalTrigger },
+    { recipes: TriggerPreapprovalChoice[] }
   >;
 
   // D-187 slice 5 — the per-contract policy-overlay rpc trio
@@ -7472,8 +7586,12 @@ export type ServerRpcRegistry = {
   // a claim as the owner's memory forms write it, or `null` for
   // none, checked like a new save; and its `summary`, never empty,
   // since the 2026-10-31 audit). Anything else is refused.
+  // `always_allow: true` (D-341) approves a held write with the
+  // standing pre-approval its ask offers (`hold.always_allow`, "Always
+  // allow for this scheduled prompt"): its trigger's later runs make
+  // that write without asking. Refused where the ask offers none.
   'chat.plan.approve': RpcMethodSpec<
-    { plan_id: string; edited_args?: Record<string, unknown> },
+    { plan_id: string; edited_args?: Record<string, unknown>; always_allow?: boolean },
     { plan: ChatPlanProposal }
   >;
   'chat.plan.cancel': RpcMethodSpec<
@@ -7518,7 +7636,33 @@ export type ServerRpcRegistry = {
    *  what keeps an agent from reading (or editing) the owner's precedent. */
   'chat.execution.learned': RpcMethodSpec<
     void,
-    { cases: import('../execution-case.js').ExecutionCaseLearnedEntry[] }
+    {
+      cases: import('../execution-case.js').ExecutionCaseLearnedEntry[];
+      /** D-335 slice W4 — the browser flows the owner kept from the "Worth remembering?" ask,
+       *  newest first. Absent from a server before W. */
+      browser_flows?: import('../execution-case.js').ExecutionBrowserFlowEntry[];
+    }
+  >;
+  /** D-335 slice W4 — forget one kept browser flow, permanently. `removed: false` means no such
+   *  flow, not an error. Owner-only / local-UI; off MCP through the `chat.execution.` prefix. */
+  'chat.execution.browser_flow.forget': RpcMethodSpec<
+    { flow_id: string },
+    { removed: boolean }
+  >;
+  /** D-335 slice W4 — a kept browser flow as a recipe, built without a model: the page found among
+   *  the open tabs or opened, then one Act on a web page sequence by the steps' selectors, each
+   *  typed text a setting. ⛔ DRAFTS, NEVER SAVES: Kitchen opens it for the owner to save, as a
+   *  case's draft. `issues` says what to look at first (a step with no selector, a secret to type).
+   *  Owner-only / local-UI; off MCP through the `chat.execution.` prefix. */
+  'chat.execution.browser_flow.recipe': RpcMethodSpec<
+    { flow_id: string },
+    {
+      ok: boolean;
+      recipe?: import('../recipe.js').RecipeDefinition;
+      issues: string[];
+      /** `unknown_flow` | `invalid_recipe`, absent when `ok`. */
+      reason?: string;
+    }
   >;
   /** D-219 item 2 — unlearn one case, permanently.
    *
@@ -9012,6 +9156,9 @@ export const SERVER_RPC_METHODS = [
   // reserved prefix — local owner only, never MCP).
   'collection.operation.upsertOwnerToolVersion',
   'collection.operation.deleteOwnerToolVersion',
+  // D-321 where the owner set a cli pack's program (same reserved prefix).
+  'collection.operation.upsertOwnerToolPath',
+  'collection.operation.deleteOwnerToolPath',
   // D-166 contract_id lifecycle — mint / revoke / list contract_definition rows
   // (Settings → Privacy → Contracts; same reserved prefix). D-187 §6 step 7 —
   // setDoorTypes edits the level-1 door types in place (same reserved prefix).
@@ -9050,6 +9197,17 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.listBrowserPassSuggestions',
   'collection.contract.acceptBrowserPassSuggestion',
   'collection.contract.dismissBrowserPassSuggestion',
+  // D-335 slice Z — the logins remembered for browser steps (same reserved prefix: owner-only).
+  'collection.contract.listBrowserLogins',
+  'collection.contract.forgetBrowserLogin',
+  // D-341 slice A — the switch beside Send, a request approved ahead (same reserved prefix: owner-only).
+  'collection.contract.getRequestPass',
+  'collection.contract.setRequestPass',
+  // D-341 slice B1 — triggers' standing pre-approvals (same reserved prefix: owner-only).
+  'collection.contract.grantTriggerPreapproval',
+  'collection.contract.listTriggerPreapprovals',
+  'collection.contract.revokeTriggerPreapproval',
+  'collection.contract.triggerPreapprovalChoices',
   // D-177 N.11 rule 5 (5.c, slice C) — scoped-grant proposal surface (same
   // reserved prefix — owner-only, never MCP).
   'collection.contract.listScopedGrantSuggestions',
@@ -9184,6 +9342,8 @@ export const SERVER_RPC_METHODS = [
   // notification block (`submitAnswer`, first-answer-wins dedup). Local-UI
   // only (omitted from MCP_TOOL_CATALOG, same posture as the reads above).
   'notification.submitAnswer',
+  // D-335 slice Z — the secret a browser step waits for, given from its ask's card. Local-UI only.
+  'notification.giveSecret',
   // D-145 PA10 follow-on — Settings → Packs install rpc.
   // Per-pair only; namespace excluded from MCP catalog by ratchet
   // (`packs.` in MCP_RESERVED_RPC_PREFIXES) so MCP-channel agents
@@ -9493,6 +9653,9 @@ export const SERVER_RPC_METHODS = [
   'chat.execution.forget',
   'chat.execution.draft_recipe',
   'chat.execution.authored',
+  // D-335 slice W4 — a kept browser flow's forget, and its recipe.
+  'chat.execution.browser_flow.forget',
+  'chat.execution.browser_flow.recipe',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   // D-167 chat provider-threading — override lifecycle + global default.

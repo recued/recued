@@ -12,7 +12,8 @@ import { situationRefHref } from './situation-ref-href.js';
 import type { BootstrapDataRouteOptions } from './bootstrap-data-route.js';
 
 type TodayKind = 'task' | 'commitment' | 'calendar' | 'situation';
-type TodayGroup = 'overdue' | 'today' | 'next' | 'coming_up';
+/** `holds` (D-340 §4): states, shown at the top of Today while they hold. */
+type TodayGroup = 'holds' | 'overdue' | 'today' | 'next' | 'coming_up';
 interface Freshness { label: string; detail: string; warning: boolean }
 export interface TodaySource {
   key: string;
@@ -42,6 +43,8 @@ export interface TodayItem {
   renewalOccurrenceId?: string;
   cluster?: SituationCluster;
   dateUnknown?: boolean;
+  /** D-340 §4 — when a state stops holding; absent for one that holds until cleared. */
+  until?: number;
 }
 export interface TodayTaskEdit {
   key: string;
@@ -70,7 +73,16 @@ export interface TodayTaskActions {
   canDismissSituation?: boolean;
   /** The last dismissal, which the notice offers to undo. */
   undoDismissal?: string | null;
+  /** D-343 slice 4 — "Close the day" opens the conversation for today's evening notice. */
+  canCloseDay?: boolean;
+  closingDay?: boolean;
+  /** D-340 slice 2 (§3.7) — "Daily stream" opens the streams' settings over Today. */
+  canOpenStream?: boolean;
 }
+/** D-343 slice 4 — Today's "Close the day" action. */
+export const TODAY_CLOSE_DAY_ACTION = 'today-close-day';
+/** D-340 slice 2 — Today's "Daily stream" action. */
+export const TODAY_STREAM_ACTION = 'today-stream';
 export interface TodaySnapshot {
   now: number;
   tomorrow: number;
@@ -248,7 +260,19 @@ export const loadToday = async (
       if (occurrence.renewal) item.renewalOccurrenceId = occurrence.id;
       if (!existing) projected.push(item);
     }
-    for (const cluster of proactive?.situations.clusters ?? []) {
+    // D-340 §4 — a state goes to the top of Today on its own line, whatever cluster it came
+    // in; the rest of its cluster is shown as before.
+    const STATE_OPEN_END = 8.64e15;
+    for (const cluster of proactive?.situations.clusters ?? []) for (const state of cluster.items.filter(item => item.kind === 'asset_state')) {
+      const until = state.when.value?.to;
+      projected.push({ key: `state:${state.ref.collection}:${state.ref.id}:${state.ref.field ?? ''}`, title: state.what.value ?? 'On file', ref: state.ref,
+        when: state.when.value?.from ?? now, group: 'holds', kind: 'situation', sourceKey: 'situations', href: situationRefHref(state.ref),
+        ...(until !== undefined && until < STATE_OPEN_END ? { until } : {}) });
+    }
+    for (const whole of proactive?.situations.clusters ?? []) {
+      const rest = whole.items.filter(item => item.kind !== 'asset_state');
+      if (!rest.length) continue;
+      const cluster = rest.length === whole.items.length ? whole : { ...whole, items: rest };
       const calendar = cluster.items.find(item => item.ref.collection === 'calendar');
       const existing = calendar ? projected.find(item => item.key === `calendar:${calendar.ref.id}`)
         : projected.find(item => cluster.items.some(value => `${value.ref.collection}:${value.ref.id}` === item.key));
@@ -431,7 +455,11 @@ const capitalized = (text: string): string => text.charAt(0).toUpperCase() + tex
 /** Why an item is here and how Recued knows it (§6.2), in the owner's words. */
 const REASON_WORDS: Record<SituationReason, string> = { due: 'due', collides: 'overlaps something else', related: 'connected to this', missing: 'something is missing', last_time: 'from last time',
   // Never on Today, which only looks forward; worded for whatever else shows an item.
-  ended: 'already happened' };
+  ended: 'already happened',
+  // D-340 §4 — a state; Today lifts these to its top band, so this words any other view.
+  holds: 'holds for now',
+  // D-342 §5 — never on Today: only the Agenda suggestions' own read lists pursuits.
+  pursuing: 'what you are working toward' };
 const BASIS_WORDS: Record<SituationBasis, string> = { declared: 'From your records', derived: 'Worked out from your records', inferred: 'Recued’s guess' };
 const reasonText = (item: SituationItem): string => {
   // Today reads each group again by its own items, so all of them are connected; the group says so.
@@ -481,6 +509,10 @@ ${TASK_DUE_STYLES}
 .today-view { max-width:960px; margin-top:18px; }
 .today-header { display:flex; justify-content:space-between; align-items:start; gap:16px; }
 .today-header h2 { margin:0 0 6px; font-size:22px; }
+.today-header-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.today-suggestions { margin:12px 0 16px; padding:12px 16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+.today-suggestions h3 { margin:0 0 6px; font-size:15px; }
+.today-view .today-suggestions-text { margin:0 0 8px; color:var(--fg); white-space:pre-wrap; }
 .today-view p { color:var(--muted); line-height:1.5; }
 .today-header p { margin:0 0 12px; }
 .today-refresh { min-height:36px; flex-shrink:0; padding:6px 12px; font:inherit; font-size:13px; color:var(--fg); background:var(--surface); border:1px solid var(--border); border-radius:8px; cursor:pointer; }
@@ -564,6 +596,20 @@ const renderTaskEditor = (actions: TodayTaskActions | undefined, actionAttr: str
   </div>`;
 };
 
+/** D-340 slice 4 (§3.3) — the day's AI suggestions at the top, as the daily stream carries them, with
+ *  "Talk it over": their conversation, where acting on one is a chat turn. Nothing before they finish. */
+const renderSuggestions = (suggestions: ProactiveToday['suggestions']): string => suggestions === undefined ? ''
+  : `<section class="today-suggestions" data-today-suggestions aria-labelledby="today-suggestions-title"><h3 id="today-suggestions-title">Suggestions</h3>
+    <p class="today-suggestions-text">${e(suggestions.text)}</p>
+    <a href="#chat/session/${e(encodeURIComponent(suggestions.session_id))}" data-today-suggestions-talk>Talk it over</a></section>`;
+
+/** D-340 §4 — what holds today, one line each above the groups, under no title (D-340
+ * ruling 10). Nothing is drawn when nothing holds. */
+const renderStates = (states: readonly TodayItem[]): string => states.length === 0 ? ''
+  : `<section class="today-states" data-today-states aria-label="What holds today"><ul class="today-list">${states.map((state) =>
+    `<li class="today-row" data-today-item="${e(state.key)}"><div><a href="${e(state.href)}">${e(state.title)}</a>${state.until === undefined ? ''
+      : ` <span class="today-meta">until <time datetime="${e(new Date(state.until).toISOString())}">${e(new Date(state.until).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</time></span>`}</div></li>`).join('')}</ul></section>`;
+
 export type TodaySphereFilter = 'all' | 'personal' | 'professional' | 'unsorted';
 export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions, sphereFilter: TodaySphereFilter = 'all'): string => {
   if (snapshot && sphereFilter !== 'all') snapshot = { ...snapshot, items: snapshot.items.filter(item => sphereFilter === 'unsorted' ? item.sphere === undefined && item.sphereReason !== undefined : item.sphere === sphereFilter) };
@@ -582,7 +628,9 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
     <header class="today-header"><div><h2>Today</h2>
       <p>Tasks, commitments, and calendar events in one place.</p>
       ${snapshot === null ? '' : `<p>Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>`}
-    </div><button type="button" class="today-refresh today-action" ${actionAttr}="refresh-today" aria-disabled="${loading}">${renderActionLabel('refresh', 'Refresh')}</button></header>
+    </div><div class="today-header-actions">${actions?.canOpenStream === true && snapshot?.proactive?.stream === true
+      ? `<button type="button" class="today-action" ${actionAttr}="${TODAY_STREAM_ACTION}" data-today-stream-open aria-haspopup="dialog">Daily stream</button>` : ''}${actions?.canCloseDay === true && snapshot?.proactive?.close_day === true
+      ? `<button type="button" class="today-action" ${actionAttr}="${TODAY_CLOSE_DAY_ACTION}" data-today-close-day aria-disabled="${actions.closingDay === true}">${actions.closingDay === true ? 'Opening…' : 'Close the day'}</button>` : ''}<button type="button" class="today-refresh today-action" ${actionAttr}="refresh-today" aria-disabled="${loading}">${renderActionLabel('refresh', 'Refresh')}</button></div></header>
     ${snapshot?.proactive?.phone_ready === false ? '<p role="status">Reminders currently reach only the app. <a href="#connections">Connect a phone channel</a>.</p>' : ''}
     ${actions?.notice ? `<p role="status" tabindex="-1" data-today-task-notice>${e(actions.notice)}${actions.undoDismissal
       ? ` <button type="button" class="today-action" ${actionAttr}="today-situation-restore" data-today-dismissal="${e(actions.undoDismissal)}">${renderActionLabel('undo', 'Undo')}</button>` : ''}</p>` : ''}
@@ -605,6 +653,8 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
         <button type="button" class="today-empty-create" ${actionAttr}="${TODAY_CREATE_ACTION}">Capture something</button>
         <p class="today-empty-sub">A task, a note, a contact, or something you promised. No setup needed — it stays on this server.</p>
       </div>` : ''}
+      ${renderSuggestions(snapshot.proactive?.suggestions)}
+      ${renderStates(snapshot.items.filter((item) => item.group === 'holds'))}
       ${groups.map((group) => {
         const items = snapshot.items.filter((item) => item.group === group.id);
         return `<section class="today-group" data-today-group="${group.id}" aria-labelledby="today-group-${group.id}">

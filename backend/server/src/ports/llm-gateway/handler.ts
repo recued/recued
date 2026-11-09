@@ -12,6 +12,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   computeContextInputTokenBudget,
   computeMaxTokens,
+  thinkingSettingOf,
   executeLLM,
   estimateConservativeMessageTokens,
   estimateConservativeMessagesTokens,
@@ -239,11 +240,22 @@ export interface LlmGatewayCompletionProvider {
   complete(input: LlmGatewayCompletionInput): Promise<LlmGatewayCompletionResult>;
 }
 
+/** D-188 — what a caller of the AI door reads while the owner's pause holds. Model- and
+ *  app-facing: it says why, that it is not the caller's to fix, and not to retry. */
+export const LLM_GATEWAY_PAUSED_MESSAGE =
+  'Recued is paused by its owner: no AI request runs until the owner resumes it. '
+  + 'This is not a key or permission problem; do not retry until then.';
+
 export interface LlmGatewayHandlerDeps {
   /** True once the server has begun stopping. A completion is then refused with
    *  503 and `retry-after`, like the MCP door: a turn admitted during a restart
    *  would call the model and tools the drain is stopping. Absent ⇒ never. */
   readonly isStopping?: () => boolean;
+  /** D-188 — the master "Pause server" flag. While it is on, a completion is refused
+   *  (503 `server_paused`): the pause is a lockdown and stops every AI turn (the owner's
+   *  ruling of 2026-11-08). Checked after authorization, so only a holder of a valid key
+   *  learns the server is paused. Absent ⇒ never paused. */
+  readonly isPaused?: () => boolean;
   /** Presented-bearer verification is the sole token authority seam. Dispatch
    * must never refresh by token id and let an invalidated bearer inherit a
    * replacement row. */
@@ -954,7 +966,8 @@ export const createLlmGatewayDirectCompletionProvider = (
     const options = {
       model: input.route.slot.model,
       max_tokens: computeMaxTokens(input.route.resolved_hint, input.route.slot),
-      thinking: false,
+      // D-344 — the owner's thinking setting for the model, and no switch when none is set.
+      ...(thinkingSettingOf(input.route.slot) !== undefined ? { thinking: thinkingSettingOf(input.route.slot) } : {}),
       search: false,
       json: false,
       timeout_ms: deps.timeout_ms ?? null,
@@ -1795,6 +1808,11 @@ const createLiveProviderAuthorityAssertion = (input: {
   const expectedSeller = sellerAuthorityKey(input.sellerAdmission);
   const expectedAllowed = JSON.stringify([...input.allowedToolNames].sort());
   return () => {
+    // D-188 — the owner's pause: checked before every model call, so a request already running
+    // stops at its next one with the answer a request gets at the door while paused.
+    if (input.deps.isPaused?.() === true) {
+      throw new LlmGatewayLiveAuthorityError(503, 'server_paused', LLM_GATEWAY_PAUSED_MESSAGE, 'server_error');
+    }
     const current = input.now();
     const live = authorize(input.req, input.deps, current);
     if (!live.ok) {
@@ -2226,6 +2244,13 @@ export const createLlmGatewayPortHandler = (
         initialAuth.message,
         initialAuth.type,
       );
+      return;
+    }
+
+    // D-188 — no turn while the owner's pause holds: the words the inbound paths answer a
+    // pause with, and no retry-after, since only the owner's Resume ends it.
+    if (isCompletionsPath && deps.isPaused?.() === true) {
+      writeOpenAiError(res, 503, 'server_paused', LLM_GATEWAY_PAUSED_MESSAGE, 'server_error');
       return;
     }
 

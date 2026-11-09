@@ -69,6 +69,7 @@ import {
   CLI_PROGRESS_ANSWER_ADAPTERS,
   CLI_BINDING_ENV_NAMES,
   CLI_BINDING_ENV_VALUE_MAX,
+  CLI_EXISTING_PATH_ACCEPTS,
   SERVICE_CHECK_KINDS,
   SERVICE_RESTART_POLICIES,
   CATALOG_CONNECTOR_INVOKE_TIMEOUT_CAP_MS,
@@ -1497,6 +1498,58 @@ const validateCliCwdSpec = (
   }
 };
 
+/** D-346 § 9 — the catalog mirror of the authoring `validateCliExistingPaths`:
+ *  each `existing_paths` entry is a single `{arg_name}` token the argv passes,
+ *  never an engine-owned path (a materialized input, the output folder), with an
+ *  optional `accepts` from `CLI_EXISTING_PATH_ACCEPTS`. */
+const validateCliExistingPathsSpec = (
+  binding: Record<string, unknown>,
+  opKey: string,
+  path: string,
+  add: AddFn,
+): void => {
+  const specs = binding.existing_paths;
+  if (specs === undefined) return;
+  if (!Array.isArray(specs) || specs.length === 0) {
+    add('error', 'CATALOG_BINDING_INVALID', path,
+      `cli_invocation binding for '${opKey}' existing_paths must be a non-empty array of { arg: "{arg_name}" } when present`);
+    return;
+  }
+  const argv = Array.isArray(binding.argv_template)
+    ? binding.argv_template.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  const materialize = isObjectRecord(binding.input_materialize) ? binding.input_materialize.arg : undefined;
+  const capture = isObjectRecord(binding.output_capture) ? binding.output_capture.dir_arg : undefined;
+  specs.forEach((spec, index) => {
+    const at = `${path}[${index}]`;
+    if (!isObjectRecord(spec) || !(objectKeysExactly(spec, ['arg']) || objectKeysExactly(spec, ['arg', 'accepts']))) {
+      add('error', 'CATALOG_BINDING_INVALID', at,
+        `cli_invocation binding for '${opKey}' existing_paths entries must be exactly { arg: "{arg_name}" }, with accepts only beside it`);
+      return;
+    }
+    if (spec.accepts !== undefined && !(CLI_EXISTING_PATH_ACCEPTS as readonly unknown[]).includes(spec.accepts)) {
+      add('error', 'CATALOG_BINDING_INVALID', `${at}.accepts`,
+        `cli_invocation binding for '${opKey}' existing_paths accepts must be one of ${CLI_EXISTING_PATH_ACCEPTS.join('|')}`);
+      return;
+    }
+    const ref = cliCwdArgRef(spec.arg);
+    if (ref === undefined) {
+      add('error', 'CATALOG_BINDING_INVALID', `${at}.arg`,
+        `cli_invocation binding for '${opKey}' existing_paths arg must be a single {arg_name} template token`);
+      return;
+    }
+    if (ref === materialize || ref === capture) {
+      add('error', 'CATALOG_BINDING_INVALID', `${at}.arg`,
+        `cli_invocation binding for '${opKey}' existing_paths arg '${ref}' is a path the engine makes; name only a path the caller gives`);
+      return;
+    }
+    if (!argv.some((entry) => entry.includes(`{${ref}}`))) {
+      add('error', 'CATALOG_BINDING_INVALID', `${at}.arg`,
+        `cli_invocation binding for '${opKey}' existing_paths arg '${ref}' must be passed in argv_template — the value checked is the value the program gets`);
+    }
+  });
+};
+
 /** Runtime contract for detached CLI marker patterns (mirrors the authoring
  *  validator + the server executor): every pattern is confined under the
  *  `result_dir` arg, so it must be rooted there, and every template arg the
@@ -2614,6 +2667,7 @@ const validateConnectorSurface = (
           }
         }
         validateCliCwdSpec(rawBinding, operations[opKey], opKey, `${bPath}.cwd`, add);
+        validateCliExistingPathsSpec(rawBinding, opKey, `${bPath}.existing_paths`, add);
         // Pinned environment variables — the installed-catalog mirror of the
         // authoring `validateCliEnv`, through the same shared invariant: a
         // closed list of names that only narrow their tool, literal bounded

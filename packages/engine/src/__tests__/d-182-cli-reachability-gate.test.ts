@@ -351,6 +351,8 @@ describe('a refused cli op says in words what happened, and reads as a refusal',
     const err = await refusal(ctx);
     expect(err.message).toBe(OWNER_SWITCH);
     expect(err.code).toBe('NOT_AUTHORIZED');
+    // D-346 follow-up — and carries the switch, for the run dialog's "Turn it on".
+    expect((err as { program_switch?: unknown }).program_switch).toEqual({ ingredient_id: SLUG, operation_id: 'x' });
   });
 
   it('tells an owner schedule the same: it reads the owner’s switch', async () => {
@@ -361,18 +363,18 @@ describe('a refused cli op says in words what happened, and reads as a refusal',
     expect((await refusal(ctx)).message).toBe(OWNER_SWITCH);
   });
 
-  it('names the contract’s switch for a run under a contract, even the owner’s own', async () => {
+  // D-346 follow-up (2026-11-08) — any contract but the owner's reads only that it is not
+  // available, even when the owner is the one using it (the owner's ruling).
+  it('a run under a contract, the owner’s own app included, reads only that it is not available', async () => {
     const { ctx, reachCalls } = makeCtx({
       reachability: () => false, actor: 'user_self', contract_id: 'contract_self',
     });
     const err = await refusal(ctx);
     expect(reachCalls[0]?.principal).toBe('contract_self');
-    expect(err.message).toBe(
-      "'pub/cat.x' is switched off for the contract this run is under, so it did not run. "
-      + 'The owner can turn it on for that contract on its pack’s Access tab, in Packs. '
-      + '(cli_reachability_disabled)',
-    );
+    expect(err.message).toBe("'pub/cat.x' is not available for this contract. (cli_reachability_disabled)");
     expect(err.code).toBe('NOT_AUTHORIZED');
+    // No switch for a contract's run: the owner turns on nothing from there.
+    expect('program_switch' in err).toBe(false);
   });
 
   it('points a run that can never reach a program at who can, not at a switch', async () => {
@@ -391,6 +393,7 @@ describe('a refused cli op says in words what happened, and reads as a refusal',
     );
     expect(reachCalls[0]?.principal).toBeNull();
     expect(err.code).toBe('NOT_AUTHORIZED');
+    expect('program_switch' in err).toBe(false);
   });
 
   it('says so when the pack has no such action', async () => {
@@ -420,6 +423,8 @@ describe('a refused cli op says in words what happened, and reads as a refusal',
     expect(run.success).toBe(false);
     expect(run.errors).toHaveLength(1);
     expect(run.errors[0]).toMatchObject({ code: 'NOT_AUTHORIZED', message: OWNER_SWITCH });
+    // The step runner keeps the switch in the step error's details (`run-needs.ts` reads it).
+    expect(run.errors[0]).toMatchObject({ details: { program_switch: { ingredient_id: SLUG, operation_id: 'x' } } });
   });
 
   it('a connection op names its connection', async () => {

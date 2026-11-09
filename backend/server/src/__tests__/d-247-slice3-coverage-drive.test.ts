@@ -115,7 +115,8 @@ describe('D-247 — a granted recipe runs its revoked op; an ungranted one does 
     expect(result.success).toBe(false);
     // Assert the REASON, not the verdict: a failure for any other cause would
     // satisfy `success === false` while proving nothing about the access axis.
-    expect(JSON.stringify(result.errors)).toContain('not granted');
+    // D-346 follow-up (2026-11-08) — the owner's own run reads that it is off for them.
+    expect(JSON.stringify(result.errors)).toContain("'core.data.form-response.get' is turned off for you, so it did not run.");
     expect(h.formResponseGet).not.toHaveBeenCalled();
   });
 
@@ -262,7 +263,7 @@ describe('D-247 — INHERITED coverage is not re-derived from the carrier body',
       config: { ingredient_slug: SLUG },
     }, {} as never);
     expect(result.success).toBe(false);
-    expect(JSON.stringify(result.errors)).toContain('not granted');
+    expect(JSON.stringify(result.errors)).toContain("'core.data.form-response.get' is turned off for you, so it did not run.");
   });
 
   it('still refuses when NOTHING granted the run — inheritance is not a bypass', async () => {
@@ -271,6 +272,6 @@ describe('D-247 — INHERITED coverage is not re-derived from the carrier body',
       recipe_id: RECIPE_ID, trigger_source: 'chat', execution_source: OWNER,
     }, {} as never);
     expect(result.success).toBe(false);
-    expect(JSON.stringify(result.errors)).toContain('not granted');
+    expect(JSON.stringify(result.errors)).toContain("'core.data.form-response.get' is turned off for you, so it did not run.");
   });
 });

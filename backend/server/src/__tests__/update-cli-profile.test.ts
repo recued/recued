@@ -139,7 +139,7 @@ describe('runUpdateProfile (recued update)', () => {
     const binDir = join(dir, 'bin');
     mkdirSync(binDir, { recursive: true });
     const dbPath = join(dir, 'must-not-open.db');
-    const lease = acquireUpdateLease({
+    const lease = acquireUpdateLease({ identify: () => null,
       leasePath: updateLeasePathFor(join(binDir, 'recued')),
       operation: 'rollback',
       // A live pid other than this test process makes the production claim

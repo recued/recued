@@ -7,7 +7,10 @@
 
 import { describe, expect, it } from 'vitest';
 
+import type { RunNeed } from '@recued/contracts';
+
 import {
+  automationFixFor,
   automationRuleLink,
   decideAutomationFailure,
   describeAutomationFailureNotice,
@@ -120,6 +123,44 @@ describe('D-268 a non-failure changes nothing', () => {
     });
     expect(report.disarm).toBe(true);
     expect(report.consecutive_failures).toBe(5);
+  });
+});
+
+// D-346 follow-up (2026-11-08) — the owner's ruling: the notice carries the fix, not only the
+// automation's rules. A failing one links to the pack's page, where it is fixed; a stopped one
+// keeps the rules link, where it is re-armed, and says the fix.
+describe('the notice says how to fix what the run needed', () => {
+  const reconnect: RunNeed = {
+    kind: 'connection', step_id: 'deal', problem: 'reconnect', slot: 'hubspot', pack_slug: 'hubspot', label: 'HubSpot',
+  };
+  const off: RunNeed = {
+    kind: 'switch', step_id: 'find', ingredient_id: 'rg-catalog', operation_id: 'search', pack_slug: 'ripgrep', label: 'Ripgrep',
+  };
+
+  it('names each kind of fix and links to its pack', () => {
+    expect(automationFixFor([reconnect])).toEqual({
+      text: 'HubSpot did not accept its sign-in: reconnect it from its pack’s page.', link_url: '#packs/hubspot',
+    });
+    expect(automationFixFor([off])?.text).toBe(
+      'Ripgrep runs a program on your server that is switched off for you: turn it on under Self (you) on its Access tab.',
+    );
+    expect(automationFixFor([{ kind: 'program', step_id: 'find', problem: 'not_found', tool: 'rg', pack_slug: 'ripgrep' }])?.text)
+      .toBe('rg is not installed on your server: its pack’s page says what to do.');
+    expect(automationFixFor([{ ...reconnect, pack_slug: undefined }])).toBeUndefined();
+    expect(automationFixFor(undefined)).toBeUndefined();
+  });
+
+  it('a failing automation links to the fix; a stopped one keeps its rules link and says the fix', () => {
+    const report = decideAutomationFailure({
+      unit, code: 'OAUTH_EXPIRED', reason: 'HubSpot returned 401.', prior_consecutive_failures: 0, threshold: THRESHOLD, needs: [reconnect],
+    });
+    expect(report.notice?.text).toContain('reconnect it from its pack’s page');
+    expect(report.notice?.link_url).toBe(report.disarm ? automationRuleLink(unit) : '#packs/hubspot');
+    const stopped = describeAutomationFailureNotice({
+      unit, reason: 'Boom.', consecutive_failures: 5, stopped: true, threshold: 5, fix: automationFixFor([off]),
+    });
+    expect(stopped.text).toContain('turn it on under Self (you) on its Access tab');
+    expect(stopped.link_url).toBe(automationRuleLink(unit));
   });
 });
 

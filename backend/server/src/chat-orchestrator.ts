@@ -1,10 +1,11 @@
 import { answerOutputAttachments } from './chat-output-files.js';
 import { approvalChannelOf, approvalElsewhereMessage } from './run-result-agent-projection.js';
 import {
-  askAfterWaiting, conversationCarriesOn, noteWaitingInTurn, notAskedYetMessage,
+  askAfterWaiting, conversationCarriesOn, noteAnsweredInTurn, noteWaitingInTurn, notAskedYetMessage,
+  OWNER_CHAT_HELD_WAIT_MS,
 } from './chat-carries-on.js';
 import { withResourceReview } from './resource-review.js';
-import { captureResourceReview, mergeValueLabels, type ApprovalValueLabels } from '@recued/contracts';
+import { assetDateAt, captureResourceReview, contractUnavailableSentence, mergeValueLabels, type ApprovalValueLabels } from '@recued/contracts';
 import { heldPeopleValueLabels } from './held-people-labels.js';
 /** D-137 / D-164 P6.3 — Server-side chat orchestrator: single AI main
  *  turn + tool dispatch loop.
@@ -83,9 +84,9 @@ import { heldPeopleValueLabels } from './held-people-labels.js';
  */
 
 import { dateFormatIssue } from './date-argument-format.js';
-import type { ChatAnswerSource, InstallOffer } from '@recued/contracts';
+import type { ChatAnswerSource, ChatFix, InstallOffer } from '@recued/contracts';
 import { answerSourceCitations } from './chat-source-citations.js';
-import { installOffersFromToolResults } from './install-offers/turn-offers.js';
+import { chatFixesFromToolResults, installOffersFromToolResults } from './install-offers/turn-offers.js';
 import { bindMailWorkChatTools } from './mail-work-chat-plan.js';
 import { resolveRecallCorpusScopeForSource } from './chat-recall-scope.js';
 import { renderToolRow, toolNameFromRow } from './chat-tool-row.js';
@@ -204,6 +205,7 @@ import {
   type ChatPriorToolPointers,
 } from './chat-turn-executor.js';
 import { CHAT_TURN_TIME_ZONE_STATE_KEY, withTurnZone } from './chat-clock.js';
+import { closingDayLine, isEveningNotice, type ClosingItem, type ClosingQuote } from './chat-closing-day.js';
 import { createChatPiiSlotOrderingSeeder } from './chat-pii-slot-ordering.js';
 import { markChatToolCallSaved, rememberChatToolCallFailure, withChatToolCallContext } from './chat-tool-call-context.js';
 import { withToolProgress } from './execution/tool-progress.js';
@@ -228,6 +230,7 @@ import {
   CHAT_TURN_AFTER_INPUTS_STATE_KEY,
   CORRECTION_LEARNING_MIDDLEWARE_ID,
   type ChatCatalogBuilder,
+  type ChatCatalogEntries,
   type ChatCatalogInputs,
   type ChatScopeSearchInput,
   type ChatTurnAfterInputs,
@@ -235,6 +238,8 @@ import {
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 import { fitCatalogModeToBudget } from './chat-context-budget.js';
 import { SITUATION_PREFETCH_MIDDLEWARE_ID } from './situations/prefetch.js';
+import { NAMED_PAGES_NOTE, namedPageAddresses } from './chat-named-pages.js';
+import { chatModelChoiceOf, withChatModelChoice } from './chat-model-choice.js';
 import { registerSituationPrefetchSourceCapture } from './situations/prefetch-source-citations.js';
 import { PROMPT_CACHE_MIDDLEWARE_ID } from '@recued/middleware-prompt-cache';
 // D-167 P5 S4 — the always-on PII bookend hooks + the wire-seam enactment.
@@ -279,6 +284,7 @@ import type {
 } from './execution-case-critic.js';
 import { parseBrief } from './chat-rolling-brief.js';
 import { noticeQuoteText } from './chat-notices.js';
+import { parseStoredCarry } from './chat-turn-carry.js';
 import { gateAnswerOf, recordAnswerInBrief } from './chat-no-model-answers.js';
 import { heldPlanEditableArgs } from './chat-plan-edits.js';
 import type { CurrentAssetAttachment } from './chat-asset-fresh-read.js';
@@ -996,6 +1002,12 @@ export interface ChatOrchestratorDeps {
    *  did not answer. The turn opens holding them, and they are told once its model answers
    *  (`createCarriedHeldResults`). Absent ⇒ none are carried. */
   carriedHeldResults?: (session_id: string) => Promise<import('./chat-held-results.js').CarriedHeldResults | undefined>;
+  /** D-335 slice X — whether a Browser Bridge is connected now, which lists the Browser Toolkit's
+   *  main tools in full (`BROWSER_TOOLKIT_LISTED`). Absent ⇒ none is listed. */
+  browserBridgeConnected?: () => boolean;
+  /** D-335 slice AK — of the addresses a request names, those its turn reads before the first round
+   *  without asking the owner (`readableNamedPages`). Absent ⇒ none is read. */
+  namedPagesReadable?: (session_id: string, addresses: readonly string[]) => Promise<readonly string[]>;
   /** D-213 pointer arm. Bound at the composition root (it needs the chat store
    *  AND the contract definition store); absent everywhere it is not wired, so
    *  the control arm is the natural default. */
@@ -1234,6 +1246,25 @@ export interface ChatOrchestratorDeps {
     tool: string,
     args: unknown,
   ) => { readonly rule_id: string; readonly uses_remaining: number } | undefined;
+  /** D-341 slice B3 — spend one use of the scheduled prompt's own standing pre-approval that
+   *  stands in for this Tier-1 write's ask: one its owner granted for this prompt's text, naming the
+   *  write (as a write rule names it), within its cap per run. Asked after the write rules, under
+   *  the same conditions. Absent, or none ⇒ the write is held as above. */
+  useTriggerPreapproval?: (
+    source: ExecutionSource,
+    tool: string,
+    args: unknown,
+  ) => { readonly preapproval_id: string; readonly uses: number } | undefined;
+  /** D-341 — the trigger's standing pre-approval a held Tier-1 write's ask offers: its label
+   *  ("Always allow for this scheduled prompt") and what it lets happen, in the ask's words. Kept
+   *  on its proposal (`hold.always_allow`, `hold.always_allow_note`) so its card offers it too.
+   *  Asked as the hold asks (`scheduledPromptHoldOffer`). Absent, or none ⇒ the card says yes once
+   *  only. */
+  holdAlwaysAllow?: (
+    source: ExecutionSource,
+    tool: string,
+    args: unknown,
+  ) => { readonly label: string; readonly note: string } | undefined;
   getResourceReview?: () => import('@recued/contracts').ResourceReviewHooks | undefined;
   validateLocalMutation?: (source: ExecutionSource, tool: string) => void;
   /** D-160 Stage 3 — the live first-party middleware registry (built in
@@ -1485,7 +1516,9 @@ export interface LlmGatewayPostEffectOutcome {
   readonly error_code:
     | 'context_length_exceeded'
     | 'llm_gateway_provider_failed'
-    | 'llm_gateway_authority_changed';
+    | 'llm_gateway_authority_changed'
+    /** D-188 — the owner paused the server after the request's tools ran. */
+    | 'server_paused';
   readonly message: string;
   readonly retryable: false;
   readonly dispatched_tool_calls: number;
@@ -1583,6 +1616,41 @@ export const CARRIED_TOOLS_LIMIT = 12;
 /** How far back a continuation reads its conversation for the request it carries on: that request
  *  is the one just before it. */
 const CARRY_SCAN_MESSAGES = 80;
+/** D-335 slice X — the Browser Toolkit recipes a turn lists in full while a Browser Bridge is
+ *  connected, so a request about a web page or a tab needs no `tools.search` round first (slice E
+ *  measured it at 13 to 35 s a request): the one call that reads and acts across tabs, opening a
+ *  page, reading one, its text, a question about it, and the tabs. About 8,000 characters a turn,
+ *  and only from the turn's own grant-decided catalog, so an uninstalled toolkit lists nothing. */
+export const BROWSER_TOOLKIT_LISTED = ['act-on-web-page', 'open-web-page', 'inspect-web-page', 'read-web-text',
+  'ask-web-page', 'list-browser-tabs'] as const;
+/** Whose toolkit recipes are listed: the pack's, and the owner's own copies saved in Kitchen. */
+const BROWSER_TOOLKIT_PUBLISHERS = ['recued-core', 'kitchen'] as const;
+/** D-335 slice X — what a turn that lists the toolkit is told. Slice AO (2026-11-07): and to end a batch with the
+ *  read or ask of the page its steps lead to: one of C's two runs after AM typed its search in one call and asked the
+ *  page it led to in another, a round more. Slice AI (2026-11-06): Act on web pages
+ *  takes the address too, and a page the user gives the address of is called for straight away, open or
+ *  not; after AG, 3 of 19 runs with no tab open listed the tabs first. ⚠ Model-facing string — see
+ *  `chat-prompt-optimization-log.md`. */
+export const BROWSER_TOOLKIT_LISTED_NOTE =
+  'A Browser Bridge is connected, so the Browser Toolkit\'s main tools are listed in "available_tools" with their '
+  + 'arguments: for a web page or a tab in the user\'s browser, call them directly, without searching for them. Act '
+  + 'on web pages, Inspect, Read the text of and Ask a web page take a page\'s address in place of its handle, using '
+  + 'the tab showing it or opening the page when none does: for a page the user gives the address of, in their browser '
+  + 'or not, call the one for the task with that address first, not List browser tabs or Open a web page. One Act on '
+  + 'web pages call can read and act on several tabs, each step naming its tab by its address. End it with a read or '
+  + 'an ask of the page its steps lead to, such as a search and then its results, so the answer comes in that same call.';
+
+/** D-345 slice D — the HTTP Toolkit recipes a turn lists in full when the request names a web address:
+ *  the server reads a public address faster than a tab, and needs no Bridge. Only from the turn's own
+ *  grant-decided catalog, so an uninstalled toolkit lists nothing. */
+export const HTTP_TOOLKIT_LISTED = ['read-web-address', 'get-web-address', 'download-web-file'] as const;
+/** D-345 slice D — what a turn that lists the HTTP Toolkit is told. ⚠ Model-facing string — see
+ *  `chat-prompt-optimization-log.md`. */
+export const HTTP_TOOLKIT_LISTED_NOTE =
+  'This request names a web address, so the HTTP Toolkit is listed in "available_tools" with its arguments: Read a web '
+  + 'address, Get a web address and Download a file from a web address fetch a public address from the server, faster '
+  + 'than a tab and with no browser. They send nothing of the user\'s: for a page that needs the user signed in, or to '
+  + 'act on a page, use the Browser Toolkit.';
 
 /** D-337 slice W — the tools a request of this conversation called, and the recipes its
  *  `tools.search` calls returned, by name: the request `turn_id` names first, in the order it met
@@ -1629,6 +1697,7 @@ export const carryRecipeTools = (
   entries: ReadonlyArray<ToolEntry>,
   names: readonly string[],
   allow: (entry: ToolEntry) => boolean = () => true,
+  limit: number = CARRIED_TOOLS_LIMIT,
 ): { tools: ReadonlyArray<ChatMainTurnTool>; carried: number } => {
   const byName = new Map(entries.filter((entry) => entry.tier === 2 && allow(entry)).map((entry) => [entry.name, entry]));
   const listed = new Map(tools.map((tool) => [tool.recipe_slug, tool]));
@@ -1637,7 +1706,7 @@ export const carryRecipeTools = (
     if (entry === undefined || listed.get(name)?.args_schema !== undefined) return [];
     return [{ recipe_slug: entry.name, args_schema: entry.arg_schema,
       ...(entry.description ? { description: entry.description } : {}) } as ChatMainTurnTool];
-  }).slice(0, CARRIED_TOOLS_LIMIT);
+  }).slice(0, limit);
   if (full.length === 0) return { tools, carried: 0 };
   const replacing = new Set(full.map((tool) => tool.recipe_slug));
   return { tools: [...tools.filter((tool) => !replacing.has(tool.recipe_slug)), ...full], carried: full.length };
@@ -2561,6 +2630,31 @@ export const createChatOrchestrator = (
   const now = deps.now ?? Date.now;
   const mintId = deps.mintId ?? randomUUID;
   const selfDisplayName = deps.selfDisplayName ?? 'Self';
+  /** D-343 slice 3 — the items of the days a quoted Agenda is about, with their refs, read as the
+   *  turn's own situation.query reads them. A private one is named as the Agenda names it. */
+  const closingItemsFor = (source: ExecutionSource, zone: string) => async (quote: ClosingQuote): Promise<ClosingItem[] | undefined> => {
+    const access = deps.getSituationAccess?.();
+    if (access === undefined) return undefined;
+    const result = await access.read({ time: quote.from === quote.to ? quote.from : { first_day: quote.from, last_day: quote.to } }, source, undefined, zone);
+    const seen = new Set<string>(); const items: ClosingItem[] = [];
+    // D-340 slice 5 — a notice from a stream that includes private items named them: so does its note.
+    const names = access.namesPrivateIn(quote.title);
+    for (const item of result.clusters.flatMap((cluster) => cluster.items)) {
+      const key = JSON.stringify([item.ref.collection, item.ref.id, item.ref.field ?? null]);
+      if (item.kind === 'asset_state' || seen.has(key)) continue;
+      seen.add(key);
+      items.push({ title: !names && access.isPrivate(item) ? 'Reminder in Yours' : item.what.value ?? item.kind, ref: item.ref });
+    }
+    // D-343 slice 4 — the evening notice also asks about the pursuits the owner marked for it, named
+    // as it names them, so a record can cite one and one left out is asked about.
+    if (isEveningNotice(quote)) for (const pursuit of access.eveningPursuits?.(source) ?? []) {
+      const key = JSON.stringify([pursuit.ref.collection, pursuit.ref.id, null]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ title: pursuit.private && !names ? 'Pursuit in Yours' : pursuit.title, ref: pursuit.ref });
+    }
+    return items;
+  };
 
   // D-160 — the framework substrate the chat turn runs THROUGH.
   // The channel carries the generic streaming delta (the `TurnExecutor`
@@ -2705,13 +2799,13 @@ export const createChatOrchestrator = (
     const rawOps = deps.rawOpSource ? deps.rawOpSource(source) : [];
     return [...catalogEntries, ...(rawOps as typeof catalogEntries)];
   };
-  const buildCatalog: ChatCatalogBuilder = (_picker_target, projection, source) => {
+  const buildCatalog: ChatCatalogBuilder = (_picker_target, projection, source, entries) => {
     // ⚠ The empty set is still THREADED rather than removed from
     // `buildChatMainTurnTools`: its parameter is a general "names to withhold"
     // seam, and emptying the only current producer is not a reason to delete a
     // seam the next one would have to re-add.
     const disabledTier3Names = new Set<string>();
-    return buildChatMainTurnTools(catalogEntriesFor(source), disabledTier3Names, projection);
+    return buildChatMainTurnTools(entries?.(source) ?? catalogEntriesFor(source), disabledTier3Names, projection);
   };
 
   // The stream registry is now ALWAYS populated: the `catalog` hook (A.8
@@ -2997,7 +3091,8 @@ export const createChatOrchestrator = (
     // original plan card from execution truth rather than `chat.send` ack.
     let consumedPlanId: string | undefined;
     let consumedResourceReview: import("@recued/contracts").ResourceReview | undefined;
-    // Set when a standing write rule the owner accepted stands in for the ask.
+    // Set when a standing write rule the owner accepted stands in for the ask, or (D-341 B3) the
+    // scheduled prompt's own pre-approval does.
     let ruledWrite = false;
     // D-329 — the channels a hold raised in this dispatch went to (`holdProposal`).
     let heldApprovalChannels: readonly string[] | undefined;
@@ -3195,6 +3290,13 @@ export const createChatOrchestrator = (
         && holdsTier1 && retry_of_plan_id === undefined
         ? deps.useWriteRule?.(holdSource!, tool_name, arg_values)
         : undefined;
+      // D-341 slice B3 — a scheduled prompt's own pre-approval, when no write rule stood in: under
+      // the same conditions, so it is never spent beside an ask still out for this very call. It
+      // audits its own use (`trigger_preapproval_used`).
+      const preapprovedBy = ruledBy === undefined && approved === undefined && !sameTurnPending
+        && pendingHeld === undefined && holdsTier1 && retry_of_plan_id === undefined
+        ? deps.useTriggerPreapproval?.(holdSource!, tool_name, arg_values)
+        : undefined;
       if (approved) {
         // Spend the approval AT the dispatch decision — before the
         // dispatch runs, so a failed dispatch consumes it too and
@@ -3255,6 +3357,9 @@ export const createChatOrchestrator = (
           JSON.stringify({ rule_id: ruledBy.rule_id, uses_remaining: ruledBy.uses_remaining, tier }),
         );
         // Fall through to normal dispatch below, with no card: the rule is the yes.
+      } else if (preapprovedBy !== undefined) {
+        // The owner's pre-approval for this scheduled prompt is the yes, as a rule is.
+        ruledWrite = true;
       } else {
         // D-337 slice K — not asked while a call of this turn waits for the owner's answer: the
         // conversation carries on with that call's outcome, and the model makes this call then,
@@ -3357,9 +3462,19 @@ export const createChatOrchestrator = (
           if (holdsTier1) {
             // D-336 slice E — and with what the owner may change on its card while approving.
             const editable = heldPlanEditableArgs(tool_name);
+            // D-341 — and the trigger's pre-approval its ask offers, which the card offers too.
+            let alwaysAllow: { readonly label: string; readonly note: string } | undefined;
+            try {
+              alwaysAllow = deps.holdAlwaysAllow?.(holdSource!, tool_name, arg_values);
+            } catch {
+              alwaysAllow = undefined; // the ask still offers it; the card says yes once
+            }
             proposal = {
               ...proposal,
-              hold: { run_id: mintId() },
+              hold: {
+                run_id: mintId(),
+                ...(alwaysAllow !== undefined ? { always_allow: alwaysAllow.label, always_allow_note: alwaysAllow.note } : {}),
+              },
               ...(editable !== undefined ? { editable_args: editable } : {}),
             };
           }
@@ -3404,6 +3519,8 @@ export const createChatOrchestrator = (
             ? { editable_args: proposal.editable_args }
             : {}),
           ...(proposal.memory_conflicts !== undefined ? { memory_conflicts: proposal.memory_conflicts } : {}),
+          ...(proposal.hold?.always_allow !== undefined ? { always_allow: proposal.hold.always_allow } : {}),
+          ...(proposal.hold?.always_allow_note !== undefined ? { always_allow_note: proposal.hold.always_allow_note } : {}),
         });
         // D-336 slice G — what the write meets, told beside "it was sent to the owner".
         const told = heldNotices?.agent !== undefined ? ` ${heldNotices.agent}` : '';
@@ -3885,6 +4002,15 @@ export const createChatOrchestrator = (
     getRetainedCandidates: () => readonly RetainedAliasCandidate[];
   } => {
     const { session_id, turn_id, picker_target, emit } = params;
+    // The turn's grant-decided entries, read once for the turn. Its setup asked for them 4 or 5 times
+    // (the catalog, its budget fit, the named pages, the toolkits it lists), and each was a full listing
+    // of every recipe, twice over: measured 2026-11-08, 780 entries at 0.2 to 1.1 s a listing, the
+    // largest share of a turn's work before its first model call. One snapshot for the turn's setup,
+    // which read them once each before; for any other source the catalog reads as before.
+    let turnEntries: ReadonlyArray<ToolEntry> | undefined;
+    const entriesOfTurn = (): ReadonlyArray<ToolEntry> => (turnEntries ??= catalogEntriesFor(params.execution_source));
+    const turnCatalogEntries: ChatCatalogEntries = (source) =>
+      (source === params.execution_source ? entriesOfTurn() : undefined);
     // Resolved ONCE per turn, before any round composes a prompt, so every
     // round of the turn is fitted against the same ceiling. Absent dep or an
     // unlearned endpoint yields `undefined` — today's behaviour exactly.
@@ -3955,7 +4081,7 @@ export const createChatOrchestrator = (
           // applies), while `buildCatalog`'s third argument is the
           // EXECUTION source, which decides Tier-2 grant filtering. Passing
           // the wrong one measures a catalog the turn would never be shown.
-          buildCatalog(picker_target, { ...requestedProjection, mode }, params.execution_source),
+          buildCatalog(picker_target, { ...requestedProjection, mode }, params.execution_source, turnCatalogEntries),
         ),
       }]),
     });
@@ -3973,6 +4099,7 @@ export const createChatOrchestrator = (
     streamState.set(CHAT_CATALOG_INPUTS_STATE_KEY, {
       picker_target,
       projection: perTurnProjection,
+      entries: turnCatalogEntries,
     } satisfies ChatCatalogInputs);
     let capturedTurnResult: RunChatTurnResult | undefined;
     // Egress history (D-167 transparency): the aliased model-bound packets sent
@@ -4046,9 +4173,27 @@ export const createChatOrchestrator = (
       // D-337 §7.10 — calls no model was told of (their continuation's model did not answer): this
       // turn carries them, first among its opening calls, and its note says why they are there.
       const carried = await deps.carriedHeldResults?.(session_id).catch(() => undefined);
+      // D-335 slice AK — the pages the owner's request names, read before its first round as
+      // browser-use opens its task's address before its first step, when the read asks nothing
+      // (`chat-named-pages.ts`): the turn reads them as calls of its own, and is told they are there.
+      const namedPages: Array<{ tool_name: string; page: string }> = [];
+      if (deps.namedPagesReadable !== undefined && deps.browserBridgeConnected?.() === true && picker_target === 'self'
+        && params.execution_source.channel === 'chat' && !params.read_only && !params.mail_work && !params.retry_of_plan_id
+        && params.continuation_of_turn_id === undefined && params.held_results === undefined) {
+        const addresses = namedPageAddresses(content.user_message);
+        if (addresses.length > 0) {
+          const names = new Set(entriesOfTurn().filter((entry) => entry.tier === 2).map((entry) => entry.name));
+          const tool_name = BROWSER_TOOLKIT_PUBLISHERS.map((publisher) => `${publisher}/inspect-web-page`).find((name) => names.has(name));
+          if (tool_name !== undefined) {
+            const readable = await deps.namedPagesReadable(session_id, addresses).catch(() => []);
+            for (const page of readable) namedPages.push({ tool_name, page });
+          }
+        }
+      }
       const inFlightContext = [
         deps.buildInFlightContext?.(params.execution_source, carried?.run_ids),
         carried !== undefined ? CARRIED_HELD_RESULTS_NOTE : undefined,
+        namedPages.length > 0 ? NAMED_PAGES_NOTE : undefined,
       ].filter((part): part is string => part !== undefined && part.length > 0).join('\n') || undefined;
       const openingHeld = [...(params.held_results ?? []), ...(carried?.calls ?? [])];
       const priorToolPointers = await deps.buildPriorToolPointers?.(
@@ -4122,12 +4267,44 @@ export const createChatOrchestrator = (
       if (params.continuation_of_turn_id !== undefined && perTurnProjection.mode !== 'full') {
         try {
           const names = await toolsOfTurn(deps.chatStore, session_id, params.continuation_of_turn_id);
-          const carry = carryRecipeTools(listedTools, catalogEntriesFor(params.execution_source), names,
+          const carry = carryRecipeTools(listedTools, entriesOfTurn(), names,
             (entry) => readOnlyToolNames === null || entry.classification === 'read');
           availableTools = carry.tools;
           carriedTools = carry.carried;
         } catch {
           // The tools are a convenience: a search finds them as before.
+        }
+      }
+      // D-335 slice X — while a Browser Bridge is connected, the toolkit's main tools are listed in
+      // full (`BROWSER_TOOLKIT_LISTED`): lean-core lists no recipe, and finding them cost every
+      // browser request a round.
+      let toolkitListed = 0;
+      if (perTurnProjection.mode !== 'full' && deps.browserBridgeConnected?.() === true) {
+        try {
+          const entries = entriesOfTurn();
+          const names = entries.filter((entry) => entry.tier === 2 && BROWSER_TOOLKIT_LISTED.some((slug) =>
+            BROWSER_TOOLKIT_PUBLISHERS.some((publisher) => entry.name === `${publisher}/${slug}`))).map((entry) => entry.name);
+          const carry = carryRecipeTools(availableTools, entries, names,
+            (entry) => readOnlyToolNames === null || entry.classification === 'read', BROWSER_TOOLKIT_LISTED.length);
+          availableTools = carry.tools;
+          toolkitListed = carry.carried;
+        } catch {
+          // As above: a search finds them as before.
+        }
+      }
+      // D-345 slice D — a request that names a web address lists the HTTP Toolkit in full, Bridge or not.
+      let httpToolkitListed = 0;
+      if (perTurnProjection.mode !== 'full' && namedPageAddresses(content.user_message).length > 0) {
+        try {
+          const entries = entriesOfTurn();
+          const names = entries.filter((entry) => entry.tier === 2 && HTTP_TOOLKIT_LISTED.some((slug) =>
+            BROWSER_TOOLKIT_PUBLISHERS.some((publisher) => entry.name === `${publisher}/${slug}`))).map((entry) => entry.name);
+          const carry = carryRecipeTools(availableTools, entries, names,
+            (entry) => readOnlyToolNames === null || entry.classification === 'read', HTTP_TOOLKIT_LISTED.length);
+          availableTools = carry.tools;
+          httpToolkitListed = carry.carried;
+        } catch {
+          // As above: a search finds them as before.
         }
       }
 
@@ -4194,7 +4371,15 @@ export const createChatOrchestrator = (
       let noticesHere = false;
       try { noticesHere = deps.noticesHere?.(session_id) === true; } catch { noticesHere = false; }
 
-      const result = await runChatTurn(
+      // The owner's 3a — in their own app chat, a call held for their approval waits in its round a
+      // while for their answer (`OWNER_CHAT_HELD_WAIT_MS`, for the turn's holds together).
+      const ownerHeldWait = picker_target === 'self' && params.execution_source.channel === 'chat'
+        && deps.settleHeldCall !== undefined;
+      let ownerHeldWaitedMs = 0;
+      // D-340 slice 4 — a managed run's own tool rounds (the streams' AI suggestions, ruling 9).
+      const toolRoundCap = deps.getSituationAccess?.()?.toolRoundCap(params.execution_source);
+      // D-344 slice C — the turn's model reaches the model calls of the recipes it runs, preferred.
+      const result = await withChatModelChoice(chatModelChoiceOf(params.model_layer, params.model_source_id), () => runChatTurn(
         {
           session_id,
           turn_id,
@@ -4205,6 +4390,9 @@ export const createChatOrchestrator = (
           dispatch_peer_name: params.dispatch_peer_name,
           ...(params.mail_work ? { mail_work: params.mail_work } : {}),
           ...(openingHeld.length > 0 ? { held_results: openingHeld } : {}),
+          ...(params.held_results !== undefined ? { host_message: true as const } : {}),
+          ...(namedPages.length > 0 ? { named_pages: namedPages } : {}),
+          ...(toolRoundCap !== undefined ? { tool_round_cap: toolRoundCap } : {}),
           ...(directOwnerRecallSurface && picker_target === 'self' && !params.read_only
             && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id
             ? { prefetch_selected_asset: true as const } : {}),
@@ -4232,8 +4420,10 @@ export const createChatOrchestrator = (
           ...(priorToolPointers
             ? { prior_tool_pointers: priorToolPointers }
             : {}),
-          ...(inFlightContext !== undefined || carriedTools > 0
-            ? { in_flight_context: [inFlightContext, carriedTools > 0 ? CARRIED_TOOLS_NOTE : undefined]
+          ...(inFlightContext !== undefined || carriedTools > 0 || toolkitListed > 0 || httpToolkitListed > 0
+            ? { in_flight_context: [inFlightContext, carriedTools > 0 ? CARRIED_TOOLS_NOTE : undefined,
+              toolkitListed > 0 ? BROWSER_TOOLKIT_LISTED_NOTE : undefined,
+              httpToolkitListed > 0 ? HTTP_TOOLKIT_LISTED_NOTE : undefined]
               .filter((part): part is string => part !== undefined).join('\n') }
             : {}),
           ...(executionCaseContext
@@ -4320,6 +4510,32 @@ export const createChatOrchestrator = (
             },
             clear: (sid) => { deps.chatStore.deleteSessionBrief(sid); },
           },
+          // D-347 — a turn's results kept raw for the next turns, beside the brief. A store that
+          //   predates it has none, and its turns close with a fold as before.
+          ...(deps.chatStore.readSessionCarry && deps.chatStore.writeSessionCarry && deps.chatStore.deleteSessionCarry
+            ? { carryStore: {
+                read: async (sid: string): Promise<readonly ChatPriorToolCall[]> => {
+                  const json = await deps.chatStore.readSessionCarry!(sid);
+                  if (json === null) return [];
+                  try { return parseStoredCarry(JSON.parse(json)); } catch { return []; }
+                },
+                write: async (sid: string, calls: readonly ChatPriorToolCall[]): Promise<void> => {
+                  await deps.chatStore.writeSessionCarry!(sid, JSON.stringify(calls));
+                },
+                clear: (sid: string): void => { deps.chatStore.deleteSessionCarry!(sid); },
+              } }
+            : {}),
+          // D-347 follow-up 3 — the owner's waiting statements, rebuilt after a restart from when a fold
+          //   last took them and the conversation's saved user messages (the last 200 rows; no copy kept).
+          ...(deps.chatStore.readStatementsFoldedAt && deps.chatStore.markStatementsFolded
+            ? { statementStore: {
+                foldedAt: (sid: string): number | null => deps.chatStore.readStatementsFoldedAt!(sid),
+                recordFold: (sid: string): void => { deps.chatStore.markStatementsFolded!(sid); },
+                savedUserMessages: async (sid: string) => (await deps.chatStore.listMessagePage(sid, 200)).messages
+                  .filter((m) => m.role === 'user')
+                  .map((m) => ({ text: m.content, ts: m.ts, ...(m.turn_id !== undefined ? { turn_id: m.turn_id } : {}) })),
+              } }
+            : {}),
           ...(directOwnerRecallSurface && deps.chatStore.readMailWorkEvidence
             && deps.chatStore.writeMailWorkEvidence && deps.chatStore.deleteMailWorkEvidence ? {
               mailWorkEvidenceStore: {
@@ -4338,13 +4554,40 @@ export const createChatOrchestrator = (
               try { params.on_first_dispatch?.(); } catch { /* a record of it, never the call */ }
             }
             await params.before_dispatch?.();
-            const result = await dispatchTool({
+            let result = await dispatchTool({
               ...call,
               ...(params.read_only === true ? { read_only: true } : {}),
               turn_state: streamState,
               get_retained_candidates: () => [...retainedCandidates.values()],
             });
             params.assert_active?.();
+            // The owner's 3a (2026-11-07) — the owner: "go ahead with ... 3a". Held for their approval,
+            // the call waits here for their answer, as an LLM gateway request's does (D-337 ruling 4):
+            // answered in time, it returns what it would have returned, the model takes the next step
+            // in this round, and no continuation turn tells it again. Otherwise it stays held, as before.
+            // A turn stopped while it waits stops waiting.
+            if (ownerHeldWait && result.ok && result.run_held?.kind === 'approval' && result.run_id !== undefined
+              && ownerHeldWaitedMs < OWNER_CHAT_HELD_WAIT_MS) {
+              const waitStarted = now();
+              const stopped = new AbortController();
+              const watch = setInterval(() => {
+                try { params.assert_active?.(); } catch { stopped.abort(); }
+              }, 500);
+              try {
+                const settled = await deps.settleHeldCall!({
+                  run_id: result.run_id, held: result,
+                  until: waitStarted + (OWNER_CHAT_HELD_WAIT_MS - ownerHeldWaitedMs), signal: stopped.signal,
+                }).catch(() => undefined);
+                if (settled !== undefined) {
+                  result = settled;
+                  noteAnsweredInTurn(streamState, call.tool_name);
+                }
+              } finally {
+                clearInterval(watch);
+                ownerHeldWaitedMs += Math.max(0, now() - waitStarted);
+              }
+              params.assert_active?.();
+            }
             return result;
           },
           ...((params.execution_source.channel === 'chat' || (params.execution_source.channel === 'schedule' && params.execution_source.prompt_schedule !== undefined)) ? {
@@ -4393,7 +4636,7 @@ export const createChatOrchestrator = (
           emit,
           now,
         },
-      );
+      ));
       capturedTurnResult = { ...result, ...(prefetchSourceCapture?.sources().length
         ? { prefetch_source_citations: prefetchSourceCapture.sources() } : {}) };
       // The model read the calls this turn carried, and answered.
@@ -4728,6 +4971,9 @@ export const createChatOrchestrator = (
         modelMessage = JSON.stringify({ reply_to: { message_id: reference.id, role: reference.role, text: quoted }, message: turnMessage });
       } catch (error) { failPendingUserSource(); throw error; }
     }
+    // D-343 slice 3 — a reply to the owner's Agenda or evening notice carries how to close its day.
+    const closingZone = resolveChatTimeZone(input.time_zone, deps.serverTimeZone?.());
+    const closingLine = await closingDayLine(modelMessage, assetDateAt(now(), closingZone), closingItemsFor(executionSource, closingZone));
     const assistantMessageId = mintId();
     let turnDriver: ReturnType<typeof buildTurnDriver>;
     try {
@@ -4766,12 +5012,12 @@ export const createChatOrchestrator = (
               input.attachments,
               deps.resolveFileNames?.(input.attachments.map((a) => a.file_id))
                 ?? new Map<string, string>(),
-            )}`
+            )}${closingLine}`
             : input.scheduled_prompt
               ? `[Scheduled request: ${input.scheduled_prompt.schedule_id}, occurrence ${input.scheduled_prompt.occurrence_id}, saved revision ${input.scheduled_prompt.revision}. Execute the saved request below. This is an unattended turn; use normal approvals for writes.]\n${modelMessage}`
               : input.held_results
                 ? `${input.held_results.length > 1 ? HELD_RESULTS_TURN_NOTE : HELD_RESULT_TURN_NOTE}\n${modelMessage}`
-                : modelMessage,
+                : `${modelMessage}${closingLine}`,
           chat_tail: builtChatTail.messages,
         }),
         visible_recall_item_ids: [
@@ -5107,6 +5353,13 @@ export const createChatOrchestrator = (
         const offers = installOffersFromToolResults(turnResult.tool_results);
         return offers.length > 0 ? { install_offers: offers } : {};
       })(),
+      // D-346 follow-up (2026-11-08) — what the turn's calls could not do and how the owner
+      // fixes it (a run's need, a switch of theirs), shown under the answer with a link or
+      // "Turn it on". Only the owner's own calls carry any.
+      ...((): { fixes?: ChatFix[] } => {
+        const fixes = chatFixesFromToolResults(turnResult.tool_results);
+        return fixes.length > 0 ? { fixes } : {};
+      })(),
       ...(gateAnswer !== undefined ? { answered_without_model: gateAnswer } : {}),
     });
     if (gateAnswer !== undefined) {
@@ -5160,6 +5413,10 @@ export const createChatOrchestrator = (
         model_used: modelUsed,
         tool_call_count: assistantToolCalls?.length ?? 0,
         provenance_count: assistantProvenance?.length ?? 0,
+        // D-347 follow-up (2026-11-08) — why the turn's model call failed, when one did: the reason
+        // its live notice gave and the error itself, one line with no key in it
+        // (`failureDetailForRecord`). The saved answer says only that the provider failed.
+        ...(turnResult.decoder_failure !== undefined ? { model_call_failed: turnResult.decoder_failure } : {}),
         // D-137 Trio #E follow-on — durable per-turn token usage. The
         // benchmark + future billing surface read this row to compute
         // per-turn cost (tokens × rates at report time). Counts only;
@@ -5382,6 +5639,9 @@ export const createChatOrchestrator = (
       reply_to: input.native_reply_context ?? { native_message_id: input.native_reply_to, retained: false },
       message: userText,
     }) : userText;
+    // D-343 slice 3 — a reply to the owner's Agenda or evening notice carries how to close its day.
+    const closingZone = resolveChatTimeZone(undefined, deps.serverTimeZone?.());
+    const closingLine = await closingDayLine(modelMessage, assetDateAt(now(), closingZone), closingItemsFor(inbound.source, closingZone));
     // Native surfaces receive completed text; paired webclients also receive
     // the live tool/provenance events from this same executor.
     const {
@@ -5423,7 +5683,7 @@ export const createChatOrchestrator = (
             deps.resolveFileNames?.(userAttachments.map((a) => a.file_id))
               ?? new Map<string, string>(),
           )}`
-          : modelMessage}${input.model_note ?? ''}`,
+          : modelMessage}${input.model_note ?? ''}${closingLine}`,
         chat_tail: builtChatTail.messages,
       }),
       // ⛔ D-213 WAS CHAT-ONLY, AND THAT WAS A GAP, NOT A SCOPE DECISION. The
@@ -5501,6 +5761,8 @@ export const createChatOrchestrator = (
         model_used: modelUsed,
         tool_call_count: turnResult.tool_calls?.length ?? 0,
         ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
+        // As the app's turn row: why its model call failed, when one did.
+        ...(turnResult.decoder_failure !== undefined ? { model_call_failed: turnResult.decoder_failure } : {}),
       }),
     );
 
@@ -5625,7 +5887,9 @@ export const createChatOrchestrator = (
         ? 'the remaining model context was exhausted'
         : error_code === 'llm_gateway_authority_changed'
           ? 'live gateway authority changed before final synthesis'
-          : 'the model provider failed during final synthesis';
+          : error_code === 'server_paused'
+            ? 'the owner paused the server before final synthesis'
+            : 'the model provider failed during final synthesis';
       const message = status === 'completed'
         ? `Tool work completed, but ${failure}. Do not retry automatically; the effect already ran.`
         : status === 'partial'
@@ -5720,10 +5984,12 @@ export const createChatOrchestrator = (
               || !allowedNames.has(call.tool_name)
             ) {
               nonEffectDispatches += 1;
+              // D-346 follow-up (2026-11-08) — an app on the llm_gateway door reads only that
+              // the tool is not available, not why (the owner's ruling).
               return {
                 ok: false,
                 reason: 'classification_blocked',
-                detail: 'llm_gateway tool is not granted by this customer token',
+                detail: contractUnavailableSentence(`'${call.tool_name}'`),
               };
             }
             const argsValidation = validateLlmGatewayToolArguments(
@@ -5828,11 +6094,15 @@ export const createChatOrchestrator = (
       const rawCode = error !== null && typeof error === 'object'
         ? (error as { code?: unknown }).code
         : undefined;
+      // D-188 — the live check refuses with its own public code while the owner's pause holds.
+      const publicCode = error !== null && typeof error === 'object'
+        ? (error as { public_code?: unknown }).public_code
+        : undefined;
       const errorCode: LlmGatewayPostEffectOutcome['error_code'] | null =
         error instanceof ChatContextLengthError || rawCode === 'AI_TOKEN_BUDGET_EXCEEDED'
           ? 'context_length_exceeded'
           : rawCode === 'llm_gateway_authority_changed'
-            ? 'llm_gateway_authority_changed'
+            ? publicCode === 'server_paused' ? 'server_paused' : 'llm_gateway_authority_changed'
             : null;
       const outcome = errorCode ? buildPostEffectOutcome(errorCode) : null;
       if (outcome) {

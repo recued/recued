@@ -146,6 +146,10 @@ import {
   type WebhooksTestDeliveryCaller,
   type WebhooksRetentionPruneCaller,
 } from './webhooks-panel.js';
+import {
+  TRIGGER_PREAPPROVAL_PANEL_STYLES,
+  type TriggerPreapprovalPanelCallers,
+} from '../contracts/trigger-preapproval-panel.js';
 import { findAccountLane, findAccountProvider, type AccountLaneId } from '@recued/ui-shared';
 import type {
   OAuthAppConfigSnapshot,
@@ -464,6 +468,7 @@ export const CONNECTIONS_ROUTE_STYLES = [
   CONNECTIONS_PAGE_STYLES,
   ACCOUNTS_PANEL_STYLES,
   WEBHOOKS_PANEL_STYLES,
+  TRIGGER_PREAPPROVAL_PANEL_STYLES,
   CONNECTIONS_GRANT_PANEL_STYLES,
   CONNECTIONS_ROUTE_CHROME_STYLES,
 ].join('\n');
@@ -639,6 +644,8 @@ export interface BootstrapConnectionsRouteOptions {
   webhooksDeliveryGetCaller?: WebhooksDeliveryGetCaller;
   webhooksDeliveryEventGetCaller?: WebhooksDeliveryEventGetCaller;
   webhooksRejectedDeliveryListCaller?: WebhooksRejectedDeliveryListCaller;
+  /** D-341 slice B2b — "What it may do without asking" on each webhook's card. */
+  webhooksTriggerPreapprovals?: TriggerPreapprovalPanelCallers;
   webhooksRetireCaller?: WebhooksRetireCaller;
   webhooksRetentionPruneCaller?: WebhooksRetentionPruneCaller;
   // ── Foundational lane callers ──
@@ -1031,6 +1038,9 @@ export const bootstrapConnectionsRoute = (
           : {}),
         ...(opts.webhooksRetentionPruneCaller !== undefined
           ? { runRetentionPrune: opts.webhooksRetentionPruneCaller }
+          : {}),
+        ...(opts.webhooksTriggerPreapprovals !== undefined
+          ? { triggerPreapprovals: opts.webhooksTriggerPreapprovals }
           : {}),
       });
     } else {

@@ -1,0 +1,810 @@
+/* Recued Bridge side-panel polish.
+ *
+ * The legacy component rules in index.html remain as a conservative layout
+ * floor. This final layer aligns the live panel with the webclient polish
+ * system without widening the Bridge's product role: one accent, one danger,
+ * 9/14px geometry, 38px controls, clear focus, and quiet elevated surfaces.
+ */
+
+:root {
+  --bridge-radius: 9px;
+  --bridge-radius-lg: 14px;
+  --bridge-radius-pill: 999px;
+  --bridge-control-h: 38px;
+  --bridge-ring: 0 0 0 3px var(--accent-weak);
+}
+
+html {
+  background: var(--surface-sunk);
+}
+
+body {
+  min-width: 280px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 18% 0%, var(--accent-weak), transparent 30rem),
+    var(--surface-sunk);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+header {
+  position: sticky;
+  z-index: 20;
+  top: 0;
+  min-height: 58px;
+  padding: 10px 16px;
+  border-bottom-color: var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 1px 0 rgba(24, 24, 27, 0.02),
+    0 8px 24px rgba(24, 24, 27, 0.035);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+header h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fg-strong, var(--fg));
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+header h1::before {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 4px;
+  background: var(--accent);
+  box-shadow: 0 0 0 5px var(--accent-weak);
+  content: "";
+}
+
+header .subtle {
+  min-width: 0;
+  margin: 4px 0 0 20px;
+  padding: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 16px 14px 28px;
+}
+
+.panel-loading {
+  margin-top: 6px;
+  padding: 18px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--bridge-radius-lg);
+  background: var(--surface-sunk);
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+section {
+  margin: 0 0 18px;
+}
+
+section h2 {
+  margin: 0 0 8px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+
+.card {
+  overflow: hidden;
+  padding: 10px 12px;
+  border-color: var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
+}
+
+.card > .row:not(:first-child) {
+  border-top: 1px solid var(--border);
+}
+
+.row {
+  min-height: 31px;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.row .k {
+  min-width: 0;
+  color: var(--fg-muted);
+}
+
+.row .v {
+  flex: none;
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 11px;
+  text-align: right;
+}
+
+.unresolved-command,
+.confirmed-command {
+  min-width: 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.unresolved-command code,
+.confirmed-command code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.unresolved-command time,
+.confirmed-command time {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.confirmed-outcomes h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.diagnostic-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.diagnostic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.diagnostic-copy-notice {
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+
+.diagnostic-summary {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 160px;
+  margin: 0 0 8px;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--bridge-radius);
+  background: var(--surface);
+  color: var(--fg);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  resize: vertical;
+}
+
+.diagnostic-summary:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--bridge-ring);
+}
+
+.diagnostic-freshness {
+  min-width: 0;
+}
+
+.diagnostic-freshness time {
+  display: block;
+  color: var(--fg);
+}
+
+.diagnostic-refresh {
+  flex: none;
+  min-height: var(--bridge-control-h);
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--bridge-radius);
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.diagnostic-refresh:hover:not([aria-disabled="true"]) {
+  background: var(--surface-sunk);
+}
+
+.diagnostic-refresh[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.diagnostic-notice {
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+
+.diagnostic-notice:empty {
+  display: none;
+}
+
+.diagnostic-notice-error {
+  color: var(--danger);
+}
+
+[data-recued-side-panel-status-value="current-command"] .v {
+  min-width: 0;
+  max-width: 65%;
+  overflow-wrap: anywhere;
+}
+
+.confirmed-status {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.confirmed-error-cause,
+.confirmed-error-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.confirmed-error-hint,
+.confirmed-command .confirmed-error-code {
+  color: var(--fg-muted);
+}
+
+.confirmed-command .confirmed-error-code {
+  margin-top: 6px;
+  font-size: 10px;
+}
+
+.subtle {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.card > .subtle {
+  padding: 0 0 7px;
+}
+
+.empty {
+  padding: 7px 2px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.card-empty {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: var(--surface-sunk);
+  text-align: center;
+  box-shadow: none;
+}
+
+.card-empty-danger {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-left: 3px solid var(--danger);
+  background: var(--danger-weak);
+  color: var(--danger);
+  text-align: left;
+}
+
+.card-empty-danger .empty {
+  color: var(--danger);
+}
+
+.pill {
+  padding: 2px 8px;
+  border-radius: var(--bridge-radius-pill);
+  background: var(--surface-sunk);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.status-hero {
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 0;
+  padding: 2px 0 10px;
+}
+
+.status-hero .pill {
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
+.status-hero-name {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.run-meta {
+  align-items: center;
+}
+
+.pair-section {
+  padding: 22px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--bridge-radius-lg);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
+  text-align: left;
+}
+
+/* Scoped to the section's own children: a `.pair-section p` rule would
+   outrank the pair form's status and error paragraphs (pairing.css). */
+.pair-section > .purpose {
+  margin: 0 0 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pair-section > .empty {
+  margin: 16px 0 0;
+  padding: 12px;
+  border-radius: var(--bridge-radius);
+  background: var(--surface-sunk);
+  text-align: left;
+}
+
+.watch-cta {
+  margin: 0 0 18px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
+}
+
+.watch-button {
+  min-height: var(--bridge-control-h);
+  padding: 0 14px;
+  border-radius: var(--bridge-radius);
+  color: var(--on-accent);
+  font-size: 13px;
+  font-weight: 650;
+  transition: box-shadow 120ms ease, filter 120ms ease, transform 120ms ease;
+}
+
+.watch-button:hover:not(:disabled) {
+  filter: brightness(1.07);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.watch-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.watch-status {
+  margin: 9px 1px 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.watch-link {
+  margin-top: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-underline-offset: 2px;
+}
+
+.active-controls {
+  gap: 7px;
+  padding: 2px 0 8px;
+}
+
+.active-control {
+  min-height: 32px;
+  padding: 0 11px;
+  border-color: var(--border-strong);
+  border-radius: var(--bridge-radius);
+  background: var(--surface);
+  font-size: 11px;
+  transition: background-color 120ms ease, border-color 120ms ease,
+    box-shadow 120ms ease, transform 120ms ease;
+}
+
+.active-control:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-sunk);
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.active-control-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-weak);
+}
+
+details > summary {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+  padding: 0 2px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+details > summary::after,
+details[open] > summary::after,
+details:not([open]) > summary::after {
+  color: var(--fg-muted);
+  content: "›";
+  font-size: 18px;
+  line-height: 1;
+  opacity: 0.8;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+details[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--bridge-ring);
+}
+
+a:focus-visible,
+summary:focus-visible {
+  border-radius: 4px;
+}
+
+@media (max-width: 340px) {
+  main {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .row {
+    align-items: flex-start;
+  }
+
+  .run-meta {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* D-335 slice G — the Sites section: Chrome's grant of every site, and the
+   owner's list of sites Recued must never use. */
+.sites-card {
+  display: grid;
+  gap: 8px;
+}
+
+.sites-card + .sites-card {
+  margin-top: 8px;
+}
+
+.sites-status,
+.sites-heading {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sites-explain,
+.sites-message {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sites-message:empty {
+  display: none;
+}
+
+.sites-row,
+.sites-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Keep signed in's days and hours show under their choice only: the rule above beats `hidden`. */
+.sites-add[hidden] {
+  display: none;
+}
+
+.sites-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.sites-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--bridge-radius);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.sites-button,
+.disconnect-button {
+  flex: 0 0 auto;
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--bridge-radius);
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sites-button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 650;
+}
+
+.sites-button:disabled,
+.disconnect-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* The Disconnect under the server's status: the button, then the question it asks first. */
+.disconnect {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  justify-items: start;
+}
+
+.disconnect-prompt {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.disconnect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.disconnect-button-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.disconnect-message {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* 2026-11-04 — approvals lead the panel and every other section folds to one line
+   (`folds.ts`): its title, and what it holds now. The header carries the server's
+   connection, so it shows while the Server section is folded. */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.header-row h1 {
+  min-width: 0;
+}
+
+.header-status {
+  flex: none;
+  padding: 2px 9px;
+  font-size: 11px;
+}
+
+.header-status[hidden] {
+  display: none;
+}
+
+section[data-recued-side-panel-section="approvals"] {
+  margin-bottom: 16px;
+}
+
+section[data-recued-side-panel-section="approvals"] > h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.section-count {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: var(--bridge-radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* An approval's answers, one per line: the first approve is the one filled
+   button, and a later one (allowing it for a session, or always) is quieter,
+   since it allows more than this one action. DOM order, so keyboard order, is
+   the card's own. */
+section[data-recued-side-panel-section="approvals"] .rx-ask-card-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+section[data-recued-side-panel-section="approvals"] .rx-ask-card-btn--approve ~ .rx-ask-card-btn--approve {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.fold-section {
+  margin: 0 0 10px;
+}
+
+details.fold {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
+}
+
+details.fold > summary.fold-summary {
+  min-height: 44px;
+  margin: 0;
+  padding: 0 12px;
+  gap: 10px;
+  border-radius: 12px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+details.fold[open] > summary.fold-summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.fold-title {
+  flex: none;
+}
+
+.fold-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fold-meta-danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.fold-body {
+  padding: 0 12px 12px;
+}
+
+/* Inside a fold, a section's cards drop their own frame: the fold is the card. */
+.fold-body .card,
+.fold-body .watch-cta {
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.fold-body .card + .card {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.fold-body .card-empty {
+  text-align: left;
+}
+
+
+/* The diagnostic keeps its own fold; it takes the same frame as the others. */
+section[data-recued-side-panel-section="bridge-diagnostic"] > details {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
+}
+
+section[data-recued-side-panel-section="bridge-diagnostic"] > details > summary {
+  min-height: 44px;
+  margin: 0;
+  padding: 0 12px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+section[data-recued-side-panel-section="bridge-diagnostic"] > details[open] {
+  padding: 0 12px 12px;
+}
+
+section[data-recued-side-panel-section="bridge-diagnostic"] > details[open] > summary {
+  margin: 0 -12px 8px;
+}
+
+/* The panel's controls are the panel's height, not a touch screen's. */
+section[data-recued-side-panel-section="approvals"] .rx-ask-card-btn {
+  min-height: var(--bridge-control-h);
+  padding: 7px 14px;
+}

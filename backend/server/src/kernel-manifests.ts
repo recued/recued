@@ -2864,7 +2864,7 @@ const MANIFESTS = [
   {
     "slug": "dom-write",
     "name": "DOM Write",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a `value`, and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the write to it (D-335) — types the value into the element on the page actuated by the paired Browser Bridge — an input or textarea (focused, and set through its own value setter, so a React-built form hears it), a list (the option whose value or text matches), a checkbox or radio button (`true`/`false`), or a rich-text editor — and fails DOM_WRITE_FAILED when the element does not end up holding it; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). With `pick` (D-335 slice N, a page handle only), it then picks the field's suggestion whose text that is, as a person clicks one in the list that shows as they type, and checks the field took it, answering `picked` and the page the tab shows; none or several matching fail DOM_WRITE_FAILED listing the suggestions. Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.write` op. Given a `target` URL pattern, a `value`, and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the write to it (D-335) — types the value into the element on the page actuated by the paired Browser Bridge — an input or textarea (focused, and set through its own value setter, so a React-built form hears it), a list (the option whose value or text matches), a checkbox or radio button (`true`/`false`), or a rich-text editor — and fails DOM_WRITE_FAILED when the element does not end up holding it; an optional `submit_selector` presses Enter on a second element afterward (e.g. submit a web-chat prompt). With `pick` (D-335 slice N, a page handle only), it then picks the field's suggestion whose text that is, as a person clicks one in the list that shows as they type, and checks the field took it, answering `picked` and the page the tab shows; none or several matching fail DOM_WRITE_FAILED listing the suggestions. Returns `{ written, fields, failed }` (or `{ writes, clicked }` when a submit fires). No per-tool manifest selector map — the Bridge is the uniform DOM executor and the selector/target/value ride as op args. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge. write-tier: a DOM mutation, approval-gated. D-335 slice T: called with a `page`, the answer also says what changed on that page (`changes`): the page is read again, and the lines new since its last read come with their numbers and refs (a `from` at one reads on there), with those that went, or it says nothing changed; a page it loaded, or one never read, answers its first lines. A run reviewed before it starts gets none. D-335 slice Y: with `page`, the field can be named instead by its `text`, its label, placeholder or name as an inspection names it (Search Wikipedia), with `role` (text field, list, checkbox) when several share it: it is found on the page's latest read, or on a read made then, and none or several matching fail DOM_SELECTOR_NOT_FOUND naming the nearest.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "authoring",
@@ -2885,16 +2885,19 @@ const MANIFESTS = [
       "ref": null,
       "value": null,
       "submit_selector": null,
-      "pick": null
+      "pick": null,
+      "text": null,
+      "role": null
     },
     "output": {
-      "written": "written"
+      "written": "written",
+      "changes": "changes"
     }
   },
   {
     "slug": "dom-inspect",
     "name": "DOM Inspect",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.inspect` op (D-335). Given a `target` URL pattern (op arg), reads the page open in the paired Browser Bridge as cleaned HTML: no styles, scripts, frames, SVG drawing data, comments or hidden elements; a closed list of attributes, at most three readable class names per element, and each form field's current value (a password, hidden, sign-in code or payment card field comes back without its value). Every element a person can act on carries `ref=\"eN\"`. To read one region instead, pass `selector`, or `page` (the handle an earlier inspect returned) with a `ref` from that page. Returns `{ page, url, title, html, truncated }`: at most 40,000 characters, cut at an element boundary, with `truncated: true` when the page did not fit. A ref from a page that has since navigated or reloaded fails DOM_SELECTOR_NOT_FOUND: inspect again.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.inspect` op (D-335). Given a `target` URL pattern (op arg), reads the page open in the paired Browser Bridge as cleaned HTML: no styles, scripts, frames, SVG drawing data, comments or hidden elements; a closed list of attributes, at most three readable class names per element, and each form field's current value (a password, hidden, sign-in code or payment card field comes back without its value). Every element a person can act on carries `ref=\"eN\"`. To read one region instead, pass `selector`, or `page` (the handle an earlier inspect returned) with a `ref` from that page. Returns `{ page, url, title, html, truncated }`: at most 40,000 characters, cut at an element boundary, with `truncated: true` when the page did not fit. With `form: \"outline\"` it returns `{ page, url, title, outline, truncated }` instead (D-335 slice O): the same read as one line per block of text, cut at 100 characters, with what a person can act on as `[label](eN)` and `…(bN)` where a line is cut (at its end), or where only a picture's description in it is; the server keeps the read, so `block` (such as `b12`) returns `{ page, url, title, block, text }`, that line in full, and `find` returns `{ page, url, title, find, matches, lines, truncated }`, every line holding that text (ignoring case), both without reading the page again. Since D-335 slice P the outline is of the whole page, as much as the Bridge carries in one answer (the server names the size; a Bridge before 0.0.8 reads 40,000 characters), answered in parts: the `outline` holds the first and `next` the line to pass as `from` for the one after. With `form: \"text\"` (D-335 slice Q) the same read answers as the page's `text`: each line in full, links as their words, no fields or buttons, only the page's main content when it marks one, in parts on the same line numbers. `find` and `from` read the page again once what was kept is 15 seconds old or an action on the page came after it. D-335 slice V: `chars` (at most 60,000) sizes one part of the outline or the text, for a recipe that sends it on to a model of its own (Ask a web page). A ref from a page that has since navigated or reloaded fails DOM_SELECTOR_NOT_FOUND: inspect again.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "reading",
@@ -2912,20 +2915,32 @@ const MANIFESTS = [
       "target": null,
       "page": null,
       "ref": null,
-      "selector": null
+      "selector": null,
+      "form": null,
+      "block": null,
+      "find": null,
+      "from": null,
+      "chars": null
     },
     "output": {
       "page": "page",
       "url": "url",
       "title": "title",
       "html": "html",
+      "outline": "outline",
+      "block": "block",
+      "text": "text",
+      "find": "find",
+      "matches": "matches",
+      "lines": "lines",
+      "next": "next",
       "truncated": "truncated"
     }
   },
   {
     "slug": "dom-click",
     "name": "DOM Click",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.click` op (D-335). Given a `target` URL pattern and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the click to it — clicks the element on the page actuated by the paired Browser Bridge, the way a person would: scrolled into view and pressed at its centre, with the pointer and mouse events, the focus and the click a person's click sends. A disabled element, or one something else on the page covers (a dialog, a banner), fails DOM_WRITE_FAILED with the reason and nothing is clicked. Returns `{ clicked: 1 }` once the click is dispatched; what the page does with it is the page's. A page or ref that has gone since it was inspected fails DOM_SELECTOR_NOT_FOUND and nothing is clicked; a click whose answer the page took with it (a navigation) fails ACTION_DELIVERY_UNCERTAIN. write-tier: approval-gated, and a click cannot be undone.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.click` op (D-335). Given a `target` URL pattern and the element — a CSS `selector`, or `page` (the handle `core.dom.inspect` answered) with a `ref` (or `selector`) on that page, which binds the click to it — clicks the element on the page actuated by the paired Browser Bridge, the way a person would: scrolled into view and pressed at its centre, with the pointer and mouse events, the focus and the click a person's click sends. A disabled element, or one something else on the page covers (a dialog, a banner), fails DOM_WRITE_FAILED with the reason and nothing is clicked. Returns `{ clicked: 1 }` once the click is dispatched; what the page does with it is the page's. A page or ref that has gone since it was inspected fails DOM_SELECTOR_NOT_FOUND and nothing is clicked; a click whose answer the page took with it (a navigation) fails ACTION_DELIVERY_UNCERTAIN. write-tier: approval-gated, and a click cannot be undone. D-335 slice U: with `key` (a page and a ref or selector), presses that key in the element instead of clicking it: Enter, Escape, Tab, Space, Backspace, Delete, the arrows, Home, End, PageUp, PageDown, F1 to F12, a letter, a digit or one of / . , - = ; ' [ ] \\ `, after any of Control, Meta, Alt and Shift joined with + (Control+Enter); what the browser does for the key is done too (Enter sends a field's form or activates a button or link, Space activates a button or a checkbox, Escape closes an open dialog, Tab moves the focus). Answers `{ pressed, page, url, title, moved, sent }` as a click answers. Needs Browser Bridge 0.0.8; an older one fails ROLE_RESTRICTION, saying to update it, and clicks nothing. Not in a run reviewed before it starts. D-335 slice T: called with a `page`, the answer also says what changed on that page (`changes`): the page is read again, and the lines new since its last read come with their numbers and refs (a `from` at one reads on there), with those that went, or it says nothing changed; a page it loaded, or one never read, answers its first lines. A run reviewed before it starts gets none. D-335 slice Y: with `page`, the element can be named instead by its `text`, what it shows or is called on that page as an inspection names it (Sign in, Search Wikipedia), with `role` (button, link, checkbox, tab, menu item) when several share it: it is found on the page's latest read, or on a read made then, and none or several matching fail DOM_SELECTOR_NOT_FOUND naming the nearest.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "authoring",
@@ -2943,16 +2958,21 @@ const MANIFESTS = [
       "target": null,
       "page": null,
       "ref": null,
-      "selector": null
+      "selector": null,
+      "key": null,
+      "text": null,
+      "role": null
     },
     "output": {
-      "clicked": "clicked"
+      "clicked": "clicked",
+      "changes": "changes",
+      "pressed": "pressed"
     }
   },
   {
     "slug": "dom-act",
     "name": "DOM Act",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.act` op (D-335 slice J). Given a `target` URL pattern, a `page` (the handle `core.dom.inspect` answered) and `steps` (at most 20, `browser-act.ts`), does each step on that page in order through the paired Browser Bridge, approved once for all of them: `type` (a value into a field by ref or selector, a list taking an option and a checkbox true or false; with `submit`, then sends its form in the same script; with `pick`, then picks the field's suggestion with that text, as a person clicks one in the list that shows as they type, and checks the field took it), `click`, `submit` (sends the form the element is in, as Enter would) and `wait` (a pause, or until a selector shows or goes). Recued checks every step: a typed value must be in its field, a step whose page then shows a CAPTCHA nobody has solved stops the sequence, and a sent form (or a click on a form's send button) must load a page or change the address within 5 seconds unless the step's `success_when` says what to look for instead (`page_changes`, `url_includes`, `shows`, `gone`, `text`, within `seconds`), and an error message a click or a send leads to stops the sequence, quoted. A step's `fail_when` (`shows`, `text`, `url_includes`) is watched for while it waits; whichever holds first decides. Stops at the first step that fails or whose check does not hold, with DOM_CHECK_FAILED or the step's own error, saying how far it got and where the tab is. Returns `{ done, of, steps, page, url, title }`, the page the tab shows at the end, with no page while it is still loading. write-tier: approval-gated, the ask naming every step as the page shows it; a click or a send cannot be undone.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.act` op (D-335 slice J). Given a `target` URL pattern, a `page` (the handle `core.dom.inspect` answered) and `steps` (at most 20, `browser-act.ts`), does each step on that page in order through the paired Browser Bridge, approved once for all of them: `type` (a value into a field by ref or selector, a list taking an option and a checkbox true or false; with `submit`, then sends its form in the same script; with `pick`, then picks the field's suggestion with that text, as a person clicks one in the list that shows as they type, and checks the field took it), `click`, `submit` (sends the form the element is in, as Enter would) and `wait` (a pause, or until a selector shows or goes). Recued checks every step: a typed value must be in its field, a step whose page then shows a CAPTCHA nobody has solved stops the sequence, and a sent form (or a click on a form's send button) must load a page or change the address within 5 seconds unless the step's `success_when` says what to look for instead (`page_changes`, `url_includes`, `shows`, `gone`, `text`, within `seconds`), and an error message a click or a send leads to stops the sequence, quoted. A step's `fail_when` (`shows`, `text`, `url_includes`) is watched for while it waits; whichever holds first decides. Stops at the first step that fails or whose check does not hold, with DOM_CHECK_FAILED or the step's own error, saying how far it got and where the tab is. Returns `{ done, of, steps, page, url, title }`, the page the tab shows at the end, with no page while it is still loading. write-tier: approval-gated, the ask naming every step as the page shows it; a click or a send cannot be undone. D-335 slice T: called with a `page`, the answer also says what changed on that page (`changes`): the page is read again, and the lines new since its last read come with their numbers and refs (a `from` at one reads on there), with those that went, or it says nothing changed; a page it loaded, or one never read, answers its first lines. A run reviewed before it starts gets none. D-335 slice X: a step may name its tab, `page` (a handle) or `url` (an address: the tab showing it, else a new tab opened for it), and a step naming neither runs on the tab of the step before; `page` may then be left out. Steps that read (`read`: the page as an outline, or with `form: \"text\"` its text, with `find`, `from` or `chars`, as `core.dom.inspect` answers it), scroll (`to`, `screen`), wait for an address (`wait` with `url_includes`) and, with Bridge 0.0.8, go to an address (`go`), `back`, `reload`, `close` the tab and point at an element (`hover`) join the ones that act. Reads that follow one another on different tabs run side by side, and a batch's reads hold at most 60,000 characters. A batch that names its tabs or reads answers `tabs`, one per tab: `{ page, url, title, opened?, closed?, steps, reads?, changes? }`. A batch that only reads, scrolls, waits and points, on tabs already open, asks nothing; one let through without an ask opens no tab its admission did not cover.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "authoring",
@@ -2977,13 +2997,15 @@ const MANIFESTS = [
       "steps": "steps",
       "page": "page",
       "url": "url",
-      "title": "title"
+      "title": "title",
+      "changes": "changes",
+      "tabs": "tabs"
     }
   },
   {
     "slug": "dom-tabs",
     "name": "DOM Tabs",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.tabs` op (D-335). Given a `target` URL pattern (op arg), lists the tabs open in the browser of the paired Browser Bridge on that site, each as `{ page, url, title }` read from the page itself, where `page` is the handle `core.dom.inspect`, `core.dom.write` and `core.dom.click` take. The owner's own Recued client is never listed. Returns `{ tabs, truncated }`: at most 50 tabs, with `truncated: true` when there were more. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.tabs` op (D-335). Given a `target` URL pattern (op arg), lists the tabs open in the browser of the paired Browser Bridge on that site, each as `{ page, url, title }` read from the page itself, where `page` is the handle `core.dom.inspect`, `core.dom.write` and `core.dom.click` take. The owner's own Recued client is never listed. Returns `{ tabs, truncated }`: at most 50 tabs, with `truncated: true` when there were more. D-335 slice X: with `address`, only the tabs showing that address (host without www., path without a trailing slash, query; the scheme and the fragment ignored), which Open a web page looks for before it opens a tab. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "reading",
@@ -2998,7 +3020,8 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
-      "target": null
+      "target": null,
+      "address": null
     },
     "output": {
       "tabs": "tabs",
@@ -3035,7 +3058,7 @@ const MANIFESTS = [
   {
     "slug": "dom-wait",
     "name": "DOM Wait",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.wait` op (D-335 slice H). Given a `target` URL pattern, a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered) and a CSS `selector`, waits in that page of the paired Browser Bridge until an element matching the selector is shown — or, with `until: \"gone\"`, until none is — holding `text` when given (case and spacing ignored), for at most `timeout_seconds` (default 10, at most 30). Returns `{ page, url, title, found, waited_ms }`; `found: false` means it was not met in time, which is an answer, not an error. A page that reloads or goes to another address while waiting fails DOM_SELECTOR_NOT_FOUND: list the tabs for its new handle. read-tier: changes nothing on the page.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.wait` op (D-335 slice H). Given a `target` URL pattern, a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered) and a CSS `selector`, waits in that page of the paired Browser Bridge until an element matching the selector is shown — or, with `until: \"gone\"`, until none is — holding `text` when given (case and spacing ignored), for at most `timeout_seconds` (default 10, at most 30). Returns `{ page, url, title, found, waited_ms }`; `found: false` means it was not met in time, which is an answer, not an error. A page that reloads or goes to another address while waiting fails DOM_SELECTOR_NOT_FOUND: list the tabs for its new handle. read-tier: changes nothing on the page. D-335 slice T: called with a `page`, the answer also says what changed on that page (`changes`): the page is read again, and the lines new since its last read come with their numbers and refs (a `from` at one reads on there), with those that went, or it says nothing changed; a page it loaded, or one never read, answers its first lines. A run reviewed before it starts gets none.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "reading",
@@ -3062,7 +3085,8 @@ const MANIFESTS = [
       "url": "url",
       "title": "title",
       "found": "found",
-      "waited_ms": "waited_ms"
+      "waited_ms": "waited_ms",
+      "changes": "changes"
     }
   },
   {
@@ -3100,7 +3124,7 @@ const MANIFESTS = [
   {
     "slug": "dom-screenshot",
     "name": "DOM Screenshot",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.screenshot` op (D-335 slice H). Needs Browser Bridge 0.0.5 with \"Allow screenshots\" turned on in its side panel (Chrome captures a tab only for an extension holding `<all_urls>`, which the owner grants there); without it the step fails ROLE_RESTRICTION, saying how to turn it on, and no tab moves. Given a `target` URL pattern and a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered), takes a picture of that page as Chrome draws it in the browser of the paired Browser Bridge: the visible part of the page, or the element `ref` or `selector` names, scrolled into view when it is not. Chrome only pictures the tab in front, so the Bridge brings the tab forward for a moment and then puts back the tab the owner was on. The picture is a JPEG of at most 1568 pixels on its longer side, and it pictures the page as shown, embedded frames and form fields included. Returns `{ page, url, title, image, width, height }`, where `image` is `{ type: \"image\", image_id, mime_type, width, height }`: the server keeps the picture for 10 minutes, an AI app connected over MCP receives it as an image beside the result, and the run's history keeps only this reference. A minimized Chrome window fails ROLE_RESTRICTION. read-tier: does not ask.",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.screenshot` op (D-335 slice H). Needs Browser Bridge 0.0.5 with \"Allow screenshots\" turned on in its side panel (Chrome captures a tab only for an extension holding `<all_urls>`, which the owner grants there); without it the step fails ROLE_RESTRICTION, saying how to turn it on, and no tab moves. Given a `target` URL pattern and a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered), takes a picture of that page as Chrome draws it in the browser of the paired Browser Bridge: the visible part of the page, or the element `ref` or `selector` names, scrolled into view when it is not. Chrome only pictures the tab in front, so the Bridge brings the tab forward for a moment and then puts back the tab the owner was on. The picture is a JPEG of at most 1568 pixels on its longer side, and it pictures the page as shown, embedded frames and form fields included. Pass `screen` for one screen of a long page, counted from 1 at its top, each a Page Down (seven eighths of a window) below the one before: of the page, of the panel an app scrolls instead, or of the element `ref` or `selector` names when it scrolls its content or is taller than what shows; whatever the screenshot scrolled is put back once the picture is taken (Browser Bridge 0.0.8; an older one fails ROLE_RESTRICTION, saying to update it). Returns `{ page, url, title, image, width, height, screen, screens }`, where `screen` is the screen pictured (for the page as shown, the one it begins in) of `screens`, and `image` is `{ type: \"image\", image_id, mime_type, width, height }`: the server keeps the picture for 10 minutes, an AI app connected over MCP receives it as an image beside the result, and the run's history keeps only this reference. A minimized Chrome window fails ROLE_RESTRICTION. read-tier: does not ask.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "reading",
@@ -3118,7 +3142,8 @@ const MANIFESTS = [
       "target": null,
       "page": null,
       "ref": null,
-      "selector": null
+      "selector": null,
+      "screen": null
     },
     "output": {
       "page": "page",
@@ -3126,7 +3151,179 @@ const MANIFESTS = [
       "title": "title",
       "image": "image",
       "width": "width",
-      "height": "height"
+      "height": "height",
+      "screen": "screen",
+      "screens": "screens"
+    }
+  },
+  {
+    "slug": "dom-scroll",
+    "name": "DOM Scroll",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.scroll` op (D-335 slice U). Given a `target` URL pattern and a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered), scrolls that page in the browser of the paired Browser Bridge a screen at a time, as Page Down does (each screen seven eighths of a window below the one before), and leaves it there: `to` is `next` (the default), `previous`, `top` or `bottom`, or `screen` names one counted from 1 at the top. It scrolls the page, or the panel an app scrolls instead (a mail list, a chat), or the element `ref` or `selector` names when it scrolls its content or is taller than what shows; then it waits up to a second and a half for the page to draw what that brought in (a feed that loads more as it is scrolled). Returns `{ page, url, title, screen, screens }` and, as typing and clicks do, `changes`: the lines new on the page since it was last read, with their numbers and refs. Needs Browser Bridge 0.0.8; an older one fails ROLE_RESTRICTION, saying to update it. read-tier: does not ask.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "read"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "ref": null,
+      "selector": null,
+      "to": null,
+      "screen": null
+    },
+    "output": {
+      "page": "page",
+      "url": "url",
+      "title": "title",
+      "screen": "screen",
+      "screens": "screens",
+      "changes": "changes"
+    }
+  },
+  {
+    "slug": "dom-download",
+    "name": "DOM Download",
+    "description": "Kernel backing ingredient for the Tier-K `core.dom.download` op (D-335 slice AP). Needs a Browser Bridge that runs `download_file` (the release after 0.0.7); an older one fails ROLE_RESTRICTION, saying to update it. Given a `target` URL pattern and a `page` (the handle `core.dom.tabs`, `core.dom.open` or `core.dom.inspect` answered), fetches the file the page links to, as the page would fetch it with its cookies: the link `ref` or `selector` names (its `href`, or an element's `src`), or `address`. At most 2,500,000 bytes; a larger file fails, saying its size. The server keeps the file among the owner's files (`data.file.received`, origin `browser_download`) and returns `{ page, url, title, address, file_ref, filename, mime_type, size_bytes, sha256 }`, never the bytes: `file_ref` is the `file:` ref Read a PDF's text, `document.read` and the CSV Toolkit take. read-tier: changes nothing on the page.",
+    "author": "recued",
+    "kind": "dom",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "dom",
+      "core.dom",
+      "extension",
+      "read",
+      "file"
+    ],
+    "input": {
+      "target": null,
+      "page": null,
+      "ref": null,
+      "selector": null,
+      "address": null
+    },
+    "output": {
+      "page": "page",
+      "url": "url",
+      "title": "title",
+      "address": "address",
+      "file_ref": "file_ref",
+      "record_id": "record_id",
+      "filename": "filename",
+      "mime_type": "mime_type",
+      "size_bytes": "size_bytes",
+      "sha256": "sha256"
+    }
+  },
+  {
+    "slug": "http-get",
+    "name": "HTTP Get",
+    "description": "Kernel backing ingredient for the Tier-K `core.http.get` op (D-345). The server fetches a public web address itself (no browser, nothing of the owner's sent: no cookies, no credentials) and returns what the site answered: `{ url, status, status_text, type, size, headers, json?, text?, truncated?, note? }` — `url` after redirects, `json` parsed for a JSON answer, `text` up to 40,000 characters for any other text, and for anything else a `note` that Download takes it. `headers_only: true` asks for the headers alone (HEAD). Refuses an address that is not public (loopback, private, link-local, shared, metadata), checked for every address the name resolves to and every redirect. read-tier: changes nothing.",
+    "author": "recued",
+    "kind": "storage",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "http",
+      "core.http",
+      "web",
+      "read"
+    ],
+    "input": {
+      "address": null,
+      "headers_only": false
+    },
+    "output": {
+      "url": "url",
+      "status": "status",
+      "status_text": "status_text",
+      "type": "type",
+      "size": "size",
+      "headers": "headers",
+      "json": "json",
+      "text": "text",
+      "truncated": "truncated",
+      "note": "note",
+      "redirected": "redirected"
+    }
+  },
+  {
+    "slug": "http-read",
+    "name": "HTTP Read",
+    "description": "Kernel backing ingredient for the Tier-K `core.http.read` op (D-345). The server fetches a public web address itself (no browser, nothing of the owner's sent) and returns the page as readable text: title, headings as `#` lines, paragraphs, list items, table rows, links as `[text](address)` — read from its `<main>` when it has one. `{ url, status, title, text, from, next, of }`: 40,000 characters a part from `from`, `next` the offset of the next part (null at the end), `of` the whole text's length. A file that is not text is refused, saying Download takes it. read-tier: changes nothing.",
+    "author": "recued",
+    "kind": "storage",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "http",
+      "core.http",
+      "web",
+      "read"
+    ],
+    "input": {
+      "address": null,
+      "from": 0
+    },
+    "output": {
+      "url": "url",
+      "status": "status",
+      "title": "title",
+      "text": "text",
+      "from": "from",
+      "next": "next",
+      "of": "of",
+      "cut_at_bytes": "cut_at_bytes"
+    }
+  },
+  {
+    "slug": "http-download",
+    "name": "HTTP Download",
+    "description": "Kernel backing ingredient for the Tier-K `core.http.download` op (D-345). The server fetches a file from a public web address itself (no browser, nothing of the owner's sent) and keeps it among the owner's files (`data.file.received`, origin `http_download`), up to 25 MB: `{ url, file_ref, record_id, filename, mime_type, size_bytes, sha256 }`, never the bytes. `file_ref` is the `file:` ref `document.read` (PDFs, Word and more), the CSV recipes and the archive packs take. An answer that is not 2xx keeps nothing. read-tier: changes nothing outside the owner's files.",
+    "author": "recued",
+    "kind": "storage",
+    "surface_kind": "reading",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "http",
+      "core.http",
+      "web",
+      "read",
+      "file"
+    ],
+    "input": {
+      "address": null
+    },
+    "output": {
+      "url": "url",
+      "file_ref": "file_ref",
+      "record_id": "record_id",
+      "filename": "filename",
+      "mime_type": "mime_type",
+      "size_bytes": "size_bytes",
+      "sha256": "sha256"
     }
   },
   {

@@ -103,6 +103,8 @@ export type ReceptionProjectionEffect = (
 export interface ComposeReceptionInboxDepsInput {
   /** Gate handle — the D-120 audit log (held-run anchors + audit rows). */
   readonly auditLog: AuditLogStore | undefined;
+  /** D-188 — the master "Pause server" flag: no held item is approved while paused. */
+  readonly isServerPaused?: () => boolean;
   /** Gate handle — the checkpoint store (held state + the N.5 narrow
    *  `setArgOverrides` writer). */
   readonly checkpointStore: CheckpointStore | undefined;
@@ -138,6 +140,8 @@ export interface ComposeReceptionInboxDepsInput {
   readonly readAskAllowOffer?: (
     ask_id: string,
   ) => Promise<{ ttl_ms: number; max_uses: number } | undefined>;
+  /** D-341 slice B4 — whether the OPEN ask offers "Always allow for this form" (`allow_trigger`). */
+  readonly readAskAlwaysAllow?: (ask_id: string) => Promise<boolean>;
   /** D-173 D7 — the owner-facing calendar overlap count for a held booking
    *  (`countCalendarOverlap` over the calendar stack). Absent ⇒ no count is
    *  surfaced on the inbox item. Owner-facing ONLY — never the visitor path. */
@@ -341,6 +345,7 @@ export const composeReceptionInboxDeps = (
     // EXISTING resume path — answer the held op's `gateway.preflight` ask.
     // Unwired notification blocks now fail closed with `not_configured`.
     submitAnswer: input.submitAnswer,
+    ...(input.isServerPaused !== undefined ? { isServerPaused: input.isServerPaused } : {}),
     // D-210 Phase C — the no-ask release leg. Bound only when BOTH the
     // decorated resumer and the checkpoint store are present: the release
     // must resume AND consume the checkpoint, and a half-wired seam that
@@ -359,6 +364,8 @@ export const composeReceptionInboxDeps = (
     ...(input.readAskAllowOffer !== undefined
       ? { readAskAllowOffer: input.readAskAllowOffer }
       : {}),
+    // D-341 slice B4 — "Always allow for this form" read (absent ⇒ never offered).
+    ...(input.readAskAlwaysAllow !== undefined ? { readAskAlwaysAllow: input.readAskAlwaysAllow } : {}),
     subviewStore: input.subviewStore,
     // D-173 D7 — "confirmed at approval". The OWNER-facing overlap count over
     // every calendar they have, so they can judge whether another booking at

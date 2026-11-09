@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { PackListEntry } from '@recued/contracts';
+import type { ConnectionView, PackListEntry } from '@recued/contracts';
 
 import {
   PACK_CONNECTIONS_ACTION_ATTR,
@@ -18,8 +18,10 @@ import {
   PACK_CONNECTIONS_ATTR,
   PACK_CONNECTIONS_EFFECT_ATTR,
   PACK_CONNECTIONS_ERROR_ATTR,
+  PACK_CONNECTIONS_FIX_ATTR,
   PACK_CONNECTIONS_HELD_BY_ATTR,
   PACK_CONNECTIONS_NO_DEFAULT_ATTR,
+  PACK_CONNECTIONS_PROBLEM_ATTR,
   PACK_CONNECTIONS_RECIPE_EFFECT_ATTR,
   PACK_CONNECTIONS_ROW_ATTR,
   PACK_CONNECTIONS_SET_UP_ATTR,
@@ -291,7 +293,15 @@ describe('D-320 — the Access tab Connections block', () => {
     };
     const m = mount(callers);
     await m.settle();
-    expect(text(m.block!)).toContain('No longer set up');
+    // D-321 P4 — "Not set up", never "No longer": installing with no connection
+    // leaves its name on the list, and it was never set up. With no vendor named,
+    // the way there is Connections.
+    expect(text(m.block!)).toContain('Not set up.');
+    expect(text(m.block!)).not.toContain('No longer');
+    const fix = one(one(m.block!, PACK_CONNECTIONS_ROW_ATTR, 'hubspot-key')!, PACK_CONNECTIONS_FIX_ATTR)!;
+    expect(fix.getAttribute(PACK_CONNECTIONS_FIX_ATTR)).toBe('not_set_up');
+    expect(text(fix)).toBe('Set it up under Connections →');
+    expect(fix.getAttribute('href')).toBe('#connections/others');
   });
 
   it('shows nothing for a pack that signs in to nothing, or a server without the calls', async () => {
@@ -666,5 +676,98 @@ describe('D-320 ruling 17 — the block says connection, never account', () => {
     expect(words).toContain('No default: runs ask which connection to use');
     expect(words).toContain('This pack will run on HubSpot app from now on.');
     for (const state of seen) expect(state).not.toMatch(/account/i);
+  });
+});
+
+/** D-321 P4 — the block is the pack's one Connections block now, above its tabs,
+ *  so each connection on the list says whether it works for this pack, by the rule
+ *  the readiness rows use before install (`connectionProblem`). */
+describe('D-321 P4 — each connection on the list says whether it works here', () => {
+  const listView = (rows: Array<[string, string, boolean, boolean?]>): PackConnectionsView => ({
+    pack_slug: PACK,
+    slots: [{
+      slot: 'hubspot',
+      catalogs: ['hubspot-catalog'],
+      connections: rows.map(([name, alias, isDefault, enrolled]) => entry(name, alias, isDefault, enrolled ?? true)),
+      candidates: [],
+      vendor: 'hubspot',
+    }],
+  });
+  const viewOf = (name: string, over: Partial<ConnectionView> = {}): ConnectionView =>
+    ({ name, kind: 'api', display_name: name, ...over }) as ConnectionView;
+  const mountWith = async (
+    list: PackConnectionsView,
+    views: ConnectionView[] | null,
+    needed: string[] = [],
+  ): Promise<() => FakeElement> => {
+    let block: FakeElement | null = null;
+    const scoped = { slug: PACK, required_scopes_by_connection: { hubspot: needed } } as unknown as PackListEntry;
+    const controller = createPackConnectionsController({
+      document: doc,
+      callers: { list: async () => list, add: async () => list, remove: async () => list, setDefault: async () => list },
+      onChange: () => {
+        block = controller.renderForPack(scoped) as unknown as FakeElement | null;
+      },
+      connectionViews: () => views,
+    });
+    block = controller.renderForPack(scoped) as unknown as FakeElement | null;
+    await controller.whenSettled();
+    await flush();
+    return () => block!;
+  };
+
+  it('a turned-down sign-in says so, and Reconnect opens that connection', async () => {
+    const block = await mountWith(
+      listView([['hubspot-key', 'Service Key', true]]),
+      [viewOf('hubspot-key', { health: { status: 'auth_failed', last_probed_at: 1 } })],
+    );
+    const row = one(block(), PACK_CONNECTIONS_ROW_ATTR, 'hubspot-key')!;
+    expect(one(row, PACK_CONNECTIONS_PROBLEM_ATTR)?.getAttribute(PACK_CONNECTIONS_PROBLEM_ATTR)).toBe('rejected');
+    expect(text(row)).toContain('Sign-in not accepted.');
+    const fix = one(row, PACK_CONNECTIONS_FIX_ATTR)!;
+    expect(text(fix)).toBe('Reconnect →');
+    expect(fix.getAttribute('href')).toBe('#connections/others/review-access/api/hubspot-key');
+  });
+
+  it("a sign-in short of a scope signs in again with the pack's; a pasted key gains it at the vendor", async () => {
+    const needed = ['crm.objects.deals.read', 'crm.objects.deals.write'];
+    const app = await mountWith(
+      listView([['hubspot-app', 'Sales app', true]]),
+      [viewOf('hubspot-app', { granted_scopes: ['crm.objects.deals.read'] })],
+      needed,
+    );
+    const appRow = one(app(), PACK_CONNECTIONS_ROW_ATTR, 'hubspot-app')!;
+    expect(text(appRow)).toContain('Missing crm.objects.deals.write.');
+    expect(text(one(appRow, PACK_CONNECTIONS_FIX_ATTR)!)).toBe('Re-authorize →');
+    expect(one(appRow, PACK_CONNECTIONS_FIX_ATTR)!.getAttribute('href'))
+      .toBe('#connections/others/enroll/hubspot/pack/hubspot/hubspot');
+    const key = await mountWith(
+      listView([['hubspot-key', 'Service Key', true]]),
+      [viewOf('hubspot-key', { granted_scopes: [], auth_type: 'bearer' })],
+      needed,
+    );
+    const keyFix = one(one(key(), PACK_CONNECTIONS_ROW_ATTR, 'hubspot-key')!, PACK_CONNECTIONS_FIX_ATTR)!;
+    expect(text(keyFix)).toBe('Add them to the key, then Probe →');
+    expect(keyFix.getAttribute('href')).toBe('#connections/others');
+  });
+
+  it('one that works, one no longer set up, or a list not read yet: the rows say what they did', async () => {
+    const works = await mountWith(
+      listView([['hubspot-key', 'Service Key', true]]),
+      [viewOf('hubspot-key', { health: { status: 'ok', last_probed_at: 1 } })],
+    );
+    expect(one(works(), PACK_CONNECTIONS_PROBLEM_ATTR)).toBeNull();
+    const gone = await mountWith(
+      listView([['hubspot-old', 'Old portal', true, false]]),
+      [viewOf('hubspot-old', { health: { status: 'auth_failed' } })],
+    );
+    // Not set up: the vendor's form for this pack, never a problem drawn from a stale view.
+    expect(text(gone())).toContain('Not set up.');
+    expect(one(gone(), PACK_CONNECTIONS_PROBLEM_ATTR)).toBeNull();
+    const setUp = one(one(gone(), PACK_CONNECTIONS_ROW_ATTR, 'hubspot-old')!, PACK_CONNECTIONS_FIX_ATTR)!;
+    expect(text(setUp)).toBe('Set up →');
+    expect(setUp.getAttribute('href')).toBe('#connections/others/enroll/hubspot/pack/hubspot/hubspot');
+    const unread = await mountWith(listView([['hubspot-key', 'Service Key', true]]), null);
+    expect(one(unread(), PACK_CONNECTIONS_PROBLEM_ATTR)).toBeNull();
   });
 });

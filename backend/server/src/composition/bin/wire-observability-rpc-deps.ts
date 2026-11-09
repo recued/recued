@@ -106,6 +106,8 @@ export interface ComposeObservabilityRpcDepsInput {
   /** What an owner's page-started run answered once its approval let it
    *  finish; `execution.get` hands it to the page still showing "held". */
   settledRunResults?: SettledRunResults;
+  /** D-341 slice B1 — triggers' pre-approvals: `execution.get` lists what a run made without asking. */
+  triggerPreapprovals?: ExecutionFeedRpcDeps['triggerPreapprovals'];
   /** Pair-instance id. Surfaces in the audit-export envelope's
    *  `instance_id` field + optionally the status page header. Always
    *  defined in bin.ts (initialised to `'server'` then overwritten on
@@ -172,6 +174,7 @@ export const composeObservabilityRpcDeps = (
     commitStore,
     gatedActionStore,
     settledRunResults,
+    triggerPreapprovals,
     serverInstanceId,
     pairing,
     circuitStore,
@@ -224,6 +227,7 @@ export const composeObservabilityRpcDeps = (
           serverInstanceId,
           ...(gatedActionStore !== undefined ? { gatedActionStore } : {}),
           ...(settledRunResults !== undefined ? { settledRunResults } : {}),
+          ...(triggerPreapprovals !== undefined ? { triggerPreapprovals } : {}),
         }
       : undefined;
 

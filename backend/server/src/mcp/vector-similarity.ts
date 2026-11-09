@@ -28,6 +28,7 @@
 
 import {
   RpcError,
+  contractUnavailableSentence,
   ENRICHMENT_PINNED_AUTHOR_PREFIX,
   VECTOR_SEARCH_DEFAULT_THRESHOLD,
   clampVectorSearchLimit,
@@ -161,7 +162,7 @@ const validateInput = (
   ) {
     throw new RpcError(
       'bad_request',
-      `mcp.vector.similarity_search: topic '${input.topic}' is not read-granted to this contract (read rejected)`,
+      `mcp.vector.similarity_search: ${contractUnavailableSentence(`topic '${input.topic}'`)}`,
       400,
     );
   }

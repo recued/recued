@@ -211,6 +211,9 @@ export interface ConnectionsDialogState {
     kind: ConnectionKind;
     name: string;
     status: string;
+    /** D-321 P8 — the pack this connection was set up from: the banner offers
+     *  the way back to it. An address in the app (`#…`). */
+    return_to?: { href: string; label: string };
     last_error?: string;
     purpose?: 'probe' | 'credential_rotation' | 'post_safe_stop';
     resolution?:

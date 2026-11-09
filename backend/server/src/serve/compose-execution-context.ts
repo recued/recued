@@ -180,6 +180,7 @@ export interface ComposeExecutionContextOptions {
     | 'gatedActionStore'
     | 'writeRuleStore'
     | 'browserPassStore'
+    | 'triggerPreapprovalStore'
     | 'settledRunResults'
     | 'fileStack'
     | 'workEntityStoreRef'
@@ -406,7 +407,15 @@ export const composeExecutionContext = async (
         // D-338 — a day a caller names is read on the server's clock unless the chat gives its turn's,
         // and a model is told which items the Agenda keeps private.
         ...(collection.serverTimeZone ? { timeZone: collection.serverTimeZone } : {}),
-        ...(collection.scheduledSituations ? { isPrivate: item => collection.scheduledSituations!.isPrivateItem(item) } : {}),
+        ...(collection.scheduledSituations ? { isPrivate: item => collection.scheduledSituations!.isPrivateItem(item),
+          // D-342 §5 — and the Agenda suggestions' own run reads the owner's pursuits.
+          readsPursuits: source => collection.scheduledSituations!.readsPursuits(source),
+          // D-343 slice 4 — a reply to the evening notice lists the pursuits it asked about.
+          eveningPursuits: () => collection.scheduledSituations!.eveningPursuits(),
+          // D-340 slice 5 — and names the private items a quoted stream named.
+          namesPrivateIn: title => collection.scheduledSituations!.namesPrivateIn(title),
+          // D-340 slice 4 — and the suggestions' own run takes its own tool rounds.
+          toolRoundCap: source => collection.scheduledSituations!.suggestionsToolRounds(source) } : {}),
         isVaultUnlocked: app.isVaultUnlocked ?? (() => false) }) : undefined;
   if (app.situationAccessRef) app.situationAccessRef.current = situationAccess;
   if (situationAccess) collection.scheduledSituations?.bindAccess(situationAccess);
@@ -828,6 +837,7 @@ export const composeExecutionContext = async (
     gatedActionStore: storage.gatedActionStore,
     writeRules: storage.writeRuleStore,
     browserPasses: storage.browserPassStore,
+    triggerPreapprovals: storage.triggerPreapprovalStore,
     annotationStore: app.annotationStoreRef,
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path R1
     // pre-pass builds the merged convention-family vendor registry (built-ins +

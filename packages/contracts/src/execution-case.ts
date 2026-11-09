@@ -1325,6 +1325,42 @@ export interface ExecutionCaseLearnedEntry {
 }
 
 // ────────────────────────────────────────────────────────────────
+// D-335 slice W — a browser flow the owner kept
+// ────────────────────────────────────────────────────────────────
+
+/** D-335 slice W — one step a chat turn did in the owner's browser: the page acted on, the element as
+ *  an ask names it (and, when one matches it alone, a CSS selector that finds it again), and what was
+ *  typed. What a field for a password, a sign-in code or a card took is never kept: `secret` says
+ *  there was one. */
+export interface ExecutionBrowserFlowStep {
+  do: 'type' | 'pick' | 'click' | 'press' | 'submit';
+  url: string;
+  title: string;
+  element: { role: string; label: string; selector?: string };
+  value?: string;
+  secret?: true;
+  /** The suggestion picked, for a pick. */
+  pick?: string;
+  /** The key pressed, for a press. */
+  key?: string;
+  /** Epoch ms. */
+  at: number;
+}
+
+/** D-335 slice W4 — a browser flow the owner kept by answering "That was right" to the "Worth
+ *  remembering?" ask, listed in Settings → Privacy → Learning beside the cases, to forget or make a
+ *  recipe of. ⛔ Its own entry, never a case: a case is a projection rebuilt from its sources, and
+ *  holds tool names without the arguments a flow is made of. */
+export interface ExecutionBrowserFlowEntry {
+  flow_id: string;
+  /** Epoch ms; the client renders it in the viewer's zone. */
+  kept_at: number;
+  /** The sites its steps were on, in the order first used. */
+  sites: string[];
+  steps: ExecutionBrowserFlowStep[];
+}
+
+// ────────────────────────────────────────────────────────────────
 // §10 — Retrieval and flow critique
 // ────────────────────────────────────────────────────────────────
 

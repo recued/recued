@@ -458,6 +458,9 @@ describe('wrapRegistryWithToolsSearch — install offers (D-323)', () => {
     // ⛔ The model cannot install and must not say it did.
     expect(String(res.guidance)).toContain('NOT installed');
     expect(String(res.guidance)).toContain('Never say you installed or ran it');
+    // The owner's ruling (2026-11-08): until a chat resumes after an install, the model
+    // asks the owner to say when it is in, so the owner knows to come back.
+    expect(String(res.guidance)).toContain('ask the owner to let you know when they have it installed and switched on');
     expect(String(res.guidance)).toContain('Do NOT retry');
   });
 
@@ -525,5 +528,68 @@ describe('wrapRegistryWithToolsSearch — install offers (D-323)', () => {
     );
     const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'quantum rent' }, CTX));
     expect((res.installable as Array<{ slug: string }>).map((offer) => offer.slug)).toEqual(['rental-book']);
+  });
+});
+
+/** D-346 follow-up (2026-11-08) — the owner deserves to know everything: an installed recipe or
+ *  action switched off for them is named, with where to turn it on, instead of the search
+ *  saying nothing installed does it. Only the owner: the source answers nothing for any other
+ *  caller, and a door never reaches the search. */
+describe('tools.search — what is installed but switched off for the owner', () => {
+  const OFF_RECIPE = mkEntry('recued-core/weekly-rent-digest', 2, {
+    description: 'Send the weekly rent digest', topic_tags: ['rent', 'digest'],
+  });
+  const OFF_ACTION = mkEntry('recued_op_recued-core.rentals.invoice.create', 2, {
+    description: 'Create a rent invoice', topic_tags: ['rent', 'invoice'],
+  });
+  const result = (res: unknown) => (res as { result: Record<string, unknown> }).result;
+
+  it('names a switched-off match with where its switch is, and does not offer a pack for it', async () => {
+    const asked: unknown[] = [];
+    const reg = wrapRegistryWithToolsSearch(mkInner([]), {
+      enabled: true,
+      ownerTurnedOff: () => [{ entry: OFF_RECIPE, tab: 'Recipes' }, { entry: OFF_ACTION, tab: 'Ops' }],
+      installOffers: async (query, installed) => { asked.push({ query, installed }); return []; },
+    });
+    const recipe = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'digest' }, CTX));
+    expect(recipe.match_count).toBe(0);
+    expect(recipe.turned_off).toEqual([{
+      recipe_slug: 'recued-core/weekly-rent-digest',
+      description: 'Send the weekly rent digest',
+      turn_on_under: 'Self (you) → Recipes on the Contracts page',
+    }]);
+    expect(JSON.stringify(recipe.turned_off)).not.toContain('args_schema');
+    expect(String(recipe.guidance)).toContain('switched off for the owner, so you cannot call them');
+    expect(String(recipe.guidance)).toContain('turn_on_under');
+    expect(String(recipe.guidance)).toContain('to let you know once it is on');
+    // It counts as installed: the owner turns it on and is not offered a pack for it.
+    expect((asked[0] as { installed: Array<{ name: string }> }).installed.map((r) => r.name))
+      .toEqual(['recued-core/weekly-rent-digest']);
+
+    const action = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'invoice' }, CTX));
+    expect(action.turned_off).toEqual([{
+      recipe_slug: 'recued_op_recued-core.rentals.invoice.create',
+      description: 'Create a rent invoice',
+      turn_on_under: 'Self (you) → Ops on the Contracts page',
+    }]);
+  });
+
+  it('keeps a callable match first, and adds the switched-off one beside it', async () => {
+    const callable = mkEntry('recued-core/rent-reminder', 2, { description: 'Remind tenants about rent', topic_tags: ['rent'] });
+    const reg = wrapRegistryWithToolsSearch(mkInner([callable]), {
+      enabled: true,
+      ownerTurnedOff: () => [{ entry: OFF_RECIPE, tab: 'Recipes' }],
+    });
+    const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'rent' }, CTX));
+    expect(res.match_count).toBe(1);
+    expect((res.turned_off as Array<{ recipe_slug: string }>).map((r) => r.recipe_slug)).toEqual(['recued-core/weekly-rent-digest']);
+    expect(String(res.guidance)).toContain('match too, but are switched off for the owner');
+  });
+
+  it('reads as before when nothing is switched off', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner([]), { enabled: true, ownerTurnedOff: () => [] });
+    const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'rent digest' }, CTX));
+    expect(res).not.toHaveProperty('turned_off');
+    expect(String(res.guidance)).toContain('No installed recipe tool or action matches this request');
   });
 });

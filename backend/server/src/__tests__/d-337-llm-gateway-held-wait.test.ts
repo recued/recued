@@ -77,6 +77,8 @@ const harness = (input: {
   now?: () => number;
   waiters?: ReturnType<typeof createHeldRunWaiters>;
   failAiRound?: number;
+  /** What the failing round throws. Defaults to a live authority change. */
+  failWith?: () => Error;
 }) => {
   const aiInputs: Record<string, unknown>[] = [];
   let round = 0;
@@ -84,7 +86,7 @@ const harness = (input: {
     aiInputs.push(aiInput);
     const at = round++;
     if (input.failAiRound === at) {
-      throw Object.assign(new Error('authority changed'), { code: 'llm_gateway_authority_changed' });
+      throw input.failWith?.() ?? Object.assign(new Error('authority changed'), { code: 'llm_gateway_authority_changed' });
     }
     return { body: input.rounds[Math.min(at, input.rounds.length - 1)]! };
   });
@@ -292,6 +294,31 @@ describe('D-337 ruling 4 (a) — the gateway request waits for the owner\'s answ
       error_code: 'llm_gateway_authority_changed',
       dispatched_tool_calls: 1,
     });
+  });
+});
+
+// D-188 — the owner pauses after the request's tools ran: the live check before the next model call
+// refuses with `server_paused`, and the caller is told that, not that its authority changed.
+describe('D-188 — a pause after the tools ran', () => {
+  it('reports the work done and that the owner paused the server', async () => {
+    let h!: ReturnType<typeof harness>;
+    h = harness({
+      dispatch: async () => {
+        setTimeout(() => h.waiters.settled(settledFor('run-p1', ranResponse('Dentist'))), 10);
+        return heldResult('run-p1');
+      },
+      rounds: [callRemove(), answer('unreached')],
+      failAiRound: 1,
+      failWith: () => Object.assign(new Error('The server is paused.'),
+        { code: 'llm_gateway_authority_changed', public_code: 'server_paused' }),
+    });
+    const result = await h.run({ ms: 60_000 });
+    expect(result.post_effect_outcome).toMatchObject({
+      status: 'completed',
+      error_code: 'server_paused',
+      dispatched_tool_calls: 1,
+    });
+    expect(result.post_effect_outcome?.message).toContain('the owner paused the server');
   });
 });
 

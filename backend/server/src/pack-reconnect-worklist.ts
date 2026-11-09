@@ -7,6 +7,9 @@ import type { PackInstallRpcDeps } from './pack-install-handler.js';
 import { scanInstalledPackRowsBySegment, packIngredientIds } from './pack-inventory.js';
 import { createConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
 import { oauthScopesCover } from './managed-oauth-service.js';
+import { isCoreFeaturePack, resolveBundledPackManifest } from './bundled-pack-source.js';
+import { createPackConnectionHolderStore } from './storage/pack-connection-holder-store.js';
+import { authoredSlotOf, requirementVendor, signInLabel } from './pack-connection-slots.js';
 
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -34,6 +37,7 @@ export const createPackReconnectWorklist = (deps: PackInstallRpcDeps) => {
     const views = await deps.getVendorPermissionConnections();
     const byName = new Map(views.filter(v => v.kind === 'api').map(v => [v.name, v]));
     const bindings = createConnectionCatalogBindingStore(store).list();
+    const holders = createPackConnectionHolderStore(store);
     const items: InternalItem[] = [];
     const unresolved = new Map<string, { slug: string; name: string; message: string }>();
     for (const [packSlug, row] of scanInstalledPackRowsBySegment(store)) {
@@ -47,6 +51,22 @@ export const createPackReconnectWorklist = (deps: PackInstallRpcDeps) => {
           message: 'Installed permission requirements could not be read. Refresh or review this Pack.' }); continue;
       }
       const version = Number(value.version);
+      // D-321 P5 — the pack as an owner knows it, and the vendor whose form sets up
+      // its sign-in. Read from the manifest an install used; absent, its slug and
+      // no vendor.
+      let packManifest: ReturnType<typeof resolveBundledPackManifest> = null;
+      try {
+        packManifest = resolveBundledPackManifest(deps.packDir, packSlug) ?? deps.resolveDependencyManifest?.(packSlug) ?? null;
+      } catch { packManifest = null; }
+      const packName = typeof packManifest?.name === 'string' && packManifest.name.trim() !== '' ? packManifest.name : packSlug;
+      const vendor = requirementVendor(packManifest);
+      // Who sets up its connection: the owner, for a pack holding its own list. A
+      // core feature the server installs itself is not theirs to set up (the
+      // reception packs dispatch in-process, at `https://reception.local`), and a
+      // pack signing in through another's list (D-320 ruling 9) is set up there.
+      const holder = holders.get(packSlug)?.holder_pack_id;
+      const ownsItsSignIn = !(packManifest !== null && isCoreFeaturePack(packManifest))
+        && (holder === undefined || holder === packSlug);
       const ownBindings = bindings.filter(b => b.installed_pack_id === packSlug);
       const ids = packIngredientIds(store, packSlug);
       const grouped = new Map<string, { slot: string; name?: string; scopes: string[]; bases: string[] }>();
@@ -60,9 +80,17 @@ export const createPackReconnectWorklist = (deps: PackInstallRpcDeps) => {
           continue;
         }
         const needs = union(...Object.values(catalog.operations).map(op => op.required_scopes ?? []));
-        if (!needs.length) continue;
         const assigned = ownBindings.filter(b => b.catalog_slug === id);
-        const targets = assigned.length ? assigned.map(b => ({ slot: b.slot ?? id, name: b.connection_name })) : [{ slot: id }];
+        // D-321 P5 — a catalog none of whose connections is set up needs the owner
+        // whether or not its operations declare scopes: an API-key pack with no
+        // connection never appeared. Only a catalog a connection serves
+        // (`surfaces.api`, as the pack's own Connections block reads it; a
+        // program's catalog signs in to nothing), of a pack whose sign-in the owner
+        // sets up. One with a set-up connection and no scopes has nothing to review.
+        if (!needs.length && (!ownsItsSignIn || catalog.surfaces?.api === undefined
+          || assigned.some(b => byName.has(b.connection_name)))) continue;
+        const slotOf = (recorded: string | undefined): string => recorded ?? authoredSlotOf(packManifest, id) ?? id;
+        const targets = assigned.length ? assigned.map(b => ({ slot: slotOf(b.slot), name: b.connection_name })) : [{ slot: slotOf(undefined) }];
         for (const target of targets) {
           const name = 'name' in target ? target.name : undefined;
           const key = JSON.stringify([target.slot, name]);
@@ -74,6 +102,21 @@ export const createPackReconnectWorklist = (deps: PackInstallRpcDeps) => {
       }
       for (const current of grouped.values()) {
         const view = current.name ? byName.get(current.name) : undefined;
+        // D-321 P5 — no set-up connection behind it (none bound, or one named that
+        // is not set up): one "Connection needed" item, offering the vendor's form.
+        // A name not set up has nothing to open, so it is not grouped under it.
+        if (view === undefined) {
+          if (!ownsItsSignIn) continue;
+          const requirement = hash([packSlug, version, value.installed_at, current.slot, 'connection-needed', current.scopes]);
+          items.push({ id: hash([packSlug, current.slot, 'connection-needed']), pack_slug: packSlug, pack_name: packName, version,
+            slot: current.slot, required_scopes: current.scopes, missing_scopes: [], coverage: 'unknown', reviewed: false,
+            connection_needed: true, ...(vendor !== undefined ? { vendor } : {}),
+            // Its heading names the service, as the Access tab does; the chip says
+            // "Connection needed".
+            authentication: 'unknown', display_name: signInLabel(vendor, current.slot, [packName]),
+            requirement_fingerprint: requirement, compatible: false });
+          continue;
+        }
         const authentication = view?.auth_type === 'oauth2_refresh' ? 'direct_oauth' : view?.auth_type === 'managed_oauth' ? 'broker'
           : view?.auth_type ? 'other' : 'unknown';
         const api = typeof view?.base_url === 'string' ? view.base_url : undefined;
@@ -90,7 +133,7 @@ export const createPackReconnectWorklist = (deps: PackInstallRpcDeps) => {
         const saved = current.name ? store.get(scope, [packSlug, current.slot, current.name])?.value : undefined;
         const reviewed = coverage === 'unknown' && sourceId !== undefined && record(saved)
           && saved.requirement_fingerprint === requirement && saved.source_id === sourceId;
-        items.push({ id: hash([packSlug, current.slot, current.name]), pack_slug: packSlug, pack_name: packSlug, version,
+        items.push({ id: hash([packSlug, current.slot, current.name]), pack_slug: packSlug, pack_name: packName, version,
           slot: current.slot, required_scopes: current.scopes, missing_scopes: missing, coverage, reviewed,
           ...(current.name ? { connection_name: current.name } : {}), authentication,
           display_name: view?.display_name ?? current.name ?? 'Connection needed', requirement_fingerprint: requirement,
@@ -118,7 +161,9 @@ export const createPackReconnectWorklist = (deps: PackInstallRpcDeps) => {
         can_reconnect: available && ['direct_oauth', 'broker'].includes(first.authentication),
         can_mark_reviewed: available && first.authentication !== 'unknown' && members.every(m => m.coverage === 'unknown'),
         items: members.map(m => ({ id: m.id, pack_slug: m.pack_slug, pack_name: m.pack_name, version: m.version,
-          slot: m.slot, required_scopes: m.required_scopes, missing_scopes: m.missing_scopes, coverage: m.coverage, reviewed: m.reviewed })),
+          slot: m.slot, required_scopes: m.required_scopes, missing_scopes: m.missing_scopes, coverage: m.coverage, reviewed: m.reviewed,
+          ...(m.connection_needed === true ? { connection_needed: true as const } : {}),
+          ...(m.vendor !== undefined ? { vendor: m.vendor } : {}) })),
       };
     }).sort((a, b) => a.display_name.localeCompare(b.display_name) || a.id.localeCompare(b.id));
     return { groups, unresolved_packs: [...unresolved.values()], items, assertCurrent, store };

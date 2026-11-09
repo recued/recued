@@ -36,6 +36,7 @@ export type MessengerIngressSupervisorState =
   | MessengerIngressRunnerState
   | 'webhook'
   | 'locked'
+  | 'paused'
   | 'invalid';
 
 export interface MessengerIngressSupervisorStatus {
@@ -209,6 +210,14 @@ export const createMessengerIngressSupervisor = (
     if (options.isVaultUnlocked?.() === false) {
       await stopKey(key);
       setStatus(vendor, row.name, mode, 'locked', 'server vault is locked');
+      return;
+    }
+    // D-188 — the owner's pause stops the runner as a locked vault does: no messenger is
+    // polled or kept connected while paused (the emergency stop: nothing comes in). What the
+    // vendor still holds is fetched after Resume, whose reconcile starts the runner again.
+    if (options.isPaused?.() === true) {
+      await stopKey(key);
+      setStatus(vendor, row.name, mode, 'paused', 'server is paused');
       return;
     }
 

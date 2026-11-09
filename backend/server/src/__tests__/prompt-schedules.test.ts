@@ -3,12 +3,13 @@ import { createManifestRegistry } from '../manifest-loader.js';
 import { buildChatToolRegistryInputs, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { withTurnZone } from '../chat-clock.js';
 import Database from 'better-sqlite3';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OWNER_CONTRACT_ID, opGrantEntry, isExecutionSource, CHAT_RPC_METHODS, SERVER_RPC_METHODS, isReservedLocalRpc,
   TIER1_TOOL_DESCRIPTORS, type InternalToolRegistry, type ExecutionSource, type PromptSchedule } from '@recued/contracts';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createSqliteChatPlanStore } from '../storage/chat-plan-store.js';
+import { createHeldResultTurnStore } from '../storage/chat-held-result-store.js';
 import { planApproval } from '@recued/gateway';
 import { createChatOrchestrator, type ChatTurnInput } from '../chat-orchestrator.js';
 import { withQueuedChatTurns } from '../chat-turn-queue.js';
@@ -369,6 +370,109 @@ describe('scheduled prompts use durable conversations', () => {
     expect(f.inputs).toHaveLength(3);
   });
 
+  it('D-337 slice F — counts what the turns that carried a run on wait on as the schedule\'s, however long the chain or folded', async () => {
+    const f = fixture();
+    const schedule = (await f.service.create(recurring, 'carry-on-outcome'))!;
+    const other = (await f.service.create({ ...recurring, title: 'Other prompt' }, 'carry-on-other'))!;
+    f.clock(NOW + 300000); await f.service.tick();
+    await f.settled(schedule.session_id); await f.settled(other.session_id);
+    const occurrence = (await f.service.get(schedule.schedule_id)).last_turn_id!;
+    const turns = createHeldResultTurnStore(f.db, () => NOW + 300000);
+    const write = (plan_id: string, turn_id: string, at: number) => {
+      const args = { to: 'owner@example.com', body: plan_id };
+      return { plan_id, session_id: schedule.session_id, turn_id, tool: 'mail.send', tier: 1 as const, classification: 'write' as const,
+        args, args_hash: planApproval.computePlanArgsHash(args), status: 'proposed' as const, created_at: at };
+    };
+    const carry = (turn_id: string, origin_turn_id: string) =>
+      turns.record({ turn_id, session_id: schedule.session_id, run_id: `run-${turn_id}`, origin_turn_id });
+    // The other schedule's own run waits on a write of its own.
+    const otherRun = (await f.service.get(other.schedule_id)).last_turn_id!;
+    await f.plans.put({ ...write('other-run-write', otherRun, NOW + 300000), session_id: other.session_id });
+
+    // The run's write was approved and its conversation carried on: that turn held another write.
+    carry('carry-1', occurrence);
+    await f.plans.put(write('held-in-carry-on', 'carry-1', NOW + 300001));
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ last_outcome: { status: 'finished' },
+      pending_approvals: { count: 1, plan_id: 'held-in-carry-on' }, run_now_available: false });
+    await expect(f.service.runNow({ schedule_id: schedule.schedule_id, expected_revision: 1, submission_id: 'carry-on-waits' }))
+      .rejects.toThrow('waiting');
+    expect(await f.service.get(other.schedule_id)).toMatchObject({ pending_approvals: { count: 1, plan_id: 'other-run-write' }, pending_work: null });
+
+    // A turn carrying that one on: the chain keeps its first turn, the run's.
+    carry('carry-2', 'carry-1');
+    await f.plans.put(write('held-in-chain', 'carry-2', NOW + 300002));
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ pending_approvals: { count: 2, plan_id: 'held-in-carry-on' } });
+
+    // A turn carrying on the owner's own request is the owner's, until it takes the run's in.
+    await handleSend({ store: f.store, orchestrator: f.orchestrator, selfSignature: signature },
+      { session_id: schedule.session_id, message: 'Send a separate note.', submission_id: 'owner-request', picker_state: { current: 'self' } });
+    await f.settled(schedule.session_id);
+    carry('carry-owner', f.inputs.at(-1)!.queue_turn_id!);
+    carry('carry-3', occurrence);
+    await f.plans.put(write('held-for-both', 'carry-owner', NOW + 300003));
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ pending_approvals: { count: 2 } });
+    turns.fold(['carry-3'], 'carry-owner');
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ pending_approvals: { count: 3, plan_id: 'held-in-carry-on' } });
+    expect(await f.service.get(other.schedule_id)).toMatchObject({ pending_approvals: { count: 1, plan_id: 'other-run-write' } });
+
+    // An approved write a carry-on turn has not acted on yet.
+    for (const plan_id of ['held-in-chain', 'held-for-both']) await f.plans.resolve(plan_id, 'cancelled', NOW + 300004);
+    await f.plans.resolve('held-in-carry-on', 'approved', NOW + 300005);
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ pending_approvals: null,
+      pending_work: { status: 'needs_attention', reason: 'awaiting_execution', plan_id: 'held-in-carry-on' }, run_now_available: false });
+    await f.plans.consumeForDispatch!('held-in-carry-on', NOW + 300006, 'carry-resume');
+    await f.plans.recordExecution!('held-in-carry-on', { status: 'completed', turn_id: 'carry-resume', result_ref: 'carry-result' });
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ pending_work: null, run_now_available: true });
+
+    // A call a carry-on turn holds.
+    const message = { id: 'carry-on-call', session_id: schedule.session_id, turn_id: 'carry-2', role: 'tool' as const,
+      content: 'Tool call', target_server: 'self', picker_at_send: { display_name: 'Self', signature },
+      model_used: { provider: 'test', model_id: 'test' } };
+    await f.store.toolCalls!.start({ ...message, tool_name: 'mail.list' });
+    f.store.toolCalls!.hold(message.id);
+    expect(await f.service.get(schedule.schedule_id)).toMatchObject({ last_outcome: { status: 'finished' },
+      pending_work: { status: 'needs_attention', reason: 'action_held' }, run_now_available: false });
+    expect(f.inputs).toHaveLength(3);
+  });
+
+  it('D-337 slice F — refuses a Run now when a carry-on turn holds a write while it is being queued', async () => {
+    const entered = latch(), release = latch(); cleanup.push(release.release);
+    const f = fixture({ beforeSubmit: async command => {
+      if (String(command.input.occurrence_id).includes(':manual:')) { entered.release(); await release.promise; }
+    } });
+    const schedule = (await f.service.create(recurring, 'late-carry-on-approval'))!;
+    f.clock(NOW + 300000); await f.service.tick(); await f.settled(schedule.session_id);
+    const occurrence = (await f.service.get(schedule.schedule_id)).last_turn_id!;
+    const attempt = f.service.runNow({ schedule_id: schedule.schedule_id, expected_revision: 1, submission_id: 'late-carry-on' })
+      .then(() => ({ accepted: true }), error => ({ accepted: false, error }));
+    await entered.promise;
+    createHeldResultTurnStore(f.db, () => NOW + 300001)
+      .record({ turn_id: 'late-carry', session_id: schedule.session_id, run_id: 'late-run', origin_turn_id: occurrence });
+    const args = { to: 'owner@example.com' };
+    await f.plans.put({ plan_id: 'late-carry-on', session_id: schedule.session_id, turn_id: 'late-carry', tool: 'mail.send', tier: 1,
+      classification: 'write', args, args_hash: planApproval.computePlanArgsHash(args), status: 'proposed', created_at: NOW + 300001 });
+    release.release(); const result = await attempt;
+    if (result.accepted) await f.settled(schedule.session_id);
+    expect(result).toMatchObject({ accepted: false, error: { code: 'conflict', message: expect.stringContaining('approval waiting') } });
+    expect((await f.queue.snapshot(schedule.session_id)).turns).toHaveLength(1);
+  });
+
+  it('D-337 slice F — looks a turn up among the schedule\'s runs by the turn, never by scanning every run it kept', async () => {
+    const f = fixture(); const schedule = (await f.service.create(recurring, 'carry-on-indexed'))!;
+    const reads = new Set<string>(); const prepare = f.db.prepare.bind(f.db);
+    vi.spyOn(f.db, 'prepare').mockImplementation(sql => { if (/\bchat_held_result_turns\b/.test(sql)) reads.add(sql); return prepare(sql); });
+    f.clock(NOW + 300000); await f.service.tick(); await f.settled(schedule.session_id);
+    await f.service.get(schedule.schedule_id);
+    await f.service.runNow({ schedule_id: schedule.schedule_id, expected_revision: 1, submission_id: 'indexed-run' });
+    await f.settled(schedule.session_id);
+    vi.restoreAllMocks();
+    expect(reads.size).toBeGreaterThanOrEqual(4);
+    const plans = [...reads].flatMap(sql => (f.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all({ schedule_id: schedule.schedule_id,
+      ...(sql.includes('@session_id') ? { session_id: schedule.session_id } : {}) }) as Array<{ detail: string }>).map(row => row.detail));
+    expect(plans.filter(detail => /\bSCAN [oh]\b/.test(detail)
+      || /\bSEARCH o\b/.test(detail) && !/USING INDEX chat_prompt_occurrences_turn \(turn_id=\?\)/.test(detail))).toEqual([]);
+  });
+
   it('distinguishes approval, unexecuted approval, active dispatch and uncertain recovery after a finished turn', async () => {
     const f = fixture(); const schedule = (await f.service.create(once, 'dispatch-outcome'))!;
     const plans = createSqliteChatPlanStore(f.db);
@@ -659,7 +763,10 @@ describe('scheduled prompt timing previews', () => {
 
   it.each([
     { from: '2026-03-08T05:00:00Z', cron: '30 2 * * *', expected: ['2026-03-09T06:30:00.000Z', '2026-03-10T06:30:00.000Z', '2026-03-11T06:30:00.000Z'] },
-    { from: '2026-11-01T04:00:00Z', cron: '30 1 * * *', expected: ['2026-11-01T05:30:00.000Z', '2026-11-01T06:30:00.000Z', '2026-11-02T06:30:00.000Z'] },
+    // ⛔ The fall-back plays 01:00–01:59 twice. This used to expect BOTH 01:30s,
+    // pinning the double run the execution clock then had. A fixed-time cron now
+    // runs once in the repeated hour, as classic cron does (`nextCronMatch`).
+    { from: '2026-11-01T04:00:00Z', cron: '30 1 * * *', expected: ['2026-11-01T05:30:00.000Z', '2026-11-02T06:30:00.000Z', '2026-11-03T06:30:00.000Z'] },
   ])('previews the execution clock across daylight-saving changes from $from', ({ from, cron, expected }) => {
     const f = fixture(); f.clock(Date.parse(from));
     expect(f.service.preview({ mode: 'recurring', time_zone: 'America/New_York', cron_expression: cron })
@@ -843,4 +950,31 @@ it('chat.send cannot forge scheduled provenance', async () => {
   await handleSend({ store: f.store, orchestrator: f.orchestrator, selfSignature: signature }, input);
   await f.settled('owner-session'); expect(f.inputs[0]?.scheduled_prompt).toBeUndefined();
   expect((await f.store.listMessages('owner-session'))[0]?.contributor).toBe('user');
+});
+
+describe('D-341 slice B3 — each run names the version of the prompt it runs', () => {
+  it('stamps a run with its prompt\'s version, keyed, which an edit to the text changes and nothing else does', async () => {
+    const key = new Uint8Array(32).fill(7);
+    const f = fixture({ key: () => key });
+    const schedule = (await f.service.create(recurring, 'b3-version'))!;
+    const id = schedule.schedule_id;
+    const first = (await f.service.promptVersion(id))!;
+    expect(first).toEqual({ title: recurring.title, prompt_sha256: expect.stringMatching(/^[0-9a-f]{64}$/u) });
+    // Keyed by the chat's key: no checkable digest of what the owner wrote travels on the run.
+    expect(first.prompt_sha256).not.toBe(createHash('sha256').update(recurring.prompt).digest('hex'));
+    await f.service.runNow({ schedule_id: id, expected_revision: 1, submission_id: 'b3-first-run' });
+    await f.settled(schedule.session_id);
+    expect(f.inputs[0]!.scheduled_prompt).toMatchObject({ schedule_id: id, prompt_sha256: first.prompt_sha256 });
+
+    // A new title, a new time and a pause leave it as it was.
+    await f.service.update({ schedule_id: id, expected_revision: 1, title: 'Work mail summary', cron_expression: '0 8 * * *' });
+    await f.service.control('pause', { schedule_id: id });
+    expect((await f.service.promptVersion(id))!.prompt_sha256).toBe(first.prompt_sha256);
+    // A new prompt changes it.
+    const paused = await f.service.get(id);
+    await f.service.update({ schedule_id: id, expected_revision: paused.revision, prompt: 'Summarize urgent mail only.' });
+    expect((await f.service.promptVersion(id))!.prompt_sha256).not.toBe(first.prompt_sha256);
+    await f.service.control('remove', { schedule_id: id });
+    expect(await f.service.promptVersion(id)).toBeNull();
+  });
 });

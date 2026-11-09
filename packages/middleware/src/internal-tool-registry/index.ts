@@ -35,6 +35,11 @@ import {
   TIER1_TOOL_DESCRIPTORS,
   TIER1_TOOL_NAME_SET,
   TIER1_TOOL_NAMES,
+  grantRefusalSentence,
+  grantSwitchText,
+  isOwnersOwnCall,
+  primitiveGrantEntry,
+  RECIPE_GRANT_PREFIX,
   type ApprovalValueLabels,
   type HeldCallNotices,
   type ChatDispatchContext,
@@ -96,13 +101,20 @@ const buildTier1Catalog = (): ReadonlyArray<ToolEntry> =>
  *  installed recipes (recipe definition + publisher scope) that the
  *  factory re-projects on every catalog read. The caller threads its
  *  recipe-store (server: `RecipeStore.listStored`; tests: a static
- *  fixture). Re-projection is cheap (O(N_recipes); N is bounded — a
- *  user typically has tens of installed recipes), so we don't bother
- *  caching at the registry layer; the chat orchestrator already
- *  scopes its per-turn catalog snapshot to one call. */
+ *  fixture). Nothing is cached at the registry layer, so an install
+ *  shows at the next read.
+ *  ⚠ Re-projection is NOT cheap any more: this said "a user typically has
+ *  tens of installed recipes"; measured 2026-11-08, 780 entries at 140 to
+ *  430 ms a projection, and a lookup by name re-projected all of them
+ *  (36 projections in one two-message conversation, 15 after its answer,
+ *  holding the event loop). Hence {@link Tier2Source.recipeNamed}. */
 export interface Tier2Source {
   /** Synchronous snapshot of installed recipes. */
   listRecipes(): ReadonlyArray<Tier2RecipeEntry>;
+  /** The entry `listRecipes` holds under one Tier 2 tool name
+   *  (`<publisher>/<recipe_id>`), read alone, or `null`. Optional: a source
+   *  without it is looked up in a full projection, as before. */
+  recipeNamed?(name: string): Tier2RecipeEntry | null;
 }
 
 /** D-137 Wave 2.1 — Tier 2 dispatch handler signature. Tier 2 entries
@@ -370,6 +382,20 @@ export const createInternalToolRegistry = (
   const projectTier2 = (): ReadonlyArray<ToolEntry> =>
     buildTier2Catalog(tier2Source.listRecipes(), manifestLookup, opKindLookup);
 
+  /** The Tier 2 entry under one name: built alone from the source's own entry
+   *  when it can read one (`recipeNamed`), else found in a fresh projection.
+   *  The same entry either way, since a projection builds each entry on its
+   *  own (`buildTier2Catalog`), with the same exposure rules. */
+  const tier2Named = (name: string): ToolEntry | null => {
+    if (tier2Source.recipeNamed === undefined) {
+      return projectTier2().find((entry) => entry.name === name) ?? null;
+    }
+    const recipe = tier2Source.recipeNamed(name);
+    if (recipe === null) return null;
+    return buildTier2Catalog([recipe], manifestLookup, opKindLookup)
+      .find((entry) => entry.name === name) ?? null;
+  };
+
   /** ⛔⛔ D-228 slice 4 — ALWAYS EMPTY. Tier 3 projected `<connection>.<tool>`
    *  entries from `tool_overrides`, the chat presentation store D-225 named as
    *  the standing defect; that store is deleted and an enrolled MCP tool now
@@ -414,12 +440,9 @@ export const createInternalToolRegistry = (
   const getByName = (name: string): ToolEntry | null => {
     const t1 = tier1Index.get(name);
     if (t1) return t1;
-    // Tier 2 is keyed on `<publisher>/<recipe_id>`; do an indexed scan
-    // of the fresh projection. The N here is the count of currently-
-    // installed exposed recipes (bounded; tens at most), so a linear
-    // find is fine vs. maintaining a parallel index.
-    const tier2 = projectTier2();
-    const t2 = tier2.find((entry) => entry.name === name);
+    // Tier 2 is keyed on `<publisher>/<recipe_id>`: the one entry, read alone
+    // when the source can (`tier2Named`).
+    const t2 = tier2Named(name);
     if (t2) return t2;
     // Tier 3 is keyed on `<connection_name>.<tool_name>`. Same
     // bounded-N argument — Mary's MCP enrollments are typically a
@@ -428,13 +451,25 @@ export const createInternalToolRegistry = (
     return tier3.find((entry) => entry.name === name) ?? null;
   };
 
-  const tier1Blocked = (name: string): ChatDispatchResult => ({
-    ok: false,
-    reason: 'classification_blocked',
-    detail:
-      `'${name}' is turned off for this contract. `
-      + 'Re-enable it in Settings → Contracts → Ops, or tell the user it is unavailable.',
-  });
+  /** D-346 follow-up (2026-11-08) — a tool or recipe switched off for its caller: the owner's
+   *  own turn reads where to turn it on ("Self (you)" on the Contracts page), any other
+   *  contract's only that it is not available. It said "Re-enable it in Settings → Contracts",
+   *  and Contracts is its own page. */
+  const turnedOff = (name: string, ctx: ChatDispatchContext, tab: 'Ops' | 'Recipes'): ChatDispatchResult => {
+    const ownersOwn = isOwnersOwnCall(ctx.execution_source);
+    // A Tier-2 name is `<publisher>/<recipe_id>`, its switch `recipe.<publisher>/<recipe_id>`.
+    const entry_key = tab === 'Recipes' ? `${RECIPE_GRANT_PREFIX}${name}` : primitiveGrantEntry(name);
+    return {
+      ok: false,
+      reason: 'classification_blocked',
+      detail: grantRefusalSentence(`'${name}'`, ownersOwn, tab),
+      // D-346 follow-up — the owner's own chat offers to turn it on under the answer.
+      ...(ownersOwn
+        ? { fixes: [{ kind: 'switch' as const, entry_key, label: grantSwitchText(entry_key)?.title ?? name }] }
+        : {}),
+    };
+  };
+  const tier1Blocked = (name: string, ctx: ChatDispatchContext): ChatDispatchResult => turnedOff(name, ctx, 'Ops');
 
   /** D-329 — a Tier-1 write's own refusal before anyone is asked to approve it, behind the
    *  channel invariants and the contract gate a dispatch has: what the call would be
@@ -448,7 +483,7 @@ export const createInternalToolRegistry = (
     if (!check) return null;
     const channelError = assertChannelInvariants(ctx);
     if (channelError) return channelError;
-    if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) return tier1Blocked(name);
+    if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) return tier1Blocked(name, ctx);
     return check(args, ctx);
   };
 
@@ -484,13 +519,12 @@ export const createInternalToolRegistry = (
     if (t1) {
       // D-228 slice 5 — the contract decides before the handler runs. Absent
       // callback ⇒ no contract substrate on this host (see the option's doc).
-      if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) return tier1Blocked(name);
+      if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) return tier1Blocked(name, ctx);
       const handler = tier1Handlers[name as Tier1ToolName];
       return handler(args, ctx);
     }
 
-    const tier2 = projectTier2();
-    const t2 = tier2.find((entry) => entry.name === name);
+    const t2 = tier2Named(name);
     if (t2) {
       // ⛔ D-247 D9 — CATALOG MEMBERSHIP IS NOT THE ENFORCEMENT BOUNDARY. Tier-2
       // visibility is filtered beside the registry (where the turn's source is),
@@ -498,13 +532,7 @@ export const createInternalToolRegistry = (
       // revoke unless dispatch re-asks. Exactly the shape D-228 slice 5 proved on
       // Tier 1 above: absent callback ⇒ no contract substrate on this host.
       if (options.admitTier2 && !options.admitTier2(name, ctx)) {
-        return {
-          ok: false,
-          reason: 'classification_blocked',
-          detail:
-            `'${name}' is turned off for this contract. `
-            + 'Re-enable it in Settings → Contracts → Recipes, or tell the user it is unavailable.',
-        };
+        return turnedOff(name, ctx, 'Recipes');
       }
       return tier2Dispatch(name, args, ctx);
     }

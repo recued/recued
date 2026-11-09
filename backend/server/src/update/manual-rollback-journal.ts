@@ -3,9 +3,12 @@
  * migrating rollback: the install generation and the realm database generation. */
 import { createHash, randomBytes } from 'node:crypto';
 import {
+  closeSync,
   copyFileSync,
   existsSync,
+  openSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -134,11 +137,28 @@ export type ManualRollbackRecovery = {
   database: 'rolled-back' | 'unchanged' | 'unknown' | 'not-applicable' | 'unproven';
 };
 
+/** Hash a file a megabyte at a time.
+ *
+ *  ⛔ IT READ THE WHOLE FILE INTO ONE BUFFER, which Node refuses past 2 GiB
+ *  (ERR_FS_FILE_TOO_LARGE). That returned null, so the owner's rollback of a
+ *  release that migrated a database over 2 GiB was refused with "could not hash
+ *  the rollback database snapshot". */
 export const sha256File = (path: string): string | null => {
+  let fd: number | null = null;
   try {
-    return createHash('sha256').update(readFileSync(path)).digest('hex');
+    fd = openSync(path, 'r');
+    const hash = createHash('sha256');
+    const chunk = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const count = readSync(fd, chunk, 0, chunk.length, null);
+      if (count === 0) break;
+      hash.update(chunk.subarray(0, count));
+    }
+    return hash.digest('hex');
   } catch {
     return null;
+  } finally {
+    if (fd !== null) try { closeSync(fd); } catch { /* best effort */ }
   }
 };
 

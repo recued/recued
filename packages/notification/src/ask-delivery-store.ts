@@ -48,6 +48,16 @@ export interface AskDestinationResolution {
   issues: { channel: ChannelName; reason: ReminderDestinationIssueReason }[];
 }
 
+/** D-340 slice 3 — the message the asks belong to: the owner's daily stream, carrying the day's
+ *  reminders. A messenger or an email sends this text in place of the items' own, which it lists by
+ *  number already, with each item's buttons or answers as usual; the app and the Browser Bridge,
+ *  which show each reminder on its own, leave it out. In a messenger it is a notice (D-338), as the
+ *  stream is. */
+export interface AskDeliveryLead {
+  title: string;
+  text: string;
+}
+
 export interface AskDeliveryInput {
   group_id: string;
   asks: readonly {
@@ -60,11 +70,15 @@ export interface AskDeliveryInput {
   destinations: readonly AskDeliveryDestination[];
   /** Quiet hours move delivery, never the question's answerable lifetime. */
   not_before?: number;
+  lead?: AskDeliveryLead;
 }
 
 export type AskDeliveryOutcome =
-  /** `notice`: posted with no buttons and no answer hint, to a copy that only receives. */
-  | { outcome: 'delivered'; provider_message_id?: string; presentation?: 'buttons' | 'text' | 'notice' }
+  /** `notice`: posted with no buttons and no answer hint, to a copy that only receives.
+   *  `sent`: what this destination was sent, when it is not what the envelope renders (a lead the
+   *  owner's chat made a notice of), so a later edit keeps it. */
+  | { outcome: 'delivered'; provider_message_id?: string; presentation?: 'buttons' | 'text' | 'notice';
+      sent?: { title?: string; text: string } }
   /** `permanent`: this destination can never take the envelope (its pinned
    *  connection is gone or was replaced, or no durable adapter exists), so no
    *  retry follows. */
@@ -102,6 +116,8 @@ export interface AskDeliveryGroup {
   asks: NewPendingAsk[];
   destinations: AskDeliveryDestination[];
   not_before: number;
+  /** D-340 slice 3 — the stream the asks were sent inside. */
+  lead?: AskDeliveryLead;
   created_at: number;
   asks_initialized: boolean;
   /** After closing superseded questions, a flow can prepare, recheck its
@@ -173,9 +189,13 @@ export interface AskDeliveryEnvelope {
   /** Preserve original item numbers while omitting buttons for items answered
    * during a quiet-hours hold or another destination's send. */
   closed_ask_ids?: readonly string[];
+  /** D-340 slice 3 — the stream these asks are inside (`AskDeliveryInput.lead`). */
+  lead?: AskDeliveryLead;
 }
 
 export interface AskDeliveryReceipt extends AskDeliveryEnvelope {
   provider_message_id?: string;
   presentation?: 'buttons' | 'text' | 'notice';
+  /** What was sent, when the channel recorded it (`AskDeliveryOutcome` `sent`). */
+  sent?: { title?: string; text: string };
 }

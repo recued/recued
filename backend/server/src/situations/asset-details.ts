@@ -1,4 +1,5 @@
 import type { Asset, SituationAssetDetails } from '@recued/contracts';
+import { assetTypeAttributeNames } from './asset-types.js';
 
 /** One asset's details as JSON, at most, before `left_out`. In the chat lookup's
  * 6,000 bytes they give way before their item does (`prefetch.ts`). */
@@ -18,7 +19,8 @@ const shortened = (value: string): string => {
 /** What a model reads of an asset beside its clocks. Settings and attributes are
  * what the owner typed, and are shown as typed. A removed attribute (stored as
  * null) is not shown; a null date or reading is, since the asset says it is
- * unknown. */
+ * unknown, and so is an unset attribute its type names (a pursuit's Where I am,
+ * D-342): a model that changes it reads its name here. */
 export const situationAssetDetails = (
   asset: Pick<Asset, 'class_id' | 'status' | 'dates' | 'readings' | 'settings' | 'attributes'>,
 ): SituationAssetDetails => {
@@ -48,6 +50,7 @@ export const situationAssetDetails = (
       else leave(group, name);
     }
   }
+  for (const name of assetTypeAttributeNames(asset.class_id)) if (asset.attributes?.[name] == null) put('attributes', name, null);
   if (left.length) details.left_out = left.length > LEFT_OUT_NAMES ? [...left.slice(0, LEFT_OUT_NAMES), `+${left.length - LEFT_OUT_NAMES} more`] : left;
   return details;
 };

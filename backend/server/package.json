@@ -1,6 +1,6 @@
 {
   "name": "@recued/server",
-  "version": "26.11.5",
+  "version": "26.11.9",
   "description": "Personal automation server — data warehouse + scheduler + MCP host",
   "license": "AGPL-3.0-only",
   "homepage": "https://recued.com",
@@ -26,6 +26,8 @@
     "!dist/bin.cjs",
     "!dist/bin.cjs.map",
     "!dist/binary",
+    "!dist/binary-docker",
+    "!dist/release",
     "config.sample.toml",
     "scripts/recued.service",
     "scripts/com.recued.daemon.plist",

@@ -2,10 +2,12 @@ export * from './customer-refunds.js';
 export { isLlmRetryTime, formatLlmRetryTime } from './llm-retry-time.js';
 // D-329 §3.4 — the write rules an AI's approvals teach.
 export * from './write-approval-rule.js';
+export * from './trigger-preapproval.js';
 // D-335 slice F — passes for Browser Toolkit writes, and what their approvals teach.
 export * from './browser-pass.js';
 // D-335 slice J — a sequence of steps on one web page, approved once (`core.dom.act`).
 export * from './browser-act.js';
+export * from './browser-secret.js';
 export type { LocalUpdateUndoReview, LocalUpdateUndoDecision, LocalUpdateUndoResult } from './local-update-undo.js';
 export { hasLocalUpdateResources, LOCAL_CHANGE_SET_LIMITS } from './local-change-sets.js';
 export type { LocalChangeSetPrepare, LocalChangeSetUndoPrepare, LocalChangeSetDecision, LocalChangeSetReview, LocalChangeSetInspection } from './local-change-sets.js';
@@ -803,6 +805,7 @@ export type {
   BulkPackInstallResultLike,
   // D-145 PA10 follow-on — `packs.list` rpc surface
   PackListEntry,
+  PackMissingPack,
   PacksListResult,
   // D-259 — `packs.unrunnable` rpc surface
   UnrunnablePackRow,
@@ -900,6 +903,7 @@ export {
   TIER1_TOOL_GUIDE,
   grantSwitchText,
   tier1CallDetails,
+  episodeRecordChecklist,
   tier1CallTitle,
   memorySaveConflictRows,
   toolsNeedingSwitch,
@@ -1058,7 +1062,7 @@ export type {
   ApiExecutionBinding, RestExecutionBinding, RestResponseCaptureSpec, RestResponseJsonSpec, RestRequestJsonSpec, GraphQLExecutionBinding, McpExecutionBinding,
   WebhookExecutionBinding, QueueSubscriptionBinding, PushChannelBinding,
   ConnectorRuntimeSpec, ConnectorLifecycleSpec, ConnectorExecutionBinding,
-  ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliMethodBinding, CliInputMaterializeSpec,
+  ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliExistingPathSpec, CliExistingPathAccepts, CliMethodBinding, CliInputMaterializeSpec,
   CliProgressSpec, D259CliProgressSpec,
   CliHeartbeatProgressSpec, CliFileGrowthProgressSpec,
   CliProgressAdapter, CliBindingEnvName,
@@ -1112,6 +1116,7 @@ export {
   isReadyCliDetachedSupervisionSpec,
   CLI_PROGRESS_ADAPTERS, CLI_PROGRESS_ANSWER_ADAPTERS,
   CLI_BINDING_ENV_NAMES, CLI_BINDING_ENV_VALUE_MAX,
+  CLI_EXISTING_PATH_ACCEPTS,
   // D-209 §1.3 — the op-risk APPROVAL FLOOR (the single source the runtime clamp +
   // the composition/manifest authoring validators derive from). D-211 §2 adds
   // `clampToFloor` — the owner-override clamp (write-gate + fail-closed resolve) —
@@ -2093,6 +2098,7 @@ export type {
   Checkpoint,
   HeldBrowserTarget,
   HeldBrowserStep,
+  HeldBrowserTab,
   PreflightApprovedTarget,
   PreflightCheckpointContext,
   PreflightForeachCover,
@@ -2151,6 +2157,10 @@ export {
   // D-192 F1 — the all-actor commitment-proposal approval lift.
   COMMITMENT_PROPOSAL_INGREDIENT_SLUGS,
   isCommitmentProposalSlug,
+  // D-341 — an op whose review no standing pre-approval stands in for.
+  opAlwaysReviewed,
+  // D-177 with D-192 F1 — a review no session grant stands in for.
+  reviewedEachTime,
 } from './op-risk-admission.js';
 // D-153 P3 — Cancellation grace window + compensating-commit substrate.
 export {
@@ -5032,6 +5042,7 @@ export {
   bridgeRunsCommand,
   BRIDGE_INSPECT_MAX_CHARS,
   BRIDGE_INSPECT_MAX_VALUE_CHARS,
+  BRIDGE_INSPECT_CEILING_CHARS,
   BRIDGE_INSPECT_OUTPUT_KEYS,
   BRIDGE_DESCRIBE_OUTPUT_KEYS,
   BRIDGE_TABS_OUTPUT_KEYS,
@@ -5042,12 +5053,30 @@ export {
   BRIDGE_SUBMIT_OUTPUT_KEYS,
   BRIDGE_PICK_OUTPUT_KEYS,
   BRIDGE_PICK_MAX_MS,
+  // D-335 slice U — a key pressed in a page.
+  BRIDGE_PRESS_OUTPUT_KEYS,
+  parseBridgeKey,
+  type BridgeKeyPress,
+  BRIDGE_SCROLL_OUTPUT_KEYS,
+  BRIDGE_SCROLL_TO,
+  type BridgeScrollTo,
+  // D-335 slice X — a tab moved, closed or pointed at.
+  BRIDGE_NAVIGATE_OUTPUT_KEYS,
+  BRIDGE_CLOSE_OUTPUT_KEYS,
+  BRIDGE_HOVER_OUTPUT_KEYS,
+  // D-335 slice W — the element acted on, found again another day.
+  BRIDGE_ACTED_ON_KEY,
+  readBridgeActedOn,
+  type BridgeActedOn,
   BRIDGE_CLICK_SETTLE_MS,
   BRIDGE_CLICK_LOAD_MAX_MS,
   BRIDGE_WATCH_MAX_MS,
+  BRIDGE_CLICK_WAIT_MS,
   BRIDGE_PAGE_CHANGED_MESSAGE,
   BRIDGE_PAGE_GONE_MESSAGE,
   isBridgeTargetGone,
+  bridgeElementChangedMessage,
+  isBridgeRefChanged,
   BRIDGE_WAIT_DEFAULT_MS,
   BRIDGE_WAIT_MAX_MS,
   BRIDGE_WAIT_OUTPUT_KEYS,
@@ -5055,6 +5084,9 @@ export {
   BRIDGE_TABLE_OUTPUT_KEYS,
   BRIDGE_SCREENSHOT_MAX_EDGE,
   BRIDGE_SCREENSHOT_MAX_BASE64,
+  BRIDGE_FILE_MAX_BYTES,
+  BRIDGE_DOWNLOAD_OUTPUT_KEYS,
+  BRIDGE_UPLOAD_OUTPUT_KEYS,
   BRIDGE_SCREENSHOT_OUTPUT_KEYS,
   BROWSER_IMAGE_TTL_MS,
   isBrowserImageRef,
@@ -6912,6 +6944,8 @@ export * from './release-update.js';
 // D-182 §7.2 — per-contract cli-tool reachability vocabulary (the Local-tools
 // grid + install-dialog substrate the gateway cli stage reads; F1 RESOLVED).
 export * from './cli-reachability.js';
+// D-346 follow-up — the wording of a refusal for what its caller may not use.
+export * from './grant-refusal-copy.js';
 // D-182 §7.2 — owner-only `cli.reachability.*` grid rpc wire shapes (the surface
 // that authors the per-contract cli reachability allowlist).
 export * from './cli-reachability-rpc.js';
@@ -6923,6 +6957,7 @@ export * from './cli-failure.js';
 export * from './cli-tool-version.js';
 // D-321 — the owner's per-tool choice outside those versions (refuse or warn).
 export * from './owner-tool-version.js';
+export * from './owner-tool-path.js';
 // D-321 — `packs.tool_status`: whether each installed pack's programs are ready.
 export * from './packs-tool-status.js';
 // D-192 Slice 6b — work-entity container-pick carrier (ContainerPickDetail +
@@ -7180,7 +7215,11 @@ export * from './authentication-history-export.js';
 export * from './authentication-access-verification.js';
 export * from './authentication-access-summary.js';
 export * from './pack-access.js';
-export type { PackConnectionChange, PackConnectionsView } from './pack-connections.js';
+export type { ConnectionNotSetUpDetails, PackConnectionChange, PackConnectionsView } from './pack-connections.js';
+export { CONNECTION_NOT_SET_UP } from './pack-connections.js';
+export type { ProgramSwitchDetail, RunConnectionNeed, RunNeed, RunProgramNeed, RunSwitchNeed } from './run-needs.js';
+export { RUN_PROGRAM_NEED_PROBLEMS, isProgramSwitchDetail } from './run-needs.js';
+export { CHAT_FIX_LIMIT, chatFixesOf, type ChatFix } from './chat-fixes.js';
 
 export { savedOAuthAppIssuerForEndpoints,savedOAuthAppRequestedScopes,withSavedOAuthAppProvider } from './oauth-app-reuse.js';
 export * from './pack-vendor-permissions.js';
@@ -7219,7 +7258,7 @@ export { OAUTH_PERMISSION_CLEANUP_ACTIONS, isOAuthPermissionCleanupJob, isOAuthP
 export * from './resource-review.js';
 export {
   ASSET_STATUSES, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_SOURCE_RANKS,
-  AssetValidationError, isAssetDate, validateAsset, validateAssetRule,
+  AssetValidationError, isAssetDate, validateAsset, validateAssetRule, assetConditionHolds,
 } from './assets.js';
 export type {
   Asset, AssetStatus, AssetAudience, AssetContributionKind, AssetFactSource,
@@ -7241,10 +7280,11 @@ export * from './asset-search-terms.js';
 export * from './proactive-history.js';
 export type {
   SituationBasis, SituationVerdict, SituationReason, SituationRef, SituationPlace,
-  SituationDimension, SituationWindow, TripDetails, SituationAssetDetails, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
+  SituationDimension, SituationWindow, TripDetails, SituationAssetDetails, SituationRecordedDays, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
   SituationCluster, SituationResult, SituationState, SituationDismissal,
   SituationSnapshot, SituationRevision, SituationDigestLookAhead, SituationDeliverySettings, SituationDeliveryStatus, ProactiveToday,
-  SituationAgendaSettings, SituationAgendaStatus,
+  SituationAgendaSettings, SituationAgendaStatus, SituationCloseDaySettings, SituationCloseDayStatus,
+  SituationStreamKind, SituationStreamSettings, SituationStreamStatus, SituationStreamsStatus, SituationStreamPreview,
 } from './situation.js';
 export { SITUATION_QUERY_SCHEMA, SITUATION_CONTEXT_MAX_BYTES, SITUATION_TOOL_MAX_ITEMS, parseSituationQueryInput } from './situation.js';
 

@@ -68,3 +68,14 @@ export const computeMaxTokens = (hint: ModelHint, slot: LLMSlot): number => {
 /** Whether extended reasoning should be enabled for this hint + slot combo. */
 export const shouldEnableThinking = (hint: ModelHint, slot: LLMSlot): boolean =>
   hint === 'thinking' && slot.supports_thinking === true;
+
+/** D-344 — the owner's thinking setting for a model, as a call's option: `true` on, `false` off,
+ *  `undefined` when none is set (the provider's default). */
+export const thinkingSettingOf = (slot: LLMSlot): boolean | undefined =>
+  slot.thinking === 'on' ? true : slot.thinking === 'off' ? false : undefined;
+
+/** D-344 — a call's thinking: the owner's setting for the model when there is one, else extended
+ *  reasoning for the `thinking` tier on a slot that supports it, as before, else the provider's
+ *  default (`undefined`: no switch is sent). */
+export const resolveThinking = (hint: ModelHint, slot: LLMSlot): boolean | undefined =>
+  thinkingSettingOf(slot) ?? (shouldEnableThinking(hint, slot) ? true : undefined);

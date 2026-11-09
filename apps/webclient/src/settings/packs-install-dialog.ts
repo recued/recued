@@ -34,6 +34,7 @@ import type {
   MailTemplateCondition,
   MailTemplateInstallPreview,
   PackListEntry,
+  PackToolStatus,
   PackWebhookPlanEntry,
 } from '@recued/contracts';
 // Same byte formatter the Records explorer uses — these are the same quota
@@ -49,6 +50,7 @@ import {
   type InstallGrantPickerModel,
 } from './install-grant-picker.js';
 import { renderInstallConnectPicker } from './install-connect-picker.js';
+import { programConsequence, programDisplayName, programStateText } from './pack-programs-controls.js';
 import {
   groupCollisionsByOtherPack,
   type PackRecipeCollision,
@@ -77,10 +79,10 @@ export const PACKS_DIALOG_PERMISSION_NEEDED_BY_ATTR = 'data-recued-packs-dialog-
 export const PACKS_DIALOG_DEPENDENCIES_ATTR = 'data-recued-packs-dialog-dependencies';
 /** D-310 — one pack in that list; value = its slug. */
 export const PACKS_DIALOG_DEPENDENCY_ATTR = 'data-recued-packs-dialog-dependency';
-/** D-310 — one Access radio for a pack in that list; value = its slug,
- *  `data-access` = the tier. */
-export const PACKS_DIALOG_DEPENDENCY_ACCESS_ATTR = 'data-recued-packs-dialog-dependency-access';
-/** D-310 — what the other packs of the install do with it; value = its slug. */
+/** D-346 C — a pack in that list's own Install…, which opens its own dialog; value =
+ *  its slug. It replaced D-310's Access radios for the pack. */
+export const PACKS_DIALOG_DEPENDENCY_INSTALL_ATTR = 'data-recued-packs-dialog-dependency-install';
+/** What Install all gives a pack in that list, and why; value = its slug. */
 export const PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR = 'data-recued-packs-dialog-dependency-needs';
 /** The packs this install needs and does not bring in, offered with a "Get
  *  <pack>" link each. Value: `preview` (said before the owner chooses anything,
@@ -524,13 +526,19 @@ export const dependencyPacksToChoose = (
 ): readonly InstallDependencyPack[] =>
   (preview?.dependency_packs ?? []).filter((pack) => pack.updates !== true && pack.access_options.length > 0);
 
-/** D-310 — the tier a pack in the list installs at: the owner's pick when it is
- *  one the pack offers, else Read only, the same start as any pack's own dialog. */
-export const resolveDependencyAccess = (
-  picked: InstallAccessTier | undefined,
-  pack: InstallDependencyPack,
-): InstallAccessTier =>
-  picked !== undefined && pack.access_options.includes(picked) ? picked : 'read';
+/** D-346 C (ruling 1) — the tier Install all brings a pack in the list in at: what
+ *  the install's actions need from it (the other packs', and its own workflows',
+ *  D-310 REV 2), at least Read, and never one its own dialog does not offer (then
+ *  the highest it offers below that). It replaces D-310's pick for each pack inside
+ *  this dialog, which started at Read only: an owner who wants another tier
+ *  installs that pack first, with its own Install…, in its own dialog. */
+export const neededDependencyAccess = (pack: InstallDependencyPack): InstallAccessTier => {
+  const wanted = highestNeed(pack.needs?.access, pack.own_needs) ?? 'read';
+  for (let at = TIER_ORDER.indexOf(wanted); at > 0; at -= 1) {
+    if (pack.access_options.includes(TIER_ORDER[at]!)) return TIER_ORDER[at]!;
+  }
+  return 'read';
+};
 
 const TIER_ORDER: readonly InstallAccessTier[] = ['read', 'write', 'all'];
 
@@ -681,53 +689,62 @@ const renderMissingPacks = (
   return section;
 };
 
-/** D-310 — "Month-end closer adds and changes things in it." and, while the pick
- *  is below what that needs, what happens then. D-310 REV 2 — and what the pack's
- *  OWN workflows need: "Some of its own workflows add and change things." A pack
- *  brought in had them refused at Read with no word on screen. */
-export const dependencyNeedsText = (
-  needs: InstallDependencyPack['needs'],
-  access: InstallAccessTier,
-  ownNeeds?: InstallDependencyPack['own_needs'],
-): string => {
+/** D-346 C — what Install all gives a pack in the list, and why: "Month-end closer
+ *  adds and changes things in it. Install all gives it Read + write." D-310 REV 2 —
+ *  and what its OWN workflows do: "Some of its own workflows add and change
+ *  things." When its dialog offers less than that, the line says those steps will
+ *  be refused, as D-310's did. */
+export const dependencyAccessText = (pack: InstallDependencyPack, verb = 'Install all'): string => {
   const said: string[] = [];
-  if (needs !== undefined) {
-    const what = needs.access === 'write'
+  if (pack.needs !== undefined) {
+    const what = pack.needs.access === 'write'
       ? 'adds and changes things in it'
       : 'deletes things in it or changes its settings';
-    said.push(`${joinNames(needs.by)} ${what}.`);
+    said.push(`${joinNames(pack.needs.by)} ${what}.`);
   }
-  if (ownNeeds !== undefined) said.push(`Some of its own workflows ${OWN_NEEDS_WHAT[ownNeeds]}.`);
-  const required = highestNeed(needs?.access, ownNeeds);
-  const short = required !== undefined && TIER_ORDER.indexOf(access) < TIER_ORDER.indexOf(required);
-  return short
-    ? `${said.join(' ')} Choose ${ACCESS_LABEL[required!]}, or those steps will be refused.`
-    : said.join(' ');
+  if (pack.own_needs !== undefined) said.push(`Some of its own workflows ${OWN_NEEDS_WHAT[pack.own_needs]}.`);
+  const given = neededDependencyAccess(pack);
+  const wanted = highestNeed(pack.needs?.access, pack.own_needs);
+  const short = wanted !== undefined && TIER_ORDER.indexOf(given) < TIER_ORDER.indexOf(wanted);
+  said.push(short
+    ? `${verb} gives it ${ACCESS_LABEL[given]}, the most it offers, so those steps will be refused.`
+    : `${verb} gives it ${ACCESS_LABEL[given]}.`);
+  return said.join(' ');
 };
 
-/** D-310 — the packs an install brings in with it, each with its own Access
- *  choice. They were installed at their authored read defaults, whatever the
- *  owner chose for this pack, and nothing on screen said they came with it. */
+/** D-310, as D-346 C (ruling 1) reshaped it — the packs an install brings in with
+ *  it. Each says what Install all gives it, and has its own Install…, which opens
+ *  that pack's own dialog, with its own Access choice, and comes back here. D-310
+ *  put an Access choice for every pack inside this dialog: 24 of them for Codex
+ *  Issue Pipeline, in a panel 3,705 px tall. */
 const renderDependencyPacks = (
   doc: Document,
   props: PacksInstallDialogProps,
   packs: readonly InstallDependencyPack[],
   audienceChosenAbove: boolean,
   installing: boolean,
+  isUpdate = false,
 ): HTMLElement => {
+  // The verb is the button's: an update brings them in when it updates.
+  const verb = isUpdate ? 'Update' : 'Install all';
   const section = doc.createElement('section');
   section.setAttribute(PACKS_DIALOG_DEPENDENCIES_ATTR, '');
   section.className = 'packs-dialog-deps';
+  const fresh = packs.filter((pack) => pack.updates !== true).length;
   const heading = doc.createElement('p');
   heading.className = 'packs-dialog-summary';
-  heading.textContent = packs.length === 1 ? 'Also installs 1 Pack' : `Also installs ${packs.length} Packs`;
+  heading.textContent = fresh === 0
+    ? (packs.length === 1 ? 'Also updates 1 Pack' : `Also updates ${packs.length} Packs`)
+    : `${props.pack.name} needs ${fresh === 1 ? '1 Pack that is' : `${fresh} Packs that are`} not installed`;
   section.appendChild(heading);
-  const intro = doc.createElement('p');
-  intro.className = 'packs-dialog-deps-intro';
-  intro.textContent = audienceChosenAbove
-    ? 'This Pack needs these to work. Choose what each may do. Who may use them is what you chose in step 2.'
-    : 'This Pack needs these to work. Choose what each may do.';
-  section.appendChild(intro);
+  if (fresh > 0) {
+    const intro = doc.createElement('p');
+    intro.className = 'packs-dialog-deps-intro';
+    intro.textContent = `${verb} brings ${fresh === 1 ? 'it' : 'them'} in with what the actions need, as each row says`
+      + `${audienceChosenAbove ? ', for who you chose in step 2' : ''}. `
+      + `Or install ${fresh === 1 ? 'it' : 'one'} first with Install…, choosing what it may do in its own dialog.`;
+    section.appendChild(intro);
+  }
   const list = doc.createElement('ul');
   list.className = 'packs-dialog-dep-list';
   for (const pack of packs) {
@@ -744,45 +761,30 @@ const renderDependencyPacks = (
       ? `Installed already. This updates it for ${joinNames(pack.needed_by)}.`
       : `Needed by ${joinNames(pack.needed_by)}.`;
     item.appendChild(why);
-    const choosing = pack.updates !== true && pack.access_options.length > 0;
-    const access = resolveDependencyAccess(props.dependencyAccessPicks?.get(pack.pack_slug), pack);
-    if (choosing) {
-      const options = doc.createElement('div');
-      options.className = 'packs-dialog-dep-access';
-      options.setAttribute('role', 'radiogroup');
-      options.setAttribute('aria-label', `What ${pack.name} may do`);
-      for (const tier of pack.access_options) {
-        const label = doc.createElement('label');
-        label.className = 'packs-dialog-dep-option';
-        const radio = doc.createElement('input');
-        radio.setAttribute('type', 'radio');
-        radio.setAttribute('name', `packs-dialog-dep-${pack.pack_slug}`);
-        radio.setAttribute(PACKS_DIALOG_DEPENDENCY_ACCESS_ATTR, pack.pack_slug);
-        radio.setAttribute('data-access', tier);
-        radio.checked = tier === access;
-        if (installing) radio.setAttribute('disabled', '');
-        else radio.addEventListener('change', () => props.onPickDependencyAccess?.(pack.pack_slug, tier));
-        label.appendChild(radio);
-        const text = doc.createElement('span');
-        text.textContent = ACCESS_LABEL[tier];
-        label.appendChild(text);
-        options.appendChild(label);
+    if (pack.updates !== true) {
+      const access = doc.createElement('p');
+      access.className = 'packs-dialog-dep-needs';
+      if (pack.access_options.length > 0) {
+        access.setAttribute(PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR, pack.pack_slug);
+        access.textContent = dependencyAccessText(pack, verb);
+        // Its dialog offers less than the actions need: those steps will be refused.
+        const wanted = highestNeed(pack.needs?.access, pack.own_needs);
+        if (wanted !== undefined && TIER_ORDER.indexOf(neededDependencyAccess(pack)) < TIER_ORDER.indexOf(wanted)) {
+          access.className = 'packs-dialog-dep-needs packs-dialog-dep-needs-short';
+        }
+      } else {
+        access.textContent = 'Nothing to choose for it.';
       }
-      item.appendChild(options);
-    } else if (pack.updates !== true) {
-      const none = doc.createElement('p');
-      none.className = 'packs-dialog-dep-note';
-      none.textContent = 'Nothing to choose for it here.';
-      item.appendChild(none);
-    }
-    const required = highestNeed(pack.needs?.access, pack.own_needs);
-    if (required !== undefined && choosing) {
-      const needs = doc.createElement('p');
-      const short = TIER_ORDER.indexOf(access) < TIER_ORDER.indexOf(required);
-      needs.className = short ? 'packs-dialog-dep-needs packs-dialog-dep-needs-short' : 'packs-dialog-dep-needs';
-      needs.setAttribute(PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR, pack.pack_slug);
-      needs.textContent = dependencyNeedsText(pack.needs, access, pack.own_needs);
-      item.appendChild(needs);
+      item.appendChild(access);
+      const own = doc.createElement('button');
+      own.type = 'button';
+      own.className = 'rx-btn rx-btn-secondary rx-btn-sm packs-dialog-dep-install';
+      own.setAttribute(PACKS_DIALOG_DEPENDENCY_INSTALL_ATTR, pack.pack_slug);
+      own.setAttribute('aria-label', `Install ${pack.name} first, in its own dialog`);
+      own.textContent = 'Install…';
+      if (installing || props.onInstallDependency === undefined) own.disabled = true;
+      else own.addEventListener('click', () => props.onInstallDependency?.(pack.pack_slug));
+      item.appendChild(own);
     }
     list.appendChild(item);
   }
@@ -1120,6 +1122,9 @@ const renderInstallRecipeDisclosure = (
 };
 
 export interface PacksInstallDialogProps {
+  /** D-321 C1 — the programs the pack runs, as this server has them (the pack
+   *  page's Programs block read them). Absent or empty: nothing is said. */
+  programs?: readonly PackToolStatus[];
   updateTests?: { element: HTMLElement; blocked: boolean };
   vendorPermissionsReviewed?: boolean;
   vendorPermissionsLoading?: boolean;
@@ -1206,11 +1211,9 @@ export interface PacksInstallDialogProps {
   /** D-305 — the pack brings other packs in with it, and the preview has not yet
    *  said what they need. Install waits, since the install would refuse them. */
   permissionsLoading?: boolean;
-  /** D-310 — the owner's Access pick for each pack the install brings in, by
-   *  slug (absent ⇒ Read only). */
-  dependencyAccessPicks?: ReadonlyMap<string, InstallAccessTier>;
-  /** D-310 — pick an Access tier for one pack the install brings in. */
-  onPickDependencyAccess?(packSlug: string, tier: InstallAccessTier): void;
+  /** D-346 C — install one pack the install brings in first, in its own dialog
+   *  (its own Install…). Absent ⇒ the button is off. */
+  onInstallDependency?(packSlug: string): void;
   /** D-295 — pick a webhook for one choice. */
   onPickWebhook?(key: string, ingressId: string): void;
   /** D-315 §5.2 — the templates the recipes bring, each with which template
@@ -1264,6 +1267,38 @@ export const renderConnectionHintDisclosure = (
  *  construction over the props — all state reads and every mutation flow
  *  through the host callbacks, so the panel's state machine stays the single
  *  writer. */
+/** D-321 C1 — marks the install panel's Programs section. */
+export const INSTALL_PROGRAMS_ATTR = 'data-recued-install-programs';
+
+/** D-321 C1 — "rg — Not on the server's PATH", and what that means for a run. */
+const renderInstallPrograms = (doc: Document, programs: readonly PackToolStatus[]): HTMLElement => {
+  const section = doc.createElement('div');
+  section.className = 'packs-install-programs';
+  section.setAttribute(INSTALL_PROGRAMS_ATTR, '');
+  const heading = doc.createElement('p');
+  heading.className = 'packs-install-programs-heading';
+  heading.textContent = 'Programs it runs on your server';
+  section.appendChild(heading);
+  const list = doc.createElement('ul');
+  list.className = 'packs-install-programs-list';
+  for (const tool of programs) {
+    const item = doc.createElement('li');
+    item.setAttribute('data-state', tool.state);
+    item.textContent = `${programDisplayName(tool.binary)} — ${programStateText(tool)}`;
+    const consequence = programConsequence(tool);
+    if (consequence !== null) {
+      const note = doc.createElement('span');
+      note.className = 'packs-install-programs-note';
+      // The state is a few words with no full stop ("Not on the server's PATH").
+      note.textContent = `. ${consequence}`;
+      item.appendChild(note);
+    }
+    list.appendChild(item);
+  }
+  section.appendChild(list);
+  return section;
+};
+
 export const renderPacksInstallDialog = (
   props: PacksInstallDialogProps,
 ): HTMLElement => {
@@ -1771,6 +1806,13 @@ export const renderPacksInstallDialog = (
     );
   }
 
+  // D-321 C1 — a cli pack's counterpart of the connection line above: each
+  // program it runs and whether this server has it. It holds nothing: a program
+  // the server cannot find fails only the actions that run it.
+  if (props.programs !== undefined && props.programs.length > 0) {
+    container.appendChild(renderInstallPrograms(doc, props.programs));
+  }
+
   if (props.connectionRequirement === undefined && props.connectionHintSetup !== undefined) {
     container.appendChild(
       renderConnectionHintDisclosure(doc, props.connectionHintSetup),
@@ -1846,7 +1888,7 @@ export const renderPacksInstallDialog = (
   // none is shown and none is sent.
   if ((preview?.dependency_packs?.length ?? 0) > 0) {
     container.appendChild(
-      renderDependencyPacks(doc, props, preview!.dependency_packs!, grantModel !== null, installing),
+      renderDependencyPacks(doc, props, preview!.dependency_packs!, grantModel !== null, installing, isUpdate),
     );
   }
 
@@ -1980,13 +2022,23 @@ export const renderPacksInstallDialog = (
   installBtn.type = 'button';
   installBtn.setAttribute(PACKS_DIALOG_INSTALL_BTN_ATTR, '');
   installBtn.className = 'rx-btn rx-btn-primary rx-btn-sm packs-dialog-install';
+  // D-346 C — with packs it brings in, the button says it installs them too.
+  const bringsIn = (preview?.dependency_packs ?? []).filter((pack) => pack.updates !== true);
   installBtn.textContent = installing
     ? isUpdate
       ? DIALOG_COPY.updating_label
       : DIALOG_COPY.installing_label
     : isUpdate
-      ? DIALOG_COPY.update_label
-      : DIALOG_COPY.install_label;
+      ? bringsIn.length === 0
+        ? DIALOG_COPY.update_label
+        : bringsIn.length === 1
+          ? `Update and install ${bringsIn[0]!.name}`
+          : `Update and install all ${bringsIn.length}`
+      : bringsIn.length === 0
+        ? DIALOG_COPY.install_label
+        : bringsIn.length === 1
+          ? `Install ${bringsIn[0]!.name} and ${props.pack.name}`
+          : `Install all ${bringsIn.length} and ${props.pack.name}`;
   // Slice B — also disable while a Delete rpc is mid-flight on
   // another row. Single-rpc-at-a-time per DD#10; without this gate
   // a user could submit a parallel install while a delete is

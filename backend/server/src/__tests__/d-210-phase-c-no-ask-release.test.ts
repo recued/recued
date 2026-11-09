@@ -493,4 +493,32 @@ describe('D-210 Phase C — inbox approve/reject on an ask-less hold', () => {
     ).rejects.toThrow(/no ask/i);
     expect(released).toEqual([]);
   });
+
+  // D-188 — the owner's ruling of 2026-11-08: a held item came in through a door, which the
+  // pause stops, so while the server is paused it cannot be approved. Refused before anything
+  // is written (the approval audit would record a release that did not happen); denying it
+  // still works, and it is approved once resumed.
+  it('D-188 — refuses approving while the server is paused, before any audit or release', async () => {
+    const { deps, released } = buildDeps({ isServerPaused: () => true });
+    const logged = vi.spyOn(deps.auditLog, 'logActivity');
+    const appended = vi.spyOn(deps.auditLog, 'append');
+    await expect(handleReceptionInboxApprove(deps, { hold_id: HOLD }, ADMIN)).rejects.toMatchObject({
+      code: 'server_paused',
+      message: 'The server is paused. Resume it to approve this; you can still deny it.',
+      status: 409,
+    });
+    expect(released).toEqual([]);
+    expect(logged).not.toHaveBeenCalled();
+    expect(appended).not.toHaveBeenCalled();
+  });
+
+  it('D-188 — …still dismisses it while paused, and approves it once resumed', async () => {
+    let paused = true;
+    const { deps, released } = buildDeps({ isServerPaused: () => paused });
+    expect((await handleReceptionInboxReject(deps, { hold_id: HOLD }, ADMIN)).status).toBe('dismissed');
+    expect(released).toEqual([{ kind: 'deny' }]);
+    paused = false;
+    expect((await handleReceptionInboxApprove(deps, { hold_id: HOLD }, ADMIN)).released).toBe(true);
+    expect(released).toEqual([{ kind: 'deny' }, { kind: 'approve', approved_at: RELEASED_AT }]);
+  });
 });

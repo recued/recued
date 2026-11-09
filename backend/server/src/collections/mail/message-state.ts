@@ -11,7 +11,11 @@ type StateCollection = Pick<MailCollection, 'get' | 'accountEmail'>
 export interface MailMessageStateDeps {
   getCollection(slug: string): StateCollection | undefined;
   getIncarnation?(slug: string): string | null;
+  /** D-188 — the owner's pause. While it holds, the status is not checked at the mailbox. */
+  isPaused?(): boolean;
 }
+/** D-188 — why a paused server shows the stored status and cannot change it. */
+export const MAIL_STATE_PAUSED_REASON = 'The server is paused. Resume it to change this email.';
 const changed = (): never => { throw new RpcError('resource_changed', 'This email or mailbox changed. Refresh Mail before continuing.', 409); };
 const capture = (deps: MailMessageStateDeps, input: MailMessageRef) => {
   if (!input || typeof input.slug !== 'string' || !input.slug || input.slug.length > 256
@@ -61,6 +65,11 @@ export const readMailMessageState = async (deps: MailMessageStateDeps, input: Ma
 }> => {
   const bound = capture(deps, input);
   if (!bound.supported) return { state: bound.stateOf(), assertCurrent: bound.assertCurrent };
+  // D-188 — the emergency stop: nothing reaches the mailbox, so the stored status is shown,
+  // unchecked. Changing it waits for Resume (its rpc is refused while paused).
+  if (deps.isPaused?.() === true) {
+    return { state: { ...bound.stateOf(), unavailable_reason: MAIL_STATE_PAUSED_REASON }, assertCurrent: bound.assertCurrent };
+  }
   const readStartedAt = Date.now();
   let message: CanonicalMessage | null = null;
   try { message = await bound.collection.provider.fetchMessage!(bound.record.source_id); } catch { /* Keep the stored status, with actions disabled. */ }

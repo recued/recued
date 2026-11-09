@@ -91,6 +91,7 @@ import type {
   RiskTier,
   SessionGrantOffer,
   ChatDispatchContext,
+  TriggerPreapprovalOffer,
 } from '@recued/contracts';
 import {
   primitiveGrantEntry,
@@ -112,6 +113,8 @@ import {
   stampPlatformRecordIds,
   type ApprovalValueLabels,
   type MemorySaveConflict,
+  grantRefusalSentence,
+  isOwnersOwnCall,
 } from '@recued/contracts';
 import {
   deriveChannelSessionId,
@@ -159,6 +162,8 @@ import {
   createNamespaceStores,
 } from './server-executor.js';
 import { ownerEditsFor } from './chat-plan-edits.js';
+import { scheduledPromptHoldOffer } from './scheduled-prompt-preapproval.js';
+import { SERVER_PAUSED_DETAIL } from './pause-approval.js';
 
 /** The reserved op-args key naming the enrolled connection a raw op binds
  *  (Model 1). Stripped from the op args before dispatch; the Inc D catalog tool
@@ -266,6 +271,9 @@ export type RawOpDispatchDeps = Pick<
   // owner's zone. Absent ⇒ the ask names the action only.
   | 'heldCallDetails'
   | 'ownerTimeZone'
+  // D-341 slice B3 — a scheduled prompt's held write offers its own standing pre-approval only
+  // where an answer could grant it.
+  | 'triggerPreapprovalGranter'
 > & {
   /** Test seam — substitute the IO executor UNDER the gateway (mirrors
    *  `CanonicalPollDeps.buildExecutor`): tests script wire responses while the
@@ -509,9 +517,14 @@ const dispatchRawOpOnce = async (
   if (admission.verdict === 'deny') {
     return {
       kind: 'refused',
-      message:
-        `'${opId}' is denied by the active contract policy (${admission.detail}). `
-        + 'Ask the owner to grant it on this door, or use a permitted operation.',
+      // A grant refusal's own words already say who turns it on and where.
+      message: admission.code === 'op_not_granted'
+        ? admission.detail
+        // D-188 — a pause is no grant: "ask the owner to grant it" sent the app the wrong way.
+        : admission.code === 'server_paused'
+          ? pausedCallRefusal(opId)
+          : `'${opId}' is denied by the active contract policy (${admission.detail}). `
+            + 'Ask the owner to grant it on this door, or use a permitted operation.',
     };
   }
   // D-329 — an AI app's repeat of a call still waiting for the owner is that call: one ask,
@@ -937,8 +950,7 @@ export const admitCatalogOpForSource = (
     return Object.freeze({
       verdict: 'deny',
       code: 'server_paused',
-      detail:
-        'server is paused — contracted and AI operations are halted until the owner resumes',
+      detail: SERVER_PAUSED_DETAIL,
     });
   }
   if (
@@ -949,7 +961,7 @@ export const admitCatalogOpForSource = (
     return Object.freeze({
       verdict: 'deny',
       code: 'op_not_granted',
-      detail: `operation '${overlayOpId}' is not granted to this dispatch's governing contract (revoked)`,
+      detail: grantRefusalSentence(`'${overlayOpId}'`, isOwnersOwnCall(executionSource), 'Ops'),
     });
   }
   return decision;
@@ -1274,6 +1286,9 @@ interface RawOpHoldInput {
   /** D-336 slice N's open item — the chat whose card can change the held call
    *  (`PreflightCheckpointContext.change_in_chat`). Display only. */
   changeInChat?: string;
+  /** D-341 slice B3 — the standing pre-approval its ask offers ("Always allow for this scheduled
+   *  prompt", `PreflightCheckpointContext.trigger_preapproval`), which an answer grants. */
+  triggerPreapprovalOffer?: TriggerPreapprovalOffer;
 }
 
 /** Resolve the `raw_op` session-grant offer for a hold — the `(mcp ×
@@ -1386,6 +1401,7 @@ const buildRawOpHold = async (
       ...(hold.changeInChat !== undefined && hold.changeInChat.trim() !== ''
         ? { change_in_chat: hold.changeInChat.trim() }
         : {}),
+      ...(hold.triggerPreapprovalOffer !== undefined ? { trigger_preapproval: hold.triggerPreapprovalOffer } : {}),
     },
     raw_op: {
       ...(hold.tier1Tool !== undefined ? { tier1_tool: hold.tier1Tool } : {}),
@@ -1554,6 +1570,12 @@ const buildRawOpHold = async (
   };
 };
 
+/** D-188 — what a call the owner's pause stops reads: the admission's own detail, and that it
+ *  is no grant problem, so an app neither asks the owner to grant it nor retries meanwhile. */
+export const pausedCallRefusal = (opId: string): string =>
+  `'${opId}' did not run (server_paused): ${SERVER_PAUSED_DETAIL}. `
+  + 'It is not a grant problem; do not retry until the owner resumes.';
+
 /** A source that carries the turn it was made in: a chat's, or a scheduled one's. */
 const sourceNamesTurn = (source: ExecutionSource): source is ExecutionSource & { turn_id: string } =>
   (source.channel === 'chat' || source.channel === 'schedule') && source.turn_id !== undefined;
@@ -1580,6 +1602,16 @@ export const holdTier1Call = async (
     changeInChat?: string;
   },
 ): Promise<RawOpDispatchOutcome> => {
+  // D-188 — the owner's ruling of 2026-11-08: nothing new is asked during a pause. A caller the
+  // pause stops (an AI app, the owner's own AI) is refused here, before its hold, rather than
+  // held for an approval nobody can give until Resume. The raw-op door's admission refuses the
+  // same way before its own hold; this path builds the hold directly, so it asks here.
+  if (deps.opAdmissionGate?.isFrozenByPause(call.executionSource) === true) {
+    return { kind: 'refused', message: pausedCallRefusal(call.tool) };
+  }
+  // D-341 slice B3 — a scheduled prompt's write offers its own standing pre-approval, where an
+  // answer could grant it.
+  const triggerPreapprovalOffer = scheduledPromptHoldOffer(deps, call.executionSource, call.tool, call.args);
   const outcome = await buildRawOpHold(deps, {
     opId: call.tool,
     catalogSlug: TIER1_HOLD_CATALOG_SLUG,
@@ -1596,6 +1628,7 @@ export const holdTier1Call = async (
     ...(call.valueLabels !== undefined ? { valueLabels: call.valueLabels } : {}),
     ...(call.memoryConflicts !== undefined ? { memoryConflicts: call.memoryConflicts } : {}),
     ...(call.changeInChat !== undefined ? { changeInChat: call.changeInChat } : {}),
+    ...(triggerPreapprovalOffer !== undefined ? { triggerPreapprovalOffer } : {}),
     tier1Tool: call.tool,
   }, { risk_tier: 'write' });
   // D-336 slice O's open item — once held, the earlier saves of the same fact still waiting

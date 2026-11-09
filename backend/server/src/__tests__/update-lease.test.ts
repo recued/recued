@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   acquireUpdateLease,
+  inspectUpdateLease,
   updateLeasePathFor,
   UpdateLeaseHeldError,
 } from '../update/update-lease.js';
@@ -23,7 +24,7 @@ describe('acquireUpdateLease', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const take = (over: Partial<Parameters<typeof acquireUpdateLease>[0]> = {}) =>
-    acquireUpdateLease({ leasePath, operation: 'apply', now: () => 1, ...over });
+    acquireUpdateLease({ identify: () => null, leasePath, operation: 'apply', now: () => 1, ...over });
 
   it('a SECOND process is refused while the first holds it', () => {
     take({ currentPid: () => 100 });
@@ -161,10 +162,10 @@ describe('the lease guards the EXECUTABLE, not the realm', () => {
   it('⛔ and the second realm is then actually REFUSED', () => {
     // The property the path derivation exists for, driven rather than inferred.
     const binary = join(binDir, 'recued');
-    const first = acquireUpdateLease({
+    const first = acquireUpdateLease({ identify: () => null,
       leasePath: updateLeasePathFor(binary), operation: 'apply', currentPid: () => 100,
     });
-    expect(() => acquireUpdateLease({
+    expect(() => acquireUpdateLease({ identify: () => null,
       leasePath: updateLeasePathFor(binary),
       operation: 'apply',
       currentPid: () => 200,
@@ -201,7 +202,7 @@ describe('stale reclamation is a critical section', () => {
   it('⛔ does NOT erase a holder that appeared since the staleness was observed', () => {
     seedStale();
     let interleaved = false;
-    expect(() => acquireUpdateLease({
+    expect(() => acquireUpdateLease({ identify: () => null,
       leasePath: lease2,
       operation: 'apply',
       currentPid: () => 200,
@@ -229,7 +230,7 @@ describe('stale reclamation is a critical section', () => {
     // section. Deleting the stale lease from outside it is the same bug.
     seedStale();
     writeFileSync(`${lease2}.reclaim`, '');
-    expect(() => acquireUpdateLease({
+    expect(() => acquireUpdateLease({ identify: () => null,
       leasePath: lease2, operation: 'apply', currentPid: () => 200, isAlive: () => false,
     })).toThrow(UpdateLeaseHeldError);
     expect(existsSync(lease2), 'the stale lease must not be removed from outside').toBe(true);
@@ -237,11 +238,71 @@ describe('stale reclamation is a critical section', () => {
 
   it('a successful reclaim releases the reclaim lock', () => {
     seedStale();
-    const lease = acquireUpdateLease({
+    const lease = acquireUpdateLease({ identify: () => null,
       leasePath: lease2, operation: 'apply', currentPid: () => 200, isAlive: () => false,
     });
     expect(existsSync(`${lease2}.reclaim`), 'the reclaim lock must not leak').toBe(false);
     expect(JSON.parse(readFileSync(lease2, 'utf-8')).pid).toBe(200);
+    lease.release();
+  });
+});
+
+/** A lease outlives an update that died uncleanly, and its PID can then name an
+ *  unrelated live process. Judged by the PID alone, boot read that as an update
+ *  in progress and exited 4, and every later update was refused until a human
+ *  deleted the file. `proc_start` tells the writer from a process given its
+ *  number later; unknown on either side keeps the PID's verdict. Real processes
+ *  and the real identity: `stale-lock-reused-pid.test.ts`. */
+describe('update lease — a PID reused after an update that died', () => {
+  let dir: string;
+  let leasePath: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'update-lease-reuse-'));
+    leasePath = join(dir, 'recued-update.lock');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const heldBy100 = (procStart?: string): void => writeFileSync(leasePath, JSON.stringify({
+    pid: 100, operation: 'apply', at: 1, token: 'old-token',
+    ...(procStart !== undefined ? { proc_start: procStart } : {}),
+  }));
+  const claimAs200 = (starts: Record<number, string>) => acquireUpdateLease({
+    leasePath, operation: 'install', currentPid: () => 200, isAlive: (pid) => pid === 100,
+    identify: (pid) => starts[pid] ?? null,
+  });
+
+  it('⛔ a live PID that started at another time is not the holder: the next update claims it', () => {
+    heldBy100('start-A');
+    const lease = claimAs200({ 100: 'start-B', 200: 'start-mine' });
+    expect(JSON.parse(readFileSync(leasePath, 'utf-8'))).toMatchObject({ pid: 200, proc_start: 'start-mine' });
+    lease.release();
+  });
+
+  it('still refuses while the PID is the process that took it', () => {
+    heldBy100('start-A');
+    expect(() => claimAs200({ 100: 'start-A' })).toThrow(UpdateLeaseHeldError);
+  });
+
+  it('⚠ refuses on the PID alone when the start cannot be read — unknown is not proof', () => {
+    heldBy100('start-A');
+    expect(() => claimAs200({})).toThrow(UpdateLeaseHeldError);
+  });
+
+  it('judges a lease from before start identities were kept by its PID, as before', () => {
+    heldBy100();
+    expect(() => claimAs200({ 100: 'start-B' })).toThrow(UpdateLeaseHeldError);
+  });
+
+  it('⛔ boot asks the same: a reused PID is nobody updating, the writer is', () => {
+    heldBy100('start-A');
+    expect(inspectUpdateLease(leasePath, () => 'start-B', () => true)).toBeNull();
+    expect(inspectUpdateLease(leasePath, () => 'start-A', () => true)?.pid).toBe(100);
+    expect(inspectUpdateLease(leasePath, () => null, () => true)?.pid).toBe(100);
+  });
+
+  it('writes no start where the platform cannot say', () => {
+    const lease = claimAs200({});
+    expect(JSON.parse(readFileSync(leasePath, 'utf-8'))).not.toHaveProperty('proc_start');
     lease.release();
   });
 });

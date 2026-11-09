@@ -60,6 +60,7 @@ import {
 import type {
   ExecutionCaseStore,
 } from './storage/execution-case-store.js';
+import type { BrowserFlowRecorder, BrowserFlowStep } from './bridges/browser-flow-record.js';
 
 /** The narrow notification seam this consumer needs — the same posture as
  *  `PreflightNotifier` / `SagaNotifier` / `PickNotifier`: the block is threaded
@@ -128,6 +129,11 @@ export interface ExecutionCaseOfferLifecycleDeps {
    *  silently retiring the feature: a silenced ask is indistinguishable from a
    *  working one until someone notices the corpus never grew. */
   isOfferEnabled?: () => boolean;
+  /** D-335 slice W3 — the browser steps of the owner's chat turns, and where a flow the owner keeps
+   *  goes. Both absent ⇒ the ask is as it was. */
+  browserFlows?: Pick<BrowserFlowRecorder, 'stepsFor' | 'forget'>;
+  keepBrowserFlow?: (flow: { session_id: string; root_request_id: string; kept_at: number; steps: BrowserFlowStep[] })
+    => Promise<unknown>;
 }
 
 export interface ExecutionCaseOfferLifecycle {
@@ -239,11 +245,16 @@ export const createExecutionCaseOfferLifecycle = (
         if (open.observation_id === observation.observation_id) return null;
         await deps.notifier.cancelAsk(open.ask_id);
       }
+      // D-335 slice W3 — the steps this request did in the owner's browser, over all its turns: an
+      // action held for approval ran in a turn of its own.
+      const browserSteps = deps.browserFlows?.stepsFor(input.session_id,
+        (turn) => deps.compiler.resolveRootForClose(input.session_id, turn) === root).length ?? 0;
       return offerExecutionCase(
         deps.notifier.ask,
         observation,
         decision,
         input.turn_id,
+        browserSteps > 0 ? { steps: browserSteps } : undefined,
       );
     },
 
@@ -265,6 +276,17 @@ export const createExecutionCaseOfferLifecycle = (
             turn_id,
             kind: answer.option,
           });
+          // D-335 slice W3 — "That was right" keeps the request's browser steps as a flow; any
+          // answer ends their wait in memory.
+          const root_request_id = readString(payload, 'root_request_id');
+          if (deps.browserFlows !== undefined && root_request_id !== undefined && typeof payload.browser_steps === 'number') {
+            const inRoot = (turn: string) => deps.compiler.resolveRootForClose(session_id, turn) === root_request_id;
+            const steps = deps.browserFlows.stepsFor(session_id, inRoot);
+            if (answer.option === 'accepted' && steps.length > 0) {
+              await deps.keepBrowserFlow?.({ session_id, root_request_id, kept_at: answer.answered_at, steps });
+            }
+            deps.browserFlows.forget(session_id, inRoot);
+          }
         },
       );
     },

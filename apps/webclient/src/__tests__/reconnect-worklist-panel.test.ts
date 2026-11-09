@@ -146,3 +146,26 @@ describe('unified authentication repair worklist', () => {
     expect(host.firstChild).toBe(before); expect(host.find('data-authentication-repair-group', 'd'.repeat(64))).toBeUndefined();
   });
 });
+
+/** D-321 P5 — a sign-in with no set-up connection behind it: it says so, and
+ *  offers the vendor's form for the pack's sign-in. An API-key pack has no
+ *  permissions to list, so no empty list is drawn. */
+describe('D-321 P5 — Connection needed', () => {
+  it("says no connection is set up, links to the vendor's form, and lists no empty permissions", async () => {
+    const needed: PackReconnectGroup = { id: 'e'.repeat(64), fingerprint: 'f'.repeat(64), display_name: 'Exa',
+      authentication: 'unknown', required_scopes: [], reviewed: false, can_reconnect: false, can_mark_reviewed: false,
+      items: [{ id: '1'.repeat(64), pack_slug: 'exa', pack_name: 'Web Search — Exa', slot: 'exa', version: 2,
+        required_scopes: [], missing_scopes: [], coverage: 'unknown', reviewed: false, connection_needed: true, vendor: 'exa' }] };
+    const { host, panel } = mount(vi.fn<PackReconnectCaller>().mockResolvedValue(response([needed])));
+    await panel.whenLoaded();
+    const article = host.find('data-reconnect-worklist-group', needed.id)!;
+    expect(article.text()).toContain('Exa');
+    expect(article.text()).toContain('Connection needed');
+    expect(article.text()).toContain('No connection is set up for this yet');
+    expect(article.text()).not.toContain('Required permissions');
+    expect(article.text()).not.toContain('Vendor permissions are unknown');
+    expect(article.find('data-reconnect-worklist-set-up', 'exa')?.attrs.get('href'))
+      .toBe('#connections/others/enroll/exa/pack/exa/exa');
+    panel.dispose();
+  });
+});

@@ -1,5 +1,5 @@
-import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_STATUSES, HOME_ASSISTANT_WRITER_SETUP, PROACTIVE_PROPOSAL_KINDS, assetDocumentDetails, isAssetDate, occasionNextDate, type Asset, type AssetClassPreset, type FileAttachmentSelection,
-  type AssetEvidence, type AssetPatch, type AssetRule, type ContactRecord, type Episode, type EpisodeInput, type Link, type Occasion, type ProactiveProposal,
+import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_STATUSES, HOME_ASSISTANT_WRITER_SETUP, PROACTIVE_PROPOSAL_KINDS, PURSUIT_CLASS_ID, assetConditionHolds, assetDocumentDetails, isAssetDate, occasionNextDate, type Asset, type AssetClassPreset, type FileAttachmentSelection,
+  type AssetEvidence, type AssetPatch, type AssetRule, type ContactRecord, type Episode, type EpisodeInput, type Link, type Occasion, type ProactiveProposal, type PursuitEnding, type SituationRef,
   type TimelineRequest, type TimelineResponse, type TripDetails, type YoursAssetFilter, type YoursAssetSphere, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
 import {
   claimEndNamingInWords, memoryClaimSentence, type MemoryClaim, type MemoryClaimsResult, type MemoryGetRequest,
@@ -35,17 +35,19 @@ import { clearYoursFieldErrors, yoursFieldError } from './yours-field-errors.js'
 import { factName } from './fact-words.js';
 import { mountClassFieldsEditor } from './class-fields-editor.js';
 import { proposalPreview, reminderTimingWords } from './proposal-preview.js';
-import { episodeDateWords, yoursCalendarDate, yoursDateTime } from './yours-dates.js';
+import { episodeDateWords, episodeDay, episodeDayWords, yoursCalendarDate, yoursDateTime } from './yours-dates.js';
 import { mountCountryChoice } from './country-choice.js';
 import { renderAssetComparisons } from './asset-comparisons.js';
 import { ASSET_STATUS_WORDS } from './asset-status.js';
 import { readSearchAssetReturn } from '../shell/search-asset-return.js';
+import { PURSUIT_FACTS, endedPursuits, isPursuit, pursuitActive, pursuitEndingWords, pursuitFacts, pursuitPartsEnding, pursuitTree } from './pursuits.js';
+import { mountPursuitEditor } from './pursuit-editor.js';
 
-const TABS = ['assets', 'proposals', 'occurrences', 'occasions', 'episodes'] as const;
+const TABS = ['assets', 'pursuits', 'proposals', 'occurrences', 'occasions', 'episodes'] as const;
 type Tab = typeof TABS[number];
 // §15.2 amendment — the occurrences tab reads "Due": what is listed is due, overdue
 // or coming up. Its address stays `#yours/occurrences`, which links already use.
-const TAB_LABELS: Readonly<Record<Tab, string>> = { assets: 'Assets', proposals: 'Proposals', occurrences: 'Due', occasions: 'Occasions', episodes: 'Episodes' };
+const TAB_LABELS: Readonly<Record<Tab, string>> = { assets: 'Assets', pursuits: 'Pursuits', proposals: 'Proposals', occurrences: 'Due', occasions: 'Occasions', episodes: 'Episodes' };
 const continuityScopes = new WeakMap<object, string>(); let nextContinuityScope = 0;
 export interface YoursRouteOptions {
   container: HTMLElement;
@@ -81,6 +83,8 @@ export interface YoursRouteOptions {
   writerSetup?: AssetWriterSetupCallers;
 }
 type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; correction?: ProactiveProposal; creation_key?: string }
+  /** D-342 — `pursuits` are what "Part of" offers; `part_of` starts a new pursuit under one. */
+  | { type: 'pursuit'; asset?: Asset; pursuits: Asset[]; part_of?: string; creation_key?: string }
   | { type: 'rule'; asset: Asset; rule?: AssetRule; proposal?: ProactiveProposal; classPreset?: AssetClassPreset; classCreating?: boolean; classDirty?: boolean; classFocus?: EditorReturnFocus; initialField?: { group: 'dates' | 'readings' | 'observations'; field: string } }
   | { type: 'trip'; proposal: ProactiveProposal }
   | { type: 'relation'; proposal: ProactiveProposal }
@@ -149,6 +153,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const selectedTrace = segments[0] === 'episodes' && segments[1] === 'trace' ? segments[2] : undefined;
   const classesView = segments[0] === 'classes' || segments[1] === 'classes';
   const assetList = tab === 'assets' && !selected && !classesView;
+  const pursuitList = tab === 'pursuits';
   let proposalKind: import('@recued/contracts').ProactiveProposalKind | '' = segments[1] === 'kind' && PROACTIVE_PROPOSAL_KINDS.includes(segments[2] as import('@recued/contracts').ProactiveProposalKind) ? segments[2] as import('@recued/contracts').ProactiveProposalKind : '';
   const pageAt = proposalKind ? 3 : 1;
   const pageNumber = (value: string | undefined) => { const number = Number(value); return Number.isSafeInteger(number) && number > 0 && Number.isSafeInteger((number - 1) * 50) ? number - 1 : 0; };
@@ -290,6 +295,23 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     } }
   };
   const change = (input: YoursCommand, keep = false) => write(() => options.change(input), keep);
+  /** D-342 — every pursuit, for "Part of" when the form opens away from the Pursuits tab. A
+   *  server that does not echo the filter has none to offer. */
+  const readPursuits = async (): Promise<Asset[]> => {
+    const result = await options.read({ pursuits: 'only', limit: 200 });
+    return result.pursuits === 'only' ? result.assets : [];
+  };
+  /** D-342 §3 — ending keeps Reached or Let go on the pursuit (ruling 8); its parts end with it,
+   *  so the owner is asked first when it has any. `known` holds its parts. */
+  const endPursuit = (asset: Asset, ending: PursuitEnding, known: readonly Asset[]) => {
+    const parts = pursuitPartsEnding(asset, known);
+    const named = parts.length > 3 ? `${parts.slice(0, 3).map(part => part.name).join(', ')} and ${parts.length - 3} more` : parts.map(part => part.name).join(', ');
+    if (parts.length && doc.defaultView?.confirm && !doc.defaultView.confirm(`${named} ${parts.length === 1 ? 'is part of it and ends' : 'are part of it and end'} with it. End ${asset.name}?`)) return;
+    return change({ action: 'asset.update', id: asset.id, patch: { status: 'retired', attributes: { ended_as: ending } }, confirm_retirement: true });
+  };
+  /** Bringing one back clears its ending; its parts stay as they are. */
+  const bringBack = (asset: Asset) => change({ action: 'asset.update', id: asset.id,
+    patch: { status: 'active', ...(asset.attributes.ended_as != null ? { attributes: { ended_as: null } } : {}) } });
   /** D-336 (spec §45) — link a "matched by name" relationship to this thing. The note is read
    *  first, so the link is made on its current claim; the page then reads its relationships again. */
   const linkThing = (memory_id: string, asset: Asset) => write(async (): Promise<YoursCommandResult> => {
@@ -534,6 +556,22 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       }
       formActions(node); return;
     }
+    if (value.type === 'pursuit') {
+      const own = value.asset; let fields: ReturnType<typeof mountPursuitEditor>;
+      const creationKey = own ? undefined : value.creation_key ??= `yours:${globalThis.crypto.randomUUID()}`;
+      const node = form(own ? `Edit ${own.name}` : 'Add pursuit', async () => {
+        const patch = fields.read(Date.now());
+        if (!own) { await change({ action: 'asset.create', class_id: PURSUIT_CLASS_ID, input: { ...patch, name: patch.name!, idempotency_key: creationKey } }); return; }
+        // An edit sends only what changed (`changedAssetPatch`), so an untouched fact keeps its source.
+        const changed = changedAssetPatch(patch, own);
+        if (Object.keys(changed).length) { await change({ action: 'asset.update', id: own.id, patch: changed }); return; }
+        editorIntent++; const target = editorReturnFocus; editor = undefined; editorReturnFocus = undefined; dirty = false;
+        message = 'No changes to save.'; render(); restoreEditorFocus(target);
+      });
+      const parentName = own?.belongs_to ? [...value.pursuits, ...(snapshot?.related_assets ?? [])].find(row => row.id === own.belongs_to)?.name : undefined;
+      fields = mountPursuitEditor(node, own, value.pursuits, { ...(value.part_of ? { partOf: value.part_of } : {}), ...(parentName ? { parentName } : {}), changed: () => { dirty = true; } });
+      formActions(node, own ? 'Save' : 'Add pursuit'); return;
+    }
     if (value.type === 'asset') {
       const simpleCreation = !value.asset && !value.proposal;
       const creationKey = value.asset || value.proposal ? undefined : value.creation_key ??= `yours:${globalThis.crypto.randomUUID()}`;
@@ -600,7 +638,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         });
       });
       label(node, 'Name', 'name', own.name ?? '').required = true;
-      const classChoice = select(node, simpleCreation ? 'Type (optional)' : 'Class', 'class', [['', simpleCreation ? 'Choose later' : 'Unclassified'], ...(snapshot?.classes.map(preset => [preset.id, preset.name] as [string, string]) ?? [])], chosenClass);
+      // D-342 — a pursuit is added on the Pursuits tab, so this form offers its type only to one.
+      const classChoice = select(node, simpleCreation ? 'Type (optional)' : 'Class', 'class', [['', simpleCreation ? 'Choose later' : 'Unclassified'],
+        ...(snapshot?.classes.filter(preset => preset.id !== PURSUIT_CLASS_ID || chosenClass === PURSUIT_CLASS_ID).map(preset => [preset.id, preset.name] as [string, string]) ?? [])], chosenClass);
       const typeHint = simpleCreation ? el('p', undefined, node) : null;
       if (typeHint) typeHint.className = 'yours-muted';
       const requiredDetails = simpleCreation ? el('div', undefined, node) : null;
@@ -938,19 +978,23 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const list = el('ul', undefined, parent); list.setAttribute('aria-label', 'Evidence'); list.dataset.yoursEvidence = '';
     for (const item of evidence) sourceLink(el('li', assetEvidenceText(item), list), item);
   };
-  /** P44 — an episode where it is cited (an occasion's history), with Correct and Hide.
-   * A hidden episode leaves every list and is named under Memory exclusions (P17). */
-  const renderEpisodeSummary = (item: HTMLElement, episode: EpisodeInput) => {
+  /** P44 — an episode where it is cited (an occasion's history, a pursuit's), with Correct and Hide.
+   * A hidden episode leaves every list and is named under Memory exclusions (P17). `here` is the
+   * record whose page shows it, which its evidence does not link back to. */
+  const renderEpisodeSummary = (item: HTMLElement, episode: EpisodeInput, here?: SituationRef) => {
     item.classList.add('yours-event');
-    el('p', `${episodeDateWords(episode.when)} · ${episode.where?.name ?? 'place unknown'}`, item).className = 'yours-event-date';
-    el('p', EPISODE_BASIS_WORDS[episode.basis], item).className = 'yours-muted';
+    // D-343 slice 5 — a record the owner made in Close the day has no place to be unknown.
+    const place = episode.where?.name ?? (episode.assembly_rule === 'owner_record.v1' ? undefined : 'place unknown');
+    el('p', `${episodeDateWords(episode.when)}${place ? ` · ${place}` : ''}`, item).className = 'yours-event-date';
+    // D-343 slice 2 — a record from closing a day says what was skipped too: never what was done.
+    el('p', episode.outcome === 'skipped' ? 'Skipped · your record' : EPISODE_BASIS_WORDS[episode.basis], item).className = 'yours-muted';
     if (episode.people.length) el('p', `With ${episode.people.map(id => holderName(id)).join(', ')}`, item);
     if (episode.notes) el('p', episode.notes, item);
-    renderEvidence(item, episode.evidence);
+    renderEvidence(item, here ? episode.evidence.filter(ref => ref.collection !== here.collection || ref.id !== here.id) : episode.evidence);
   };
-  const renderCitedEpisode = (parent: HTMLElement, episode: Episode) => {
+  const renderCitedEpisode = (parent: HTMLElement, episode: Episode, here?: SituationRef) => {
     const item = card(parent, episode.title, { collection: 'episode', id: episode.id }); item.dataset.yoursCitedEpisode = episode.id;
-    renderEpisodeSummary(item, episode);
+    renderEpisodeSummary(item, episode, here);
     button(item, 'Correct', () => open({ type: 'episode', episode }), `correct-${episode.id}`);
     button(item, 'Hide', () => change({ action: 'episode.hide', id: episode.id }), `hide-${episode.id}`);
   };
@@ -1056,8 +1100,11 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (selected) { introduction.className = 'yours-breadcrumb';
       const search = readSearchAssetReturn(doc, continuityOwner);
       const fromSearch = search?.assetId === selected;
-      const back = link(introduction, fromSearch ? 'Back to search' : 'Assets', fromSearch ? search.returnHash : readListContinuity<string>(doc, continuityKey)?.filter ?? '#yours/assets');
-      back.setAttribute('aria-label', fromSearch ? 'Back to search' : 'Back to assets'); }
+      // D-342 — a pursuit's page goes back to the Pursuits tab, which lists it.
+      const pursuitPage = !!snapshot?.assets[0] && isPursuit(snapshot.assets[0]);
+      const back = link(introduction, fromSearch ? 'Back to search' : pursuitPage ? 'Pursuits' : 'Assets',
+        fromSearch ? search.returnHash : pursuitPage ? '#yours/pursuits' : readListContinuity<string>(doc, continuityKey)?.filter ?? '#yours/assets');
+      back.setAttribute('aria-label', fromSearch ? 'Back to search' : pursuitPage ? 'Back to pursuits' : 'Back to assets'); }
     const restoreInteraction = () => {
       const menus = new Map([...root.querySelectorAll<HTMLDetailsElement>('[data-yours-menu]')].map(menu => [menu.dataset.yoursMenu!, menu]));
       for (const key of openMenus) { const menu = menus.get(key); if (menu) menu.open = true; }
@@ -1070,7 +1117,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     el('p', 'Your things, the facts, and what comes next.', introduction);
     button(masthead, 'Refresh', () => editor?.type === 'context' ? refreshContext?.() : editor?.type === 'writer_setup' ? writerSetup?.refresh() : refresh(!editor), 'refresh', 'refresh').classList.add('yours-quiet');
     const navigation = yoursNavigation(root, 'Yours'); navigationDisposers.push(navigation.dispose); const nav = navigation.nav;
-    for (const id of TABS) { const node = link(nav, TAB_LABELS[id], `#yours/${id}`); node.dataset.yoursFocus = `tab-${id}`; if (id === tab) node.setAttribute('aria-current', 'page'); }
+    // A pursuit's page sits under the Pursuits tab, which lists it.
+    const currentTab: Tab = selected && snapshot?.assets[0] && isPursuit(snapshot.assets[0]) ? 'pursuits' : tab;
+    for (const id of TABS) { const node = link(nav, TAB_LABELS[id], `#yours/${id}`); node.dataset.yoursFocus = `tab-${id}`; if (id === currentTab) node.setAttribute('aria-current', 'page'); }
     doc.defaultView?.requestAnimationFrame(() => {
       if (!nav.isConnected) return;
       const current = nav.querySelector<HTMLElement>('[aria-current]');
@@ -1088,6 +1137,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     const pageHeader = !selected ? yoursPageHeader(content, classesView ? 'Classes' : TAB_LABELS[tab],
       classesView ? 'Reusable starting points for the things you keep.' : {
         assets: 'Keep the useful details. Add reminders when you need them.',
+        pursuits: 'What you are working toward, and where you are with it.',
         proposals: 'Review suggestions before they become part of your records.',
         occurrences: 'Tasks, notices and questions your rules made due, overdue first.',
         occasions: 'Dates and traditions you want to remember.',
@@ -1102,14 +1152,22 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (selected) {
       const asset = snapshot.assets[0]; if (!asset) { yoursEmpty(content, 'Asset not found.'); paintStatus(); restoreInteraction(); return; }
       content.dataset.yoursFocusScope = JSON.stringify(['asset', asset.id]);
+      const pursuitPage = isPursuit(asset);
       // §15.3 — the header names the holder, and says the status and audience in words.
       const parentName = (id: string) => snapshot!.related_assets.find(row => row.id === id)?.name ?? 'its parent';
-      const assetHeader = yoursPageHeader(content, asset.name, [snapshot.classes.find(item => item.id === asset.class_id)?.name ?? 'Unclassified', ASSET_STATUS_WORDS[asset.status],
+      const assetHeader = yoursPageHeader(content, asset.name, [snapshot.classes.find(item => item.id === asset.class_id)?.name ?? 'Unclassified',
+        pursuitPage && !pursuitActive(asset) ? pursuitEndingWords(asset) : ASSET_STATUS_WORDS[asset.status],
         `${asset.audience === 'household' ? 'Shared with your household' : 'Only you'}${asset.inherited_fields?.audience ? ` (same as ${parentName(asset.inherited_fields.audience)})` : ''}`].join(' · '));
       assetHeader.header.classList.add('yours-asset-header');
-      const editAsset = button(assetHeader.actions, 'Edit asset', () => open({ type: 'asset', asset }), undefined, 'rename'); setButtonLabel(editAsset, 'Edit'); editAsset.setAttribute('aria-label', 'Edit asset');
+      const editAsset = pursuitPage ? button(assetHeader.actions, 'Edit pursuit', loadEditor(async () => ({ type: 'pursuit', asset, pursuits: await readPursuits() })), undefined, 'rename')
+        : button(assetHeader.actions, 'Edit asset', () => open({ type: 'asset', asset }), undefined, 'rename');
+      setButtonLabel(editAsset, 'Edit'); editAsset.setAttribute('aria-label', pursuitPage ? 'Edit pursuit' : 'Edit asset');
       if (options.askAsset) { const ask = button(assetHeader.actions, 'Ask about this asset', () => options.askAsset!(assetChatContext(asset, files, filesAvailable))); ask.textContent = 'Ask'; ask.setAttribute('aria-label', 'Ask about this asset'); }
       const assetMenu = yoursMenu(assetHeader.actions, asset.name, ['asset', asset.id]);
+      if (pursuitPage && pursuitActive(asset)) {
+        button(assetMenu, 'Reached', () => endPursuit(asset, 'reached', snapshot!.related_assets));
+        button(assetMenu, 'Let go', () => endPursuit(asset, 'let_go', snapshot!.related_assets));
+      } else if (pursuitPage) button(assetMenu, 'Bring back', () => bringBack(asset));
       button(assetMenu, 'Save as class', () => open({ type: 'class', preset: presetForAsset(asset), creating: true }), undefined, 'save');
       button(assetMenu, 'Delete asset', () => { if (doc.defaultView?.confirm && !doc.defaultView.confirm(`Remove ${asset.name}, its open clocks and bindings? Its ${snapshot!.retirement_impact?.parts ?? 0} parts and ${snapshot!.retirement_impact?.contracts ?? 0} contracts are shown below.`)) return; return change({ action: 'asset.delete', id: asset.id, confirmed: true }); }, undefined, 'delete').classList.add('yours-danger');
       const metadata = el('div', undefined, assetHeader.text); metadata.className = 'yours-asset-identity';
@@ -1124,6 +1182,32 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const panels = Object.fromEntries(['overview', 'rules', 'files', 'activity'].map(key => {
         const panel = el('div', undefined, content); panel.className = 'yours-content'; panel.dataset.yoursAssetPanel = key; panel.hidden = key !== view; return [key, panel];
       })) as Record<'overview' | 'rules' | 'files' | 'activity', HTMLDivElement>;
+      // D-342 — the pursuit in its owner's words; its Facts list below leaves these out.
+      if (pursuitPage) {
+        const about = section(panels.overview, 'Pursuit'); about.dataset.yoursPursuitFacts = '';
+        const rows: Array<[string, string, string?]> = [...pursuitFacts(asset, 'page'), ...(pursuitActive(asset) ? [] : [['Ended', pursuitEndingWords(asset)] as [string, string]])];
+        if (!rows.length) el('p', 'Edit it to add its horizon, why it matters and where you are with it.', about).className = 'yours-muted';
+        else { const facts = el('dl', undefined, about); facts.className = 'yours-facts';
+          for (const [name, value, path] of rows) {
+            const row = el('div', undefined, facts); row.className = 'yours-fact'; el('dt', name, row); const detail = el('dd', value, row);
+            // D-342 ruling 7 — the chat may write Where I am too, so each fact says where it came from.
+            const source = path ? asset.field_sources[path] : undefined;
+            if (path) detail.dataset.yoursFact = path;
+            if (path && source) renderAssetSource(detail, source, `${asset.id}:${path}`);
+          } }
+      }
+      // D-343 slice 5 — its history: what the owner recorded doing or skipping on it in Close the day,
+      // the latest first, each to correct or hide as an occasion's history is. A server older than
+      // the slice sends a pursuit's page no history of its own (no `pursuit_activity`), so none shows.
+      if (pursuitPage && snapshot.pursuit_activity) {
+        const history = section(panels.overview, 'History'); history.dataset.yoursPursuitHistory = '';
+        const activity = snapshot.pursuit_activity[asset.id];
+        if (activity) el('p', `Last worked on ${yoursCalendarDate(activity.last_on)}${activity.days_30 > 0
+          ? ` · ${activity.days_30 === 1 ? '1 day' : `${activity.days_30} days`} in the last 30` : ''}`, history).className = 'yours-muted';
+        // The server lists a pursuit's page the episodes that cite it.
+        for (const episode of snapshot.episodes) renderCitedEpisode(history, episode, { collection: 'asset', id: asset.id });
+        if (!snapshot.episodes.length) el('p', 'Nothing recorded yet. What you tell Close the day about it is kept here.', history).className = 'yours-muted';
+      }
       const openItems = section(panels.overview, 'Needs attention');
       const attention = yoursDisclosure(openItems, 'Open items'); attention.className = 'yours-attention'; attention.dataset.yoursDisclosure = `attention:${asset.id}`;
       const dueDates = snapshot.occurrences.map(item => item.due_on).filter((on): on is string => !!on && isAssetDate(on)).sort();
@@ -1227,7 +1311,10 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         item.classList.add('yours-reading-row');
         item.dataset.yoursField = `observations.${name}`; item.tabIndex = -1; item.dataset.yoursFocus = JSON.stringify(['source', 'field', `observations.${name}`]);
         const source = asset.field_sources[`observations.${name}`];
-        el('p', observation ? `${observation.active ? 'Present' : 'Clear'} · ${observation.certainty}` : 'Unknown', item).className = 'yours-reading-value';
+        // D-340 §4 — past its `until`, a condition no longer holds: "Ended", not "Present".
+        const holds = assetConditionHolds(observation, Date.now());
+        el('p', observation ? `${holds ? 'Present' : observation.active ? 'Ended' : 'Clear'} · ${observation.certainty}${holds && observation.until !== undefined
+          ? ` · until ${yoursDateTime(observation.until)}` : ''}` : 'Unknown', item).className = 'yours-reading-value';
         if (observation) {
           el('small', `Observed ${yoursDateTime(observation.as_of)}`, item);
         }
@@ -1249,7 +1336,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           el('p', `You marked this as expected on ${new Date(mark.at).toLocaleString()}. While it is present, it raises no task or reminder.`, item);
           button(item, 'Not expected after all', () => change({ action: 'asset.update', id: asset.id,
             patch: { settings: { [ASSET_EXPECTED_PATTERNS]: Object.keys(otherMarks).length ? otherMarks : null } } }), `unexpected-${name}`);
-        } else if (observation?.active) button(item, 'That’s expected', () => change({ action: 'asset.update', id: asset.id, patch: { settings: {
+        } else if (observation && holds) button(item, 'That’s expected', () => change({ action: 'asset.update', id: asset.id, patch: { settings: {
           [ASSET_EXPECTED_PATTERNS]: { ...expected, [name]: { active: true, at: observation.as_of } } } } }), `expected-${name}`); }
       // §15.3 — each value with where it came from and what can replace it (its rank).
       const facts = section(panels.overview, 'Facts and settings'); panels.overview.insertBefore(facts, readings);
@@ -1263,7 +1350,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         ...Object.entries(asset.settings).filter(([key]) => key !== ASSET_EXPECTED_PATTERNS).map(([name, value]): [string, string, unknown] => [`settings.${name}`, name, value]),
         ...(asset.holder_contact ? [['holder_contact', 'holder', holderName(asset.holder_contact)] as [string, string, unknown]] : []),
         ...(['document_number', 'serial_number', 'exact_address'] as const).flatMap((name): Array<[string, string, unknown]> => asset[name] === undefined ? [] : [[name, name, asset[name]]]),
-      ];
+      ].filter(([path]) => !pursuitPage || !PURSUIT_FACTS.has(path));
       for (const [path, name, value] of factRows) {
         const row = el('div', undefined, definition); row.className = 'yours-fact'; el('dt', factName(name), row);
         row.dataset.yoursField = path; row.tabIndex = -1; row.dataset.yoursFocus = JSON.stringify(['source', 'field', path]);
@@ -1453,6 +1540,47 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
               { key: `missing:${asset.id}:${fact.path}`, asset_id: asset.id, scope: JSON.stringify(['asset', asset.id]) });
           });
           const openAsset = link(item, '›', `#yours/asset/${encodeURIComponent(asset.id)}`); openAsset.setAttribute('aria-label', 'Open asset'); openAsset.title = `Open ${asset.name}`; openAsset.dataset.yoursOpenAsset = ''; } }
+    } else if (tab === 'pursuits') {
+      // D-342 §7 — active pursuits as a tree by parent; ended ones folded away below. A server
+      // that does not echo the filter has no pursuits, and its list would hold every asset.
+      if (snapshot.pursuits !== 'only') yoursEmpty(content, 'Your Recued server needs an update to keep pursuits.');
+      else {
+        const pursuits = snapshot.assets;
+        button(pageHeader!.actions, 'Add pursuit', () => open({ type: 'pursuit', pursuits })).className = 'yours-primary';
+        const rows = pursuitTree(pursuits);
+        if (!rows.length) yoursEmpty(content, 'Nothing yet. Add a goal for this year, or a habit for life.');
+        const list = yoursList(content); list.dataset.yoursPursuits = '';
+        for (const { asset, depth } of rows) {
+          const item = card(list, '', { collection: 'asset', id: asset.id }, ['pursuit', asset.id]); item.dataset.yoursPursuit = asset.id;
+          item.classList.add('yours-pursuit'); if (depth) item.style.setProperty('--yours-pursuit-depth', String(Math.min(depth, 4)));
+          link(item.querySelector('h3')!, asset.name, `#yours/asset/${encodeURIComponent(asset.id)}`).dataset.yoursAssetName = '';
+          // The indent shows a part; the words say it for a screen reader too.
+          const parent = depth ? pursuits.find(row => row.id === asset.belongs_to) : undefined;
+          if (parent) { const part = el('p', `Part of ${parent.name}`); part.className = 'yours-muted'; part.dataset.yoursPursuitParent = parent.id; item.querySelector('h3')!.after(part); }
+          // D-343 slice 5 (§7) — and when the owner last recorded working on it, in Close the day.
+          const lastOn = snapshot.pursuit_activity?.[asset.id]?.last_on;
+          const facts: Array<readonly [string, string, string?]> = [...pursuitFacts(asset), ...(lastOn ? [['Last worked on', yoursCalendarDate(lastOn)] as const] : [])];
+          if (facts.length) { const terms = el('dl', undefined, item); terms.className = 'yours-pursuit-facts';
+            for (const [name, value] of facts) { el('dt', name, terms); el('dd', value, terms); } }
+          const actions = yoursActions(item);
+          button(actions, 'Edit', () => open({ type: 'pursuit', asset, pursuits }), `edit-pursuit-${asset.id}`, 'rename').setAttribute('aria-label', `Edit ${asset.name}`);
+          button(actions, 'Add a part', () => open({ type: 'pursuit', pursuits, part_of: asset.id }), `part-pursuit-${asset.id}`).setAttribute('aria-label', `Add a part to ${asset.name}`);
+          const more = yoursMenu(actions, asset.name, ['pursuit', asset.id]);
+          button(more, 'Reached', () => endPursuit(asset, 'reached', pursuits), `reached-${asset.id}`);
+          button(more, 'Let go', () => endPursuit(asset, 'let_go', pursuits), `let-go-${asset.id}`);
+        }
+        const ended = endedPursuits(pursuits);
+        if (ended.length) {
+          const host = yoursDisclosure(content, `Ended · ${ended.length}`); host.dataset.yoursDisclosure = 'pursuits:ended';
+          for (const asset of ended) {
+            const item = card(host, '', undefined, ['pursuit', asset.id]); item.dataset.yoursPursuit = asset.id;
+            link(item.querySelector('h3')!, asset.name, `#yours/asset/${encodeURIComponent(asset.id)}`).dataset.yoursAssetName = '';
+            el('p', pursuitEndingWords(asset), item).className = 'yours-state';
+            button(yoursActions(item), 'Bring back', () => bringBack(asset), `bring-back-${asset.id}`).setAttribute('aria-label', `Bring back ${asset.name}`);
+          }
+        }
+        if (snapshot.total_assets > pursuits.length) el('p', `The first ${pursuits.length} of ${snapshot.total_assets} pursuits are shown.`, content).className = 'yours-muted';
+      }
     } else if (tab === 'proposals') {
       const kind = select(filterToolbar ?? content, 'Proposal kind', 'proposal-kind', [['', 'All kinds'], ...PROACTIVE_PROPOSAL_KINDS.map(value => [value, value.replaceAll('_', ' ')] as [string, string])], proposalKind);
       kind.addEventListener('change', () => { proposalKind = kind.value as typeof proposalKind; page = 0; dirty = false;
@@ -1578,7 +1706,16 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       // address, where a proposal or occasion cites it, never as a lifelog.
       const episodes = [...snapshot.episodes, ...(selectedEpisode ? (snapshot.derived_episodes ?? []).filter(row => !snapshot!.episodes.some(value => value.id === row.id)) : [])];
       const episodeList = yoursList(content); content.insertBefore(episodeList, management);
-      for (const episode of episodes) { const item = card(episodeList, episode.title, episode.id ? { collection: 'episode', id: episode.id } : undefined);
+      // D-343 slice 5 — by the day each happened, the latest first, under that day's heading, so a day
+      // closed days later sits on its own day. An episode's own address shows it alone.
+      let dayList = episodeList; let shownDay: string | undefined;
+      for (const episode of episodes) {
+        if (!selectedEpisode && episodeDay(episode.when.from) !== shownDay) {
+          shownDay = episodeDay(episode.when.from);
+          const day = el('section', undefined, episodeList); day.className = 'yours-episode-day'; day.dataset.yoursEpisodeDay = shownDay;
+          el('h3', episodeDayWords(episode.when.from), day); dayList = yoursList(day);
+        }
+        const item = card(dayList, episode.title, episode.id ? { collection: 'episode', id: episode.id } : undefined);
         item.dataset.yoursEpisode = episode.id ?? '';
         renderEpisodeSummary(item, episode);
         if (!snapshot.episodes.some(row => row.id === episode.id)) el('p', 'Assembled for this view. Kept only when you correct or annotate it, or a proposal cites it.', item);
@@ -1631,8 +1768,11 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     pending = (async () => {
       try {
         const result = await options.read({ ...(selected ? { asset_id: selected } : {}), ...(selectedOccasion ? { occasion_id: selectedOccasion } : {}),
-          ...(assetList ? { include_asset_summaries: true, ...(assetFilter ? { asset_filter: assetFilter } : {}), ...(assetSphere ? { asset_sphere: assetSphere } : {}) } : {}),
-          ...(selectedEpisode ? { episode_id: selectedEpisode } : {}), ...(selectedTrace ? { trace_id: selectedTrace } : {}), ...(tab === 'episodes' && selectedEpisode ? { include_derived: true } : {}), limit: 50, offset: page * 50,
+          // D-342 — the Assets tab leaves pursuits out, and the Pursuits tab reads all of them at once.
+          ...(assetList ? { include_asset_summaries: true, pursuits: 'exclude' as const, ...(assetFilter ? { asset_filter: assetFilter } : {}), ...(assetSphere ? { asset_sphere: assetSphere } : {}) } : {}),
+          ...(pursuitList ? { pursuits: 'only' as const } : {}),
+          ...(selectedEpisode ? { episode_id: selectedEpisode } : {}), ...(selectedTrace ? { trace_id: selectedTrace } : {}), ...(tab === 'episodes' && selectedEpisode ? { include_derived: true } : {}),
+          limit: pursuitList ? 200 : 50, offset: pursuitList ? 0 : page * 50,
           proposal_offset: tab === 'proposals' ? page * 50 : 0, ...(proposalKind ? { proposal_kind: proposalKind } : {}), ...(search ? { search } : {}), mark_shown: tab === 'proposals' || !!selected || !!selectedOccasion });
         if (disposed || version !== generation || newerDraft()) return;
         if (assetList && page > 0 && assetFiltersApplied(result) && page * 50 >= result.total_assets) {

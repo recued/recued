@@ -47,7 +47,7 @@
  *  Spec: D-166 §"contract_definition lifecycle"; the use-resolution
  *  overlay this lights up is documented in the contract-definition handover. */
 
-import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, OWNER_TOOL_VERSION_SCOPE, cliToolVersionHash, isCliVersionOutside, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, KEY_AUTHORITIES, isKeyAuthority, type KeyAuthority, type UsageCapPeriod, type DoorType } from '@recued/contracts';
+import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, OWNER_TOOL_VERSION_SCOPE, cliToolVersionHash, isCliVersionOutside, OWNER_TOOL_PATH_SCOPE, ownerToolPathProblem, cliToolFromConnectorRuntime, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, KEY_AUTHORITIES, isKeyAuthority, type KeyAuthority, type UsageCapPeriod, type DoorType } from '@recued/contracts';
 import type {
   Actor,
   CatalogIngredientView,
@@ -70,6 +70,7 @@ import type {
   OwnerOperationPolicyInput,
   OwnerOperationView,
   OwnerToolVersionView,
+  OwnerToolPathView,
   CliToolVersionPolicy,
   CliVersionOutside,
   OverridePolicyInput,
@@ -101,6 +102,8 @@ import {
 } from './storage/contract-definition-store.js';
 import { createWriteRuleRpcHandlers } from './write-rule-rpc.js';
 import { createBrowserPassRpcHandlers } from './browser-pass-rpc.js';
+import { createTriggerPreapprovalRpcHandlers, type TriggerPreapprovalTargets } from './trigger-preapproval-rpc.js';
+import { createBrowserLoginRpcHandlers } from './browser-login-rpc.js';
 import { createContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import {
   createDelegationSuggestionStore,
@@ -121,6 +124,7 @@ import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import { readRecipeCoverageUsage } from './recipe-coverage-usage.js';
 import { buildRecipeOpDependencyIndex } from './derive-recipe-capability.js';
 import type { RecipeStore } from './recipe-store.js';
+import { createCliBinaryPathResolver } from './cli-binary-reachability.js';
 
 /** D-171 — the contract-family broadcast variants minus the bus-assigned
  *  `cursor` field. Mirrors `ServerEventInput` (events/bus.ts) but narrowed to
@@ -157,6 +161,19 @@ export interface ContractRpcDeps {
   /** D-335 slice F — passes for Browser Toolkit writes (`browser-pass-rpc.ts`). Absent ⇒
    *  their five methods answer `not_configured`. */
   browserPasses?: import('./storage/browser-pass-store.js').BrowserPassStore;
+  /** D-341 slice B1 — triggers' standing pre-approvals (`trigger-preapproval-rpc.ts`): the
+   *  store, the installed recipes a grant pins, and whether a trigger starts a recipe. Absent store
+   *  ⇒ their three methods answer `not_configured`. */
+  triggerPreapprovals?: import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore;
+  triggerPreapprovalRecipes?: { get(recipe_id: string): import('@recued/contracts').RecipeDefinition | null };
+  triggerPreapprovalTargets?: TriggerPreapprovalTargets;
+  /** D-341 slice B2 — the granter the resumer shares; when given, the rpc grants through it. */
+  triggerPreapprovalGranter?: import('./trigger-preapproval-rpc.js').TriggerPreapprovalGranter;
+  /** The installed packs' catalogs, for a recipe step still written as a pack's `op`. */
+  triggerPreapprovalPacks?: () => import('@recued/recipes').PackOpResolution | undefined;
+  /** D-335 slice Z — the logins remembered for browser steps (`browser-login-rpc.ts`). Absent ⇒
+   *  their two methods answer `not_configured`. */
+  browserLogins?: import('./storage/browser-login-store.js').BrowserLoginStore;
   /** D-177 N.14.8 fork 3 — counts the owner's D-173 rejects on one door, for the
    *  suggestion card's counter-evidence. OPTIONAL: absent ⇒ door rows carry no
    *  reject count at all, which the card renders as "not counted" — never as a
@@ -380,7 +397,9 @@ const emitOverrideAudit = async (
     | 'owner_operation_override_written'
     | 'owner_operation_override_deleted'
     | 'owner_tool_version_written'
-    | 'owner_tool_version_deleted',
+    | 'owner_tool_version_deleted'
+    | 'owner_tool_path_written'
+    | 'owner_tool_path_deleted',
   target: string,
   detail: Record<string, unknown>,
 ): Promise<void> => {
@@ -731,6 +750,91 @@ const handleOwnerToolVersionDelete = async (
     await emitOverrideAudit(deps, 'owner_tool_version_deleted', ingredient_id, {
       ingredient_id,
       outside: null,
+      prior: priorRow?.value ?? null,
+    });
+  }
+  return { deleted };
+};
+
+// ════════════════════════════════════════════════════════════════
+// D-321 where the owner set a cli catalog's program
+// ════════════════════════════════════════════════════════════════
+
+/** The program a cli catalog launches. A catalog that runs none has no program
+ *  to place, so the write is refused rather than stored. */
+const requireCliProgram = (deps: ContractRpcDeps, method: string, ingredient_id: string): string => {
+  const runtime = requireOverrideManifest(deps, method, ingredient_id).surfaces?.connector?.runtime;
+  const binary = runtime?.wire_protocol === 'cli_invocation' ? cliToolFromConnectorRuntime(runtime) : undefined;
+  if (binary === undefined) throw new RpcError('bad_request', `${method}: '${ingredient_id}' runs no program`);
+  return binary;
+};
+
+/** The file at `path` the server would run, or a refusal saying why it cannot be
+ *  the program's location. Checked here, where the file is, so the page never
+ *  holds a location no run could start (`owner-tool-path.ts`). */
+const resolveOwnerToolPath = (method: string, binary: string, raw: unknown): string => {
+  if (typeof raw !== 'string') throw new RpcError('bad_request', `${method}: path is required`);
+  const path = raw.trim();
+  const windows = process.platform === 'win32';
+  const problem = ownerToolPathProblem(binary, path, windows);
+  if (problem !== null) throw new RpcError('bad_request', `${method}: the location ${problem}`);
+  // On Windows the file found may carry `.exe`, which the launch needs.
+  const file = createCliBinaryPathResolver()(path);
+  if (file === undefined) {
+    throw new RpcError('bad_request', `${method}: there is no program the server can run at ${path}`);
+  }
+  return file;
+};
+
+/** Set where a catalog's program is: runs, checks and the pack page then use
+ *  that file. Stamped with the program the pack launches now, so a pack update
+ *  that launches another leaves this row aside. */
+export const upsertOwnerToolPath = async (
+  deps: ContractRpcDeps,
+  args: { ingredient_id: string; path: string },
+): Promise<OwnerToolPathView> => {
+  const method = 'collection.operation.upsertOwnerToolPath';
+  const a = ensureRecordArgs(method, args);
+  const ingredient_id = ensureIngredientId(method, a.ingredient_id);
+  const binary = requireCliProgram(deps, method, ingredient_id);
+  const path = resolveOwnerToolPath(method, binary, a.path);
+  const segments = [ingredient_id];
+  const priorRow = deps.store.get(OWNER_TOOL_PATH_SCOPE, segments);
+  try {
+    deps.store.put(OWNER_TOOL_PATH_SCOPE, segments, { binary, path });
+  } catch (err) {
+    if (err instanceof ContractWriteInvalidError) {
+      throw new RpcError('bad_request', err.message, undefined, method, { issues: err.issues });
+    }
+    throw err;
+  }
+  const row = deps.store.get(OWNER_TOOL_PATH_SCOPE, segments);
+  if (row === null) throw new RpcError('internal', `${method}: owner tool path row missing after write`);
+  await emitOverrideAudit(deps, 'owner_tool_path_written', ingredient_id, {
+    ingredient_id,
+    binary,
+    path,
+    prior: priorRow?.value ?? null,
+  });
+  return { ingredient_id, binary, path, written_at: row.written_at };
+};
+
+/** Remove the location; the server looks on its PATH again. Needs no manifest,
+ *  so a location left by a pack that is gone can still be cleared. */
+const handleOwnerToolPathDelete = async (
+  deps: ContractRpcDeps,
+  args: { ingredient_id: string },
+): Promise<{ deleted: boolean }> => {
+  const method = 'collection.operation.deleteOwnerToolPath';
+  const a = ensureRecordArgs(method, args);
+  const ingredient_id = ensureIngredientId(method, a.ingredient_id);
+  const segments = [ingredient_id];
+  const priorRow = deps.store.get(OWNER_TOOL_PATH_SCOPE, segments);
+  const deleted = deps.store.delete(OWNER_TOOL_PATH_SCOPE, segments);
+  if (deleted) {
+    await emitOverrideAudit(deps, 'owner_tool_path_deleted', ingredient_id, {
+      ingredient_id,
+      path: null,
       prior: priorRow?.value ?? null,
     });
   }
@@ -2434,6 +2538,8 @@ type ContractMethods =
   | 'collection.operation.listOwnerOverrides'
   | 'collection.operation.upsertOwnerToolVersion'
   | 'collection.operation.deleteOwnerToolVersion'
+  | 'collection.operation.upsertOwnerToolPath'
+  | 'collection.operation.deleteOwnerToolPath'
   | 'collection.contract.mintContract'
   | 'collection.contract.revokeContract'
   | 'collection.contract.setDoorTypes'
@@ -2462,7 +2568,15 @@ type ContractMethods =
   | 'collection.contract.revokeBrowserPass'
   | 'collection.contract.listBrowserPassSuggestions'
   | 'collection.contract.acceptBrowserPassSuggestion'
-  | 'collection.contract.dismissBrowserPassSuggestion';
+  | 'collection.contract.dismissBrowserPassSuggestion'
+  | 'collection.contract.listBrowserLogins'
+  | 'collection.contract.forgetBrowserLogin'
+  | 'collection.contract.getRequestPass'
+  | 'collection.contract.setRequestPass'
+  | 'collection.contract.grantTriggerPreapproval'
+  | 'collection.contract.listTriggerPreapprovals'
+  | 'collection.contract.revokeTriggerPreapproval'
+  | 'collection.contract.triggerPreapprovalChoices';
 
 export const makeContractHandlers = (
   deps: ContractRpcDeps | undefined,
@@ -2500,6 +2614,8 @@ export const makeContractHandlers = (
       'collection.operation.listOwnerOverrides',
       'collection.operation.upsertOwnerToolVersion',
       'collection.operation.deleteOwnerToolVersion',
+      'collection.operation.upsertOwnerToolPath',
+      'collection.operation.deleteOwnerToolPath',
       'collection.contract.mintContract',
       'collection.contract.revokeContract',
       'collection.contract.setDoorTypes',
@@ -2529,6 +2645,14 @@ export const makeContractHandlers = (
       'collection.contract.listBrowserPassSuggestions',
       'collection.contract.acceptBrowserPassSuggestion',
       'collection.contract.dismissBrowserPassSuggestion',
+      'collection.contract.listBrowserLogins',
+      'collection.contract.forgetBrowserLogin',
+      'collection.contract.getRequestPass',
+      'collection.contract.setRequestPass',
+      'collection.contract.grantTriggerPreapproval',
+      'collection.contract.listTriggerPreapprovals',
+      'collection.contract.revokeTriggerPreapproval',
+      'collection.contract.triggerPreapprovalChoices',
     ],
     handlers: {
       // D-329 §3.4 — the write rules an AI's approvals teach.
@@ -2540,6 +2664,23 @@ export const makeContractHandlers = (
       // D-335 slice F — passes for Browser Toolkit writes, and the suggestions to always allow.
       ...createBrowserPassRpcHandlers({
         ...(deps.browserPasses !== undefined ? { store: deps.browserPasses } : {}),
+        ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        now,
+      }),
+      // D-341 slice B1 — triggers' standing pre-approvals.
+      ...createTriggerPreapprovalRpcHandlers({
+        ...(deps.triggerPreapprovals !== undefined ? { store: deps.triggerPreapprovals } : {}),
+        ...(deps.triggerPreapprovalRecipes !== undefined ? { recipeStore: deps.triggerPreapprovalRecipes } : {}),
+        ...(deps.triggerPreapprovalTargets !== undefined ? { targets: deps.triggerPreapprovalTargets } : {}),
+        manifestOf: deps.getManifest,
+        ...(deps.triggerPreapprovalPacks !== undefined ? { packs: deps.triggerPreapprovalPacks } : {}),
+        ...(deps.triggerPreapprovalGranter !== undefined ? { granter: deps.triggerPreapprovalGranter } : {}),
+        ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        now,
+      }),
+      // D-335 slice Z — the logins remembered for browser steps.
+      ...createBrowserLoginRpcHandlers({
+        ...(deps.browserLogins !== undefined ? { store: deps.browserLogins } : {}),
         ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
         now,
       }),
@@ -2638,6 +2779,16 @@ export const makeContractHandlers = (
         handleOwnerToolVersionDelete(
           deps,
           args as Parameters<typeof handleOwnerToolVersionDelete>[1],
+        ),
+      'collection.operation.upsertOwnerToolPath': async (args) =>
+        upsertOwnerToolPath(
+          deps,
+          args as Parameters<typeof upsertOwnerToolPath>[1],
+        ),
+      'collection.operation.deleteOwnerToolPath': async (args) =>
+        handleOwnerToolPathDelete(
+          deps,
+          args as Parameters<typeof handleOwnerToolPathDelete>[1],
         ),
       // contract_id lifecycle. `mintContract` reads the authenticated client
       // (`ctx`) for `minted_by` provenance; revoke/list don't need it. Both

@@ -77,6 +77,11 @@ import {
   type ExecutionCaseArgumentStore,
 } from '../../storage/execution-case-argument-store.js';
 import {
+  createExecutionCaseBrowserFlowStore,
+  type BrowserFlowStore,
+} from '../../storage/execution-case-browser-flow-store.js';
+import { browserFlows } from '../../bridges/browser-flow-record.js';
+import {
   createExecutionReportStore,
   type ExecutionReportStore,
 } from '../../storage/execution-report-store.js';
@@ -136,6 +141,9 @@ export interface ComposedExecutionCases {
   /** D-219 capture-only argument buffer. Surfaced so the retention pruner and
    *  the privacy cascade can reach it; ⛔ no read path consumes it. */
   argumentStore: ExecutionCaseArgumentStore;
+  /** D-335 slice W3 — the browser flows the owner kept from the offer, listed in Learning beside the
+   *  cases; in the session privacy cascade. */
+  browserFlowStore: BrowserFlowStore;
   compiler: ExecutionCaseCompiler;
   experimentReporter: ExecutionCaseExperimentReporter;
   /** Present only for a complete pre-registered experiment definition. */
@@ -330,6 +338,8 @@ export const composeExecutionCases = (input: {
     input.db,
     input.chatKeyProvider,
   );
+  // D-335 slice W3 — sealed under the same chat sub-DEK as every D-214 table.
+  const browserFlowStore = createExecutionCaseBrowserFlowStore(input.db, input.chatKeyProvider);
   const registry = wrapRegistryWithExecutionCaseTools(
     input.registry,
     lifecycle,
@@ -488,6 +498,9 @@ export const composeExecutionCases = (input: {
               executionCaseOfferEnabled(input.getOfferPrefsRoster!()),
           }
         : {}),
+      // D-335 slice W3 — the browser steps a request did, kept when the owner says it was right.
+      browserFlows,
+      keepBrowserFlow: (flow) => browserFlowStore.keep(flow),
     });
     offerLifecycle.registerAnswerHandler();
   };
@@ -562,6 +575,7 @@ export const composeExecutionCases = (input: {
     verificationStore,
     interventionStore,
     argumentStore,
+    browserFlowStore,
     compiler,
     experimentReporter,
     ...(experiment
@@ -581,6 +595,8 @@ export const composeExecutionCases = (input: {
       // text) has no root to be deleted by, and forgetting a session must not
       // leave it behind.
       argumentStore.deleteForSession(session_id);
+      // D-335 slice W3 — and the browser flows it kept.
+      browserFlowStore.deleteForSession(session_id);
       return roots.length;
     },
   };

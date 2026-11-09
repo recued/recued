@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Collection } from '@recued/storage';
 import type Database from 'better-sqlite3';
+import { pidWasReused, processStartIdentity } from './lifecycle/process-identity.js';
 
 export const MCP_ACTION_STATUS_TOOL_NAME = 'recued_actionStatus';
 export const MCP_ACTION_NOTIFICATION_METHOD = 'notifications/recued/action-status';
@@ -86,6 +87,21 @@ export interface McpActionRecord {
   /** Agent-facing result only; original arguments are never retained. */
   result?: unknown;
   result_omitted_reason?: 'size_limit' | 'not_serializable';
+  /** The process dispatching the resumed action, set by `markRunning`: its pid
+   *  and when it started (`processStartIdentity`). Absent before it was
+   *  recorded, and where the platform cannot say.
+   *
+   *  ⛔ IT REPLACES A GUESS FROM THE RECORD'S AGE. A `running` record untouched
+   *  for 15 minutes was taken to be crash residue, so a resumed op that ran
+   *  longer — or a laptop that slept through one — was finished `in_doubt`
+   *  while it was still running, and the real result was then refused. Whether
+   *  the dispatching process is still alive answers what the age guessed at. */
+  dispatcher?: McpActionDispatcher;
+}
+
+export interface McpActionDispatcher {
+  pid: number;
+  start: string;
 }
 
 export interface McpActionPublicState {
@@ -145,7 +161,41 @@ export interface CreateMcpActionStoreOptions {
   /** Cross-process compare-and-set. Required by SQLite-backed compositions so
    * a polling MCP process cannot overwrite a terminal update from the server. */
   compareAndSet?: McpActionCompareAndSet;
+  /** This process, as `markRunning` records it. Default: its pid and start
+   *  identity, or null where the platform cannot say. Injected for tests. */
+  dispatcher?: () => McpActionDispatcher | null;
 }
+
+const thisProcess = (): McpActionDispatcher | null => {
+  const start = processStartIdentity(process.pid);
+  return start === null ? null : { pid: process.pid, start };
+};
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
+/** Is the process that resumed this action still the one running it?
+ *  `true` — it is alive, so the dispatch is in flight however long ago the
+ *  record last changed (a live dispatcher always settles its record:
+ *  `resumeRawOp` never throws and the recipe path settles in its catch).
+ *  `false` — it is gone, or its pid now names another process: nothing will
+ *  settle the record. `null` — unknown: no dispatcher recorded. */
+export const mcpActionDispatcherAlive = (
+  record: Pick<McpActionRecord, 'dispatcher'>,
+  identify: (pid: number) => string | null = processStartIdentity,
+  isAlive: (pid: number) => boolean = pidAlive,
+): boolean | null => {
+  const d = record.dispatcher;
+  if (d === undefined) return null;
+  if (!isAlive(d.pid)) return false;
+  return !pidWasReused(d.pid, d.start, identify);
+};
 
 export type McpActionCompareAndSet = (
   actionRef: string,
@@ -210,6 +260,11 @@ export const isMcpActionRecord = (value: unknown): value is McpActionRecord => {
     && value.result_omitted_reason !== 'size_limit'
     && value.result_omitted_reason !== 'not_serializable'
   ) return false;
+  if (value.dispatcher !== undefined) {
+    const d = value.dispatcher;
+    if (!isPlainObject(d) || !Number.isInteger(d.pid) || (d.pid as number) <= 0
+      || typeof d.start !== 'string' || d.start.length === 0) return false;
+  }
   const terminal = isMcpActionTerminal(value.status as McpActionStatus);
   if (terminal !== (value.terminal_at !== undefined && value.expires_at !== undefined)) {
     return false;
@@ -295,6 +350,9 @@ export const createMcpActionStore = (
     options.terminalRetentionMs ?? MCP_ACTION_TERMINAL_RETENTION_MS,
   ));
   const compareAndSet = options.compareAndSet;
+  let ownDispatcher: McpActionDispatcher | null | undefined;
+  const dispatcher = options.dispatcher
+    ?? ((): McpActionDispatcher | null => (ownDispatcher === undefined ? (ownDispatcher = thisProcess()) : ownDispatcher));
   const listeners = new Set<(event: McpActionStoreEvent) => void>();
   // Serializes read-modify-write transitions inside one process. SQLite still
   // provides atomic row replacement across the stdio/server process boundary.
@@ -478,12 +536,21 @@ export const createMcpActionStore = (
       return mutate(async () => {
         const existing = await findByRun(run_id);
         if (existing === null || isMcpActionTerminal(existing.status)) return existing;
-        if (existing.status === 'running') return existing;
+        const me = dispatcher();
+        if (existing.status === 'running') {
+          // A resume that follows a dispatcher which died takes the dispatch
+          // over; a live dispatcher keeps it.
+          if (me === null || mcpActionDispatcherAlive(existing) !== false) return existing;
+          return writeUpdate(existing, (current) => current.status === 'running'
+            ? { dispatcher: me }
+            : null);
+        }
         return writeUpdate(existing, (current) => current.status === 'running'
           ? null
           : {
               status: 'running',
               status_message: status_message ?? 'Owner approval received; Recued resumed the original action.',
+              ...(me !== null ? { dispatcher: me } : {}),
             });
       });
     },

@@ -377,12 +377,26 @@ export class CommitmentLifecycleError extends Error {
 
 /** D-325 §15.7 (2026-10-24) — a renewal's task fulfilled before its new date was entered.
  *  Still a forbidden lifecycle move (same `code`), but its message is the owner's words,
- *  and the rpc layer sends it as it is. */
+ *  and the rpc layer sends it as it is. `renewal` names the thing and the date that closes
+ *  it, for a caller that can enter the date itself (the chat's tools, D-343 slice 1). */
 export class RenewalDateRequiredError extends CommitmentLifecycleError {
-  constructor(commitment_id: string, from: string, owner_message: string) {
+  constructor(commitment_id: string, from: string, owner_message: string,
+    readonly renewal?: { readonly asset_id: string; readonly asset_name: string; readonly field: string }) {
     super(commitment_id, from, 'fulfilled', owner_message);
     this.name = 'RenewalDateRequiredError';
     this.message = owner_message;
+  }
+}
+
+/** D-343 ruling 16 — an AI's write of a date that a thing's open reminder reads
+ *  (`createReminderDateGuard`). Written, the date replaces the reminder, which then closes as
+ *  cancelled; keeping the reminder records the date and closes it as kept. Live, a model
+ *  that closed the reminder also wrote the date in 5 of 5 runs, and the date's card ran
+ *  first, so the reminder was recorded as cancelled. `reminder` names the one to keep. */
+export class AssetReminderOpenError extends Error {
+  constructor(readonly reminder: { readonly commitment_id: string; readonly statement: string; readonly field: string }) {
+    super(`“${reminder.statement}” is open, and keeping it records \`${reminder.field}\``);
+    this.name = 'AssetReminderOpenError';
   }
 }
 
@@ -587,6 +601,12 @@ export interface WorkEntityIngredientDeps {
   /** D-325 §15.7 (2026-10-24) — may refuse any fulfil, by anyone, before it writes:
    *  a renewal waits for its new date (`createRenewalFulfillGuard`). */
   commitmentFulfillGuard?: (commitment: Commitment) => void;
+  /** D-343 ruling 16 — may refuse an AI's write of a date that a thing's open reminder reads,
+   *  before it writes (`createReminderDateGuard`). */
+  aiAssetDateGuard?: (asset: Asset, dates: AssetUpdateInput['dates']) => void;
+  /** D-343 slice 1 — the condition a reminder stands for while it holds
+   *  (`createConditionReminderLookup`), for the chat's close. */
+  conditionOfReminder?: (commitment: Commitment) => { asset_id: string; asset_name: string; field: string } | null;
   /** D-325 §4.4 (2026-10-24) — the asset types. Wired, an extracted create that
    *  names one is held to its fields and gets its reminders (`asset-types.ts`). */
   assetTypes?: Pick<AssetTypes, 'get'>;
@@ -2489,22 +2509,23 @@ const commitmentUpdate = (deps: WorkEntityIngredientDeps) =>
     return { commitment };
   };
 
-const commitmentLifecycleMove = (
-  deps: WorkEntityIngredientDeps,
-  to: 'fulfilled' | 'cancelled',
-  ownerAction = false,
-) => async (input: { id: string; fulfilled_at?: number; cancelled_at?: number }): Promise<{
-  commitment: Commitment;
-}> => {
-  const localId = resolveWorkEntityInputId(deps, 'commitment', input.id);
-  const existing = deps.store.readCommitment(localId);
-  if (!existing) throw new WorkEntityNotFoundError('commitment', input.id);
+/** The commitment a local or a qualified id names. */
+const commitmentByInput = (deps: WorkEntityIngredientDeps, id: string): Commitment => {
+  const existing = deps.store.readCommitment(resolveWorkEntityInputId(deps, 'commitment', id));
+  if (!existing) throw new WorkEntityNotFoundError('commitment', id);
+  return existing;
+};
+/** The checks a lifecycle move makes before it writes: the move from its state, an expired
+ *  one's policy, and a renewal's new date (`commitmentFulfillGuard`). Each throws as the move
+ *  would. */
+const commitmentLifecycleChecks = (deps: WorkEntityIngredientDeps, existing: Commitment, to: 'fulfilled' | 'cancelled'): void => {
+  const id = existing.id;
   const allowedFromStates = to === 'fulfilled'
     ? COMMITMENT_FULFILL_FROM_STATES
     : COMMITMENT_CANCEL_FROM_STATES;
   if (!allowedFromStates.has(existing.lifecycle_state)) {
     throw new CommitmentLifecycleError(
-      input.id,
+      id,
       existing.lifecycle_state,
       to,
       existing.lifecycle_state === 'fulfilled' || existing.lifecycle_state === 'cancelled'
@@ -2522,7 +2543,7 @@ const commitmentLifecycleMove = (
     && !COMMITMENT_FULFILL_ALLOWED_EXPIRY_POLICIES.has(existing.expiry_policy)
   ) {
     throw new CommitmentLifecycleError(
-      input.id,
+      id,
       'expired',
       'fulfilled',
       `expiry_policy '${existing.expiry_policy}' does not permit fulfilling an expired commitment`
@@ -2530,6 +2551,16 @@ const commitmentLifecycleMove = (
     );
   }
   if (to === 'fulfilled') deps.commitmentFulfillGuard?.(existing);
+};
+const commitmentLifecycleMove = (
+  deps: WorkEntityIngredientDeps,
+  to: 'fulfilled' | 'cancelled',
+  ownerAction = false,
+) => async (input: { id: string; fulfilled_at?: number; cancelled_at?: number }): Promise<{
+  commitment: Commitment;
+}> => {
+  const existing = commitmentByInput(deps, input.id);
+  commitmentLifecycleChecks(deps, existing, to);
   const sourceReg = deps.store.getSource(existing.source_id);
   if (sourceReg) {
     await prepareVendorWrite(deps, sourceReg, 'commitment', 'update', {});
@@ -2857,16 +2888,32 @@ const createdAssetType = (deps: WorkEntityIngredientDeps, input: AssetCreateInpu
  *  kept, and nothing is written (`AssetFieldHeldError`). */
 export interface AssetAiWrite {
   /** The owner approved this write: an ask they answered, or a standing rule they
-   *  accepted. Its readings are then their own samples, at their rank, and the rest keeps
-   *  the AI's (the owner's ruling of 2026-10-25: "readings mine, rest AI's"). */
+   *  accepted. It is then theirs, at their rank (`aiWriteSource`). */
   readonly owner_approved?: boolean;
   /** Make every check the write makes, then roll it back: why it would be refused,
    *  asked before the owner is asked (D-329). Nothing is written or emitted. */
   readonly check?: boolean;
 }
-const aiReadingsSource = (input: AssetCreateInput | AssetUpdateInput, factSource: AssetWriteSource, ai: AssetAiWrite | undefined) =>
-  ai?.owner_approved === true && factSource.kind === 'extracted' && input.readings !== undefined
-    ? { readings_source: { kind: 'owner' as const, ref: factSource.ref } } : {};
+/** The facts an AI's tools write (`work.create`, `work.update`; its conditions since D-343 slice 1),
+ *  which a write the owner approved takes at their rank. The rest of a thing (its rules, who may see it, its status, settings
+ *  and exact address) stays the owner's own controls, as a contact's relationship and address
+ *  do (D-336 §3.7), so an approved write that names one is refused rather than ranked. */
+const AI_WRITTEN_FACTS: ReadonlySet<string> = new Set(['name', 'class_id', 'holder_contact', 'belongs_to', 'dates', 'readings',
+  'observations', 'attributes', 'anchors']);
+/** D-343 ruling 16 (2026-11-06) — an AI write the owner approved is theirs, at their rank, so
+ *  it may change what they set, as Yours does and as a contact the AI writes already was (the
+ *  owner, 2026-10-31: "since user approve then it should be counted as yours"). The owner: "it
+ *  is already gated twice: by contract if the tool is available and by approval". It replaces
+ *  D-325's "readings mine, rest AI's" (2026-10-25), and with it the pursuit's Where I am
+ *  exception (D-342 rulings 7 and 11). A write the owner did not approve keeps the AI's rank.
+ *  ⛔ A value it re-sends unchanged keeps its source (`owner_approved_ai`): at the owner's
+ *  rank it would lock out the document or device that gave it. */
+const aiWriteSource = (input: AssetCreateInput | AssetUpdateInput, factSource: AssetWriteSource, ai: AssetAiWrite | undefined) => {
+  if (ai?.owner_approved !== true || factSource.kind !== 'extracted') return { source: factSource };
+  const control = assetPatchFields.find((name) => !AI_WRITTEN_FACTS.has(name) && input[name] !== undefined);
+  if (control) throw new AssetValidationError(`\`${control}\` is the owner's to change`, control);
+  return { source: { kind: 'owner' as const, ref: factSource.ref }, owner_approved_ai: true };
+};
 const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreateInput & WorkEntityCreateOrigin, ai?: AssetAiWrite): Promise<{ asset: Asset }> => {
   const factSource = checkedAssetFactSource(input);
   const type = createdAssetType(deps, input, factSource);
@@ -2874,7 +2921,7 @@ const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreat
   if (source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(source.id, 'asset', 'create');
   const keyed = idempotentCreateKey('asset', input.idempotency_key, source.id);
   const patch = type ? typedAssetFacts(type, assetPatchOf(input)) : assetPatchOf(input);
-  const write = { ...patch, source_id: source.id, source: factSource, ...aiReadingsSource(input, factSource, ai) };
+  const write = { ...patch, source_id: source.id, ...aiWriteSource(input, factSource, ai) };
   // Both writes a create makes, its type's included: a reading in a unit the type's
   // rules do not read would cost the asset its reminders, which a run only logs.
   if (ai?.check) {
@@ -2918,7 +2965,8 @@ const assetUpdate = (deps: WorkEntityIngredientDeps) => async (input: AssetUpdat
   const factSource = checkedAssetFactSource(input);
   const prior = assetToUpdate(deps)(input.id);
   const id = prior.id;
-  const write = { ...assetPatchOf(input), id, source_id: prior.source_id, source: factSource, ...aiReadingsSource(input, factSource, ai) };
+  if (ai) deps.aiAssetDateGuard?.(prior, input.dates);
+  const write = { ...assetPatchOf(input), id, source_id: prior.source_id, ...aiWriteSource(input, factSource, ai) };
   if (ai?.check) return { asset: deps.store.dryRun(() => deps.store.writeAsset(write, deps.now?.(), { strict: true })) };
   const asset = deps.store.writeAsset(write, deps.now?.(), { strict: ai !== undefined });
   if (JSON.stringify(asset) !== JSON.stringify(prior)) {
@@ -3442,6 +3490,13 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
   // owner surface may select this operation; JSON input cannot select it.
   ownerCommitmentFulfill: commitmentLifecycleMove(deps, 'fulfilled', true),
   commitmentCancel: commitmentLifecycleMove(deps, 'cancelled'),
+  /** D-343 slice 1 — the commitment a chat's id names, and whether a move would go
+   *  through, asked before the owner is: the checks the move makes, nothing written. */
+  commitmentById: (id: string): Commitment => commitmentByInput(deps, id),
+  commitmentCondition: (commitment: Commitment) => deps.conditionOfReminder?.(commitment) ?? null,
+  commitmentCloseCheck: (input: { commitment: Commitment; to: 'fulfilled' | 'cancelled' }): void => {
+    commitmentLifecycleChecks(deps, input.commitment, input.to);
+  },
   projectCreate: projectCreate(deps),
   projectUpdate: projectUpdate(deps),
   projectArchive: projectArchive(deps),
@@ -3450,6 +3505,12 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
   // kernel-op registration.
   bookingCreate: bookingCreate(deps),
   bookingUpdate: bookingUpdate(deps),
+  /** D-343 slice 1 — a live booking by a local or a qualified id, as the chat's change reads it. */
+  bookingById: (id: string): Booking => {
+    const booking = deps.store.readBooking(resolveWorkEntityInputId(deps, 'booking', id));
+    if (!booking || booking.deleted_at != null || booking.sync_state !== 'live') throw new WorkEntityNotFoundError('booking', id);
+    return booking;
+  },
   bookingDelete: bookingDelete(deps),
   assetCreate: assetCreate(deps),
   assetUpdate: assetUpdate(deps),

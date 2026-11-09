@@ -3,9 +3,11 @@
  *  for, accepted or dismissed for good; a live pass ended. Each a deliberate second step. */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { BrowserPassRow, BrowserPassSuggestionRow, WriteRuleRow } from '@recued/contracts';
+import type { BrowserLoginRow, BrowserPassRow, BrowserPassSuggestionRow, WriteRuleRow } from '@recued/contracts';
 
 import {
+  BROWSER_LOGIN_ATTR,
+  BROWSER_LOGIN_FORGET_ATTR,
   BROWSER_PASS_ALWAYS_ATTR,
   BROWSER_PASS_ATTR,
   BROWSER_PASS_DISMISS_ATTR,
@@ -227,5 +229,58 @@ describe('D-335 slice F — the passes on the Contracts panel', () => {
     await h.panel.whenLoaded();
     const [card] = all(h.host, BROWSER_PASS_ATTR);
     expect(all(card!, WRITE_RULES_ERROR_ATTR)).toHaveLength(1);
+  });
+});
+
+describe('D-335 slice Z — the logins remembered for browser steps, on the Contracts panel', () => {
+  const login: BrowserLoginRow = { origin: 'https://login.live.com', site: 'login.live.com', field: 'name:passwd', label: 'Password',
+    kind: 'password', saved_at: NOW, used_at: NOW + 86_400_000 };
+  const mountLogins = (rows: BrowserLoginRow[] = [login]) => {
+    const host = element('div');
+    const state = { logins: rows };
+    const forget = vi.fn(async (args: { origin: string; field: string }) => {
+      state.logins = state.logins.filter((row) => row.origin !== args.origin || row.field !== args.field);
+      return { forgotten: true as const };
+    });
+    const panel = mountWriteRulesPanel({
+      host: host as never,
+      document: { createElement: element } as never,
+      listSuggestions: async () => ({ suggestions: [] }),
+      listRules: async () => ({ rules: [] }),
+      accept: vi.fn(), dismiss: vi.fn(), revoke: vi.fn(),
+      logins: { list: async () => ({ logins: state.logins }), forget },
+    });
+    return { host, panel, forget };
+  };
+
+  it('lists each with its site, field and dates, never a secret, and forgets one after one more step', async () => {
+    const h = mountLogins();
+    await h.panel.whenLoaded();
+    expect(text(h.host)).toContain('Remembered for your browser');
+    const [card] = all(h.host, BROWSER_LOGIN_ATTR);
+    expect(card!.getAttribute(BROWSER_LOGIN_ATTR)).toBe('https://login.live.com|name:passwd');
+    expect(text(card!)).toContain('Your password for login.live.com');
+    expect(text(card!)).toContain('For the field “Password”; saved');
+    all(h.host, BROWSER_LOGIN_FORGET_ATTR)[0]!.click();
+    expect(h.forget).not.toHaveBeenCalled();
+    expect(text(h.host)).toContain('The next step that needs it asks you for it again.');
+    all(h.host, WRITE_RULES_CONFIRM_ATTR)[0]!.click();
+    await tick();
+    expect(h.forget).toHaveBeenCalledWith({ origin: 'https://login.live.com', field: 'name:passwd' });
+    await h.panel.whenLoaded();
+    expect(all(h.host, BROWSER_LOGIN_ATTR)).toHaveLength(0);
+    expect(text(h.host)).not.toContain('Remembered for your browser');
+  });
+
+  it('none remembered, nothing shown; Cancel keeps one', async () => {
+    const empty = mountLogins([]);
+    await empty.panel.whenLoaded();
+    expect(text(empty.host)).not.toContain('Remembered for your browser');
+    const h = mountLogins();
+    await h.panel.whenLoaded();
+    all(h.host, BROWSER_LOGIN_FORGET_ATTR)[0]!.click();
+    all(h.host, WRITE_RULES_CANCEL_ATTR)[0]!.click();
+    expect(h.forget).not.toHaveBeenCalled();
+    expect(all(h.host, BROWSER_LOGIN_ATTR)).toHaveLength(1);
   });
 });

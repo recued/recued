@@ -140,7 +140,7 @@ await waitFor(${JSON.stringify(release)});
   it('the file is gone once the winner releases, so the next caller can take it', async () => {
     const leasePath = join(dir, 'recued-update.lock');
     const { acquireUpdateLease } = await import('../update/update-lease.js');
-    const lease = acquireUpdateLease({ leasePath, operation: 'apply' });
+    const lease = acquireUpdateLease({ identify: () => null, leasePath, operation: 'apply' });
     expect(existsSync(leasePath)).toBe(true);
     lease.release();
     expect(existsSync(leasePath)).toBe(false);
@@ -176,7 +176,7 @@ describe('the mid-claim window — deterministic, not timing-dependent', () => {
     writeFileSync(leasePath, '');
 
     expect(
-      () => acquireUpdateLease({
+      () => acquireUpdateLease({ identify: () => null,
         leasePath, operation: 'apply', currentPid: () => 999_999, isAlive: () => true,
       }),
       'an incomplete lease must refuse, not reclaim',
@@ -187,7 +187,7 @@ describe('the mid-claim window — deterministic, not timing-dependent', () => {
   it('whatever exists at the lease path always parses', async () => {
     const { acquireUpdateLease } = await import('../update/update-lease.js');
     const leasePath = join(dir, 'recued-update.lock');
-    const lease = acquireUpdateLease({ leasePath, operation: 'apply' });
+    const lease = acquireUpdateLease({ identify: () => null, leasePath, operation: 'apply' });
     expect(() => JSON.parse(readFileSync(leasePath, 'utf-8'))).not.toThrow();
     lease.release();
   });

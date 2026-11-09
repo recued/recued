@@ -140,6 +140,7 @@ import { createQuietHoursStore } from '../../storage/quiet-hours-store.js';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
 import { resolveServerTimeZone, shouldSuppressForQuietHours } from '@recued/contracts';
 import { createWorkEntityStore } from '../../storage/work-entity-store.js';
+import { isServerPausedIn } from '../../server-state.js';
 
 /** Inputs to `composeReceptionSubstrate`. The six "required" handles
  *  gate the whole branch (mirroring the pre-extraction `if`); the
@@ -444,6 +445,10 @@ export const composeReceptionSubstrate = async (
       : {}),
   });
 
+  // D-188 — the four follow-up sweeps below notify the owner on their own: held while the owner's
+  // pause holds (the emergency stop: nothing leaves). Read from the database, as the file stack
+  // does; what came due is swept on the first tick after Resume.
+  const receptionSweepsPaused = (): boolean => deps.db !== undefined && isServerPausedIn(deps.db);
   const { composeApprovalWorkflowService, composeApprovalWorkflowResponse } = await import('../../compose-approval-workflow-service.js');
   let approvalWorkflows: import('../../approval-workflow-service.js').ApprovalWorkflowService | undefined;
   const getApprovalWorkflowService = deps.db && deps.executeDeps
@@ -472,7 +477,7 @@ export const composeReceptionSubstrate = async (
     const zone = createServerTimeZoneStore(deps.db);
     deps.backgroundServices.registerInterval({ name: 'quote-signoff-reminders', intervalMs: 60_000,
       fireImmediate: true, tick: async () => {
-        if (!receptionKeyProvider()) return;
+        if (!receptionKeyProvider() || receptionSweepsPaused()) return;
         await getQuoteSignoffReminderService().sweep(
           message => deps.executeDeps!.preflightNotifier!.notify({ ...message, link_url: '#reception/signoffs' }),
           at => shouldSuppressForQuietHours({ policy: quietHours.read(), instant: at,
@@ -495,7 +500,7 @@ export const composeReceptionSubstrate = async (
     const zone = createServerTimeZoneStore(deps.db);
     deps.backgroundServices.registerInterval({ name: 'quote-completion-reminders', intervalMs: 60_000,
       fireImmediate: true, tick: async () => {
-        if (!receptionKeyProvider()) return;
+        if (!receptionKeyProvider() || receptionSweepsPaused()) return;
         await getQuoteCompletionReminderService().sweep(
           message => deps.executeDeps!.preflightNotifier!.notify({ ...message, link_url: '#reception/jobs' }),
           at => shouldSuppressForQuietHours({ policy: quietHours.read(), instant: at,
@@ -535,7 +540,7 @@ export const composeReceptionSubstrate = async (
   if (getCustomerAccountPaymentReminderService && deps.executeDeps?.preflightNotifier && deps.db) {
     const quietHours = createQuietHoursStore(deps.db);const zone = createServerTimeZoneStore(deps.db);
     deps.backgroundServices.registerInterval({ name: 'customer-account-payment-reminders',intervalMs: 60_000,fireImmediate: true,tick: async () => {
-      if (!receptionKeyProvider()) return;
+      if (!receptionKeyProvider() || receptionSweepsPaused()) return;
       await getCustomerAccountPaymentReminderService().sweep(
         message => deps.executeDeps!.preflightNotifier!.notify({ ...message,link_url: '#reception/jobs' }),
         at => shouldSuppressForQuietHours({ policy: quietHours.read(),instant: at,
@@ -572,7 +577,7 @@ export const composeReceptionSubstrate = async (
     const zone = createServerTimeZoneStore(deps.db);
     deps.backgroundServices.registerInterval({ name: 'quote-payment-reminders', intervalMs: 60_000,
       fireImmediate: true, tick: async () => {
-        if (!receptionKeyProvider()) return;
+        if (!receptionKeyProvider() || receptionSweepsPaused()) return;
         await getQuotePaymentReminderService().sweep(
           message => deps.executeDeps!.preflightNotifier!.notify({ ...message, link_url: '#reception/jobs' }),
           at => shouldSuppressForQuietHours({ policy: quietHours.read(), instant: at,

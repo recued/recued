@@ -73,6 +73,7 @@ import {
 import {
   mountExecutionCaseDraftRoute,
   EXECUTION_CASE_DRAFT_HOST_ATTR,
+  EXECUTION_CASE_DRAFT_NOTES_ATTR,
   EXECUTION_CASE_DRAFT_REFINE_ATTR,
   EXECUTION_CASE_DRAFT_REFINE_ERROR_ATTR,
   EXECUTION_CASE_DRAFT_REFINE_PANEL_ATTR,
@@ -2354,6 +2355,30 @@ describe('recipe-editor: a valid recipe with no prefetch_steps', () => {
 // ────────────────────────────────────────────────────────────────
 // D-219 — refining an AI draft in place
 // ────────────────────────────────────────────────────────────────
+
+describe('D-335 slice W4 — a draft built from a kept browser flow', () => {
+  it('shows its notes above the editor, and no refine control where the shell wires none', () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    mountExecutionCaseDraftRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      draft: { draft_key: 'k', case_id: 'browser-flow:f1', request_aliased: true,
+        notes: ['Step 3 (click the button “Create”) has no selector that finds it alone.'],
+        recipe: { recipe_id: 'browser-flow-github-com-f1', version: 1, ttl: 0,
+          metadata: { name: 'On github.com', description: '', author: 'you', supported_platforms: [] },
+          variables: {}, steps: [{ id: 'tabs', op: 'core.dom.tabs', args: { target: '*://*/*' } }], output: { render: [] } } },
+      validateCaller: okValidate,
+      saveCaller: okSave,
+    });
+    const host = findByAttr(root, EXECUTION_CASE_DRAFT_HOST_ATTR)!;
+    const notes = findByAttr(host, EXECUTION_CASE_DRAFT_NOTES_ATTR)!;
+    expect(notes.children.map((item) => item.textContent))
+      .toEqual(['Step 3 (click the button “Create”) has no selector that finds it alone.']);
+    expect(host.children.indexOf(notes)).toBeLessThan(host.children.indexOf(findByAttr(host, RECIPE_EDITOR_ROUTE_ATTR)!));
+    expect(findByAttr(host, EXECUTION_CASE_DRAFT_REFINE_PANEL_ATTR)).toBeFalsy();
+  });
+});
 
 describe('execution-case draft route: iterative refinement', () => {
   /** ⛔ NO `prefetch_steps`, on purpose. The editor NORMALISES it in, so its

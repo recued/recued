@@ -511,3 +511,64 @@ describe('mountRecipeInstallDialog — per-dep grant scope (§7.1/§7.2)', () =>
     });
   });
 });
+
+/** D-182 §7.1 — a pack a recipe brings in that runs a program on the server asks
+ *  which of its actions to allow, as an install from Packs does. Before, a
+ *  recipe installed from Discover left those actions off with no dialog, and its
+ *  first run was refused "… is switched off" (found 2026-11-08). */
+describe('mountRecipeInstallDialog — program access after the install', () => {
+  const programs = (snapshot: ReadonlySet<string> | null = new Set(['rg:old'])) => ({
+    snapshot: vi.fn(async () => snapshot),
+    openForNewTools: vi.fn(async () => undefined),
+  });
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('reads the program actions when it opens with packs to bring in, and asks about the new ones once installed', async () => {
+    const programAccess = programs();
+    const { dialog, onInstalled } = setup({ programAccess });
+    dialog.open(recipe, deps);
+    expect(programAccess.snapshot).toHaveBeenCalledTimes(1);
+    await dialog.clickInstall();
+    await settle();
+    expect(onInstalled).toHaveBeenCalledWith('deal-risk');
+    expect(dialog.isOpen()).toBe(false);
+    expect(programAccess.openForNewTools).toHaveBeenCalledTimes(1);
+    expect(programAccess.openForNewTools).toHaveBeenCalledWith(new Set(['rg:old']));
+  });
+
+  it('asks nothing after a failed step, and a retry still diffs from before the first pack', async () => {
+    const programAccess = programs();
+    const installRecipe = vi.fn()
+      .mockResolvedValueOnce({ ok: false, message: 'validator rejected' })
+      .mockResolvedValueOnce({ ok: true });
+    const { dialog } = setup({ programAccess, installRecipe });
+    dialog.open(recipe, deps);
+    await dialog.clickInstall();
+    await settle();
+    expect(programAccess.openForNewTools).not.toHaveBeenCalled();
+    await dialog.clickInstall();
+    await settle();
+    expect(programAccess.snapshot).toHaveBeenCalledTimes(1);
+    expect(programAccess.openForNewTools).toHaveBeenCalledWith(new Set(['rg:old']));
+  });
+
+  it('asks nothing on cancel, and reads nothing when there is no pack to bring in', async () => {
+    const programAccess = programs();
+    const { dialog } = setup({ programAccess });
+    dialog.open(recipe, deps);
+    dialog.clickCancel();
+    await settle();
+    expect(programAccess.openForNewTools).not.toHaveBeenCalled();
+    dialog.open(recipe, [dep({ pack: 'hubspot', name: 'HubSpot', installed: true })]);
+    expect(programAccess.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens nothing when the program actions could not be read before', async () => {
+    const programAccess = programs(null);
+    const { dialog } = setup({ programAccess });
+    dialog.open(recipe, deps);
+    await dialog.clickInstall();
+    await settle();
+    expect(programAccess.openForNewTools).not.toHaveBeenCalled();
+  });
+});

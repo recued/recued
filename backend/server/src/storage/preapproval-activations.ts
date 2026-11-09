@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { RpcError, matchesTriggerDispatchFilter, type AutoRunStatusEntry, type Checkpoint, type EventTrigger, type PreparePreapproval } from '@recued/contracts';
 import { eventPath, matchesPattern, type WarehouseEvent } from '@recued/warehouse-events';
-import { nextCronMatch, type Schedule } from '@recued/scheduler';
+import { nextCronMatch, scheduleCronZone, type Schedule } from '@recued/scheduler';
 import type { AutoRunSettingsStore, CircuitBreakerStore } from '../auto-run-scheduler.js';
 import { triggerPreapprovalMaterial, type EventTriggersStore } from '../triggers/store.js';
 import type { RecipeStore } from '../recipe-store.js';
@@ -36,6 +36,12 @@ export interface PreapprovalAutomationDeps {
   db: Database.Database; schedules: ScheduleStore; autoRun: AutoRunSettingsStore;
   circuits: CircuitBreakerStore; triggers: EventTriggersStore; recipes: RecipeStore;
   now?: () => number;
+  /** D-269 — the server's declared zone. An approved schedule's next run is
+   *  read in the schedule's zone (`scheduleCronZone`), as the scheduler fires
+   *  it; read host-local, a Hong Kong 07:00 approved on a UTC host fell due
+   *  at 15:00, and the driver fires an approved run when it falls due.
+   *  Absent ⇒ the schedule's own zone, else host-local. */
+  serverTimeZone?: () => string | undefined;
 }
 
 function stale(): never { throw new RpcError('preapproval_stale', 'The automation changed. Review a new execution.', 409); }
@@ -140,7 +146,8 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
         if (identity.revision !== activation.expected_revision) stale();
         const schedule = activation.kind === 'next_schedule' ? deps.schedules.get(key)! : null;
         const due = schedule ? (schedule.mode === 'one_shot' ? schedule.run_at ?? schedule.next_run_at
-          : nextCronMatch(schedule.cron_expression.trim().split(/\s+/), Math.floor(now() / 60_000) * 60_000 + 60_000)) : null;
+          : nextCronMatch(schedule.cron_expression.trim().split(/\s+/), Math.floor(now() / 60_000) * 60_000 + 60_000,
+            undefined, scheduleCronZone(schedule, deps.serverTimeZone?.()))) : null;
         if (schedule && (due === null || due === undefined || due <= now())) stale();
         return { kind: activation.kind, key, incarnation: identity.incarnation, revision: identity.revision,
           qualifying_sequence: identity.qualifying_sequence, due_at: due ?? null, was_enabled: current.enabled };
@@ -361,7 +368,8 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
               enabled: restore,
               ...outcome,
               next_run_at: schedule.mode === 'one_shot' ? null
-                : nextCronMatch(schedule.cron_expression.trim().split(/\s+/), Math.max(now(), row.due_at ?? 0) + 60_000),
+                : nextCronMatch(schedule.cron_expression.trim().split(/\s+/), Math.max(now(), row.due_at ?? 0) + 60_000,
+                  undefined, scheduleCronZone(schedule, deps.serverTimeZone?.())),
             });
           } else if (row.target_kind === 'next_trigger' && current) deps.triggers.update(row.target_key, { enabled: restore });
           else if (row.target_kind === 'next_auto_run' && current) deps.autoRun.setEnabled(row.target_key, current.recipe_id, restore);

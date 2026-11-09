@@ -80,15 +80,16 @@ export interface OpAdmissionGate {
    *  its `core.*` op). Absent (a non-kernel simple-form slug) ⇒ no op axis ⇒ admit. */
   isOpGranted(source: ExecutionSource, opId: string | undefined): boolean;
 
-  /** D-188 — is this dispatch FROZEN by the master "Pause server"
-   *  circuit-breaker? `true` iff the server is paused AND `source` has a
-   *  GOVERNING contract (owner-AI → {@link OWNER_CONTRACT_ID}, or a door).
-   *  A contract-free dispatch (the owner's direct `(user, user_self)` HID +
-   *  the system channels) resolves to no governing contract → `false`
-   *  (NOT frozen), so the owner's hands-on control + the resume rpc stay
-   *  live while everything contracted is halted — the SAME bypass the
-   *  op-grant axis uses (reusing {@link resolveGrantGoverningContractId}
-   *  so the two can never disagree about who is "governed").
+  /** D-188 — is this dispatch FROZEN by the master "Pause server"? `true` for EVERY
+   *  source while the server is paused.
+   *
+   *  ⛔ It used to be `true` only for a GOVERNED source (owner-AI, a door), and a
+   *  contract-free dispatch (the owner's direct `(user, user_self)` HID + the system
+   *  channels) went through. The owner's ruling of 2026-11-08 made the pause the
+   *  emergency stop: *nothing leaves this server and nothing comes in until Resume*,
+   *  the owner's own hands included. So a run already going when the owner paused
+   *  stops at its next step, and an action by hand that would reach an account waits.
+   *  Resume is an rpc, not an op dispatch, so it never meets this gate and stays live.
    *
    *  Deliberately a DISTINCT axis from {@link isOpGranted}: pause is a
    *  transient server-wide halt, not a grant decision. The caller turns
@@ -220,7 +221,7 @@ export const createOpAdmissionGate = (deps: {
   readonly grantEntryStore: ContractGrantEntryStore;
   readonly definitionStore: ContractDefinitionStore;
   /** D-188 — the master pause flag (server-state). When injected, a paused
-   *  server FREEZES every governed dispatch via {@link OpAdmissionGate.isFrozenByPause}.
+   *  server FREEZES every dispatch via {@link OpAdmissionGate.isFrozenByPause}.
    *  Absent ⇒ pause is unenforced at this gate (dbless / unit) — the
    *  scheduler-pause + webhook-closure halves still apply where wired. */
   readonly isPaused?: () => boolean;
@@ -229,15 +230,9 @@ export const createOpAdmissionGate = (deps: {
   const now = deps.now ?? ((): number => Date.now());
   const grantResolver = createGrantEntryResolver(deps.grantEntryStore);
   return {
-    isFrozenByPause(source) {
-      if (!(deps.isPaused?.() ?? false)) return false;
-      // Frozen iff GOVERNED — the IDENTICAL "who governs" resolution the op
-      // axis uses. Contract-free (HID + system channels) ⇒ undefined ⇒ not
-      // frozen (the owner's direct control + the resume rpc bypass pause).
-      return (
-        resolveGrantGoverningContractId(source, deps.definitionStore, now)
-        !== undefined
-      );
+    isFrozenByPause() {
+      // Every source while paused: the emergency stop (see the interface's doc).
+      return deps.isPaused?.() ?? false;
     },
     isOpGranted(source, opId) {
       if (opId === undefined) return true; // no op axis → nothing to gate

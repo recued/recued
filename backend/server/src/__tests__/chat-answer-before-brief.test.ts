@@ -20,7 +20,10 @@ const gate = () => {
  * or, for `cancel-before-answer`, the final main model call. */
 const startTurn = (mode: 'success' | 'failure' | 'empty-brief' | 'cancel' | 'cancel-before-answer') => {
   const db = new Database(':memory:'); ensureChatSchema(db);
-  const store = createChatStore(db); store.createSession({ id: 'answer-before-brief' });
+  // D-347 — the closing brief's own boundaries, so a store without the carry: a turn that did tool
+  //   work closes with a fold, as before the carry.
+  const { readSessionCarry: _read, writeSessionCarry: _write, deleteSessionCarry: _delete, ...store } = createChatStore(db);
+  store.createSession({ id: 'answer-before-brief' });
   store.setRollingBriefEnabled(true);
   const blocked = gate();
   const executionFinished = gate();

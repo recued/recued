@@ -17,6 +17,7 @@ import {
   type LifecycleRecoveryPreListenerRuntimeResult,
   type StartLifecycleRecoveryPreListenerRuntimeOptions,
 } from './start-lifecycle-recovery-pre-listener-runtime.js';
+import { housekeepingSchedulerRegistry } from '../composition/bin/housekeeping-scheduler-instance.js';
 
 type BootstrapCascadeLifecycleKeys = 'bootstrapDeps' | 'cascade';
 type BootstrapMaintenancePreListenerKeys =
@@ -50,6 +51,9 @@ export interface StartPostExecutionBootstrapMaintenanceRuntimeOptions {
     >;
   };
   readonly publishScheduleDeps?: (deps: ScheduleHandlerDeps | undefined) => void;
+  /** D-188 — move the mail and calendar poll loops on the pause's edges
+   *  (`CollectionContext.applyServerPause`). Absent ⇒ sync is not held by the pause. */
+  readonly applyServerPause?: () => Promise<void>;
 }
 
 export interface PostExecutionBootstrapMaintenanceRuntimeResult {
@@ -88,10 +92,20 @@ export const startPostExecutionBootstrapMaintenanceRuntime = async (
   // getters are late-bound, so the closure is safe to set before the
   // bundles publish during the runtime call.
   if (bootstrapCascade.bootstrapDeps) {
-    bootstrapCascade.bootstrapDeps.onPauseChanged = (paused): Promise<void> =>
-      paused
-        ? maintenance.executionControl.stop()
-        : maintenance.executionControl.rearm();
+    // D-188 — and the mail and calendar poll loops hold or run with it: nothing comes in during
+    // the emergency stop (the owner's ruling of 2026-11-08). Both run even when one throws.
+    bootstrapCascade.bootstrapDeps.onPauseChanged = async (paused): Promise<void> => {
+      const [work, sync] = await Promise.allSettled([
+        paused
+          ? maintenance.executionControl.stop()
+          // Housekeeping too, which the shared re-arm leaves to a restart (a maintenance
+          // window's rule, not a pause's).
+          : maintenance.executionControl.rearm().finally(() => housekeepingSchedulerRegistry.resume()),
+        options.applyServerPause?.(),
+      ]);
+      if (work.status === 'rejected') throw work.reason;
+      if (sync.status === 'rejected') throw sync.reason;
+    };
   }
 
   const runtime = await startLifecycleRecoveryPreListenerRuntime({

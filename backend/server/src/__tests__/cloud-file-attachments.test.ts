@@ -91,8 +91,16 @@ describe('connected cloud attachments', () => {
       export_as: { filename: 'Planning.docx' } });
     expect(f.fetchImpl).toHaveBeenCalledTimes(1); f.fetchImpl.mockClear();
     f.add('one', 'Planning sheet', { mime_type: 'application/vnd.google-apps.spreadsheet' });
+    f.fetchImpl.mockResolvedValueOnce(new Response('exported spreadsheet', { headers: {
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } }));
     expect(await f.handlers['data.file.attachments.preview']({ record_id: id }, client)).toMatchObject({
-      filename: 'Planning sheet.xlsx', can_download: true, unavailable_reason: expect.stringContaining('no preview') });
+      filename: 'Planning sheet.xlsx', can_download: true,
+      content: { kind: 'xlsx', bytes_b64: Buffer.from('exported spreadsheet').toString('base64') },
+      export_as: { filename: 'Planning sheet.xlsx' } });
+    expect(f.fetchImpl).toHaveBeenCalledTimes(1); f.fetchImpl.mockClear();
+    f.add('one', 'Planning slides', { mime_type: 'application/vnd.google-apps.presentation' });
+    expect(await f.handlers['data.file.attachments.preview']({ record_id: id }, client)).toMatchObject({
+      filename: 'Planning slides.pptx', can_download: true, unavailable_reason: expect.stringContaining('no preview') });
     f.add('one', 'Form', { mime_type: 'application/vnd.google-apps.form' });
     expect(await f.handlers['data.file.attachments.preview']({ record_id: id }, client)).toMatchObject({
       can_download: false, unavailable_reason: expect.stringContaining('cannot be exported') });

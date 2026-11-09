@@ -25,6 +25,7 @@
 
 import {
   canonicalizeEmail,
+  COLLECTION_GRANT_PREFIX,
   isMailboxAddress,
   executionSourceContractId,
   isContactAnnualDate,
@@ -41,6 +42,7 @@ import type { Tier1Handler } from '@recued/middleware/internal-tool-registry/ind
 import {
   isAiToolPrincipal,
   isCollectionReadGrantedForDispatch,
+  neededSwitchOff,
   type ChatToolHandlerDeps,
 } from './chat-tool-handlers.js';
 import { conversationWords, crmRecordGivenAsContact, namedInPart } from './named-in-part.js';
@@ -62,7 +64,6 @@ const VALUE_MAX = 200;
 type Values = Partial<Record<Field, string>>;
 
 const refuse = (detail: string): ChatDispatchResult => ({ ok: false, reason: 'invalid_args', detail });
-const blocked = (detail: string): ChatDispatchResult => ({ ok: false, reason: 'classification_blocked', detail });
 
 const andList = (items: readonly string[]): string =>
   items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
@@ -183,8 +184,10 @@ export const runContactWrite = async (
     return refuse(`contact.write takes ${named(['target_id', 'email', ...FIELDS])}, not ${named(other)}`);
   }
   const source = ctx.execution_source;
-  if (!admitted(deps, source)) return blocked('contact.write is not granted to this contract (write rejected)');
-  if (!readsContacts(deps, ctx)) return blocked('contact.write: this contract cannot read contacts, so it cannot write them');
+  if (!admitted(deps, source)) return neededSwitchOff('contact.write', CONTACT_WRITE_OP_ID, source);
+  // The owner's own call is never held to spheres (`createReadScope`), so for the owner this is
+  // their "Your contacts" switch; any other contract reads only that the tool is not available.
+  if (!readsContacts(deps, ctx)) return neededSwitchOff('contact.write', `${COLLECTION_GRANT_PREFIX}contact`, source);
   // Only the owner's yes makes what is written theirs. A check asks whether that yes is the
   // one this call will get; the run, whether it got it.
   if (check ? !ownerApprovesCallsOf(source!) : ctx.owner_approved !== true) {

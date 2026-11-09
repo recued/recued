@@ -9,6 +9,9 @@
  *    SIGTERM / SIGINT  → graceful drain with intent=shutdown
  *    SIGHUP            → hot-reload runtime config (no drain)
  *    SIGUSR1           → dump lifecycle snapshot (debug)
+ *    SIGUSR2           → graceful drain with intent=restart, so a
+ *                         supervised server comes back under its
+ *                         supervisor (`recued restart`)
  *    uncaughtException → record last_crash, exit 1 (no drain —
  *                         process state is unreliable)
  *
@@ -35,6 +38,10 @@ export interface SignalListenerDeps {
   /** Called for SIGUSR1. Should log the current lifecycle snapshot.
    *  Absent → SIGUSR1 logs a default "received" line. */
   onDumpSnapshot?: () => void;
+  /** Called for SIGUSR2. Should drain and exit with the supervisor's
+   *  RESTART code, which every supervisor relaunches on. Absent → SIGUSR2
+   *  logs only. */
+  onRestart?: (reason: string) => Promise<void>;
   /** Called on uncaughtException / unhandledRejection. Should write
    *  a `last_crash` entry and persist audit. Listener exits 1 after
    *  the callback resolves (or rejects — we exit regardless). */
@@ -74,7 +81,7 @@ export const createSignalListener = (
   const registered: HandlerEntry[] = [];
 
   const register = (
-    event: 'SIGTERM' | 'SIGINT' | 'SIGHUP' | 'SIGUSR1' | 'uncaughtException' | 'unhandledRejection',
+    event: 'SIGTERM' | 'SIGINT' | 'SIGHUP' | 'SIGUSR1' | 'SIGUSR2' | 'uncaughtException' | 'unhandledRejection',
     handler: (...args: unknown[]) => void,
   ): void => {
     proc.on(event, handler);
@@ -100,6 +107,17 @@ export const createSignalListener = (
         .onReload('SIGHUP')
         .catch((err) => {
           log('error', 'onReload callback rejected', { err: errShape(err) });
+        });
+    }
+  };
+
+  const handleRestartSignal = () => {
+    log('info', 'restart signal received', { signal: 'SIGUSR2' });
+    if (deps.onRestart) {
+      void deps
+        .onRestart('SIGUSR2')
+        .catch((err) => {
+          log('error', 'onRestart callback rejected', { err: errShape(err) });
         });
     }
   };
@@ -141,6 +159,7 @@ export const createSignalListener = (
       register('SIGINT', () => handleShutdownSignal('SIGINT'));
       register('SIGHUP', () => handleReloadSignal());
       register('SIGUSR1', () => handleDumpSignal());
+      register('SIGUSR2', () => handleRestartSignal());
 
       register('uncaughtException', ((err: Error, origin: string) => {
         void handleFatal(err, origin);

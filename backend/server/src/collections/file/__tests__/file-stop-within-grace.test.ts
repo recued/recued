@@ -251,6 +251,86 @@ describe('S3 adapter — a stop aborts the listing', () => {
     expect(signals).toHaveLength(1);
   });
 
+  // D-188 — the owner's pause (the emergency stop: nothing comes in) skips the bucket's polls; the
+  // first tick after Resume lists it again.
+  it('lists nothing while the server is paused, and polls again once resumed', async () => {
+    vi.useFakeTimers();
+    let lists = 0;
+    const fetcher: S3Fetch = () => {
+      lists += 1;
+      return Promise.resolve(new Response('<ListBucketResult></ListBucketResult>', { status: 200 }));
+    };
+    let paused = false;
+    const instance = createS3AdapterFactory({ fetcher }).create({
+      slug: 'photos', config, caps: { ...caps, watch: 'poll' }, onEvent: () => {}, isPaused: () => paused,
+    });
+    await instance.start();
+    expect(lists).toBe(1);
+    paused = true;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(lists).toBe(1);
+    paused = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(lists).toBe(2);
+    await instance.stop();
+  });
+
+  // D-188 — a start while paused (a boot, a restart) lists nothing either: the bucket's first
+  // listing waits for the first look after Resume, and is the baseline (`present`), not changes.
+  const bucketOf = (keys: string[]): string =>
+    `<ListBucketResult>${keys.map((key) => `<Contents><Key>${key}</Key></Contents>`).join('')}</ListBucketResult>`;
+
+  it('starts paused without listing, then takes the first listing after Resume as the baseline', async () => {
+    vi.useFakeTimers();
+    let lists = 0;
+    const fetcher: S3Fetch = () => {
+      lists += 1;
+      return Promise.resolve(new Response(bucketOf(['a.txt', 'b.txt']), { status: 200 }));
+    };
+    const events: Array<{ type: string; path: string }> = [];
+    let paused = true;
+    const instance = createS3AdapterFactory({ fetcher }).create({
+      slug: 'photos', config, caps: { ...caps, watch: 'poll' }, isPaused: () => paused,
+      onEvent: (event) => { events.push({ type: event.type, path: event.path }); },
+    });
+    await instance.start();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(lists).toBe(0);
+    expect(events).toEqual([]);
+    paused = false;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(lists).toBe(1);
+    expect(events).toEqual([{ type: 'present', path: 'a.txt' }, { type: 'present', path: 'b.txt' }]);
+    // Later polls compare with that baseline: nothing changed, nothing reported.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(lists).toBe(2);
+    expect(events).toHaveLength(2);
+    await instance.stop();
+  });
+
+  it('lists a notified bucket once after Resume when it started paused, and polls it no further', async () => {
+    vi.useFakeTimers();
+    let lists = 0;
+    const fetcher: S3Fetch = () => {
+      lists += 1;
+      return Promise.resolve(new Response(bucketOf(['a.txt']), { status: 200 }));
+    };
+    const events: string[] = [];
+    let paused = true;
+    const instance = createS3AdapterFactory({ fetcher }).create({
+      slug: 'photos', config: { ...config, notifications_enabled: true }, caps: { ...caps, watch: 'realtime' },
+      isPaused: () => paused, onEvent: (event) => { events.push(`${event.type} ${event.path}`); },
+    });
+    await instance.start();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(lists).toBe(0);
+    paused = false;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(lists).toBe(1);
+    expect(events).toEqual(['present a.txt']);
+    await instance.stop();
+  });
+
   it('aborts a poll in flight on stop', async () => {
     vi.useFakeTimers();
     let lists = 0;

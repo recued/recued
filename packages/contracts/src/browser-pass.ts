@@ -63,24 +63,58 @@ export const BROWSER_PASS_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
 export type BrowserPassKind = 'session' | 'always';
 
+/** D-341 slice A — a request approved ahead: with the switch beside Send on, every Browser Toolkit
+ *  write the owner's chat makes in that conversation runs without asking, on any site its tabs go,
+ *  until the owner turns it off or eight hours pass. One a conversation. Sites on the owner's list
+ *  are still refused, a secret is still asked for, and nothing but the owner's own chat has one. */
+export interface BrowserRequestPass {
+  /** The conversation, as a run's identity names it: `chat:<session_id>`. */
+  readonly channel_session_id: string;
+  readonly started_at: number;
+  readonly expires_at: number;
+  /** The browser writes it let through. */
+  readonly uses: number;
+}
+/** How long a request approved ahead lasts at most: a working day, as a session pass. */
+export const BROWSER_REQUEST_PASS_TTL_MS = 8 * 60 * 60 * 1000;
+
 /** The answers on a held browser write, beside allow once and deny. ⚠ Ids stay within 23
  *  bytes: Telegram carries `ask-<uuid>|<option>` in a 64-byte callback. */
 export const BROWSER_PASS_SESSION_OPTION_ID = 'allow_site_session';
 export const BROWSER_PASS_ALWAYS_OPTION_ID = 'allow_site_always';
-export type BrowserPassOptionId = typeof BROWSER_PASS_SESSION_OPTION_ID | typeof BROWSER_PASS_ALWAYS_OPTION_ID;
+/** D-341 slice A — beside them on an ask from the owner's own chat: turn the switch beside Send on. */
+export const BROWSER_PASS_REQUEST_OPTION_ID = 'allow_request';
+export type BrowserPassOptionId = typeof BROWSER_PASS_SESSION_OPTION_ID | typeof BROWSER_PASS_ALWAYS_OPTION_ID
+  | typeof BROWSER_PASS_REQUEST_OPTION_ID;
 export const isBrowserPassOptionId = (id: unknown): id is BrowserPassOptionId =>
-  id === BROWSER_PASS_SESSION_OPTION_ID || id === BROWSER_PASS_ALWAYS_OPTION_ID;
-export const browserPassKindOfOption = (id: BrowserPassOptionId): BrowserPassKind =>
-  id === BROWSER_PASS_ALWAYS_OPTION_ID ? 'always' : 'session';
+  id === BROWSER_PASS_SESSION_OPTION_ID || id === BROWSER_PASS_ALWAYS_OPTION_ID || id === BROWSER_PASS_REQUEST_OPTION_ID;
+/** What an answer gives: a pass on the site, of its kind, or (D-341 slice A) the conversation's
+ *  request approved ahead. */
+export type BrowserPassAnswerKind = BrowserPassKind | 'request';
+export const browserPassKindOfOption = (id: BrowserPassOptionId): BrowserPassAnswerKind =>
+  id === BROWSER_PASS_ALWAYS_OPTION_ID ? 'always' : id === BROWSER_PASS_REQUEST_OPTION_ID ? 'request' : 'session';
 
 /** A host short enough for a button: Slack refuses a button text over 75 characters, and it
  *  refuses the whole message with it. */
 const buttonHost = (host: string): string => (host.length > 45 ? `${host.slice(0, 44)}…` : host);
 
-export const browserPassOptions = (host: string): ReadonlyArray<{ id: BrowserPassOptionId; label: string }> => [
+export const browserPassOptions = (
+  host: string,
+  options: {
+    /** D-341 slice A — offer to stop asking about browser actions in this chat conversation. */
+    readonly request?: boolean;
+  } = {},
+): ReadonlyArray<{ id: BrowserPassOptionId; label: string }> => [
   { id: BROWSER_PASS_SESSION_OPTION_ID, label: `Allow on ${buttonHost(host)} for this session` },
   { id: BROWSER_PASS_ALWAYS_OPTION_ID, label: `Always allow on ${buttonHost(host)}` },
+  ...(options.request === true
+    ? [{ id: BROWSER_PASS_REQUEST_OPTION_ID as BrowserPassOptionId, label: 'Don’t ask about browser actions in this chat' }] : []),
 ];
+
+/** D-341 slice A — whether an ask may offer the conversation's request approved ahead: only the
+ *  owner's own chat in the Recued app has the switch it turns on. */
+export const browserPassOffersRequest = (offer: BrowserPassOffer): boolean =>
+  offer.key.principal.kind === 'owner_chat' && offer.channel_session_id.startsWith('chat:');
 
 /** What a held browser write's answers would mint, as the hold read it: present only when
  *  who, recipe and site are all known. The answer mints exactly this, never a key read again. */

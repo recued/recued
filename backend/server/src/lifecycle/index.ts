@@ -458,6 +458,15 @@ export const createLifecycle = (
       logAudit('signal_received', { signal: reason });
       await configWatcher.reload(reason);
     },
+    // `recued restart` asks a supervised server to restart ITSELF: stopping it
+    // and starting a fresh one from the CLI left a server with no supervisor.
+    onRestart: async (reason) => {
+      logAudit('signal_received', { signal: reason });
+      await lifecycle.requestDrain({ intent: 'restart', reason });
+      const code = supervisor.handoff('restart');
+      if (opts.exit) opts.exit(code);
+      else process.exit(code);
+    },
     onDumpSnapshot: () => {
       log('info', 'lifecycle snapshot', lifecycle.getSnapshot() as unknown as Record<string, unknown>);
     },

@@ -38,6 +38,7 @@ import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
 import { createContractStore } from '../storage/contract-store.js';
+import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
 import {
   composeExecuteDeps,
   type ComposeExecuteDepsDeps,
@@ -80,6 +81,9 @@ const directExecuteDepKeys = [
   // D-321 slice 3 — the run-record half of the Warn-note hand-off. The cli
   // executor holds the other half, and both are built with it, unconditionally.
   'takeUntestedTools',
+  // D-346 A — the up-front program check, built beside the cli executor whose
+  // launch it reads as, unconditionally (the owner's locations only with a store).
+  'programPresence',
 ] as const;
 
 const conditionalExecuteDepKeys = [
@@ -537,6 +541,52 @@ describe('composeExecuteDeps ExecuteHandlerDeps field parity', () => {
     expect(executeDeps.webhookResumeDoor).toBeDefined();
     // No webhooks on this server: nothing is composed.
     expect(composeExecuteDeps(buildDeps({ contractStore })).executeDeps.webhookResumeDoor).toBeUndefined();
+  });
+
+  it('D-341 slice B2 composes the resume authority over the live webhook doors: an approved webhook write resumes', () => {
+    const db = makeDb();
+    const contractStore = createContractStore(db, { now: () => NOW });
+    contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+    const definitions = createContractDefinitionStore(contractStore, { now: () => NOW });
+    const door = definitions.mint({ minted_by: 'test', display_name: 'Webhook door',
+      scope: { channels: ['webhook'], actors: ['anonymous'], ingredient_ids: ['records-notes'] },
+      door_types: ['webhook'], max_risk_without_approval: 'admin' });
+    const { executeDeps } = composeExecuteDeps(buildDeps({
+      contractStore,
+      inboundTokenStore: { getTokenById: vi.fn(() => null) },
+    }));
+    const webhook = (contract_id: string) => ({ execution_source: {
+      channel: 'webhook', actor: 'anonymous', vendor: 'generic', webhook_secret_id: 'whi_1', contract_id,
+    } as const });
+    expect(executeDeps.approvalResumeAuthority?.resolve(webhook(door.contract_id))).toMatchObject({
+      admitted: true, contract_snapshot: { contract_id: door.contract_id, allowed_tools: ['records-notes'] },
+    });
+    definitions.revoke(door.contract_id, 'test');
+    expect(executeDeps.approvalResumeAuthority?.resolve(webhook(door.contract_id)))
+      .toMatchObject({ admitted: false, reason: 'contract_unavailable' });
+  });
+
+  it('D-341 slice B4 composes it over the live reception doors too: an approved form write resumes', () => {
+    const db = makeDb();
+    const contractStore = createContractStore(db, { now: () => NOW });
+    contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+    const definitions = createContractDefinitionStore(contractStore, { now: () => NOW });
+    const door = definitions.mint({ minted_by: 'test', display_name: 'Form door',
+      scope: { channels: ['reception'], actors: ['anonymous'], ingredient_ids: ['records-notes'] },
+      door_types: ['reception'] });
+    const { executeDeps } = composeExecuteDeps(buildDeps({
+      contractStore,
+      inboundTokenStore: { getTokenById: vi.fn(() => null) },
+    }));
+    const form = (contract_id: string) => ({ execution_source: {
+      channel: 'reception', actor: 'anonymous', reception_id: '-ep_1', contract_id,
+    } as const });
+    expect(executeDeps.approvalResumeAuthority?.resolve(form(door.contract_id))).toMatchObject({
+      admitted: true, contract_snapshot: { contract_id: door.contract_id, allowed_tools: ['records-notes'] },
+    });
+    definitions.revoke(door.contract_id, 'test');
+    expect(executeDeps.approvalResumeAuthority?.resolve(form(door.contract_id)))
+      .toMatchObject({ admitted: false, reason: 'contract_unavailable' });
   });
 
   it('includes every conditional-spread field with identity when the matching input is present', () => {

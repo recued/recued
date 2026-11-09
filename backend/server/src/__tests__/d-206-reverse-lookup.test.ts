@@ -257,7 +257,9 @@ describe('D-206 §2.2c — the reverse lookup reports a COMPLETE total', () => {
     expect(e.candidates).toHaveLength(0);
     expect(e.partial).toBe(true);
     const failure = e.partial_failures?.find((f) => f.source === VENDOR);
-    expect(failure?.reason).toMatch(/data\.contact/);
+    // D-346 follow-up (2026-11-08) — an app reads only that it is not available, no grant id.
+    expect(failure?.reason).toMatch(/Reading contacts is not available for this contract/);
+    expect(failure?.reason).not.toMatch(/data\.contact/);
     // ⛔ And NO total — a completeness claim we could not make must not be made.
     expect(e.total).toBe(0);
   });

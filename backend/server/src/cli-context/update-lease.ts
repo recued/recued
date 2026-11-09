@@ -42,6 +42,7 @@ import {
   updateLeasePathFor,
   UpdateLeaseHeldError,
 } from '../update/update-lease.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 /** Shared with the supervisor verbs: 0 go, 10 come back, 20 stop. */
 export const LEASE_TAKEN = 0;
@@ -101,6 +102,8 @@ export async function runUpdateLeaseProfile(options: UpdateLeaseProfileOptions):
       leasePath,
       operation: getArg(options.args, 'operation') ?? 'install',
       currentPid: () => pid,
+      // The CALLER's start, read for `pid`: the installer that will release it.
+      identify: processStartIdentity,
     });
     // ⚠ A RE-ENTRANT LEASE HAS NO TOKEN and owns nothing to release. That is the
     // honest answer to "this caller already holds it": go ahead, release nothing.

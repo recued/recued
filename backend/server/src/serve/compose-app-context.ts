@@ -385,6 +385,8 @@ export interface AppContext extends LlmSubstrate {
   chatStoreRef: ChatStore | undefined;
   /** D-338 — makes a notification to a linked messenger a notice in that chat. */
   chatNoticesRef: import('@recued/notification').RemoteNoticeHook | undefined;
+  /** D-343 slice 4 — the chat's way to open a conversation holding a notice, for Yours' Close the day. */
+  openNoticeConversationRef: ((notice: { title: string; text: string }) => Promise<{ session_id: string; message_id: string }>) | undefined;
   chatConnectionMcpStoreRef: ChatConnectionMcpStore | undefined;
   chatInboundTokenStoreRef: ChatInboundTokenStore | undefined;
   chatOrchestratorRef: ChatOrchestrator | undefined;
@@ -475,6 +477,15 @@ export interface AppContext extends LlmSubstrate {
    *  deps built HERE can reach it late. Null until that wiring runs; the tool
    *  then reports `execution_error` rather than silently doing nothing. */
   situationAccessRef?: { current: import('../situations/access.js').SituationAccess | undefined };
+  /** D-343 slice 1 — the occasions made in Yours, for the chat's `work.update`; set once the
+   *  collection context has composed Yours. */
+  occasionsRef?: { current: import('../chat-tool-handlers.js').ChatOccasions | undefined };
+  /** D-343 slice 1 (ruling 15) — the mail facts, for the chat's `work.update` of one; set once
+   *  the collection context has composed the mail facts. */
+  mailFactsRef?: { current: import('../situations/mail-fact-records.js').MailFactClose | undefined };
+  /** D-343 slice 2 — the owner's closing records, for the chat's `episode.record`; set once the
+   *  collection context has composed the episode store. */
+  closingRecordsRef?: { current: import('../situations/closing-records.js').ClosingRecords | undefined };
   workEntityCrudDepsRef: { current: WorkEntityCrudRpcDeps | null };
   /** Slice 2 — the calendar write dispatchers behind `calendar.create` /
    *  `calendar.update`. Same late-bound shape and same reason: the stack is
@@ -691,6 +702,9 @@ export const composeAppContext = (
   // write executor once the gateway fetch deps exist).
   let workEntityChatResolverRef: WorkEntityResolver | undefined;
   const situationAccessRef: { current: import('../situations/access.js').SituationAccess | undefined } = { current: undefined };
+  const occasionsRef: { current: import('../chat-tool-handlers.js').ChatOccasions | undefined } = { current: undefined };
+  const mailFactsRef: { current: import('../situations/mail-fact-records.js').MailFactClose | undefined } = { current: undefined };
+  const closingRecordsRef: { current: import('../situations/closing-records.js').ClosingRecords | undefined } = { current: undefined };
   const workEntityCrudDepsRef: { current: WorkEntityCrudRpcDeps | null } = { current: null };
   const calendarWriteDepsRef: { current: CalendarWriteDeps | null } = { current: null };
   const workEntityTargetedReadDepsRef: { current: WorkEntityTargetedReadDeps | null } =
@@ -916,6 +930,8 @@ export const composeAppContext = (
   if (db) {
     chatBundle = composeChatOrchestrator({
       db,
+      // D-188 — a plan cannot be approved while the server is paused.
+      ...(serverState !== undefined ? { isServerPaused: () => serverState!.isPaused() } : {}),
       readMailBody: record => cacheBlobs ? materializeMailBody(record, cacheBlobs) : Promise.resolve(record.body_inline ?? null),
       keys,
       eventBus,
@@ -1014,6 +1030,9 @@ export const composeAppContext = (
       getWorkEntityResolver: () => workEntityChatResolverRef,
       getWorkEntityTargetedReadDeps: () => workEntityTargetedReadDepsRef.current ?? undefined,
       getSituationAccess: () => situationAccessRef.current,
+      getOccasions: () => occasionsRef.current,
+      getMailFacts: () => mailFactsRef.current,
+      getClosingRecords: () => closingRecordsRef.current,
       getWorkEntityCrudDeps: () => workEntityCrudDepsRef.current ?? undefined,
       getCalendarWriteDeps: () => calendarWriteDepsRef.current ?? undefined,
       // D-192 P5 edges — `work.read`'s `include_related`. Late-bound for the
@@ -1809,8 +1828,12 @@ export const composeAppContext = (
     annotationDeps,
     annotationStoreRef,
     situationAccessRef,
+    occasionsRef,
+    mailFactsRef,
+    closingRecordsRef,
     chatStoreRef: chatBundle?.chatStore,
     chatNoticesRef: chatBundle?.chatNotices,
+    openNoticeConversationRef: chatBundle?.openNoticeConversation,
     chatConnectionMcpStoreRef: chatBundle?.connectionMcpStore,
     chatInboundTokenStoreRef: chatBundle?.inboundTokenStore,
     chatOrchestratorRef: chatBundle?.orchestrator,

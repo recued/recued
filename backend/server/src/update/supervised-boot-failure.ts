@@ -88,11 +88,11 @@ import { acquireUpdateLease, updateLeasePathFor } from './update-lease.js';
 import {
   createUpdateLedger,
   type UpdateLedgerEntry,
-  type UpdateLedgerKind,
 } from './update-ledger.js';
 import { decideRollback, shouldAutoRevert } from './apply-state-machine.js';
 import { UPDATE_LEDGER_FILE } from './update-ledger.js';
 import { fsyncDir, writeFileAtomicSync } from '../durable-fs.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 /** Exit codes the supervising script reads. Kept small and explicit because a
  *  shell `case` is the only consumer. */
@@ -380,6 +380,7 @@ export const revertStagedRelease = (input: RevertReleaseInput): RevertReleaseOut
     lease = acquireUpdateLease({
       leasePath: updateLeasePathFor(currentPath),
       operation: 'revert',
+      identify: processStartIdentity,
     });
   } catch (err) {
     const holder = (err as { holder?: { pid: number; operation: string } }).holder;
@@ -452,6 +453,23 @@ export const revertStagedRelease = (input: RevertReleaseInput): RevertReleaseOut
       reason: 'the update ledger could not be read, so whether the failed release migrated the '
         + 'database is unknowable — refusing rather than guessing',
       noPreviousBinary: false,
+    };
+  }
+
+  // ⛔⛔ A COMMITTED RELEASE'S SNAPSHOT IS NOT A ROLLBACK POINT. With no release
+  // on trial, the release in use was committed — perhaps weeks ago — and its
+  // pre-migration snapshot predates everything written since. The docker-thin
+  // launcher asks for this revert after three failed boots of ANY cause (a bad
+  // env var, a port clash), and restoring that snapshot erased every write since
+  // the update, with no alert. So without a release on trial a migrated schema
+  // refuses — an operator decides, the launcher halts — and anything else may
+  // swap the binary back but never the database.
+  if (inFlight === null && appliedMigration) {
+    return {
+      status: 'refused',
+      reason: 'no release is on trial, and the release in use migrated the database: restoring its '
+        + 'pre-migration snapshot would erase everything written since it was committed',
+      noPreviousBinary: !existsSync(oldPath),
     };
   }
 
@@ -643,27 +661,13 @@ const readInFlightEntry = (ledgerPath: string): UpdateLedgerEntry | null => {
  *  longer does (it delegates the whole revert to `recued revert-release`), and
  *  leaving the writer there kept dragging `update-ledger` into a bundle that is
  *  supposed to import nothing from the server. */
-const TERMINAL_LEDGER_KINDS: ReadonlySet<UpdateLedgerKind> = new Set<UpdateLedgerKind>([
-  'apply_committed',
-  'apply_reverted',
-  'rolled_back',
-]);
-
 export const recordLedgerRevert = (ledgerPath: string, reason: string, now: number): boolean => {
   try {
     const ledger = createUpdateLedger(ledgerPath);
-    // Find the still-in-flight apply (the last `apply_started` with no later
-    // terminal for the same release) — the same derivation the server uses.
-    const pending: UpdateLedgerEntry[] = [];
-    for (const e of ledger.readAll()) {
-      if (e.kind === 'apply_started') {
-        pending.push(e);
-      } else if (TERMINAL_LEDGER_KINDS.has(e.kind)) {
-        const i = pending.findIndex((p) => p.release_identity === e.release_identity);
-        if (i >= 0) pending.splice(i, 1);
-      }
-    }
-    const inFlight = pending[pending.length - 1];
+    // The still-in-flight apply, by the server's own derivation rather than a copy of
+    // it: that one also knows when the server's schema comparison took a snapshot the
+    // manifest did not ask for, which this terminal has to say too.
+    const inFlight = deriveInFlightEntry(ledger);
     if (!inFlight) return true; // server-side revert already recorded
     ledger.append({
       id: randomUUID(),

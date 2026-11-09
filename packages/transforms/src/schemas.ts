@@ -538,6 +538,12 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
     rows: REQ('array'), time_field: REQ('string'), value_field: REQ('string'),
     window_ms: REQ('number'), now: REQ('number'),
   },
+  // D-339 — the latest value against the median of the window's earlier samples.
+  baseline: {
+    rows: REQ('array'), time_field: REQ('string'), value_field: REQ('string'),
+    window_ms: REQ('number'), min_count: REQ('number'), now: REQ('number'),
+    max_age_ms: OPT('number'), series_fields: OPT('array'),
+  },
   within_distance: {
     place: REQ('object'), rows: REQ('array'), latitude_field: REQ('string'),
     longitude_field: REQ('string'), radius_km: REQ('number'),

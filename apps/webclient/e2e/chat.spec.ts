@@ -33,6 +33,7 @@ const CHAT_AI_UNAVAILABLE = 'data-recued-chat-route-ai-unavailable';
 const CHAT_PLAN_CARD = 'data-recued-chat-route-plan-card';
 const CHAT_PLAN_APPROVE = 'data-recued-chat-route-plan-approve';
 const CHAT_PLAN_CANCEL = 'data-recued-chat-route-plan-cancel';
+const CHAT_PLAN_ALWAYS = 'data-recued-chat-route-plan-always';
 const CHAT_PLAN_CONTINUE = 'data-recued-chat-route-plan-continue';
 const CHAT_PLAN_CONTEXT = 'data-recued-chat-route-plan-context';
 const CHAT_DATA_DIAGNOSIS_ANSWER =
@@ -1986,6 +1987,56 @@ test('a safe-check closure keeps focus on its durable receipt', async ({ page })
   await expect(receipt).toHaveAttribute('role', 'status');
   await expect(receipt).toBeFocused();
 });
+
+for (const width of [280, 1280]) {
+  test('D-341 — a scheduled prompt\'s held write offers "Always allow" on its card at width ' + width, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(HARNESS_URL + '?chat=session#chat/session/chat_1');
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => {
+      window.__app.fireMessage({ type: 'server_event', event: {
+        kind: 'chat.plan_proposed', session_id: 'chat_1', turn_id: 'scheduled-task',
+        plan_id: 'scheduled-task-plan', tool: 'work.create', tier: 1, held: true,
+        args: { kind: 'task', title: 'Water the plants' }, args_hash: 'e2e-plan-hash',
+        always_allow: 'Always allow for this scheduled prompt',
+        always_allow_note: '“Always allow for this scheduled prompt” stops asking about this write when it runs on its'
+          + ' schedule, once a run, until you end it on the scheduled prompt\'s page or under Contracts.',
+        cursor: 1,
+      } });
+      window.__app.fireMessage({ type: 'server_event', event: {
+        kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'scheduled-task',
+        final: { id: 'scheduled-task-message', session_id: 'chat_1', role: 'assistant',
+          content: 'I asked to add the task.', target_server: 'self',
+          picker_at_send: { display_name: 'This server', signature: { server_kind: 'recued', version: 'test', instance_id: 'test' } },
+          model_used: { provider: 'test', model_id: 'fixture' }, contributor: 'model', ts: 1792245600000 },
+        cursor: 2,
+      } });
+    });
+    const card = page.locator('[' + CHAT_PLAN_CARD + '][data-plan-id="scheduled-task-plan"]');
+    const always = card.locator('[' + CHAT_PLAN_ALWAYS + ']');
+    await expect(always).toBeVisible();
+    await expect(always).toHaveText('Always allow for this scheduled prompt');
+    await expect(card.locator('[' + CHAT_PLAN_APPROVE + ']')).toBeVisible();
+    await expect(card.locator('[' + CHAT_PLAN_CANCEL + ']')).toBeVisible();
+    // What it lets happen, under the buttons, in the ask's words; never "carry on in Chat".
+    await expect(card.locator('.chat-plan-card-action-note')).toContainText('stops asking about this write');
+    await expect(card).not.toContainText('carry on in Chat');
+    // Its words fit the card: no button runs past it, and the page does not scroll sideways.
+    const fits = await card.evaluate((el, attr) => {
+      const box = el.getBoundingClientRect();
+      return [...el.querySelectorAll('[' + attr + '] ~ button, [' + attr + ']')].every((button) => {
+        const b = button.getBoundingClientRect();
+        return b.left >= box.left - 0.5 && b.right <= box.right + 0.5;
+      });
+    }, CHAT_PLAN_ALWAYS);
+    expect(fits).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await always.click();
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('chat.plan.approve.always_allow'))).toBe(1);
+    await expect(card).toHaveAttribute('data-status', 'approved');
+    await expect(card.locator('[' + CHAT_PLAN_ALWAYS + ']')).toHaveCount(0);
+  });
+}
 
 for (const width of [280, 1280]) {
   test('Chat shows the reviewed Calendar state before approval at width ' + width, async ({ page }) => {

@@ -84,6 +84,7 @@ import {
   rebindServerBundleForLocalBoot,
 } from '../database-encryption.js';
 import { createInstanceLock } from '../lifecycle/instance-lock.js';
+import { pidWasReused } from '../lifecycle/process-identity.js';
 import { openDatabase } from '../open-database.js';
 import { assertArchiveDatabaseSchema, migrateDatabaseSchema } from '../database-schema.js';
 import { FILE_NAMES, type ArchiveManifest } from './archive-format.js';
@@ -1054,7 +1055,7 @@ export const applyRestore = async (
   // ignore it and proceed.
   const lock = createInstanceLock({ lockPath: join(dataPath, SERVER_LOCK_FILE) });
   const holder = lock.inspect();
-  if (holder && isProcessAlive(holder.pid) && !force) {
+  if (holder && isProcessAlive(holder.pid) && !pidWasReused(holder.pid, holder.proc_start) && !force) {
     throw new Error(
       `ARCHIVE_RESTORE_SERVER_LIVE: server appears to be running ` +
         `(pid ${holder.pid}, port ${holder.bind_port}). Stop it first, or pass --force.`,

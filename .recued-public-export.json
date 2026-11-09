@@ -1,16 +1,17 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "98e8f78f66890abe895a1e64e79e23731011e736",
-    "tree": "d71dc15f4ff3250bb201bf79dec2252c5d76ebe8",
-    "committed_at": "2026-11-05T01:50:11-08:00"
+    "commit": "ea452e15b60648e081e9a9eb4a603704193fdcae",
+    "tree": "53bd06bbfc0cec0c0f197c133f64a5057e867d76",
+    "committed_at": "2026-11-09T09:52:33-08:00"
   },
-  "export_manifest_sha256": "e76011e3247f36f1bcc891178789056793bffd75b58cb782e2c9506457b7d892",
-  "version": "26.11.5",
+  "export_manifest_sha256": "97f72f29969d9fa0655d8805534930af2aa5e1f0e5cf62f545463f34af005e2c",
+  "version": "26.11.9",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
-    "apps/webclient"
+    "apps/webclient",
+    "apps/bridge"
   ],
   "omitted_paths": [
     "apps/webclient/e2e/paired",
@@ -51,7 +52,6 @@
     "backend/server/scripts/version-date.mjs",
     "backend/server/src/__tests__/chat-doc-index-parity.test.ts",
     "backend/server/src/__tests__/d-148-p10-cloud-narrowing.test.ts",
-    "backend/server/src/__tests__/d-148-p11-extension-webapp-retirement.test.ts",
     "backend/server/src/__tests__/d-149-phase-10-deployment-integration.test.ts",
     "backend/server/src/__tests__/d-178-release-publish-channel-paths.test.ts",
     "backend/server/src/__tests__/d-178-release-publish-signing-gate.test.ts",
@@ -66,19 +66,21 @@
     "backend/server/src/__tests__/release-r2-s3.test.ts",
     "backend/server/src/dev",
     "packages/contracts/src/__tests__/connection-signing.test.ts",
-    "packages/contracts/src/__tests__/d-148-phase-1-role-boundary.test.ts",
     "packages/contracts/src/__tests__/d-149-phase-11-reception-docs-currency.test.ts",
     "packages/crypto/src/__tests__/hmac.test.ts",
     "packages/ingredient-authoring/src/__tests__/d-192-api-pack-authoring-guide.test.ts",
     "packages/middleware-recued/prompt-cache/scripts/fts-prefetch-probe.mjs",
     "packages/middleware-recued/prompt-cache/src/__tests__/ner-corpus-eval.report.test.ts",
-    "packages/recipes/src/__tests__/qualify-recipes-output.test.ts"
+    "packages/recipes/src/__tests__/qualify-recipes-output.test.ts",
+    "apps/bridge/store-submission",
+    "apps/bridge/scripts/build-store-submission.mjs",
+    "apps/bridge/src/__tests__/manifest-public-pages.test.ts"
   ],
   "omitted_private_coupled_tests": {
     "paths": [
+      "apps/bridge/src/__tests__/d-169-phase-0-slice-1-bundler.test.ts",
       "apps/webclient/e2e/live-update-path.spec.ts",
       "apps/webclient/e2e/mail-work.spec.ts",
-      "apps/webclient/src/__tests__/d-148-i15-no-smart-redirect.test.ts",
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
       "apps/webclient/src/__tests__/d-282-b6-bulk-action.test.ts",
       "apps/webclient/src/__tests__/d-282-unprompted-run-corpus.test.ts",
@@ -90,7 +92,6 @@
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
       "apps/webclient/src/__tests__/settings-connect-device-readability.test.ts",
       "apps/webclient/src/reception/quote-signoff-payment.test.ts",
-      "apps/webclient/src/storage/token-aad-migration-bridge.test.ts",
       "backend/server/src/__tests__/a-pack-brings-the-packs-its-recipes-call.test.ts",
       "backend/server/src/__tests__/allow-session-send-fixes-recipient.test.ts",
       "backend/server/src/__tests__/approval-workflow.test.ts",
@@ -98,11 +99,6 @@
       "backend/server/src/__tests__/audit-exempt-records-read.test.ts",
       "backend/server/src/__tests__/bills-pack-live.test.ts",
       "backend/server/src/__tests__/bookings-pack-live.test.ts",
-      "backend/server/src/__tests__/bridge-dom-idempotency.test.ts",
-      "backend/server/src/__tests__/bridge-page-capture-browser.test.ts",
-      "backend/server/src/__tests__/bridge-page-fields-browser.test.ts",
-      "backend/server/src/__tests__/bridge-page-inspect-browser.test.ts",
-      "backend/server/src/__tests__/broadcast-kind-reachability.test.ts",
       "backend/server/src/__tests__/browser-toolkit-browser.test.ts",
       "backend/server/src/__tests__/browser-toolkit-pack.test.ts",
       "backend/server/src/__tests__/build-externals-declared.test.ts",
@@ -154,9 +150,9 @@
       "backend/server/src/__tests__/customer-refund-workflow.test.ts",
       "backend/server/src/__tests__/customer-refunds.test.ts",
       "backend/server/src/__tests__/customer-signoff-recovery.test.ts",
-      "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
       "backend/server/src/__tests__/d-145-phase-10-foundation-pack-pre-install.test.ts",
+      "backend/server/src/__tests__/d-148-p11-extension-webapp-retirement.test.ts",
       "backend/server/src/__tests__/d-149-phase-3-reception-rpc-handler.test.ts",
       "backend/server/src/__tests__/d-151-reception-config-template-rpc.test.ts",
       "backend/server/src/__tests__/d-165-operation-group-grant.test.ts",
@@ -171,7 +167,6 @@
       "backend/server/src/__tests__/d-173-p4-scheduling-dispatch-e2e.test.ts",
       "backend/server/src/__tests__/d-173-reception-core-packs.test.ts",
       "backend/server/src/__tests__/d-173-reception-inbox-e2e.test.ts",
-      "backend/server/src/__tests__/d-175-disconnect-announcer.test.ts",
       "backend/server/src/__tests__/d-175-handle-self-heal-capstone-e2e.test.ts",
       "backend/server/src/__tests__/d-175-p5-binding-exchange-e2e.test.ts",
       "backend/server/src/__tests__/d-175-pro-convenience-server-half-e2e.test.ts",
@@ -245,7 +240,6 @@
       "backend/server/src/__tests__/d-254-record-kind.test.ts",
       "backend/server/src/__tests__/d-259-installed-manifest-boot-check.test.ts",
       "backend/server/src/__tests__/d-259-pack-reconciliation.test.ts",
-      "backend/server/src/__tests__/d-261-browser-fixture.ts",
       "backend/server/src/__tests__/d-261-service.test.ts",
       "backend/server/src/__tests__/d-272-one-listen-site.ratchet.test.ts",
       "backend/server/src/__tests__/d-282-b6-bulk-accept-drive.test.ts",
@@ -289,7 +283,9 @@
       "backend/server/src/__tests__/d-320-shipped-recipes-name-no-connection.test.ts",
       "backend/server/src/__tests__/d-320-sign-ins.test.ts",
       "backend/server/src/__tests__/d-320-slot-settings.test.ts",
+      "backend/server/src/__tests__/d-321-packs-tool-status.test.ts",
       "backend/server/src/__tests__/d-321-recipe-run-version-check.test.ts",
+      "backend/server/src/__tests__/d-321-run-needs.test.ts",
       "backend/server/src/__tests__/d-321-run-untested-tools.test.ts",
       "backend/server/src/__tests__/d-321-tool-version-update-review.test.ts",
       "backend/server/src/__tests__/d-324-reminders-live.test.ts",
@@ -302,10 +298,16 @@
       "backend/server/src/__tests__/d-325-travel-documents.test.ts",
       "backend/server/src/__tests__/d-325-yours.test.ts",
       "backend/server/src/__tests__/d-333-kitchen-pack-edit.test.ts",
+      "backend/server/src/__tests__/d-335-reads-side-by-side.test.ts",
       "backend/server/src/__tests__/d-336-contact-write-fields.test.ts",
       "backend/server/src/__tests__/d-336-crm-named-in-part.test.ts",
       "backend/server/src/__tests__/d-336-held-record-labels.test.ts",
       "backend/server/src/__tests__/d-338-salesforce-optional-columns-run.test.ts",
+      "backend/server/src/__tests__/d-339-body-signals.test.ts",
+      "backend/server/src/__tests__/d-341-neutral-write-preapproval.test.ts",
+      "backend/server/src/__tests__/d-343-mail-fact-close.test.ts",
+      "backend/server/src/__tests__/d-346-refused-before-the-ask.test.ts",
+      "backend/server/src/__tests__/d-346-run-missing-programs.test.ts",
       "backend/server/src/__tests__/dependency-manifest.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
@@ -342,6 +344,7 @@
       "backend/server/src/__tests__/home-assistant-camera-alert-webhook-capstone.test.ts",
       "backend/server/src/__tests__/home-assistant-pack-semi-live.test.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
+      "backend/server/src/__tests__/http-toolkit-pack.test.ts",
       "backend/server/src/__tests__/hubspot-write-wire-body.test.ts",
       "backend/server/src/__tests__/install-names-the-packs-it-needs.test.ts",
       "backend/server/src/__tests__/install-sh-local-feed.test.ts",
@@ -384,6 +387,7 @@
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
       "backend/server/src/__tests__/pack-install-checks-every-pack-first.test.ts",
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
+      "backend/server/src/__tests__/pack-reconnect-worklist.test.ts",
       "backend/server/src/__tests__/pack-reparse-corpus.test.ts",
       "backend/server/src/__tests__/pack-resolve-bundled-records.test.ts",
       "backend/server/src/__tests__/pack-resource-access.test.ts",
@@ -396,7 +400,6 @@
       "backend/server/src/__tests__/pick-resolution-seal.test.ts",
       "backend/server/src/__tests__/pii-trace-classifier.test.ts",
       "backend/server/src/__tests__/pii-trace-corpus.test.ts",
-      "backend/server/src/__tests__/private-host-predicate-agreement.test.ts",
       "backend/server/src/__tests__/provider-mock-lemonsqueezy-lane-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-pack-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-paddle-lane-semi-live.test.ts",
@@ -433,6 +436,7 @@
       "backend/server/src/__tests__/recued-version-floor-corpus.test.ts",
       "backend/server/src/__tests__/release-build-config-validation.test.ts",
       "backend/server/src/__tests__/release-manifest-per-channel-path.test.ts",
+      "backend/server/src/__tests__/release-schema-attestation.test.ts",
       "backend/server/src/__tests__/rental-book-business-workflow.test.ts",
       "backend/server/src/__tests__/requests-by-email-pack-live.test.ts",
       "backend/server/src/__tests__/revived-enrichment-producer-writes.test.ts",
@@ -667,6 +671,7 @@
       "packages/ingredient-authoring/src/__tests__/d-259-cli-corpus-ratchet.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-282-spends-per-call-shipped-pack.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-321-cli-tool-version.test.ts",
+      "packages/ingredient-authoring/src/__tests__/d-346-existing-paths-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/decision-log-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/deeptutor-daily-mastery-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/derivable-request-schema-ratchet.test.ts",
@@ -887,10 +892,9 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "bd7d776ace491c3fd0c8c83b0e7b3ae778486a089cd6a5a8bf50af4957488455",
+    "sha256": "0edf65408d014a58441ac38af35ad3a3deb699c27349b407e50643deaaadb5dd",
     "roots": [
       "apps/auth-worker",
-      "apps/bridge",
       "apps/dashboard",
       "apps/marketplace",
       "backend/api",
@@ -904,15 +908,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1137,
+    "files_changed": 1149,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1066
+        "comments_rewritten": 1073
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 133
+        "comments_rewritten": 139
       },
       {
         "id": "internal-handover-note",
@@ -999,6 +1003,7 @@
     }
   ],
   "workspaces": [
+    "apps/bridge",
     "apps/webclient",
     "backend/server",
     "packages/approvals",
@@ -1035,7 +1040,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 8190,
-    "sha256": "decd0fd81ff6a19c1b39f651e969e2f1768176675f83e732fbf5d2fc476f4eca"
+    "file_count": 8540,
+    "sha256": "f596a6d7db295ede748bd8aa363509d04f315d083bf962427da3f15a8c579a92"
   }
 }

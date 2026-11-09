@@ -8,6 +8,7 @@ import type { BootTrace } from './cli/boot-trace.js';
 import { copyDatabaseForSnapshot, openDatabase } from './open-database.js';
 import { DATABASE_SCHEMA_VERSION, migrateDatabaseSchema, readDatabaseSchema } from './database-schema.js';
 import { createInstanceLock } from './lifecycle/instance-lock.js';
+import { pidWasReused } from './lifecycle/process-identity.js';
 import { SERVER_VERSION } from './server-version.js';
 import { deriveInFlightEntry } from './update/apply-orchestrator.js';
 import {
@@ -43,6 +44,8 @@ export const openApplicationDatabase = async (options: {
   if (holder && holder.pid !== process.pid) {
     try { process.kill(holder.pid, 0); anotherServerIsLive = true; }
     catch (error) { anotherServerIsLive = (error as NodeJS.ErrnoException).code === 'EPERM'; }
+    // A lock left by an unclean exit can name a reused PID: not a server.
+    if (anotherServerIsLive && pidWasReused(holder.pid, holder.proc_start)) anotherServerIsLive = false;
   }
   if (anotherServerIsLive) {
     bootTrace?.markDbOpenAttempted('configured-db-path');

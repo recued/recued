@@ -3,6 +3,7 @@ import { LLMError } from '../types.js';
 import { callProvider } from './anthropic.js';
 import { hasNonTextPart, joinTextParts, toOpenAIContent } from './content-parts.js';
 import { joinApiBase } from '../base-url.js';
+import { openAiThinkingSwitch } from '../thinking-switch.js';
 
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com';
 
@@ -53,6 +54,9 @@ export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapte
         content: renderOpenAIMessageContent(m),
       })),
     };
+
+    // D-344 — the owner's thinking setting, as this endpoint's switch.
+    if (options.thinking !== undefined) Object.assign(body, openAiThinkingSwitch(slot, options.thinking) ?? {});
 
     const response = await callProvider(
       url,

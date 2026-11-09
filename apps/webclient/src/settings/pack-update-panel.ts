@@ -237,5 +237,9 @@ export const createPackUpdatePanel = (options: { document: Document; packSlug: s
     hide() { controller?.abort(); acknowledged = false; const ack = root.querySelector<HTMLInputElement>('[data-pack-update-ack]'); if (ack) ack.checked = false; },
     setInstalling(value: boolean) { if (installing !== value) { installing = value; render(); } },
     invalidate() { acknowledged = false; if (current) current.qualification = null; render(); options.changed(); },
+    /** D-346 C — try a staging that failed again: the pack it was refused for
+     *  ("Install every dependency separately first") may be installed now. The same
+     *  request, which a failed staging never recorded. Nothing when none failed. */
+    retryStage() { if (pendingStage !== undefined && !busy && !installing && !disposed) void stage(); },
     dispose() { disposed = true; controller?.abort(); for (const panel of suitePanels.values()) panel.dispose(); if (expiry) clearTimeout(expiry); root.remove(); } };
 };

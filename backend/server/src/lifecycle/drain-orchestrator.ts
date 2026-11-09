@@ -78,7 +78,15 @@ export interface DrainWiring {
   /** Poll interval for `await_inflight` (ms). Defaults to 50. */
   inflightPollMs?: number;
   log?: DrainLogger;
+  /** The wall clock, for `started_at` only. */
   now?: () => number;
+  /** The clock the drain's budget and duration are measured on. Default
+   *  `performance.now()`, which stops while the machine sleeps.
+   *
+   *  ⛔ THE BUDGET WAS ON THE WALL CLOCK, which jumps by the time slept. A lid
+   *  closed mid-drain left every remaining step 50 ms on waking, so they were
+   *  aborted and an update's restart was abandoned as `drain_incomplete`. */
+  elapsedNow?: () => number;
 }
 
 export interface DrainOptions {
@@ -119,6 +127,7 @@ export const createDrainOrchestrator = (
 ): DrainOrchestrator => {
   const log = wiring.log ?? noopLog;
   const now = wiring.now ?? (() => Date.now());
+  const elapsedNow = wiring.elapsedNow ?? (() => performance.now());
   const defaultTimeoutMs =
     wiring.defaultTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
   const stepTimeoutMs =
@@ -134,12 +143,12 @@ export const createDrainOrchestrator = (
   const waitForNoInFlight = (signal: AbortSignal, limitMs?: number): Promise<void> => {
     if (getInFlightCount() === 0 || signal.aborted) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const deadline = limitMs === undefined ? undefined : now() + limitMs;
+      const deadline = limitMs === undefined ? undefined : elapsedNow() + limitMs;
       const tick = () => {
         if (
           signal.aborted
           || getInFlightCount() === 0
-          || (deadline !== undefined && now() >= deadline)
+          || (deadline !== undefined && elapsedNow() >= deadline)
         ) {
           cleanup();
           resolve();
@@ -255,6 +264,7 @@ export const createDrainOrchestrator = (
   const execute = async (opts: DrainOptions): Promise<DrainResult> => {
     // Initialise observable state.
     const startedAt = now();
+    const budgetFrom = elapsedNow();
     state.active = true;
     state.started_at = startedAt;
     state.reason = opts.reason;
@@ -264,7 +274,7 @@ export const createDrainOrchestrator = (
     state.aborted_steps.length = 0;
 
     const totalBudget = opts.timeoutMs ?? defaultTimeoutMs;
-    const deadline = startedAt + totalBudget;
+    const deadline = budgetFrom + totalBudget;
 
     log('info', 'drain started', {
       intent: opts.intent,
@@ -276,7 +286,7 @@ export const createDrainOrchestrator = (
       const fn = effectiveStep(name);
       if (!fn) continue;            // unwired step — skip silently
       state.current_step = name;
-      const remainingMs = Math.max(50, deadline - now());
+      const remainingMs = Math.max(50, deadline - elapsedNow());
       const outcome = await runStep(name, fn, remainingMs);
       if (outcome === 'completed') {
         state.completed_steps.push(name);
@@ -285,7 +295,7 @@ export const createDrainOrchestrator = (
       }
     }
 
-    const finishedAt = now();
+    const finishedAt = elapsedNow();
     state.active = false;
     state.current_step = undefined;
 
@@ -294,7 +304,7 @@ export const createDrainOrchestrator = (
       reason: opts.reason,
       completed: [...state.completed_steps],
       aborted: [...state.aborted_steps],
-      duration_ms: finishedAt - startedAt,
+      duration_ms: finishedAt - budgetFrom,
     };
 
     log('info', 'drain complete', {

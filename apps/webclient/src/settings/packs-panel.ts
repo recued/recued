@@ -359,6 +359,7 @@ import {
 } from '../packs/pack-app-model.js';
 import {
   mountPackAppView,
+  type PackAppAutomationDishes,
   type PackAppExecuteCaller,
   type PackAppRecordRefSearchCaller,
   type PackAppViewMount,
@@ -372,6 +373,7 @@ import {
   getSeededConnectionRequirements,
   isPackServiceKind,
   packCopyFor,
+  parseDependsOn,
 } from '@recued/contracts';
 import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import type { BadgeTone } from '@recued/ui-shared/primitives';
@@ -409,6 +411,7 @@ import {
   GRANT_OVERLAP_ALSO_VIA_PREFIX,
   PACKS_DIALOG_ATTR,
   PACKS_DIALOG_CANCEL_BTN_ATTR,
+  PACKS_DIALOG_DEPENDENCY_INSTALL_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
   PACKS_DIALOG_PERMISSION_ATTR,
@@ -419,8 +422,8 @@ import {
   installRefusalFromPreview,
   missingPacksFromFailure,
   missingPacksToInstallFirst,
+  neededDependencyAccess,
   renderPacksInstallDialog,
-  resolveDependencyAccess,
   resolveInstallDialogAccess,
   resolveInstallDialogAudience,
 } from './packs-install-dialog.js';
@@ -519,6 +522,8 @@ import {
   type PackDisclosureBlock,
 } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { serializeShellRoute } from '../shell/route.js';
+import { usesMissingLabel } from '../discover/pack-discovery.js';
 import type { RunPageContext } from '../shell/run-page-context.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -641,6 +646,13 @@ export const PACKS_ROW_COLLISION_ATTR = 'data-recued-packs-row-collision';
 // `about`). The Identity section also carries the author's repo link when the
 // manifest declares one.
 export const PACKS_DETAIL_SECTION_ATTR = 'data-recued-packs-detail-section';
+/** D-321 S7 — the "Needs update" line at the top of a pack's page. */
+export const PACKS_DETAIL_NEEDS_UPDATE_ATTR = 'data-recued-packs-needs-update';
+/** D-321 W2 — the "Packs it uses" section, each used pack's line (its slug),
+ *  and that line's state: `not_installed`, `needs` or `ready`. */
+export const PACKS_DETAIL_USES_ATTR = 'data-recued-packs-uses';
+export const PACKS_DETAIL_USES_PACK_ATTR = 'data-recued-packs-uses-pack';
+export const PACKS_DETAIL_USES_STATE_ATTR = 'data-recued-packs-uses-state';
 /** D-333 — Edit in Kitchen, on a pack made there (value = the pack's slug). */
 export const PACKS_DETAIL_KITCHEN_EDIT_ATTR = 'data-recued-packs-detail-kitchen-edit';
 /** D-333 — Edit a copy in Kitchen, on another author's pack (value = the pack's slug). */
@@ -922,6 +934,9 @@ export interface MountPacksPanelOptions {
   /** Runs a view. Absent ⇒ the Use tab still lists what the pack does but says
    *  running is unavailable, rather than rendering dead tabs. */
   runRecipeExecute?: PackAppExecuteCaller;
+  /** D-321 W1 — `dishes.list` / `dishes.defaults` / `dishes.create`: each of
+   *  Use's "Runs on its own" with its state, and "Switch on all". */
+  runAutomationDishes?: PackAppAutomationDishes;
   /** Opens the shared Run | Schedule modal for an operation. Owned by the HOST
    *  so the one-modal-at-a-time rule holds across the whole route rather than
    *  per panel. Absent ⇒ the actions bar is omitted. */
@@ -994,6 +1009,18 @@ export interface MountPacksPanelOptions {
   /** D-321 — `packs.tool_status` and the owner's Refuse / Warn writes, the
    *  DETAIL tab's Programs block. Absent ⇒ the block is not shown. */
   runPackPrograms?: PackProgramsCallers;
+  /** D-321 S7 — `packs.unrunnable`: the packs that no longer work on this server
+   *  until updated. The pack's page says so at the top, as its list badge does.
+   *  Absent, or a failed read: nothing is said. */
+  runUnrunnable?: () => Promise<{ findings: ReadonlyArray<{ slug: string }> }>;
+  /** D-321 W2 — what an installed pack needs, in its list badges' words (the
+   *  Packs page's "Needs attention"), so "Packs it uses" says each used pack's
+   *  state as the list does. Absent, or a pack with none: nothing to say. */
+  packNeedsOf?: (pack_slug: string) => readonly string[] | undefined;
+  /** D-346 — the packs an installed pack uses that are not installed, by name.
+   *  "Packs it uses" says them as that pack's own need: a pack using it calls its
+   *  operations, which do not wait on them. Absent: none. */
+  packMissingOf?: (pack_slug: string) => readonly string[] | undefined;
   /** D-196 R6 — Seller tiers used by the install audience's expanded
    *  per-tier checklist. The broad all-customers checkbox remains available
    *  when this optional read is absent. */
@@ -1054,6 +1081,8 @@ export interface PacksPanelMount {
   /** Re-run the Use tab's open view for an external refresh signal. Pack task
    *  results refresh themselves when the owner returns. No-op when unmounted. */
   refreshAppView(): void;
+  /** D-321 W2 — the packs' needs changed: redraw "Packs it uses". */
+  packNeedsChanged(): void;
   /** The Use tab's open view, or null when it isn't mounted. Test surface. */
   getActiveViewId(): string | null;
   /** Currently-rendered packs in display order. Empty when state !=
@@ -1122,9 +1151,9 @@ export interface PacksPanelMount {
    *  open, an install is in flight, the pack has no grantable model, or the
    *  tier isn't offered for this pack. */
   clickAccessOption(tier: InstallAccessTier): void;
-  /** D-310 — test-only: pick an Access tier for one pack the active dialog's
-   *  install brings in. Same guards as the radio. */
-  clickDependencyAccessOption(packSlug: string, tier: InstallAccessTier): void;
+  /** D-346 C — test-only: press one brought-in pack's own Install… in the active
+   *  dialog. Same guards as the button. */
+  clickInstallDependency(packSlug: string): void;
   /** D-310 — what the active dialog's install will send for the packs it brings
    *  in (`dependency_install_scopes`), or null when it sends none. */
   getDialogDependencyScopes(): ReadonlyArray<PackDependencyInstallScope> | null;
@@ -1253,6 +1282,18 @@ const COPY = {
   // R22.1 detail re-layout — section headings + Identity/Access copy.
   detail_access_label: 'Access',
   detail_declares_label: 'Declares',
+  detail_needs_label: 'What this pack needs',
+  // D-321 S7 — the list badge's words, on the pack's own page.
+  needs_update_heading: 'Needs update',
+  needs_update_note: 'This Pack no longer works on this server. Nothing it does will work until you update it.',
+  // D-321 W2 — the packs a pack's actions call, each in its own state.
+  uses_heading: 'Packs it uses',
+  uses_note: 'The packs this pack’s actions call. One that is not ready stops the actions waiting on it.',
+  uses_not_installed: 'Not installed',
+  uses_ready: 'Ready',
+  uses_waiting: 'Waiting on it:',
+  /** D-346 — a used pack that is itself missing a pack: its own actions wait, not these. */
+  uses_own_need: (names: string) => `Its own actions need ${names}`,
   detail_about_label: 'About',
   detail_repo_label: 'Repository ↗',
   detail_resolving_label: 'Loading pack…',
@@ -1393,9 +1434,11 @@ export const mountPacksPanel = (
   /** D-315 §5.2 — the owner's keep choice for each template a recipe brings
    *  that meets one already on: choice key → which stays on. Absent ⇒ the recipe's. */
   const dialogMailTemplateKeep = new Map<string, Map<string, 'recipe' | 'existing'>>();
-  /** D-310 — the owner's Access pick for each pack the open dialog's install
-   *  brings in: pack slug → (brought-in pack slug → tier). Absent ⇒ Read only. */
-  const dialogDependencyAccess = new Map<string, Map<string, InstallAccessTier>>();
+  /** D-346 C — the Install…s in progress, innermost last: for each, the pack whose
+   *  dialog it left (`from`) and the pack it opened (`to`). `from`'s dialog opens
+   *  again when `to`'s install finishes or its dialog is cancelled; any other
+   *  dialog ending forgets them all (`returnFromDependency`). */
+  const dependencyReturns: Array<{ from: string; to: string }> = [];
   /** D-194 2b-2 — whether the Connect section's "Use a different connection" list is
    *  expanded for a slug. Cleared on dialog close alongside the picks. */
   const dialogConnectExpanded = new Set<string>();
@@ -1426,7 +1469,6 @@ export const mountPacksPanel = (
         ...(chosen !== undefined ? { chosen_connection: chosen } : {}),
         also_unticked: [...dialogAlsoUnticked.get(slug) ?? []], also_connections: also,
         webhook_picks: [...dialogWebhookPicks.get(slug) ?? []], template_keep: [...dialogMailTemplateKeep.get(slug) ?? []],
-        dependency_access: [...dialogDependencyAccess.get(slug) ?? []],
       } });
     } catch (error) {
       permissionRepairStarting = false;
@@ -1446,7 +1488,6 @@ export const mountPacksPanel = (
     dialogAlsoUnticked.delete(slug);
     dialogWebhookPicks.delete(slug);
     dialogMailTemplateKeep.delete(slug);
-    dialogDependencyAccess.delete(slug);
   };
   /** D-247 D15 — the server-resolved install preview, cached against the
    *  MANIFEST OBJECT it was derived from rather than the slug alone. A detail
@@ -1972,10 +2013,29 @@ export const mountPacksPanel = (
     document: doc,
     ...(opts.runPackConnections ? { callers: opts.runPackConnections } : {}),
     onChange: () => transitionTo(state, true),
+    // D-321 P4 — each listed connection's health and scopes, from the list the
+    // readiness rows load beside `packs.list`.
+    connectionViews: () => connectionsReadiness.connections(),
   });
 
   // D-321 — the Programs block on DETAIL. Loads per pack on first sight;
   // forgotten (and so checked again) with every packs.list load.
+  // D-321 S7 — the packs that need an update before anything they do works. A
+  // failed read keeps what was shown: "could not check" is not "nothing wrong".
+  let unrunnable: ReadonlySet<string> = new Set();
+  let unrunnableRead = 0;
+  const refreshUnrunnable = async (): Promise<void> => {
+    if (opts.runUnrunnable === undefined) return;
+    const mine = ++unrunnableRead;
+    try {
+      const next = new Set((await opts.runUnrunnable()).findings.map((finding) => finding.slug));
+      if (mine !== unrunnableRead || disposed) return;
+      const changed = next.size !== unrunnable.size || [...next].some((slug) => !unrunnable.has(slug));
+      unrunnable = next;
+      if (changed) transitionTo(state, true);
+    } catch { /* keep the last-known set */ }
+  };
+
   const packPrograms: PackProgramsController = createPackProgramsController({
     document: doc,
     ...(opts.runPackPrograms ? { callers: opts.runPackPrograms } : {}),
@@ -2323,6 +2383,9 @@ export const mountPacksPanel = (
         // list + the access matrix in parallel so the ready-render below
         // includes the daemon controls + the readiness block + the ACCESS
         // panel in one paint.
+        // D-321 S7 — read beside the list, never awaited by it: a slow or
+        // unanswered read must not hold the pack's page.
+        void refreshUnrunnable();
         const [result] = await Promise.all([
           opts.runList(),
           supervision.refresh(),
@@ -2483,6 +2546,8 @@ export const mountPacksPanel = (
     pendingInstallPromise = null;
     pendingInstallDialogFocus = { kind: 'opener', slug };
     if (!disposed) { render(); if (wasHistory) wrapper.querySelector<HTMLElement>('[data-pack-release-history]')?.focus(); }
+    // D-346 C — a dialog an Install… opened, cancelled: back to the one it left.
+    if (!disposed && !wasHistory) returnFromDependency(slug);
   };
 
   // R22 list→detail — open a pack's DETAIL view (`slug`) or return to the LIST
@@ -2698,36 +2763,73 @@ export const mountPacksPanel = (
   const grantAudienceFor = (slug: string): InstallAudienceSelection =>
     resolveInstallDialogAudience(dialogGrantAudience.get(slug) ?? updateStartAudience(slug));
 
-  /** D-310 — pick an Access tier for one pack the open dialog's install brings
-   *  in. Only a pack the list offers a choice for, and only a tier it offers. */
-  const setDependencyAccessInternal = (packSlug: string, tier: InstallAccessTier): void => {
-    if (dialogOpenFor === null || installing) return;
+  /** D-346 C (ruling 1) — install one pack the open dialog's install brings in
+   *  first, in its own dialog with its own Access choice. The dialog left opens
+   *  again when that install finishes, or when its dialog is cancelled
+   *  (`returnFromDependency`), and asks the server afresh, so the pack now
+   *  installed leaves its list. Only a pack the list shows an Install… for. */
+  const installDependencySeparately = (packSlug: string): void => {
+    if (dialogOpenFor === null || installing || deleting) return;
     const pack = findPackBySlug(dialogOpenFor);
     if (pack === undefined || pack.manifest === undefined) return;
-    const target = dependencyPacksToChoose(installPreviewFor(pack.slug, pack.manifest))
-      .find((dependency) => dependency.pack_slug === packSlug);
-    if (target === undefined || !target.access_options.includes(tier)) return;
-    const picks = dialogDependencyAccess.get(dialogOpenFor) ?? new Map<string, InstallAccessTier>();
-    picks.set(packSlug, tier);
-    dialogDependencyAccess.set(dialogOpenFor, picks);
-    render();
+    const listed = (installPreviewFor(pack.slug, pack.manifest)?.dependency_packs ?? [])
+      .some((dependency) => dependency.pack_slug === packSlug && dependency.updates !== true);
+    const target = findPackBySlug(packSlug);
+    if (!listed || target === undefined || target.installed) return;
+    // A dialog draws inside its own pack's page: go there, then open it.
+    const from = dialogOpenFor;
+    selectPack(packSlug);
+    if (selectedSlug !== packSlug) return;
+    openDialog(packSlug);
+    if (dialogOpenFor === packSlug) dependencyReturns.push({ from, to: packSlug });
+  };
+  /** D-346 C — `ended`'s dialog closed (installed, or cancelled): when an Install…
+   *  opened it, back to the dialog that Install… left, asked afresh. True when it
+   *  went back.
+   *
+   *  ⛔ A STACK, NOT ONE SLOT. In a chain (A needs B, B needs C) an Install… for B
+   *  from A's dialog, then one for C from B's, must come back to B after C and on to
+   *  A after B; one slot came back to B and forgot A. Any other dialog ending
+   *  forgets the whole way back. When the dialog gone back to is an update whose
+   *  staging had failed (it named the pack just installed), the staging is tried
+   *  again: the owner installed what it asked for. */
+  const returnFromDependency = (ended: string): boolean => {
+    const pending = dependencyReturns.pop();
+    if (pending === undefined || pending.to !== ended || disposed) {
+      dependencyReturns.length = 0;
+      return false;
+    }
+    selectPack(pending.from);
+    if (selectedSlug !== pending.from) {
+      dependencyReturns.length = 0;
+      return false;
+    }
+    dialogInstallPreview.delete(pending.from);
+    dialogVendorPermissionsReviewed.delete(pending.from);
+    openDialog(pending.from);
+    if (dialogOpenFor !== pending.from) {
+      dependencyReturns.length = 0;
+      return false;
+    }
+    updateReviews.get(pending.from)?.panel.retryStage();
+    return true;
   };
 
   /** D-310 — what the install sends for the packs it brings in: each one the list
-   *  offers a choice for, at the owner's pick (else Read only), shared with the
-   *  people this pack is. `undefined` when the preview listed none, which is also
-   *  what a server that predates D-310 produces: it would ignore the field. */
+   *  offers a choice for, shared with the people this pack is. D-346 C — at what
+   *  the actions need from it (`neededDependencyAccess`): Install all. `undefined`
+   *  when the preview listed none, which is also what a server that predates D-310
+   *  produces: it would ignore the field. */
   const dependencyInstallScopesFor = (
     pack: PackListEntry,
   ): PackDependencyInstallScope[] | undefined => {
     if (pack.manifest === undefined) return undefined;
     const choose = dependencyPacksToChoose(installPreviewFor(pack.slug, pack.manifest));
     if (choose.length === 0) return undefined;
-    const picks = dialogDependencyAccess.get(pack.slug);
     return choose.map((dependency) => ({
       pack_slug: dependency.pack_slug,
       install_scope: {
-        access: resolveDependencyAccess(picks?.get(dependency.pack_slug), dependency),
+        access: neededDependencyAccess(dependency),
         audience: grantAudienceFor(pack.slug),
       },
     }));
@@ -3050,6 +3152,8 @@ export const mountPacksPanel = (
     disclosure = null;
     render();
     const promise = (async () => {
+      /** D-346 C — set once this install succeeded (see `finally`). */
+      let installedNow: string | null = null;
       try {
         // Route by path: added pack → installBySlug(slug); loaded pack →
         // install(manifest). Both share the grant handling + result shape.
@@ -3153,6 +3257,7 @@ export const mountPacksPanel = (
               }
             : null;
         await refreshRows({ refreshRecipes: true });
+        installedNow = submittingSlug;
       } catch (err) {
         if (disposed) return;
         updateReview?.invalidate();
@@ -3160,7 +3265,9 @@ export const mountPacksPanel = (
       } finally {
         installing = false;
         pendingInstallPromise = null;
-        if (!disposed) render();
+        // D-346 C — a pack installed first, from another's Install…: back to the
+        // dialog it left, which asks again and no longer lists it.
+        if (!disposed && !(installedNow !== null && returnFromDependency(installedNow))) render();
       }
     })();
     pendingInstallPromise = promise;
@@ -3548,8 +3655,11 @@ export const mountPacksPanel = (
       updateReviewFor(pack,{ source,manifestHash: installPreview.update_tests.manifest_hash,historyOnly: false },installPreview.update_tests.managed);
     }
     const updateReview = updateReviews.get(pack.slug)?.panel; updateReview?.setInstalling(installing);
+    // D-321 C1 — the programs it runs, as the pack page's Programs block read them.
+    const programs = packPrograms.toolsFor(pack.slug);
     return renderPacksInstallDialog({
       ...(updateReview ? { updateTests: { element: updateReview.element,blocked: updateReview.blocked() } } : {}),
+      ...(programs !== null && programs.length > 0 ? { programs } : {}),
       document: doc,
       pack,
       ...(installPreview !== undefined ? { installPreview } : {}),
@@ -3573,10 +3683,7 @@ export const mountPacksPanel = (
       ...(opts.onPermissionRepair ? { onReconnectVendorPermissions: reconnectVendorPermissions } : {}),
       ...(permissionRepairNotice ? { vendorPermissionRepairNotice: permissionRepairNotice } : {}),
       ...(dependenciesLoadingFor(pack) ? { permissionsLoading: true } : {}),
-      ...(dialogDependencyAccess.has(pack.slug)
-        ? { dependencyAccessPicks: dialogDependencyAccess.get(pack.slug)! }
-        : {}),
-      onPickDependencyAccess: (packSlug, tier) => setDependencyAccessInternal(packSlug, tier),
+      onInstallDependency: (packSlug) => installDependencySeparately(packSlug),
       collision,
       grantOverlap,
       selection: dialogPermissions.get(pack.slug) ?? new Set<string>(),
@@ -4254,6 +4361,54 @@ export const mountPacksPanel = (
 
     renderRecipesLoadState();
 
+    // ── NEEDS — what this pack needs before its actions run, by its type, above
+    // the tabs so it shows on Use as well as under Manage (D-321; the scope's
+    // § 6 step 2, the owner's ruling of 2026-11-07). A cli pack's Programs, a
+    // connection pack's Connections: no shipped pack needs both (0 of 1,076),
+    // and each block renders nothing where it does not apply, so a pack shows
+    // only its own. They lived under Manage → Detail, where an owner running
+    // the pack from Use never saw that its program was missing.
+    const needs = makeDetailSection('needs', null);
+    needs.setAttribute('aria-label', COPY.detail_needs_label);
+    let needsShown = 0;
+    // D-321 P4 — ONE Connections block, keyed by the pack's own list: it is what
+    // the pack's runs use. The readiness rows matched any connection of the
+    // service, so they said "connected" beside an Access tab saying "This pack has
+    // no connection yet." The list's block (with its Add, Make default and
+    // Remove) is the one now, here, and the Access tab no longer repeats it.
+    // Before install there is no list: the rows say whether the owner has a
+    // connection the install could use, as they did.
+    const installed = pack.installed || pack.installed_any_version === true;
+    const connectionsBlock = (installed ? packConnections.renderForPack(pack) : null)
+      ?? connectionsReadiness.renderForPack(pack);
+    // D-321 S7 — a pack that no longer works here says so first, as its badge does.
+    if (installed && unrunnable.has(pack.slug)) {
+      const update = doc.createElement('section');
+      update.setAttribute(PACKS_DETAIL_NEEDS_UPDATE_ATTR, '');
+      const heading = doc.createElement('h4');
+      heading.className = 'pp-heading';
+      heading.textContent = COPY.needs_update_heading;
+      update.appendChild(heading);
+      const note = doc.createElement('p');
+      note.className = 'packs-detail-note';
+      note.textContent = COPY.needs_update_note;
+      update.appendChild(note);
+      needs.appendChild(update);
+      needsShown += 1;
+    }
+    for (const block of [connectionsBlock, packPrograms.renderForPack(pack)]) {
+      if (block === null) continue;
+      needs.appendChild(block);
+      needsShown += 1;
+    }
+    // D-321 W2 — the one section that can sit beside Programs or Connection.
+    const uses = installed ? renderPackUses(pack) : null;
+    if (uses !== null) {
+      needs.appendChild(uses);
+      needsShown += 1;
+    }
+    if (needsShown > 0) wrapper.appendChild(needs);
+
     // ── Tabs ─────────────────────────────────────────────────────────
     // A pack that gives you something to DO leads with it; its control-plane
     // surfaces group behind Manage. A capability pack has no Use tab, so its
@@ -4462,6 +4617,11 @@ export const mountPacksPanel = (
           ...(opts.runRecipeExecute !== undefined
             ? { execute: opts.runRecipeExecute }
             : {}),
+          ...(opts.runAutomationDishes !== undefined
+            ? { automationDishes: opts.runAutomationDishes }
+            : {}),
+          // D-321 W1 — a used pack's name, for its automations' "From …".
+          packNameOf: (slug: string) => packs.find((entry) => entry.slug === slug)?.name,
           ...(opts.openRunModal !== undefined
             ? { openRunModal: opts.openRunModal }
             : {}),
@@ -4579,10 +4739,8 @@ export const mountPacksPanel = (
       // axis of the one grant matrix). Falls back when access isn't wired or
       // the pack ships no catalog operations.
       const access = makeDetailSection('access', COPY.detail_access_label);
-      // D-320 — which of the owner's connections the pack signs in with, first:
-      // the accounts it acts in, before who may call it.
-      const connectionsBlock = packConnections.renderForPack(pack);
-      if (connectionsBlock !== null) access.appendChild(connectionsBlock);
+      // D-320's Connections block sits above the tabs now (D-321 P4: one block,
+      // the pack's list), so this tab is who may call the pack.
       const accessPanel = packAccess.renderForPack(pack);
       if (accessPanel !== null) {
         access.appendChild(accessPanel);
@@ -4642,14 +4800,7 @@ export const mountPacksPanel = (
         note.textContent = COPY.detail_saved_views_note;
         declares.appendChild(note);
       }
-      // Connections readiness — per declared connection, enrolled + scope
-      // coverage (null when the pack binds no connection).
-      const connSection = connectionsReadiness.renderForPack(pack);
-      if (connSection) declares.appendChild(connSection);
-      // D-321 — Programs: the programs the pack runs on the server (null when
-      // it runs none, or the server does not offer the read).
-      const programsSection = packPrograms.renderForPack(pack);
-      if (programsSection) declares.appendChild(programsSection);
+      // Connections readiness and Programs moved above the tabs ("NEEDS").
       // Supervision — the pack's supervised-daemon controls (null when it
       // ships no `detached.supervision` op or no set caller).
       const supSection = supervision.renderForPack(pack);
@@ -4761,6 +4912,100 @@ export const mountPacksPanel = (
     appendUnavailableHistory(selectedSlug);
   };
 
+  /** D-321 W2 — "Packs it uses": the packs an installed pack's actions call
+   *  (its recipes' `depends_on`, its manifest's `dependencies`), each in its own
+   *  state as the list says it: not installed (`missing_packs`, the rule a run
+   *  is refused with), what it needs (its badges), or ready. For one that is
+   *  not ready, the actions waiting on it. Null when it uses none. */
+  const renderPackUses = (pack: PackListEntry): HTMLElement | null => {
+    const recipeNames = new Map((installedRecipes ?? []).map((entry) => [
+      entry.recipe_id,
+      typeof entry.recipe.metadata?.name === 'string' && entry.recipe.metadata.name.trim() !== ''
+        ? entry.recipe.metadata.name : entry.recipe_id,
+    ]));
+    const used = new Map<string, Set<string>>();
+    const use = (slug: string, recipe_id?: string): void => {
+      if (slug === pack.slug) return;
+      const waiting = used.get(slug) ?? new Set<string>();
+      if (recipe_id !== undefined) waiting.add(recipe_id);
+      used.set(slug, waiting);
+    };
+    for (const dependency of pack.manifest?.dependencies ?? []) {
+      if (dependency.type === 'pack') use(dependency.slug);
+    }
+    for (const entry of installedRecipes ?? []) {
+      if (entry.pack_slug !== pack.slug) continue;
+      for (const ref of entry.recipe.depends_on ?? []) {
+        const parsed = parseDependsOn(ref);
+        if (parsed !== null) use(parsed.pack, entry.recipe_id);
+      }
+    }
+    const missing = new Set<string>();
+    for (const entry of pack.missing_packs ?? []) {
+      const slug = parseDependsOn(entry.ref)?.pack ?? entry.ref;
+      missing.add(slug);
+      for (const recipe_id of entry.recipe_ids) use(slug, recipe_id);
+    }
+    if (used.size === 0) return null;
+
+    const section = doc.createElement('section');
+    section.setAttribute(PACKS_DETAIL_USES_ATTR, '');
+    const heading = doc.createElement('h4');
+    heading.className = 'pp-heading';
+    heading.textContent = COPY.uses_heading;
+    section.appendChild(heading);
+    const note = doc.createElement('p');
+    note.className = 'packs-detail-note';
+    note.textContent = COPY.uses_note;
+    section.appendChild(note);
+    const list = doc.createElement('ul');
+    list.className = 'packs-uses-list';
+    for (const [slug, waiting] of used) {
+      const row = packs.find((entry) => entry.slug === slug);
+      const notInstalled = missing.has(slug)
+        || (row !== undefined && !row.installed && row.installed_any_version !== true);
+      const labels = notInstalled ? [] : [...(opts.packNeedsOf?.(slug) ?? [])];
+      // D-346 — a pack this one uses that is itself missing a pack: its own actions
+      // that call it wait, not this pack's, which call its operations (no shipped
+      // recipe runs another's recipe). Said as its own need, never as "Waiting on it".
+      // Found asking about chains (A needs B, B needs C): A's page said A's actions
+      // waited on B for C.
+      const ownMissing = notInstalled ? [] : [...(opts.packMissingOf?.(slug) ?? [])];
+      const ownLabel = ownMissing.length > 0 ? usesMissingLabel(ownMissing) : undefined;
+      const blocking = labels.filter((label) => label !== ownLabel);
+      const state = notInstalled ? 'not_installed' : blocking.length > 0 ? 'needs' : 'ready';
+      const item = doc.createElement('li');
+      item.setAttribute(PACKS_DETAIL_USES_PACK_ATTR, slug);
+      item.setAttribute(PACKS_DETAIL_USES_STATE_ATTR, state);
+      const link = doc.createElement('a');
+      link.className = 'rx-link';
+      link.setAttribute('href', serializeShellRoute('packs', slug));
+      link.textContent = row?.name ?? slug;
+      item.appendChild(link);
+      const words = doc.createElement('span');
+      words.className = `packs-uses-state packs-uses-state--${state}`;
+      words.textContent = ` — ${state === 'not_installed' ? COPY.uses_not_installed : state === 'needs' ? blocking.join(' · ') : COPY.uses_ready}`;
+      item.appendChild(words);
+      if (state !== 'ready' && waiting.size > 0) {
+        const actions = doc.createElement('span');
+        actions.className = 'packs-uses-waiting';
+        actions.textContent = `. ${COPY.uses_waiting} ${[...waiting].map((id) => recipeNames.get(id) ?? id).join(', ')}.`;
+        item.appendChild(actions);
+      }
+      // Its own need goes last: set before "Waiting on it", it read as the thing
+      // this pack's actions wait on (found live, 2026-11-07).
+      if (ownLabel !== undefined) {
+        const own = doc.createElement('span');
+        own.className = 'packs-uses-own';
+        own.textContent = `${state !== 'ready' && waiting.size > 0 ? ' ' : '. '}${COPY.uses_own_need(ownMissing.join(', '))}.`;
+        item.appendChild(own);
+      }
+      list.appendChild(item);
+    }
+    section.appendChild(list);
+    return section;
+  };
+
   const render = (): void => {
     if (disposed) return;
     // A removal review is re-attached below, which drops the focus inside it,
@@ -4792,7 +5037,6 @@ export const mountPacksPanel = (
         dialogAlsoUnticked.set(slug, new Set(draft.also_unticked));
         dialogWebhookPicks.set(slug, new Map(draft.webhook_picks));
         dialogMailTemplateKeep.set(slug, new Map(draft.template_keep));
-        dialogDependencyAccess.set(slug, new Map(draft.dependency_access));
         dialogInstallPreview.delete(slug); dialogVendorPermissionsReviewed.delete(slug);
         permissionRepairNotice = repair.verified ? `The read-only access check passed for ${repair.name}. Review the refreshed vendor permissions before installing.`
           + (repair.reconnect_collections?.length ? ' Review connected Mail and Calendar accounts: ' + repair.reconnect_collections.map(use => use.label).join(', ') + '.' : '') : undefined;
@@ -4977,6 +5221,9 @@ export const mountPacksPanel = (
   return {
     getState: () => state,
     refreshAppView: () => appView?.refresh(),
+    packNeedsChanged: () => {
+      if (!disposed) render();
+    },
     getRunPageContext: () => !disposed && selectedSlug === appViewSlug
       && (!detailTabPinned || activeDetailTab === 'use')
       ? appView?.getRunPageContext() ?? null : null,
@@ -5130,7 +5377,10 @@ export const mountPacksPanel = (
     },
     togglePermission: (permission) => togglePermissionInternal(permission),
     clickAccessOption: (tier) => setGrantAccessInternal(tier),
-    clickDependencyAccessOption: (packSlug, tier) => setDependencyAccessInternal(packSlug, tier),
+    clickInstallDependency: (packSlug) => {
+      const b = findBtn(PACKS_DIALOG_DEPENDENCY_INSTALL_ATTR, packSlug);
+      if (b && !b.disabled) b.click();
+    },
     getDialogDependencyScopes: () => {
       if (dialogOpenFor === null) return null;
       const pack = findPackBySlug(dialogOpenFor);
@@ -5358,6 +5608,17 @@ export const PACKS_PANEL_STYLES = `
   border-top: 1px solid var(--border);
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-section > * { min-width: 0; max-width: 100%; }
+/* NEEDS opens on its block: the block's own separator would only double the card's edge. */
+[${PACKS_PANEL_ATTR}] .packs-detail-section[${PACKS_DETAIL_SECTION_ATTR}="needs"] > :first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+/* …and closes on it: the card's padding is the space below (D-321 P4, the Access
+   tab's Connections block kept a margin for the panel under it). */
+[${PACKS_PANEL_ATTR}] .packs-detail-section[${PACKS_DETAIL_SECTION_ATTR}="needs"] > :last-child {
+  margin-bottom: 0;
+}
 [${PACKS_PANEL_ATTR}] .packs-detail-section[${PACKS_DETAIL_SECTION_ATTR}="identity"] {
   border-top: none;
   padding-top: 0;
@@ -5391,6 +5652,14 @@ export const PACKS_PANEL_STYLES = `
   overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-detail-facts,
+/* D-321 W2 — "Packs it uses". */
+[${PACKS_PANEL_ATTR}] .packs-uses-list {
+  display: grid; gap: 6px; margin: 8px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.45;
+}
+[${PACKS_PANEL_ATTR}] .packs-uses-list li { overflow-wrap: anywhere; }
+[${PACKS_PANEL_ATTR}] .packs-uses-state { color: var(--fg-muted); }
+[${PACKS_PANEL_ATTR}] :is(.packs-uses-state--not_installed, .packs-uses-state--needs) { color: var(--danger); }
+[${PACKS_PANEL_ATTR}] .packs-uses-waiting { color: var(--fg-muted); }
 [${PACKS_PANEL_ATTR}] .packs-detail-counts,
 [${PACKS_PANEL_ATTR}] .packs-detail-tags,
 [${PACKS_PANEL_ATTR}] .packs-detail-note {
@@ -5706,23 +5975,10 @@ export const PACKS_PANEL_STYLES = `
   font-size: 12px;
   line-height: 1.45;
 }
-[${PACKS_PANEL_ATTR}] .packs-dialog-dep-access {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-}
-[${PACKS_PANEL_ATTR}] .packs-dialog-dep-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-[${PACKS_PANEL_ATTR}] .packs-dialog-dep-option input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--accent);
+/* D-346 C — a pack's own Install…, at its own width under its lines (the row is a
+   grid, which would stretch it across). */
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-install {
+  justify-self: start;
 }
 /* D-295 webhooks and D-315 mail templates share these: each choice on its own
    row, its hints quieter than the question. */

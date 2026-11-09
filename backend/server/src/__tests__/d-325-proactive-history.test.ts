@@ -25,6 +25,9 @@ describe('D-325 durable episodes, occasions and recall evidence', () => {
     const { history, proposals } = fixture();
     expect(() => history.saveEpisode({ ...draft(), storage_reason: 'harvest' as never }, 1000)).toThrow('reason');
     expect(() => history.saveEpisode({ ...draft(), when: { from: 100, to: 2000 } }, 1000)).toThrow('future');
+    // D-343 slice 2 — a closing record is done or skipped, nothing else.
+    expect(() => history.saveEpisode({ ...draft(), outcome: 'partly' as never }, 1000)).toThrow('outcome');
+    expect(history.saveEpisode({ ...draft(), outcome: 'skipped' }, 1000).outcome).toBe('skipped'); history.deleteEpisode(history.episodes()[0]!.id, 1000, false);
     const episode = history.saveEpisode(draft(), 1000); expect(history.episodes()).toHaveLength(1); expect(history.suppressed(episode)).toBe(false);
     proposals.saveSuppression({ kind: 'person', value: 'ana' }, 1001); expect(history.suppressed(episode)).toBe(true);
     const id = proposals.suppressions()[0]!.id; proposals.deleteSuppression(id); expect(history.suppressed(episode)).toBe(false);

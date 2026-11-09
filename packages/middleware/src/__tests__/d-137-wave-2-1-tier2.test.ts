@@ -285,3 +285,57 @@ describe('D-137 Wave 2.1 — Tier 2 requires_kinds derivation', () => {
     ]);
   });
 });
+
+// D-347 slice C follow-up (2026-11-08) — a lookup by name read every installed recipe: 780 entries at
+// 140 to 430 ms a projection, 36 projections in one two-message conversation, 15 of them after its answer.
+describe('Tier 2 lookup by name, read alone (`recipeNamed`)', () => {
+  const entries: Tier2RecipeEntry[] = [
+    { recipe_id: 'draft-followup', publisher_id: 'recued-core', recipe: baseRecipe({ recipe_id: 'draft-followup' }) },
+    { recipe_id: 'hidden-one', publisher_id: 'recued-core', recipe: baseRecipe({ recipe_id: 'hidden-one', chat_exposed: false }) },
+    { recipe_id: 'a/b', publisher_id: 'mary', recipe: baseRecipe({ recipe_id: 'a/b' }) },
+  ];
+  /** A source that reads one entry, counting its full listings. */
+  const counted = () => {
+    let listings = 0;
+    return {
+      source: {
+        listRecipes: () => { listings += 1; return entries; },
+        recipeNamed: (name: string) => entries.find((e) => `${e.publisher_id}/${e.recipe_id}` === name) ?? null,
+      },
+      listings: () => listings,
+    };
+  };
+
+  it('finds the entry a full projection holds, a hidden one as hidden, without listing every recipe', () => {
+    const { source, listings } = counted();
+    const alone = createInternalToolRegistry({ tier2Source: source });
+    const projected = createInternalToolRegistry({ tier2Source: { listRecipes: () => entries } });
+    for (const name of ['recued-core/draft-followup', 'mary/a/b', 'recued-core/hidden-one', 'recued-core/ghost', 'no-slash']) {
+      expect(alone.getByName(name)).toEqual(projected.getByName(name));
+    }
+    expect(alone.getByName('recued-core/draft-followup')?.tier).toBe(2);
+    expect(alone.getByName('mary/a/b')?.name).toBe('mary/a/b');
+    expect(alone.getByName('recued-core/hidden-one')).toBeNull();
+    expect(listings()).toBe(0);
+  });
+
+  it('dispatch reads the one entry too, and a miss is still unknown_tool', async () => {
+    const { source, listings } = counted();
+    const calls: string[] = [];
+    const registry = createInternalToolRegistry({ tier2Source: source,
+      tier2Dispatch: async (toolName) => { calls.push(toolName); return { ok: true, result: {} }; } });
+    expect((await registry.dispatch('mary/a/b', {}, ctxInternal())).ok).toBe(true);
+    const miss = await registry.dispatch('mary/ghost', {}, ctxInternal());
+    expect(miss.ok).toBe(false);
+    if (!miss.ok) expect(miss.reason).toBe('unknown_tool');
+    expect(calls).toEqual(['mary/a/b']);
+    expect(listings()).toBe(0);
+  });
+
+  it('a listing still lists every exposed recipe, from one listing', () => {
+    const { source, listings } = counted();
+    const registry = createInternalToolRegistry({ tier2Source: source });
+    expect(registry.listByTier(2).map((e) => e.name)).toEqual(['mary/a/b', 'recued-core/draft-followup']);
+    expect(listings()).toBe(1);
+  });
+});

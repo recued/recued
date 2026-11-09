@@ -1,5 +1,6 @@
 import type { ChatQueuedTurn, ChatTurnAcceptance, ChatTurnQueueSnapshot, ChatWithdrawnDraft } from '@recued/contracts';
 import { readAssetChatMessage } from './asset-context.js';
+import { isServerPausedNow, onServerPauseChange } from '../shell/server-pause-signal.js';
 
 export const CHAT_QUEUE_STYLES = `
 [data-recued-chat-turn-queue] { display:grid; gap:8px; margin:8px 0; font-size:.875rem; }
@@ -13,6 +14,7 @@ export const CHAT_QUEUE_STYLES = `
 [data-recued-chat-turn-queue] button:disabled,
 [data-recued-chat-turn-queue] button[aria-disabled="true"] { opacity:.6; cursor:wait; }
 [data-recued-chat-turn-queue] [role="alert"] { margin:0; }
+[data-recued-chat-turn-queue] [data-chat-queue-paused] { margin:0; color:var(--fg-muted,#888); }
 `;
 
 export interface ChatQueueClient {
@@ -47,6 +49,9 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
   const actions = new Map<string, QueueAction>();
   let selected: string | null = null;
   let disposed = false;
+  // D-188 — while the server is paused no turn starts (a lockdown): the strip says a queued
+  // message waits for Resume, and redraws when the pause turns on or off.
+  const stopPauseListener = onServerPauseChange(() => { if (!disposed && selected !== null) changed(); });
   const refresh = (session: string): Promise<boolean> => {
     if (disposed) return Promise.resolve(false);
     const existing = loading.get(session);
@@ -149,13 +154,14 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
     // the one way to get a second answer to the same words.
     const shown = pending.length > 0 ? pending : needsRetry(latest) ? [latest] : [];
     if (shown.length === 0 && !errors.has(session)) return null;
+    const paused = isServerPausedNow();
     for (const turn of shown) {
       const key = actionKey(session, snapshot.generation, turn.turn_id);
       const row = doc.createElement('div');
       row.setAttribute('data-chat-queued-turn', turn.turn_id);
       row.setAttribute('data-chat-turn-status', turn.status);
       const text = doc.createElement('span');
-      const labels = { queued: 'Queued', running: 'Working', cancelling: 'Stopping after the current operation',
+      const labels = { queued: paused ? 'Waits for Resume' : 'Queued', running: 'Working', cancelling: 'Stopping after the current operation',
         completed: 'Already answered', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted by a restart', withdrawn: 'Withdrawn' };
       const preview = readAssetChatMessage(turn.message)?.question ?? turn.message;
       text.textContent = `${labels[turn.status]}: ${preview.slice(0, 160)}${preview.length > 160 ? '…' : ''}`;
@@ -201,6 +207,12 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
         row.appendChild(withdraw);
       }
       root.appendChild(row);
+    }
+    if (paused && shown.some(turn => turn.status === 'queued')) {
+      const note = doc.createElement('p');
+      note.setAttribute('data-chat-queue-paused', '');
+      note.textContent = 'The server is paused. A queued message is sent when you resume it.';
+      root.appendChild(note);
     }
     const repeat = doc.createElement('button');
     // Named for what it does to THIS turn: one that did not finish is tried
@@ -252,5 +264,5 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
       if (!snapshots.has(session)) await (loading.get(session) ?? refresh(session));
       return snapshots.get(session)?.generation;
     },
-    dispose: () => { disposed = true; } };
+    dispose: () => { disposed = true; stopPauseListener(); } };
 };

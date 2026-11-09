@@ -839,7 +839,7 @@ describe('packs detail ACCESS section integration', () => {
     expect(text).not.toContain('Open Contracts');
   });
 
-  it('D-320 — shows the Connections block above the Access panel when its calls are wired', async () => {
+  it('D-321 P4 — the one Connections block is the pack\'s list, above the tabs, and the Access tab no longer repeats it', async () => {
     const doc = makeFakeDocument();
     const host = makeFakeElement('div');
     const h = makeCallers({ contracts: [door('door-a')] });
@@ -868,18 +868,21 @@ describe('packs detail ACCESS section integration', () => {
     });
     await mount.whenLoaded();
     mount.clickSelectPack('stripe-pack');
-    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
     await flush();
 
-    const access = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')!;
-    const block = findByAttr(access, PACK_CONNECTIONS_ATTR);
+    // What the pack needs, above the tabs: its own list, whatever tab is open.
+    const needs = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'needs')!;
+    const block = findByAttr(needs, PACK_CONNECTIONS_ATTR);
     expect(block).not.toBeNull();
     expect(collectTextContent(block!)).toContain('Stripe live');
-    // First in the section: the accounts the pack acts in, before who may call it.
-    const order = access.children.map((c) =>
-      c.hasAttribute(PACK_CONNECTIONS_ATTR) ? 'connections' : c.hasAttribute(PACK_ACCESS_ATTR) ? 'access' : 'other');
-    expect(order.indexOf('connections')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('connections')).toBeLessThan(order.indexOf('access'));
+
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
+    await flush();
+    const access = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')!;
+    expect(findByAttr(access, PACK_CONNECTIONS_ATTR)).toBeNull();
+    expect(findByAttr(access, PACK_ACCESS_ATTR)).not.toBeNull();
+    // Still one block, still the list's, on the Access tab too.
+    expect(findByAttr(findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'needs')!, PACK_CONNECTIONS_ATTR)).not.toBeNull();
   });
 
   it('keeps the placeholder when the access callers are absent', async () => {

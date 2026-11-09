@@ -1438,7 +1438,21 @@ export const RECEPTION_INTAKE_RECIPE_PAIR_SECTION_STYLES = `
   gap: 3px;
 }
 .reception-door-consent-ops code { word-break: break-all; }
+/* D-341 slice B4 — "What it may do without asking", the card the route puts under the pairing:
+   the pairing's column, its cards' title. */
+.reception-pair-preapprovals-host {
+  max-width: 820px;
+  margin: 20px auto 0;
+}
+.reception-pair-preapprovals > summary {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.reception-pair-preapprovals[open] > summary { margin-bottom: 10px; }
 @media (max-width: 640px) {
+  .reception-pair-preapprovals-host { margin-top: 14px; }
   .reception-pair-head { flex-direction: column; gap: 10px; }
   .reception-pair-binding > div { grid-template-columns: 1fr; gap: 2px; }
   .reception-pair-config-grid { grid-template-columns: 1fr; }

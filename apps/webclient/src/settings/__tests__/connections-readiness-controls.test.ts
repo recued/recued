@@ -8,8 +8,11 @@ import { describe, expect, it } from 'vitest';
 import type { ConnectionView, PackListEntry } from '@recued/contracts';
 
 import {
+  connectionNeedsFromSignIns,
   createConnectionsReadinessController,
+  rejectedConnectionSlots,
   resolveSlotStatus,
+  unsetConnectionSlots,
   CONNECTIONS_READINESS_SECTION_ATTR,
   CONNECTIONS_READINESS_ROW_ATTR,
   CONNECTIONS_READINESS_STATUS_ATTR,
@@ -98,6 +101,22 @@ const packWith = (ingredients: unknown[], operations: unknown[]): PackListEntry 
     },
   }) as unknown as PackListEntry;
 
+describe('unsetConnectionSlots — what the pack list badge counts (D-321)', () => {
+  it('counts every connection a list row signs in to that nothing backs, an API-key one too', () => {
+    // A `packs.list` row: no manifest, but its requirements and scopes.
+    const row = {
+      connection_requirements: [{ vendor: 'exa' }, { vendor: 'hubspot' }],
+      required_scopes_by_connection: { hubspot: ['crm.read'] },
+    } as unknown as Pick<PackListEntry, 'connection_requirements' | 'required_scopes_by_connection'>;
+    expect(unsetConnectionSlots(row, [])).toEqual(['exa', 'hubspot']);
+    // An API-key connection backs `exa` with no scopes to check.
+    expect(unsetConnectionSlots(row, [conn('exa', undefined)])).toEqual(['hubspot']);
+    expect(unsetConnectionSlots(row, [conn('exa', undefined), conn('hubspot', ['crm.read'])])).toEqual([]);
+    // Unknown is not missing: no connection list counts none.
+    expect(unsetConnectionSlots(row, null)).toEqual([]);
+  });
+});
+
 describe('resolveSlotStatus (vendor-match + reduce)', () => {
   it('not_set_up when no api connection carries the vendor', () => {
     expect(resolveSlotStatus('hubspot', ['s'], [])).toEqual({ status: 'not_set_up' });
@@ -162,6 +181,94 @@ describe('resolveSlotStatus (vendor-match + reduce)', () => {
   it('resolves the vendor from subtype when config.vendor is absent', () => {
     const c = { name: 'hs', kind: 'api', display_name: 'HS', subtype: 'hubspot', granted_scopes: ['a'] } as ConnectionView;
     expect(resolveSlotStatus('hubspot', ['a'], [c])).toEqual({ status: 'covered', label: 'HS' });
+  });
+});
+
+/** D-321 P3 — the page said "connected" while the service turned down every call.
+ *  `collection.connection.list` stamps each view's `health`; a run's own call
+ *  writes it, and a failure stands until something succeeds. */
+describe('a sign-in the service turned down (D-321 P3)', () => {
+  const rejected = (vendor: string, extra: Partial<ConnectionView> = {}) =>
+    conn(vendor, undefined, { health: { status: 'auth_failed', last_probed_at: 1 }, ...extra });
+
+  it('a slot whose every connection was turned down is rejected, naming the one to reconnect', () => {
+    expect(resolveSlotStatus('exa', [], [rejected('exa', { name: 'exa-key', display_name: 'Exa key' })]))
+      .toEqual({ status: 'rejected', label: 'Exa key', name: 'exa-key' });
+    // Scopes do not make it usable.
+    expect(resolveSlotStatus('hubspot', ['crm.read'], [rejected('hubspot', { granted_scopes: ['crm.read'] })]).status)
+      .toBe('rejected');
+  });
+
+  it('one that works still backs the slot; only a turned-down sign-in counts, never "unreachable" or an aged "ok"', () => {
+    expect(resolveSlotStatus('exa', [], [rejected('exa'), conn('exa', undefined, { name: 'exa-team' })]))
+      .toEqual({ status: 'covered', label: 'exa account' });
+    for (const status of ['unreachable', 'unknown', 'ok'] as const) {
+      expect(resolveSlotStatus('exa', [], [conn('exa', undefined, { health: { status } })]).status).toBe('covered');
+    }
+  });
+
+  it('the pack list counts it apart from a connection never set up', () => {
+    const row = {
+      connection_requirements: [{ vendor: 'exa' }, { vendor: 'hubspot' }],
+      required_scopes_by_connection: {},
+    } as unknown as Pick<PackListEntry, 'connection_requirements' | 'required_scopes_by_connection'>;
+    expect(rejectedConnectionSlots(row, [rejected('exa')])).toEqual(['exa']);
+    expect(unsetConnectionSlots(row, [rejected('exa')])).toEqual(['hubspot']);
+    expect(rejectedConnectionSlots(row, null)).toEqual([]);
+  });
+
+  it("renders it as not accepted, with Reconnect to that connection's editor", async () => {
+    const ctrl = createConnectionsReadinessController({
+      document: makeFakeDocument() as unknown as Document,
+      runConnectionList: () => Promise.resolve({ connections: [rejected('exa', { name: 'exa-key' })] }),
+    });
+    await ctrl.refresh();
+    const section = ctrl.renderForPack(packWith(
+      [httpIngredient('exa-catalog', 'exa')],
+      [op('search', 'exa-catalog')],
+    )) as unknown as FakeElement;
+    const row = findByAttr(section, CONNECTIONS_READINESS_ROW_ATTR, 'exa')!;
+    expect(row.getAttribute(CONNECTIONS_READINESS_STATUS_ATTR)).toBe('rejected');
+    expect(textOf(row)).toContain('sign-in not accepted');
+    expect(textOf(row)).not.toContain('connected');
+    const cta = findByAttr(section, CONNECTIONS_READINESS_CTA_ATTR)!;
+    expect(textOf(cta)).toBe('Reconnect →');
+    expect(cta.getAttribute('href')).toBe('#connections/others/review-access/api/exa-key');
+  });
+});
+
+/** D-321 P4 — the pack list's badges from each pack's own list
+ *  (`packs.connections.signins`), which is what its page's one block shows. */
+describe("connectionNeedsFromSignIns — the list badges from each pack's own list (D-321 P4)", () => {
+  const row = (pack_slug: string, cells: Record<string, string>, members: string[] = []) =>
+    ({ pack_slug, members: members.map((slug) => ({ pack_slug: slug })), cells });
+  const turnedDown = (vendor: string, name: string) =>
+    conn(vendor, undefined, { name, health: { status: 'auth_failed', last_probed_at: 1 } });
+
+  it('a list holding no set-up connection is unset, for the pack and each pack signing in through it', () => {
+    const needs = connectionNeedsFromSignIns(
+      [{ slot: 'hubspot', rows: [row('hubspot', { 'hubspot-app': 'available' }, ['hubspot-deals'])] }],
+      [conn('hubspot', undefined, { name: 'hubspot-app' })],
+    );
+    expect(needs.get('hubspot')).toEqual({ unset: ['hubspot'], rejected: [] });
+    expect(needs.get('hubspot-deals')).toEqual({ unset: ['hubspot'], rejected: [] });
+  });
+
+  it('every listed connection turned down is rejected; one listed that works needs nothing', () => {
+    const key = turnedDown('exa', 'exa-key');
+    expect(connectionNeedsFromSignIns([{ slot: 'exa', rows: [row('exa', { 'exa-key': 'default' })] }], [key]).get('exa'))
+      .toEqual({ unset: [], rejected: ['exa'] });
+    expect(connectionNeedsFromSignIns(
+      [{ slot: 'exa', rows: [row('exa', { 'exa-key': 'default', 'exa-team': 'listed' })] }],
+      [key, conn('exa', undefined, { name: 'exa-team' })],
+    ).has('exa')).toBe(false);
+  });
+
+  it("a working connection of the service that is not on the list is not one the pack has, as its page says", () => {
+    expect(connectionNeedsFromSignIns(
+      [{ slot: 'exa', rows: [row('exa', { 'exa-other': 'available' })] }],
+      [conn('exa', undefined, { name: 'exa-other' })],
+    ).get('exa')).toEqual({ unset: ['exa'], rejected: [] });
   });
 });
 

@@ -113,7 +113,7 @@ export const createPackRemovalStore = (db: Database.Database,codec: PreapprovalC
       return structuredClone(plan);
     },
     async apply(request: PackRemovalApply,actor: string,check: () => void,
-      execute: (target: PackRemovalReview,controls: { check(): void; beforeMutation(): void;identity: PackRemovalPack }) => Promise<BulkPackUninstallResultLike>): Promise<PackRemovalApplyResult> {
+      execute: (target: PackRemovalReview,controls: { check(): void; beforeMutation(): void;identity: PackRemovalPack;dependantsReviewed: true }) => Promise<BulkPackUninstallResultLike>): Promise<PackRemovalApplyResult> {
       request = structuredClone(request);const snapshot = await load(request.review_id,actor,check), state = snapshot.state;
       if (state.phase === 'complete') { if (digest(state.apply) !== digest(request)) conflict('That review already names another removal attempt.');return { receipt: structuredClone(state.receipt!),installed_now: installedNow(state) }; }
       if (state.phase === 'applying') {
@@ -134,7 +134,9 @@ export const createPackRemovalStore = (db: Database.Database,codec: PreapprovalC
         const claimedRow = db.transaction(() => { prepared.assertCurrent();if (state.plan.expires_at <= now()) conflict('The removal review expired.');return save(snapshot.row,claimed,encrypted,check); }).immediate();
         const live = () => { assert(claimedRow,request.review_id,check);assertPrevious(state); };
         const target = { ...structuredClone(state.request),...(state.plan.records ? { pack_slug: state.plan.records.pack_slug,publisher: state.plan.records.publisher } : {}) };
-        const result = await execute(target,{ identity: state.plan.pack,check: live,beforeMutation() {
+        // D-346 B — the packs that use this one were in the plan the owner confirmed
+        // (`stops`); the fingerprint above and `assertCurrent` below hold it to that state.
+        const result = await execute(target,{ identity: state.plan.pack,check: live,dependantsReviewed: true,beforeMutation() {
           live();if (state.plan.expires_at <= now()) conflict('The removal review expired before mutation.');prepared.assertCurrent();
         } });
         live();const receipt: PackRemovalReceipt = { review_id: request.review_id,request_id: request.request_id,pack_slug: state.plan.pack.pack_slug,completed_at: now(),result };

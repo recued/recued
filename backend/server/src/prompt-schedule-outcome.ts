@@ -3,18 +3,34 @@ import type { ChatPlanRecord, ChatToolCallRecord, PromptSchedule, PromptSchedule
 import { chatToolCallFromMetadata } from './storage/chat-tool-call-store.js';
 
 type ScheduleRef = Pick<PromptSchedule, 'schedule_id' | 'session_id'>;
+
+/** D-337 slice Y — whether turn `turn` of conversation `session` is one of the schedule's own
+ *  (`@schedule_id`): an occurrence's turn, or a turn that carried its conversation on after an
+ *  approval (slice F). A carry-on turn keeps the first turn of its chain
+ *  (`chat_held_result_turns.origin_turn_id`) and the turn it was folded into, so one join finds it
+ *  however long the chain. ⛔ Before, only an occurrence's own turn counted: a write held in its
+ *  carry-on turn showed nothing waiting on the schedule and left Run now open, so a second run
+ *  could make the write again. A turn the owner typed in the same conversation is the owner's, not
+ *  the schedule's. Each lookup goes by the turn (`chat_prompt_occurrences_turn`). */
+export const scheduleTurnSql = (session: string, turn: string): string => `(EXISTS (SELECT 1 FROM chat_prompt_occurrences o
+      WHERE o.schedule_id=@schedule_id AND o.session_id=${session} AND o.turn_id=${turn})
+    OR EXISTS (SELECT 1 FROM chat_held_result_turns h JOIN chat_prompt_occurrences o ON o.turn_id=h.origin_turn_id
+      WHERE o.schedule_id=@schedule_id AND h.session_id=${session} AND ${turn} IN (h.turn_id, h.into_turn_id)))`;
+
 const workRows = (db: Database.Database, schedule: ScheduleRef) => ({
   plans: db.prepare(`SELECT p.plan_id, p.turn_id, p.consumed_at, p.execution_status, p.execution_turn_id, p.execution_updated_at
-    FROM chat_plans p WHERE p.session_id=? AND p.status='approved'
+    FROM chat_plans p WHERE p.session_id=@session_id AND p.status='approved'
       AND (p.consumed_at IS NULL OR p.execution_status IN ('running','held'))
-      AND EXISTS (SELECT 1 FROM chat_prompt_occurrences o WHERE o.schedule_id=? AND o.turn_id=p.turn_id)
-    ORDER BY p.created_at, p.plan_id`).all(schedule.session_id, schedule.schedule_id) as Array<{ plan_id: string; turn_id: string;
-      consumed_at: number | null; execution_status: string | null; execution_turn_id: string | null; execution_updated_at: number | null }>,
+      AND ${scheduleTurnSql('p.session_id', 'p.turn_id')}
+    ORDER BY p.created_at, p.plan_id`).all({ session_id: schedule.session_id, schedule_id: schedule.schedule_id }) as Array<{
+      plan_id: string; turn_id: string; consumed_at: number | null; execution_status: string | null;
+      execution_turn_id: string | null; execution_updated_at: number | null }>,
   calls: db.prepare(`SELECT m.message_id, m.turn_id, m.metadata_blob FROM chat_messages m
-    WHERE m.session_id=? AND m.role='tool' AND json_valid(m.metadata_blob)
+    WHERE m.session_id=@session_id AND m.role='tool' AND json_valid(m.metadata_blob)
       AND json_extract(m.metadata_blob,'$.tool_call.state') IN ('running','held')
-      AND EXISTS (SELECT 1 FROM chat_prompt_occurrences o WHERE o.schedule_id=? AND o.turn_id=m.turn_id)
-    ORDER BY m.message_id`).all(schedule.session_id, schedule.schedule_id) as Array<{ message_id: string; turn_id: string; metadata_blob: string | null }>,
+      AND ${scheduleTurnSql('m.session_id', 'm.turn_id')}
+    ORDER BY m.message_id`).all({ session_id: schedule.session_id, schedule_id: schedule.schedule_id }) as Array<{
+      message_id: string; turn_id: string; metadata_blob: string | null }>,
 });
 
 /** Compared inside queue admission after asynchronous decryption/encryption. Never persisted or sent to clients. */
@@ -27,9 +43,9 @@ export const readPromptScheduleOutcome = async (
   readPlans: (session: string, turn: string) => Promise<ReadonlyArray<ChatPlanRecord>>,
 ): Promise<Pick<PromptSchedule, 'last_outcome' | 'pending_approvals' | 'pending_work'>> => {
   const pending = db.prepare(`SELECT p.plan_id, p.message_id, COUNT(*) OVER () AS count
-    FROM chat_plans p JOIN chat_prompt_occurrences o ON o.session_id=p.session_id AND o.turn_id=p.turn_id
-    WHERE o.schedule_id=? AND p.status='proposed' ORDER BY p.created_at, p.plan_id LIMIT 1`)
-    .get(schedule.schedule_id) as { plan_id: string; message_id: string | null; count: number } | undefined;
+    FROM chat_plans p WHERE p.status='proposed' AND ${scheduleTurnSql('p.session_id', 'p.turn_id')}
+    ORDER BY p.created_at, p.plan_id LIMIT 1`)
+    .get({ schedule_id: schedule.schedule_id }) as { plan_id: string; message_id: string | null; count: number } | undefined;
   const pending_approvals = pending ? { count: pending.count, plan_id: pending.plan_id,
     ...(pending.message_id ? { message_id: pending.message_id } : {}) } : null;
   const active = workRows(db, schedule);

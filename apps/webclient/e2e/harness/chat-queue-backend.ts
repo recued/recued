@@ -11,6 +11,7 @@ import { createMessengerAttachmentSource } from '../../../../backend/server/src/
 import { createChatStore, ensureChatSchema } from '../../../../backend/server/src/storage/chat-store.js';
 import { createChatOrchestrator, type ChatBroadcastEmitter } from '../../../../backend/server/src/chat-orchestrator.js';
 import { createChatMessengerBridge } from '../../../../backend/server/src/chat-messenger-bridge.js';
+import { createNoticeConversationOpener } from '../../../../backend/server/src/chat-notices.js';
 import { withQueuedChatTurns } from '../../../../backend/server/src/chat-turn-queue.js';
 import { handleChatDelivery, handleChatQueue, handleClearSessionBrief, handleGetSessionBrief, handleSessionCreate, handleSend, handleSessionGet, handleSessionsList } from '../../../../backend/server/src/chat-handler.js';
 import { ownedTempFolder, reapOrphanedFolders } from './live-binary.js';
@@ -135,6 +136,12 @@ export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = f
         role: 'user', content: `Shared ${args.name} from Messenger`, attachments: [{ file_id: file.record_id, media_class: args.type ?? 'document' }],
         target_server: 'self', picker_at_send: { display_name: 'Self', signature: selfSignature }, model_used: { provider: 'fixture', model_id: 'fixture' } });
       return { source: file.record_id, version: message.attachments![0]!.file_id };
+    },
+    /** D-343 slice 4 — what Today's "Close the day" asks the server for: a conversation holding today's
+     *  evening notice, opened by the server's own opener. */
+    async openClosingConversation(notice: { title: string; text: string }) {
+      const opened = await createNoticeConversationOpener({ chatStore: store, signature: selfSignature })(notice);
+      return { ...opened, ...notice };
     },
     async seedReplyHistory() {
       store.createSession({ id: 'other', title: 'Another conversation' });

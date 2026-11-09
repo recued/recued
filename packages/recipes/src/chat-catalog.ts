@@ -802,16 +802,18 @@ export const buildTier2ToolEntry = (
     arg_schema: deriveTier2ArgSchema(entry.recipe, entry.connection_slots ?? [], ownerCatalog),
     topic_tags: tags,
     classification: 'unknown',
-    // D-164 § 6 — Tier 2 catalog entries are sealed sequential today.
+    // D-164 § 6 — Tier 2 catalog entries are sealed sequential by default.
     // Classification above is hardcoded `'unknown'` (the dispatch
     // envelope re-classifies on each invocation against the resolved
     // recipe manifest before § A.11's plan-approval gate), so a write-
     // capable recipe could be hidden behind the umbrella — sequential
-    // is the safer default. No recipe manifest carries a
-    // `concurrency_safe` declaration yet; when that metadata lands, a
-    // future fold flips known-safe entries (read recipes; known-safe
-    // writes against separate scopes) into the parallel path.
-    concurrency_safe: false,
+    // is the safer default. D-335 slice AG: a recipe that declares
+    // `metadata.concurrency_safe` runs beside the round's other safe
+    // calls, when it is recued-core's or the owner's Kitchen copy of one
+    // (the Browser Toolkit's reads); a third party's declaration is not
+    // taken, since its writes could race. One that may ask the owner
+    // still asks one at a time (the Tier-2 handler's turn).
+    concurrency_safe: meta?.concurrency_safe === true && CONCURRENCY_TRUSTED_PUBLISHERS.has(entry.publisher_id),
   };
   if (requires_kinds.length > 0) {
     (toolEntry as { requires_kinds?: ReadonlyArray<IngredientKind> })
@@ -819,6 +821,10 @@ export const buildTier2ToolEntry = (
   }
   return toolEntry;
 };
+
+/** D-335 slice AG — whose `concurrency_safe` a Tier-2 entry takes: the first party's, and the owner's
+ *  own copies saved in Kitchen. */
+const CONCURRENCY_TRUSTED_PUBLISHERS: ReadonlySet<string> = new Set(['recued-core', 'kitchen']);
 
 /** Spec § A.1.1 — build the full Tier 2 catalog from a snapshot of
  *  installed recipes. Opted-out recipes drop silently; the result is

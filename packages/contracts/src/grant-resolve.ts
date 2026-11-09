@@ -114,6 +114,9 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // D-336 slice F — the Tier-1 `contact.write`: an AI adding or changing a contact, whose
   // values then stand at the owner's rank. Owner-on / door-off, as the memory write is.
   'core.contact.write',
+  // D-343 slice 2 — the Tier-1 `episode.record`: the owner's record of their day, kept as
+  // episodes, which are owner-only by default (P17, `data.episode` below). Owner-on / door-off.
+  'core.situation.record',
   // The Tier-1 `work.create` writes — OWNER-on / door-off, the same posture as
   // `core.memory.write` beside it and `core.work-entity.read` below.
   //

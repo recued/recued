@@ -18,7 +18,7 @@ import {
   writeSync,
   createReadStream,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { assertPreviewConversionInput, recordPreviewConversionRead } from './file-preview-conversion-guard.js';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -65,6 +65,8 @@ import {
 import { createCliBinaryPathResolver } from './cli-binary-reachability.js';
 import { allocateRunScratchDir } from './execution/run-scratch.js';
 import { envForOthers } from './supervision/env-for-others.js';
+import { describeProgramOutsidePath, programOutsidePath } from './cli-path-diagnosis.js';
+import { ownerLocationFolders, ownerLocationFor, withFoldersAfterPath } from './cli-owner-location.js';
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapproval-io-context.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { isInboundFileRecordId } from './collections/file/inbound-file-collection.js';
@@ -209,6 +211,10 @@ export interface CliInvocationExecutorOptions {
   killProcessTree?: (pid: number, signal: NodeJS.Signals) => void;
   launchTimeoutMs?: number;
   now?: () => number;
+  /** The clock a stall is measured on. Default `performance.now()`, which
+   *  stops while the machine sleeps: on `now`, the wall clock, a lid closed
+   *  longer than an op's stall window killed it on wake (`StallMonitor`). */
+  stallNow?: () => number;
   /** D-181 Slice 3 — foreground stall-monitor window overrides. */
   stallTuning?: StallTuning;
   /** D-181 slice 4 — the in-flight registry. When provided, a foreground
@@ -265,6 +271,10 @@ export interface CliInvocationExecutorOptions {
    *  `owner_tool_version` row value), or undefined when there is none. Absent
    *  ⇒ the pack's declared default always applies. */
   readOwnerToolVersion?: (ingredientId: string) => unknown;
+  /** D-321 — where the owner set a catalog's program (the raw `owner_tool_path`
+   *  row value), or undefined when they set none. Absent ⇒ every program is
+   *  looked up on the PATH. */
+  readOwnerToolPath?: (ingredientId: string) => unknown;
   /** D-321 — told when a run starts a program under Warn although its version
    *  was not one the pack was tested with, so the run's record can say so.
    *  Called only for a call that carries its run id. */
@@ -392,21 +402,123 @@ const resolveCwd = (call: CliInvocationCall): string | undefined => {
     );
   }
   const resolved = resolve(raw);
+  let real: string;
+  let folder: boolean;
   try {
-    const real = realpathSync(resolved);
-    if (!statSync(real).isDirectory()) {
-      throw new Error('not a directory');
-    }
-    return real;
+    real = realpathSync(resolved);
+    folder = statSync(real).isDirectory();
   } catch (err) {
-    throw makeCliFailureError(
-      `cli_invocation '${call.operation_id}' cwd '${raw}' must resolve to an existing directory`,
-      {
+    throw makeCliFailureError(pathRefusal(raw, resolved, tool, errnoCode(err), 'folder'), {
+      reason: 'spawn_error',
+      ...cliFailureIdentity(call, tool),
+      stderr: err instanceof Error ? err.message : String(err),
+      path: resolved,
+    });
+  }
+  if (!folder) {
+    throw makeCliFailureError(`${resolved} is not a folder, so ${programName(tool)} did not start.`, {
+      reason: 'spawn_error',
+      ...cliFailureIdentity(call, tool),
+      stderr: 'not a directory',
+      path: resolved,
+    });
+  }
+  return real;
+};
+
+/** The program as the owner knows it: `rg`, not the `/opt/homebrew/bin/rg` a
+ *  location set on its pack's page puts in argv[0] (found live). The failure's
+ *  `tool` keeps the full path. */
+const programName = (tool: string | undefined): string => (tool === undefined ? 'the program' : basename(tool));
+
+const errnoCode = (err: unknown): string | undefined => {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+};
+
+/** D-346 § 9 — why the program did not start, for the owner and for an agent
+ *  alike: the path as the server read it, then what to do. A relative path, or
+ *  one starting with `~`, was read from the folder the program starts in: no
+ *  shell runs, so nothing turns `~` into a home folder.
+ *
+ *  For `~` and `~/…` the words name the path to write, from the server's own home
+ *  folder. Measured live (2026-11-08, Qwen, 3 runs each): told only that `~` is
+ *  not read, a model on a server started from `/`, as launchd starts one, asked
+ *  the owner for the full path every time; it could not learn the home folder
+ *  from `/~/…`. `~user/…` keeps the general words. */
+const pathRefusal = (
+  raw: string,
+  at: string,
+  tool: string | undefined,
+  code: string | undefined,
+  noun?: 'folder',
+): string => {
+  const program = programName(tool);
+  const thing = noun === undefined ? at : `${noun} ${at}`;
+  const why = code === 'ENOENT' || code === 'ENOTDIR'
+    ? `There is no ${thing} on your server`
+    : code === 'EACCES' || code === 'EPERM'
+      ? `Your server is not allowed to open ${thing}`
+      : `Your server cannot open ${thing}${code === undefined ? '' : ` (${code})`}`;
+  const home = raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')
+    ? join(homedir(), raw.slice(2))
+    : undefined;
+  const hint = home !== undefined
+    ? ` A program your server starts does not read ~ as your home folder: write ${home} instead.`
+    : raw.startsWith('~')
+      ? ' Write the path in full: a program your server starts does not read ~ as your home folder.'
+      : isAbsolute(raw) ? '' : ' Write the path in full.';
+  return `${why}, so ${program} did not start.${hint}`;
+};
+
+/** D-346 § 9 — refuse before the program starts when a folder or file its
+ *  arguments name is not on the server (`binding.existing_paths`). A relative
+ *  path is read from the folder the program starts in, as the program would read
+ *  it. An argument that does not resolve is left to the argv, which says why; a
+ *  binding that reached the executor unvalidated is read defensively.
+ *
+ *  `lstat`, not `stat`: a link that points nowhere is still there. `stat`,
+ *  `file`, `find` and `du` report on the link itself, so refusing it as "no such
+ *  path" would stop a run that works and name the wrong cause.
+ *
+ *  `accepts` (`CLI_EXISTING_PATH_ACCEPTS`): a glob is the program's to match, so
+ *  it is not checked; a trailing `:<line>` is the program's, so the path before
+ *  it is. A form this server does not know is left to the program, as a
+ *  malformed entry is. */
+const GLOB_CHARACTER = /[*?[\]{}]/;
+const LINE_SUFFIX = /^(.+):\d+$/;
+const pathOfValue = (raw: string, accepts: unknown): string | undefined => {
+  if (accepts === undefined) return raw;
+  if (accepts === 'glob') return GLOB_CHARACTER.test(raw) ? undefined : raw;
+  if (accepts === 'line') return LINE_SUFFIX.exec(raw)?.[1] ?? raw;
+  return undefined;
+};
+const assertExistingPaths = (call: CliInvocationCall, cwd: string | undefined): void => {
+  const specs: unknown = call.binding.existing_paths;
+  if (!Array.isArray(specs) || specs.length === 0) return;
+  const tool = commandLabel(call);
+  const base = cwd ?? process.cwd();
+  for (const spec of specs) {
+    const token = (spec as { arg?: unknown } | null)?.arg;
+    if (typeof token !== 'string') continue;
+    let raw: string;
+    try {
+      raw = resolveTemplate(token, call.args);
+    } catch {
+      continue;
+    }
+    const checked = pathOfValue(raw, (spec as { accepts?: unknown }).accepts);
+    if (checked === undefined || checked.length === 0) continue;
+    const at = resolve(base, checked);
+    try {
+      lstatSync(at);
+    } catch (err) {
+      throw makeCliFailureError(pathRefusal(checked, at, tool, errnoCode(err)), {
         reason: 'spawn_error',
         ...cliFailureIdentity(call, tool),
-        stderr: err instanceof Error ? err.message : String(err),
-      },
-    );
+        path: at,
+      });
+    }
   }
 };
 
@@ -428,7 +540,9 @@ const resolveCwd = (call: CliInvocationCall): string | undefined => {
  *  passphrase included (`supervision/env-for-others.ts`). */
 const resolveChildEnv = (call: CliInvocationCall, cwd: string | undefined): NodeJS.ProcessEnv => {
   const pinned = call.binding.env;
-  const env = envForOthers();
+  // D-321 — a program run from where the owner set it gets that folder (and its
+  // interpreter's) at the end of its PATH (`cli-owner-location.ts`).
+  const env = withFoldersAfterPath(envForOthers(), call.path_after ?? []);
   if (cwd !== undefined) env.PWD = cwd;
   if (pinned === undefined) return env;
   const allowed: ReadonlySet<string> = new Set(CLI_BINDING_ENV_NAMES);
@@ -665,6 +779,7 @@ const waitForLaunch = (
 const buildForegroundMonitor = (
   call: CliInvocationCall,
   now: () => number,
+  stallNow: () => number,
   tuning: StallTuning,
   cwd: string | undefined,
   // `silent` is excluded deliberately: a silent contract HAS no signal to
@@ -682,7 +797,8 @@ const buildForegroundMonitor = (
     return new StallMonitor({
       contract: 'resource',
       origin: runAttentionForTriggerSource(call.stepMeta?.trigger_source),
-      now,
+      now: stallNow,
+      wallNow: now,
       source: new ResourceProgressSource({
         pid,
         ...(tuning.resourceSampleMs !== undefined ? { sampleMs: tuning.resourceSampleMs } : {}),
@@ -731,7 +847,8 @@ const buildForegroundMonitor = (
   return new StallMonitor({
     contract: effectiveContract,
     origin: runAttentionForTriggerSource(call.stepMeta?.trigger_source),
-    now,
+    now: stallNow,
+    wallNow: now,
     ...(effectiveContract === 'heartbeat' || effectiveContract === 'file-growth'
       ? { onSignal: (at: number) => onProgressSignal?.(effectiveContract, at) }
       : {}),
@@ -767,6 +884,7 @@ const runForeground = async (
   argv: string[],
   spawn: SpawnFn,
   now: () => number,
+  stallNow: () => number,
   tuning: StallTuning,
   registry: InFlightRegistry | undefined,
   killProcessTree: ((pid: number, signal: NodeJS.Signals) => void) | undefined,
@@ -795,6 +913,7 @@ const runForeground = async (
     const stdin = stdinPayload(call.binding.stdin_handling, call.args);
     const [cmd, ...rest] = argv;
     const cwd = resolveCwd(call);
+    assertExistingPaths(call, cwd);
     const env = resolveChildEnv(call, cwd);
     if (call.signal?.aborted) {
       reject(new Error(`cli_invocation '${call.operation_id}' cancelled before spawn`));
@@ -860,6 +979,7 @@ const runForeground = async (
     const monitor = buildForegroundMonitor(
       call,
       now,
+      stallNow,
       tuning,
       cwd,
       registry && killRunId !== undefined
@@ -1252,9 +1372,37 @@ const spawnFailureError = (
     const message = `cli tool '${label}' failed to start (${code ?? (err instanceof Error ? err.message : String(err))})`;
     return makeCliFailureError(message, { reason, ...cliFailureIdentity(call, cmd) });
   }
-  // D-321 § 3.6 — a tool that is not found says how to get it, from the pack's
-  // own hints, written for this server's system and never run: the command asks
-  // for the tested major where the manager can (`npm install -g opencode-ai@1`).
+  const notFound = `cli tool '${label}' was not found — the binary may not be installed or is not on the server's PATH.`;
+  // D-321 — the owner set where it is, and nothing the server can start is
+  // there now: say so, and how to fix it, rather than offer an install.
+  if (call.path_after !== undefined) {
+    return makeCliFailureError(
+      `${notFound} The owner set its location to ${label} on the pack's page, and the server cannot start that file. Set the location again there, or go back to the server's PATH.`,
+      { reason, ...cliFailureIdentity(call, cmd) },
+    );
+  }
+  // D-321 — installed, but in a folder the server's PATH leaves out (a
+  // LaunchAgent's PATH has no Homebrew): say where it is and how to fix the PATH,
+  // not how to install a program that is already there.
+  const outside = cmd === undefined ? undefined : programOutsidePath(cmd);
+  if (outside !== undefined) {
+    return makeCliFailureError(`${notFound} ${describeProgramOutsidePath(outside)}`, {
+      reason,
+      ...cliFailureIdentity(call, cmd),
+      ...outside,
+    });
+  }
+  return notFoundWithInstallHints(call, cmd, notFound);
+};
+
+/** D-321 § 3.6 — a tool that is not found says how to get it, from the pack's
+ *  own hints, written for this server's system and never run: the command asks
+ *  for the tested major where the manager can (`npm install -g opencode-ai@1`). */
+const notFoundWithInstallHints = (
+  call: CliInvocationCall,
+  cmd: string | undefined,
+  notFound: string,
+): CliFailureError => {
   const { commands, docs } = renderInstallHints(
     call.tool_install,
     cliInstallSystemOf(process.platform),
@@ -1263,15 +1411,12 @@ const spawnFailureError = (
   const how = commands.length > 0
     ? ` Install it with: ${commands.join(' or ')}.`
     : docs.length > 0 ? ` Its install instructions: ${docs.join(' or ')}.` : '';
-  return makeCliFailureError(
-    `cli tool '${label}' was not found — the binary may not be installed or is not on the server's PATH.${how}`,
-    {
-      reason,
-      ...cliFailureIdentity(call, cmd),
-      ...(commands.length > 0 ? { install: commands } : {}),
-      ...(docs.length > 0 ? { install_docs: docs } : {}),
-    },
-  );
+  return makeCliFailureError(`${notFound}${how}`, {
+    reason: 'not_found',
+    ...cliFailureIdentity(call, cmd),
+    ...(commands.length > 0 ? { install: commands } : {}),
+    ...(docs.length > 0 ? { install_docs: docs } : {}),
+  });
 };
 
 /** D-321 — why a tool whose probe did not end in a version cannot run.
@@ -1361,12 +1506,14 @@ const runDetached = async (
     ),
     rootDir,
   );
+  // Refused before the log file opens: a refusal after it leaked its descriptor.
+  const cwd = resolveCwd(call);
+  assertExistingPaths(call, cwd);
   let logFd: number | undefined;
   if (logPath) {
     logFd = openSync(logPath, 'a');
   }
   const [cmd, ...rest] = argv;
-  const cwd = resolveCwd(call);
   let child: ChildProcess;
   try {
     const env = resolveChildEnv(call, cwd);
@@ -1705,6 +1852,7 @@ export const createCliInvocationExecutor = (
 ): CliInvocationExecutor => {
   const spawn = options.spawn ?? launchingSpawn;
   const now = options.now ?? (() => Date.now());
+  const stallNow = options.stallNow ?? (() => performance.now());
   const tuning = options.stallTuning ?? {};
   const registry = options.inFlightRegistry;
   const startSupervisedDaemon = options.startSupervisedDaemon;
@@ -1758,6 +1906,7 @@ export const createCliInvocationExecutor = (
         probe: declared.probe,
         tested: declared.version.tested,
         ...(where !== undefined ? { where } : {}),
+        ...(call.path_after !== undefined ? { extraPath: call.path_after } : {}),
       }))
       : { state: 'unreadable', binary, probe_result: { kind: 'not_run' } };
     if (report.state === 'ready' || report.state === 'missing') return undefined;
@@ -1851,6 +2000,7 @@ export const createCliInvocationExecutor = (
         resolveArgv(call),
         launch,
         now,
+        stallNow,
         tuning,
         registry,
         processTreeKiller,
@@ -1908,6 +2058,7 @@ export const createCliInvocationExecutor = (
           resolveArgv(call),
           launch,
           now,
+          stallNow,
           tuning,
           registry,
           processTreeKiller,
@@ -1981,6 +2132,7 @@ export const createCliInvocationExecutor = (
         resolveArgv(call),
         launch,
         now,
+        stallNow,
         tuning,
         registry,
         processTreeKiller,
@@ -2034,6 +2186,7 @@ export const createCliInvocationExecutor = (
         resolveArgv(call),
         launch,
         now,
+        stallNow,
         tuning,
         registry,
         processTreeKiller,
@@ -2090,6 +2243,7 @@ export const createCliInvocationExecutor = (
         resolveArgv(callWithDir),
         launch,
         now,
+        stallNow,
         tuning,
         registry,
         processTreeKiller,
@@ -2122,6 +2276,7 @@ export const createCliInvocationExecutor = (
         resolveArgv(callWithDir),
         launch,
         now,
+        stallNow,
         tuning,
         registry,
         processTreeKiller,
@@ -2189,7 +2344,28 @@ export const createCliInvocationExecutor = (
     }) as SpawnFn;
   };
 
-  return async (call) => {
+  /** D-321 — the location the owner set for the program this catalog launches:
+   *  the call runs that file, its version check probes that file, and its
+   *  folders go at the end of its PATH. Only the launched program is replaced,
+   *  and only while the owner's row names it. */
+  const withOwnerLocation = (call: CliInvocationCall): CliInvocationCall => {
+    const command = commandLabel(call);
+    const path = ownerLocationFor(options.readOwnerToolPath, call.slug, command);
+    if (path === undefined || command === undefined) return call;
+    const [, ...rest] = call.binding.argv_template;
+    const probe = call.tool_version?.probe;
+    return {
+      ...call,
+      binding: { ...call.binding, argv_template: [path, ...rest] },
+      ...(call.tool_version !== undefined && probe?.[0] === command
+        ? { tool_version: { ...call.tool_version, probe: [path, ...probe.slice(1)] } }
+        : {}),
+      path_after: ownerLocationFolders(path),
+    };
+  };
+
+  return async (asked) => {
+    const call = withOwnerLocation(asked);
     // Before any input is materialized, so a refused run reads no file either.
     const note = await checkToolVersion(call);
     const launch = launchFor(call, note);

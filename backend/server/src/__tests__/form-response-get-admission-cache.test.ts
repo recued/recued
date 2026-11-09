@@ -156,7 +156,9 @@ describe('form-response-get — L2 cache never bypasses live admission', () => {
     const denied = await run(harness.deps, snapshot());
 
     expect(denied.success).toBe(false);
-    expect(denied.errors.some((error) => errorMessage(error).includes('not granted'))).toBe(true);
+    // D-346 follow-up (2026-11-08) — a contract's run reads only that it is not available.
+    expect(denied.errors.some((error) => errorMessage(error)
+      .includes("'core.data.form-response.get' is not available for this contract."))).toBe(true);
     expect(harness.formResponseGet).toHaveBeenCalledOnce();
     expect(harness.isOpGranted).toHaveBeenCalledTimes(2);
     expect(harness.isOpGranted).toHaveBeenLastCalledWith(SOURCE, OP_ID);

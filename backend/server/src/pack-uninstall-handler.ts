@@ -264,9 +264,21 @@ const emptyRemoved = (): BulkPackUninstallResultLike['removed'] => ({
 export const handlePacksUninstall = async (
   deps: PackUninstallRpcDeps,
   args: PacksUninstallArgs,
-  review: { check?(): void; beforeMutation?(): void; identity?: { publisher?: string; version?: number } } = {},
+  review: {
+    check?(): void;
+    beforeMutation?(): void;
+    identity?: { publisher?: string; version?: number };
+    /** D-346 B — the owner saw, in a reviewed removal, the packs that use this one
+     *  and the actions that stop (`PackRemovalPlan.stops`), and confirmed: the packs
+     *  that list it stay and it goes. Only `packs.removal.apply` sets it; every other
+     *  way in keeps known dependants intact, as before. */
+    dependantsReviewed?: boolean;
+  } = {},
 ): Promise<{ result: BulkPackUninstallResultLike }> => {
   review.check?.();
+  const keepDependants = (store: NonNullable<PackUninstallRpcDeps['contractStore']>, slug: string, publisher?: string): void => {
+    if (review.dependantsReviewed !== true) assertNoPackDependants(store, slug, publisher);
+  };
   if (args == null || typeof args !== 'object') {
     throw new RpcError('bad_request', 'packs.uninstall: args required');
   }
@@ -350,7 +362,7 @@ export const handlePacksUninstall = async (
       400,
     );
   }
-  if (deps.contractStore) assertNoPackDependants(deps.contractStore,pack_slug,recordsNamespace?.owner.publisher ?? args.publisher);
+  if (deps.contractStore) keepDependants(deps.contractStore,pack_slug,recordsNamespace?.owner.publisher ?? args.publisher);
   if (recordsNamespace !== undefined) {
     if (!deps.contractStore || !deps.localManifestStore || !deps.registry || !deps.recordsStore) {
       return {
@@ -372,7 +384,7 @@ export const handlePacksUninstall = async (
         contractStore: deps.contractStore,
         registry: deps.registry,
         beforeMutation() {
-          assertNoPackDependants(deps.contractStore!,recordsNamespace.owner.pack_slug,recordsNamespace.owner.publisher);
+          keepDependants(deps.contractStore!,recordsNamespace.owner.pack_slug,recordsNamespace.owner.publisher);
           review.beforeMutation?.();
         },
         applyAudience: (operationIds, sourcePack, selection) => {
@@ -544,7 +556,7 @@ export const handlePacksUninstall = async (
 
   // Every entry point keeps known installed dependencies intact, including
   // older clients and internal cleanup callers that do not use reviewed plans.
-  if (deps.contractStore) assertNoPackDependants(deps.contractStore,pack_slug,args.publisher);
+  if (deps.contractStore) keepDependants(deps.contractStore,pack_slug,args.publisher);
   review.beforeMutation?.();
 
   // Track per-category outcomes as we go so a mid-transaction throw

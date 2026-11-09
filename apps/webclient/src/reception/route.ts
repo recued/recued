@@ -192,6 +192,10 @@ export type ReceptionRouteConn = Conn<
     | 'reception.intake_recipe_pair.bind'
     | 'reception.intake_recipe_pair.configure'
     | 'reception.intake_recipe_pair.clear'
+    // D-341 slice B4 — "What it may do without asking", on a form's own page.
+    | 'collection.contract.triggerPreapprovalChoices'
+    | 'collection.contract.grantTriggerPreapproval'
+    | 'collection.contract.revokeTriggerPreapproval'
       | 'notification.pending_asks'
     | 'reception.inbox.list'
     | 'reception.inbox.approve'

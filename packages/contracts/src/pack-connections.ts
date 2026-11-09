@@ -218,3 +218,22 @@ export interface PackConnectionAddMany {
   targets: Array<{ pack_slug: string; slot: string }>;
   make_default?: boolean;
 }
+
+/** D-320 audit — a run refused before it started: a slot it signs in through
+ *  belongs to a pack that lists connections, and none of them is set up. */
+export const CONNECTION_NOT_SET_UP = 'connection_not_set_up';
+
+/** D-321 P2 — the refusal's `details`, so a run surface offers the set-up form
+ *  instead of a dead end (the webclient's `connection-setup-offer.ts`). Every
+ *  caller gets `slot`. Only the owner, who can set one up, gets the rest: the
+ *  pack whose catalog signs in through the slot, the vendor its requirement
+ *  names (which Connections form to open), and what to call the sign-in. A type,
+ *  not an interface, so it is an `RpcError`'s `details` as it stands. */
+export type ConnectionNotSetUpDetails = {
+  slot: string;
+  pack_slug?: string;
+  vendor?: string;
+  /** The vendor's display name, else as the pack's own name writes it, else the
+   *  vendor, else the slot (`signInLabel`). */
+  label?: string;
+};

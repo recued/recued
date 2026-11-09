@@ -29,6 +29,8 @@ const EXPECTED_DISPATCH_ROLES = [
   'owner_operation_defaults',
   // D-321 — the owner's per-tool choice outside a pack's tested versions.
   'owner_tool_version',
+  // D-321 — where the owner set a cli catalog's program.
+  'owner_tool_path',
   'grant_resolution',
   'approval_composition',
   'risk_override',
@@ -276,6 +278,8 @@ describe('D-165 contract schema seed', () => {
       'owner_operation',
       // D-321 — one owner choice per cli catalog's tool.
       'owner_tool_version',
+      // D-321 — one owner location per cli catalog's program.
+      'owner_tool_path',
       'contract_definition',
       // D-177 N.13 (P6b) — staged-trust suggestion rows, keyed by the
       // canonical N.13 key hash (the learner's UNIQUE-key upsert target).
@@ -320,6 +324,8 @@ describe('D-165 contract schema seed', () => {
       'owner_operation_policy',
       // D-321 — `{ outside, version_hash }`.
       'owner_tool_version_policy',
+      // D-321 — `{ binary, path }`.
+      'owner_tool_path_policy',
       'contract_scope',
       'door_execution_policy',
       // D-177 N.3 — session-grant nested shapes (bound recipe identity +
@@ -411,6 +417,20 @@ describe('D-165 contract schema seed', () => {
     });
   });
 
+  it('pins D-321 owner program locations as an exact actorless catalog key', () => {
+    const tool = D165_CONTRACT_SCHEMA.composite_keys.owner_tool_path;
+    expect(tool.segments).toEqual(['ingredient_id']);
+    expect(tool.required).toEqual(['ingredient_id']);
+    expect(tool.applies_to).toEqual(['owner_tool_path']);
+    expect(tool.merge_rule).toBe('override');
+    expect(tool.writeable_by).toBe('user');
+    expect(D165_CONTRACT_SCHEMA.value_shapes.owner_tool_path_policy).toEqual({
+      fields: ['binary', 'path'],
+      types: { binary: 'string', path: 'string' },
+      required: ['binary', 'path'],
+    });
+  });
+
   it('pins merge precedence by composite key', () => {
     expect(
       Object.fromEntries(
@@ -436,6 +456,7 @@ describe('D-165 contract schema seed', () => {
       owner_operation: 0,
       // D-321 — one row per cli catalog, no composition.
       owner_tool_version: 0,
+      owner_tool_path: 0,
       contract_definition: 0,
       // D-177 N.13 (P6b) — one row per key hash, no composition.
       delegation_rule_suggestion: 0,

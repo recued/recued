@@ -106,6 +106,8 @@ const CORE_ENTITY_FIELDS: ReadonlyMap<
     ['details', 'json_object'],
     ['context', 'asset_context_request'],
     ['trip', 'json_object'],
+    // D-343 slice 5 — the days the owner recorded a pursuit (weekdays and dates, no words of theirs).
+    ['recorded', 'json_object'],
     ['citation_source', 'json_object'],
     ['cluster_id', 'string'],
     ['ambiguous', 'boolean'],

@@ -27,6 +27,7 @@ import {
   type ChatRoute,
   type ChatRouteConn,
 } from '../chat/bootstrap-chat-route.js';
+import { __resetServerPauseSignal, noteServerPaused } from '../shell/server-pause-signal.js';
 
 interface FakeEl {
   tagName: string;
@@ -505,6 +506,38 @@ describe('D-259 ack-before-run — dispatch-only send lock', () => {
    *  concurrent turn persistence, and the next turn receives a bounded snapshot
    *  of active execution intent. Returning therefore preserves liveness without
    *  disabling the composer. */
+  // D-188 — while the server is paused no turn starts (the emergency stop): the waiting chat's row
+  // says so instead of "Working…", and goes back once resumed, with no reload.
+  it("says a chat waits for Resume while the server is paused, and that it works once resumed", async () => {
+    try {
+      noteServerPaused(false);
+      const h = mountChatRoute(async () => ({ turn_id: 't1' }));
+      await tick();
+      await h.route.openSession('chat_1');
+      await h.route.sendMessage('sent during a pause');
+      await h.route.openSession('chat_2');
+      await tick();
+      const rowStatus = (): { attr: string | null; text: string } => {
+        const row = collectByAttr(h.root, CHAT_ROUTE_SESSION_ROW_ATTR).find(
+          (candidate) => candidate.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === 'chat_1',
+        )!;
+        const status = collectByAttr(row, CHAT_ROUTE_SESSION_STATUS_ATTR)[0];
+        return { attr: status?.getAttribute(CHAT_ROUTE_SESSION_STATUS_ATTR) ?? null, text: status?.textContent ?? '' };
+      };
+      expect(rowStatus()).toEqual({ attr: 'working', text: 'Working…' });
+
+      noteServerPaused(true);
+      await tick();
+      expect(rowStatus()).toEqual({ attr: 'waiting', text: 'Waits for Resume' });
+
+      noteServerPaused(false);
+      await tick();
+      expect(rowStatus()).toEqual({ attr: 'working', text: 'Working…' });
+    } finally {
+      __resetServerPauseSignal();
+    }
+  });
+
   it('lets you leave a pending turn, keeps it running, and stays open on return', async () => {
     const h = mountChatRoute(async () => ({ turn_id: 't1' }));
     await tick();

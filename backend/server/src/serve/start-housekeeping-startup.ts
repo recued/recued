@@ -36,6 +36,8 @@ export type HousekeepingStartupCollectionContext =
 
 export interface StartHousekeepingStartupOptions {
   readonly storage: HousekeepingStartupStorageContext;
+  /** D-188 — the owner's pause, for a vendor's live stream (Salesforce's). */
+  readonly isServerPaused?: () => boolean;
   /** D-269 step 4 — called once when quiet hours ends, with a digest recomputed
    *  from anchor rows. Threaded from the caller, which owns the notification
    *  block. Absent ⇒ no card. */
@@ -94,6 +96,7 @@ export const startHousekeepingStartup = async (
   clearDefaultHousekeepingRegistry();
 
   const vendorRefs = await composeVendorSubstrateContext({
+    ...(options.isServerPaused ? { isPaused: options.isServerPaused } : {}),
     app,
     upstreamMergeRegistry: options.upstreamMergeRegistry,
     // D-269 step 1 — the owner's declared server zone. ⚠ Read PER CALL, not

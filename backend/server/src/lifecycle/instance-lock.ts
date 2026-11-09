@@ -13,12 +13,14 @@
  *      finished exiting
  *
  *  Contract:
- *    - JSON content: `{ pid, boot_at, bind_port, version }`. `version` is
- *      optional: a server from before it was recorded writes none, and an
- *      older reader ignores it (it checks only the three numbers).
- *    - `claim()` throws `LockHeldError` iff the recorded PID is alive
- *      AND the recorded bind_port matches what we're about to bind.
- *      Mismatch (dead PID, different port) → reclaim by overwrite.
+ *    - JSON content: `{ pid, boot_at, bind_port, version, proc_start }`.
+ *      `version` and `proc_start` are optional: a server from before they
+ *      were recorded writes neither, and an older reader ignores them (it
+ *      checks only the three numbers).
+ *    - `claim()` throws `LockHeldError` iff the recorded PID is alive, is
+ *      still the process that wrote the lock (`proc_start`, when both sides
+ *      can say), AND the recorded bind_port matches what we're about to bind.
+ *      Mismatch (dead or reused PID, different port) → reclaim by overwrite.
  *    - `release()` deletes the file. Idempotent.
  *    - A crashed process leaves the lock behind; the next boot reclaims
  *      it per the stale-detection rule.
@@ -38,6 +40,7 @@ import {
   mkdirSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { pidWasReused, processStartIdentity } from './process-identity.js';
 
 export interface LockInfo {
   pid: number;
@@ -53,6 +56,17 @@ export interface LockInfo {
    *  while the server is still the old one. Absent in a lock written by a
    *  server from before it was recorded. */
   version?: string;
+  /** When the holder process started, as `processStartIdentity` reads it.
+   *  ⛔ A lock outlives an unclean exit, and its `pid` can then name an
+   *  unrelated live process; this is what tells the two apart. Absent in a
+   *  lock from before it was recorded, and where the platform cannot say
+   *  (Windows) — the PID alone decides then. */
+  proc_start?: string;
+  /** The holder's lifecycle supervisor mode (`systemd`, `launchd`,
+   *  `docker-thin`, `dev`, …), so `recued restart` can tell a server that
+   *  something relaunches from one that nothing would. Absent in a lock from
+   *  before it was recorded. */
+  supervisor?: string;
 }
 
 export class LockHeldError extends Error {
@@ -70,7 +84,7 @@ export interface InstanceLock {
    *  boot_at + bind_port. Throws `LockHeldError` when another live
    *  process holds the same port. Reclaims (overwrites) when the
    *  holder's PID is dead or its port differs. */
-  claim(info: { boot_at: number; bind_port: number; version?: string }): LockInfo;
+  claim(info: { boot_at: number; bind_port: number; version?: string; supervisor?: string }): LockInfo;
   /** Release the lock (delete the file). Safe to call when already
    *  released — doesn't throw if the file is missing. */
   release(): void;
@@ -89,6 +103,9 @@ export interface CreateInstanceLockOptions {
   isAlive?: (pid: number) => boolean;
   /** Current PID — defaults to `process.pid`. Injected for tests. */
   currentPid?: () => number;
+  /** A process's start identity — defaults to `processStartIdentity`.
+   *  Injected for tests. */
+  identify?: (pid: number) => string | null;
 }
 
 const defaultIsAlive = (pid: number): boolean => {
@@ -125,6 +142,12 @@ const parseLockFile = (path: string): LockInfo | null => {
         ...(typeof parsed.version === 'string' && parsed.version.length > 0
           ? { version: parsed.version }
           : {}),
+        ...(typeof parsed.proc_start === 'string' && parsed.proc_start.length > 0
+          ? { proc_start: parsed.proc_start }
+          : {}),
+        ...(typeof parsed.supervisor === 'string' && parsed.supervisor.length > 0
+          ? { supervisor: parsed.supervisor }
+          : {}),
       };
     }
   } catch {
@@ -140,6 +163,7 @@ export const createInstanceLock = (
     lockPath,
     isAlive = defaultIsAlive,
     currentPid = () => process.pid,
+    identify = processStartIdentity,
   } = opts;
 
   // Track whether WE currently hold this lock. Prevents release()
@@ -157,22 +181,29 @@ export const createInstanceLock = (
 
     inspect: () => parseLockFile(lockPath),
 
-    claim({ boot_at, bind_port, version }) {
+    claim({ boot_at, bind_port, version, supervisor }) {
       const existing = parseLockFile(lockPath);
       if (existing && existing.pid !== currentPid()) {
         // Another PID wrote this file. Alive + same port → refuse.
         // Alive + different port, or dead PID → reclaim.
-        const alive = isAlive(existing.pid);
+        // ⛔ A live PID that is no longer the WRITER is a dead holder: the
+        // number was reused after an unclean exit. Refusing on it kept the
+        // server down at boot, and every supervisor reads that exit as "halt".
+        const alive = isAlive(existing.pid)
+          && !pidWasReused(existing.pid, existing.proc_start, identify);
         if (alive && existing.bind_port === bind_port) {
           throw new LockHeldError(existing);
         }
         // Fall through: reclaim by overwrite.
       }
+      const procStart = identify(currentPid());
       const info: LockInfo = {
         pid: currentPid(),
         boot_at,
         bind_port,
         ...(version !== undefined ? { version } : {}),
+        ...(procStart !== null ? { proc_start: procStart } : {}),
+        ...(supervisor !== undefined ? { supervisor } : {}),
       };
       ensureDir();
       writeFileSync(lockPath, JSON.stringify(info), 'utf-8');
@@ -222,9 +253,14 @@ const pidAlive = (pid: number): boolean => {
  *  is exactly what happened: `update apply` could name the holder's pid and port
  *  while `stop` announced it could not know, leaving a `serve`-started server
  *  with no supported way to be stopped. */
-export const liveServerHolding = (dbPath: string): LockInfo | null => {
+export const liveServerHolding = (
+  dbPath: string,
+  identify: (pid: number) => string | null = processStartIdentity,
+): LockInfo | null => {
   const lockPath = join(dirname(resolve(dbPath)), 'recued-server.lock');
   const info = createInstanceLock({ lockPath }).inspect();
   if (!info) return null;
-  return pidAlive(info.pid) ? info : null;
+  // ⛔ `recued stop` SIGNALS what this returns. A reused PID is somebody else's
+  // process, and naming it here is how `stop` killed it.
+  return pidAlive(info.pid) && !pidWasReused(info.pid, info.proc_start, identify) ? info : null;
 };

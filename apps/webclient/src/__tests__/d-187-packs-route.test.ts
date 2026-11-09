@@ -32,6 +32,8 @@ import type {
 
 import {
   PACKS_ROUTE_HEADING_ATTR,
+  PACKS_ROUTE_NEEDS_ATTR,
+  PACKS_ROUTE_NEEDS_PACK_ATTR,
   PACKS_ROUTE_PACKS_SECTION_ATTR,
   PACKS_ROUTE_STYLES,
   PACKS_ROUTE_STYLES_MARKER,
@@ -40,7 +42,13 @@ import {
   resolvePackInput,
 } from '../packs/bootstrap-packs-route.js';
 import type { PackAppExecuteCaller } from '../packs/pack-app-view.js';
-import { PACKS_DETAIL_PIN_ATTR, PACKS_DETAIL_TAB_ATTR } from '../settings/packs-panel.js';
+import {
+  PACKS_DETAIL_NEEDS_UPDATE_ATTR,
+  PACKS_DETAIL_PIN_ATTR,
+  PACKS_DETAIL_TAB_ATTR,
+  PACKS_DETAIL_USES_PACK_ATTR,
+  PACKS_DETAIL_USES_STATE_ATTR,
+} from '../settings/packs-panel.js';
 import {
   SETTINGS_ROUTE_SECTION_ATTR,
   bootstrapSettingsRoute,
@@ -553,6 +561,197 @@ describe('D-187 §6 packs route', () => {
 });
 
 // ── Packs R22 — list→detail routing (slice R1.1) ────────────────────
+/** D-321 C4 / S8 — the Packs page's "Needs attention" is each installed pack's
+ *  own state, as its list badges say it: a missing program counts. */
+describe('D-321 C4 / S8 — Needs attention, one line per pack', () => {
+  it('lists a pack whose program stops its actions, beside one that needs an update, and none that is fine', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [
+        { ...baseEntry({ installed: true }), slug: 'ripgrep', name: 'Ripgrep Pack', installed_any_version: true },
+        { ...baseEntry({ installed: true }), slug: 'old-pack', name: 'Old Pack', installed_any_version: true },
+        { ...baseEntry({ installed: true }), slug: 'fine-pack', name: 'Fine Pack', installed_any_version: true },
+      ] })),
+      packsUnrunnableCaller: async () => ({ findings: [{ slug: 'old-pack' }] }),
+      packProgramsCallers: {
+        status: async () => ({
+          system: 'macos',
+          packs: [{ slug: 'ripgrep', tools: [{ catalog: 'recued-core/ripgrep', binary: 'rg', state: 'missing', install: [], docs: [] }] }],
+        }),
+        setOutside: async () => { throw new Error('unused'); },
+        clearOutside: async () => { throw new Error('unused'); },
+      },
+    });
+    await vi.waitFor(() => expect(collectByAttr(root, PACKS_ROUTE_NEEDS_PACK_ATTR).length).toBe(2));
+    const needs = collectByAttr(root, PACKS_ROUTE_NEEDS_ATTR)[0]!;
+    expect(collectText(needs)).toContain('Needs attention (2)');
+    expect(collectText(needs)).toContain('Ripgrep Pack — Needs rg');
+    expect(collectText(needs)).toContain('Old Pack — Needs update');
+    expect(collectText(needs)).not.toContain('Fine Pack');
+    route.dispose();
+  });
+
+  it("D-321 S7 — a pack that needs an update says so at the top of its own page", async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialPackSlug: 'old-pack',
+      packsListCaller: vi.fn(async () => ({ packs: [
+        { ...baseEntry({ installed: true }), slug: 'old-pack', name: 'Old Pack', installed_any_version: true },
+      ] })),
+      packsUnrunnableCaller: async () => ({ findings: [{ slug: 'old-pack' }] }),
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick();
+    const line = collectByAttr(root, PACKS_DETAIL_NEEDS_UPDATE_ATTR)[0];
+    expect(line).toBeDefined();
+    expect(collectText(line!)).toContain('This Pack no longer works on this server.');
+    route.dispose();
+  });
+});
+
+/** D-321 W2 / S8 — the packs a pack's actions call, each in its own state, and
+ *  a used pack not installed counted in the pack's own state. */
+describe('D-321 W2 / S8 — Packs it uses', () => {
+  const ownRecipe = (recipe_id: string, name: string, depends_on: string[]): ServerRecipeListEntry => ({
+    recipe_id,
+    publisher_id: 'recued-core',
+    version: 1,
+    recipe_hash: `hash-${recipe_id}`,
+    recipe: {
+      recipe_id,
+      version: 1,
+      metadata: { name, description: '', author: 'recued-core', tags: [] },
+      depends_on,
+    },
+    source: 'pair-sync',
+    installed_at: 0,
+    pack_slug: 'closure',
+  }) as unknown as ServerRecipeListEntry;
+
+  it('names each used pack in its own words, the actions waiting on one not ready, and counts a missing one in Needs attention', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialPackSlug: 'closure',
+      packsListCaller: vi.fn(async () => ({ packs: [
+        {
+          ...baseEntry({ installed: true }), slug: 'closure', name: 'Closure Loop', installed_any_version: true,
+          missing_packs: [{ ref: 'recued-core.linear', recipe_ids: ['comment-closure'] }],
+        },
+        { ...baseEntry({ installed: false }), slug: 'linear', name: 'Linear' },
+        { ...baseEntry({ installed: true }), slug: 'ripgrep', name: 'Ripgrep Pack', installed_any_version: true },
+        { ...baseEntry({ installed: true }), slug: 'github', name: 'GitHub', installed_any_version: true },
+      ] })),
+      recipesListCaller: async () => ({ recipes: [
+        ownRecipe('comment-closure', 'Comment with closure', ['recued-core.linear']),
+        ownRecipe('find-files', 'Find files', ['recued-core.ripgrep@1']),
+        ownRecipe('open-pr', 'Open a pull request', ['recued-core.github']),
+      ] }),
+      packProgramsCallers: {
+        status: async () => ({
+          system: 'macos',
+          packs: [{ slug: 'ripgrep', tools: [{ catalog: 'recued-core/ripgrep', binary: 'rg', state: 'missing', install: [], docs: [] }] }],
+        }),
+        setOutside: async () => { throw new Error('unused'); },
+        clearOutside: async () => { throw new Error('unused'); },
+      },
+    });
+    // S8 — the list's state: a pack whose used pack is not installed needs the owner.
+    await vi.waitFor(() => expect(collectText(collectByAttr(root, PACKS_ROUTE_NEEDS_ATTR)[0]!)).toContain('Closure Loop — Needs Linear'));
+    await route.packsPanel()!.whenLoaded();
+    const line = (slug: string): FakeEl | undefined => collectByAttr(root, PACKS_DETAIL_USES_PACK_ATTR)
+      .find((el) => el.getAttribute(PACKS_DETAIL_USES_PACK_ATTR) === slug);
+    await vi.waitFor(() => expect(line('ripgrep')?.getAttribute(PACKS_DETAIL_USES_STATE_ATTR)).toBe('needs'));
+    expect(collectByAttr(root, PACKS_DETAIL_USES_PACK_ATTR)).toHaveLength(3);
+    expect(line('linear')!.getAttribute(PACKS_DETAIL_USES_STATE_ATTR)).toBe('not_installed');
+    expect(collectText(line('linear')!)).toContain('Linear — Not installed. Waiting on it: Comment with closure.');
+    expect(collectText(line('linear')!)).toContain('Waiting on it: Comment with closure.');
+    expect(collectText(line('ripgrep')!)).toContain('Ripgrep Pack — Needs rg. Waiting on it: Find files.');
+    expect(collectText(line('ripgrep')!)).toContain('Waiting on it: Find files.');
+    expect(line('github')!.getAttribute(PACKS_DETAIL_USES_STATE_ATTR)).toBe('ready');
+    expect(collectText(line('github')!)).toContain('GitHub — Ready');
+    expect(collectText(line('github')!)).not.toContain('Waiting on it');
+    route.dispose();
+  });
+
+  // D-346 — a chain: the closure pack uses GitHub, and GitHub is itself missing Slack.
+  // The closure pack's actions call GitHub's operations, which do not wait on Slack;
+  // GitHub's own actions that call Slack do. It said "Waiting on it" for the closure
+  // pack's actions.
+  it('a used pack that is itself missing a pack: its own need, never "Waiting on it" for this pack\'s actions', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialPackSlug: 'closure',
+      packsListCaller: vi.fn(async () => ({ packs: [
+        { ...baseEntry({ installed: true }), slug: 'closure', name: 'Closure Loop', installed_any_version: true },
+        {
+          ...baseEntry({ installed: true }), slug: 'github', name: 'GitHub', installed_any_version: true,
+          missing_packs: [{ ref: 'recued-core.slack', recipe_ids: ['github-own'] }],
+        },
+        { ...baseEntry({ installed: false }), slug: 'slack', name: 'Slack' },
+      ] })),
+      recipesListCaller: async () => ({ recipes: [ownRecipe('open-pr', 'Open a pull request', ['recued-core.github'])] }),
+    });
+    // GitHub's own state still says it, in the list and its Needs attention.
+    await vi.waitFor(() => expect(collectText(collectByAttr(root, PACKS_ROUTE_NEEDS_ATTR)[0]!)).toContain('GitHub — Needs Slack'));
+    await route.packsPanel()!.whenLoaded();
+    const github = (): FakeEl | undefined => collectByAttr(root, PACKS_DETAIL_USES_PACK_ATTR)
+      .find((el) => el.getAttribute(PACKS_DETAIL_USES_PACK_ATTR) === 'github');
+    await vi.waitFor(() => expect(collectText(github()!)).toContain('Its own actions need Slack'));
+    expect(github()!.getAttribute(PACKS_DETAIL_USES_STATE_ATTR)).toBe('ready');
+    expect(collectText(github()!)).toContain('GitHub — Ready. Its own actions need Slack');
+    expect(collectText(github()!)).not.toContain('Waiting on it');
+    route.dispose();
+  });
+
+  // D-346 — found live: when the used pack also blocks this pack's actions, its own
+  // need set before "Waiting on it" read as what those actions wait on. It goes last.
+  it('a used pack that blocks this pack AND misses a pack: "Waiting on it" first, its own need after', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialPackSlug: 'closure',
+      packsListCaller: vi.fn(async () => ({ packs: [
+        { ...baseEntry({ installed: true }), slug: 'closure', name: 'Closure Loop', installed_any_version: true },
+        {
+          ...baseEntry({ installed: true }), slug: 'github', name: 'GitHub', installed_any_version: true,
+          missing_packs: [{ ref: 'recued-core.slack', recipe_ids: ['github-own'] }],
+        },
+        { ...baseEntry({ installed: false }), slug: 'slack', name: 'Slack' },
+      ] })),
+      recipesListCaller: async () => ({ recipes: [ownRecipe('open-pr', 'Open a pull request', ['recued-core.github'])] }),
+      packProgramsCallers: {
+        status: async () => ({
+          system: 'macos',
+          packs: [{ slug: 'github', tools: [{ catalog: 'github', binary: 'gh', state: 'missing', install: [], docs: [] }] }],
+        }),
+        setOutside: async () => { throw new Error('unused'); },
+        clearOutside: async () => { throw new Error('unused'); },
+      },
+    });
+    await route.packsPanel()!.whenLoaded();
+    const github = (): FakeEl | undefined => collectByAttr(root, PACKS_DETAIL_USES_PACK_ATTR)
+      .find((el) => el.getAttribute(PACKS_DETAIL_USES_PACK_ATTR) === 'github');
+    await vi.waitFor(() => expect(github()?.getAttribute(PACKS_DETAIL_USES_STATE_ATTR)).toBe('needs'));
+    await vi.waitFor(() => expect(collectText(github()!)).toContain('Its own actions need Slack'));
+    expect(collectText(github()!)).toContain('GitHub — Needs gh. Waiting on it: Open a pull request. Its own actions need Slack.');
+    route.dispose();
+  });
+});
+
 describe('Packs R22 — route list→detail wiring', () => {
   const twoPacks = (): PackListEntry[] => [
     baseEntry({ manifest: baseManifest({ slug: 'pack-a', name: 'Pack A' }) }),

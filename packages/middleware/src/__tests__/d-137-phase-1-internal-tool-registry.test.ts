@@ -467,3 +467,43 @@ describe('D-336 slice G — askNotices', () => {
     expect(await registry.askNotices!('memory.write', {}, ctxInternal())).toBeUndefined();
   });
 });
+
+/** D-346 follow-up (2026-11-08) — a tool switched off for its caller says where it is turned
+ *  on: the owner's own turn reads its row ("Self (you)" on the Contracts page), a contract's
+ *  that the owner can turn it on. It said "Re-enable it in Settings → Contracts", which is not
+ *  where Contracts is. */
+describe('a tool switched off for its caller names where it is turned on', () => {
+  const okHandler = async () => ({ ok: true as const, tier: 1 as const, result: {} } as never);
+  const refused = async (ctx: ChatDispatchContext): Promise<string> => {
+    const registry = createInternalToolRegistry({ tier1Handlers: { 'mail.search': okHandler }, admitTier1: () => false });
+    const res = await registry.dispatch('mail.search', {}, ctx);
+    expect((res as { reason: string }).reason).toBe('classification_blocked');
+    return (res as { detail: string }).detail;
+  };
+
+  it('the owner’s own turn: their row on the Contracts page', async () => {
+    expect(await refused({ ...ctxInternal(), execution_source: { channel: 'chat', actor: 'user_self' } as never })).toBe(
+      "'mail.search' is turned off for you, so it did not run. To use it, turn it on under Self (you) → Ops on the Contracts page.",
+    );
+  });
+
+  it('any other contract’s app: only that it is not available', async () => {
+    const detail = await refused({
+      ...ctxMcpWire(),
+      execution_source: { channel: 'mcp', actor: 'contracted_user', contract_id: 'ct_app_1' } as never,
+    });
+    expect(detail).toBe("'mail.search' is not available for this contract.");
+  });
+
+  // D-346 follow-up (2026-11-08) — "Turn it on" under the owner's answer: the owner's own turn
+  // carries its switch; another contract's carries nothing, as it is told nothing.
+  it('carries the owner’s switch for their chat to turn on, and none for an app', async () => {
+    const registry = createInternalToolRegistry({ tier1Handlers: { 'mail.search': okHandler }, admitTier1: () => false });
+    const own = await registry.dispatch('mail.search', {}, { ...ctxInternal(), execution_source: { channel: 'chat', actor: 'user_self' } as never });
+    expect((own as { fixes?: unknown }).fixes).toEqual([{ kind: 'switch', entry_key: 'primitive.mail.search', label: expect.any(String) }]);
+    const app = await registry.dispatch('mail.search', {}, {
+      ...ctxMcpWire(), execution_source: { channel: 'mcp', actor: 'contracted_user', contract_id: 'ct_app_1' } as never,
+    });
+    expect('fixes' in app).toBe(false);
+  });
+});

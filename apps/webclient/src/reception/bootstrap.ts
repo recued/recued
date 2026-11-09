@@ -128,6 +128,12 @@ import {
   mountReceptionInboxPanel,
 } from './inbox-panel.js';
 import { parseShellRoute } from '../shell/route.js';
+import {
+  createTriggerPreapprovalSupport,
+  mountTriggerPreapprovalPanel,
+  TRIGGER_PREAPPROVAL_PANEL_STYLES,
+  type TriggerPreapprovalPanelMount,
+} from '../contracts/trigger-preapproval-panel.js';
 import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -154,6 +160,8 @@ export const RECEPTION_BOOTSTRAP_STYLES = [
   RECEPTION_PROMPTS_HOST_STYLES,
   RECEPTION_TEMPLATES_BROWSER_STYLES,
   RECEPTION_INTAKE_RECIPE_PAIR_SECTION_STYLES,
+  // D-341 slice B4 — "What it may do without asking", beside the pairing.
+  TRIGGER_PREAPPROVAL_PANEL_STYLES,
 ].join('\n');
 
 // ════════════════════════════════════════════════════════════════
@@ -449,12 +457,53 @@ export const bootstrapReceptionRoute = (
     && initialKind !== undefined
     && initialKind.length > 0
   ) {
-    mount = mountReceptionIntakeRecipePairSection({
-      host: content,
+    // D-341 slice B4 — under the pairing, "What it may do without asking": the form's standing
+    // pre-approvals for the recipe it runs, a card of the page's own. Hosts of their own, since the
+    // pair section redraws its host whole; the panel mounts on first open.
+    const pairHost = doc.createElement('div');
+    const preapprovalCard = doc.createElement('div');
+    preapprovalCard.className = 'reception-page reception-pair-preapprovals-host';
+    const preapprovalHost = doc.createElement('details');
+    preapprovalHost.className = 'rx-panel rx-panel-neutral reception-pair-preapprovals';
+    const preapprovalSummary = doc.createElement('summary');
+    preapprovalSummary.textContent = 'What it may do without asking';
+    preapprovalHost.appendChild(preapprovalSummary);
+    preapprovalCard.appendChild(preapprovalHost);
+    // Hidden on a server from before pre-approvals.
+    createTriggerPreapprovalSupport((args) => opts.conn('collection.contract.triggerPreapprovalChoices', args))
+      .show(preapprovalHost, { kind: 'reception', endpoint_id: initialKind });
+    content.append(pairHost, preapprovalCard);
+    const pairMount = mountReceptionIntakeRecipePairSection({
+      host: pairHost,
       conn: opts.conn,
       endpointId: initialKind,
       ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
     });
+    const endpointId = initialKind;
+    let preapprovalPanel: TriggerPreapprovalPanelMount | null = null;
+    let pairDisposed = false;
+    preapprovalHost.addEventListener('toggle', () => {
+      if (!preapprovalHost.open || preapprovalPanel !== null || pairDisposed) return;
+      preapprovalPanel = mountTriggerPreapprovalPanel({
+        host: preapprovalHost, trigger: { kind: 'reception', endpoint_id: endpointId }, document: doc,
+        callers: {
+          choices: (args) => opts.conn('collection.contract.triggerPreapprovalChoices', args),
+          grant: (args) => opts.conn('collection.contract.grantTriggerPreapproval', args),
+          revoke: (args) => opts.conn('collection.contract.revokeTriggerPreapproval', args),
+        },
+      });
+    });
+    mount = {
+      ...pairMount,
+      hasInFlightWork: () => preapprovalPanel?.pending() ?? false,
+      dispose: () => {
+        pairDisposed = true;
+        preapprovalPanel?.dispose();
+        pairMount.dispose();
+        preapprovalCard.remove();
+        pairHost.remove();
+      },
+    };
   } else if (section === 'endpoints' && initialSubview === 'setup') {
     // Routed full-page Launch Wizard (R19 Slice 3) — the § A.20.1 first-run
     // flow out of the transparent modal. Mounts straight into `content`; no

@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { BulkPackManifest, PackListEntry } from '@recued/contracts';
+import type { BulkPackManifest, PackListEntry, PacksToolStatusResult } from '@recued/contracts';
 
 import {
   PACKS_DIALOG_ATTR,
@@ -27,6 +27,7 @@ import {
   type PacksInstallPreviewCaller,
 } from '../settings/packs-panel.js';
 import {
+  INSTALL_PROGRAMS_ATTR,
   PACKS_DIALOG_INSTALL_REFUSAL_ATTR,
   installRefusalFromPreview,
   missingPacksFromFailure,
@@ -211,6 +212,8 @@ interface Harness {
 const setup = (opts: {
   preview?: PacksInstallPreviewCaller;
   install?: PacksInstallCaller;
+  /** D-321 C1 — `packs.tool_status`, for the panel's Programs block. */
+  programs?: () => Promise<PacksToolStatusResult>;
 } = {}): Harness => {
   const host = makeFakeElement('div');
   const installs: unknown[] = [];
@@ -236,6 +239,15 @@ const setup = (opts: {
           runInstallPreview: (args) => {
             previews.push(args);
             return opts.preview!(args);
+          },
+        }
+      : {}),
+    ...(opts.programs !== undefined
+      ? {
+          runPackPrograms: {
+            status: opts.programs,
+            setOutside: async () => { throw new Error('unused'); },
+            clearOutside: async () => { throw new Error('unused'); },
           },
         }
       : {}),
@@ -271,6 +283,27 @@ const installButton = (h: Harness): FakeElement => findByAttr(dialogOf(h), PACKS
 // ──────────────────────────────────────────────────────────────────
 // Tests
 // ──────────────────────────────────────────────────────────────────
+
+describe('D-321 C1 — the install panel says which programs the pack runs, and whether the server has them', () => {
+  it('lists each program with its state and what it means for a run, and holds nothing', async () => {
+    const h = setup({
+      programs: async () => ({
+        system: 'macos',
+        packs: [{
+          slug: entry.slug,
+          installed: false,
+          tools: [{ catalog: 'recued-core/ripgrep', binary: 'rg', state: 'missing', install: ['brew install ripgrep'], docs: [] }],
+        }],
+      }),
+    });
+    const dialog = await openDialog(h);
+    const programs = findByAttr(dialog, INSTALL_PROGRAMS_ATTR);
+    expect(programs).not.toBeNull();
+    expect(text(programs!)).toContain('rg — Not installed. Its actions fail until you install it.');
+    // It holds nothing: a program the server cannot find fails only the actions that run it.
+    expect(installButton(h).hasAttribute('disabled')).toBe(false);
+  });
+});
 
 describe('the dialog says which packs to install first, before the owner chooses anything', () => {
   it('⛔ names the pack, links to its page, and holds Install', async () => {

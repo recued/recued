@@ -767,6 +767,20 @@ export type ActivityAction =
   // `browser_pass_dismissed` / `browser_pass_revoked`: the owner's decisions on Contracts.
   // Reserve-class, as the write rules' are.
   | 'browser_pass_used' | 'browser_pass_minted' | 'browser_pass_dismissed' | 'browser_pass_revoked'
+  // D-335 slice Z — a secret a browser step typed, never its value (`target` = the origin; `detail`
+  // carries `{run_id, field, label, kind}`): asked of the owner at its step, given by the owner, a
+  // remembered login typed, and the owner remembering or forgetting one. Reserve-class: "what typed
+  // my password, where and when?" is a months-later question.
+  | 'browser_secret_asked' | 'browser_secret_given' | 'browser_login_used' | 'browser_login_saved' | 'browser_login_forgotten'
+  // D-341 slice A — the owner turning on, or off, the switch beside Send that lets a conversation's
+  // browser actions run without asking (`target` = `chat:<session_id>`). Each write it let through
+  // is a `browser_pass_used` row of kind `request`. Reserve-class, as the passes' are.
+  | 'browser_request_pass_started' | 'browser_request_pass_ended'
+  // D-341 slice B1 — a trigger's standing pre-approval. `trigger_preapproval_used`: a write a
+  // schedule, an event trigger or a webhook started ran on it instead of an ask (`target` = its id;
+  // `detail` carries `{run_id, recipe_id, op, trigger, uses, max_uses}`). `_granted` / `_revoked`:
+  // the owner's decisions. Reserve-class: each stands in for an approval answer.
+  | 'trigger_preapproval_used' | 'trigger_preapproval_granted' | 'trigger_preapproval_revoked'
   | 'chat_export'
   // D-137 W2.2 § A.1.1 — Mary toggled her per-kind chat catalog scope.
   // `target` = `'chat_tool_catalog_scope'` (singleton); `detail`
@@ -900,6 +914,11 @@ export type ActivityAction =
   // pack_outside?, tested?, version_hash?}`. Reserve-class: Warn lets an untested
   // version run, a standing loosening of a refusal like an `approval:'never'`.
   | 'owner_tool_version_written' | 'owner_tool_version_deleted'
+  // D-321 — the owner set where a cli catalog's program is, or cleared it.
+  // `target` = the catalog slug; `detail` carries `{ingredient_id, binary, path|null,
+  // prior|null}`. Reserve-class: it decides which file runs for every action the
+  // program is granted, a standing change like a Warn.
+  | 'owner_tool_path_written' | 'owner_tool_path_deleted'
   // D-149 P3 § A.3 + § N.3 — Reception substrate high-assurance audit
   // kinds. Mirrors `RECEPTION_HIGH_ASSURANCE_AUDIT_KINDS` from
   // `@recued/contracts/src/reception.ts` verbatim. The signing audit-
@@ -1220,6 +1239,19 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'browser_pass_minted',
   'browser_pass_dismissed',
   'browser_pass_revoked',
+  // D-341 slice B1 — a write a trigger's pre-approval let through, and the owner's decisions.
+  'trigger_preapproval_used',
+  'trigger_preapproval_granted',
+  'trigger_preapproval_revoked',
+  // D-335 slice Z — secrets browser steps typed, and the logins the owner remembered or forgot.
+  'browser_secret_asked',
+  'browser_secret_given',
+  'browser_login_used',
+  'browser_login_saved',
+  'browser_login_forgotten',
+  // D-341 slice A — the owner's switch for a request approved ahead.
+  'browser_request_pass_started',
+  'browser_request_pass_ended',
   // Phase C: lifecycle events must persist past retention so the
   // ledger of boot / shutdown / restart / crash / drain / crash-loop
   // always survives eviction. These are low-volume but forensically
@@ -1370,6 +1402,10 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // delete that ends it survive pruning for the D-211 reason above.
   'owner_tool_version_written',
   'owner_tool_version_deleted',
+  // D-321 — which file a program's actions run is chosen here: a standing change
+  // whose ledger must outlive pruning, as a Warn's does.
+  'owner_tool_path_written',
+  'owner_tool_path_deleted',
   // D-175 P5 — account ↔ server binding lifecycle. Reserve-class so the
   // forensic ledger of who owned this server (bind / rebind / unbind),
   // the ownership-contention conflicts, and the failed-exchange attack

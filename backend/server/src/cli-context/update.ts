@@ -61,6 +61,7 @@ import {
   refuseUnpackagedBinaryUpdate,
   refuseWhileRunning,
 } from './update-profile-guards.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 export interface UpdateProfileOptions {
   args: string[];
@@ -551,7 +552,7 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
       // so two stopped CLIs cannot open one realm under another's file restore.
       const leasePath = updateLeasePathFor(resolveUpdateBinaryPath(env));
       try {
-        updateLease = acquireUpdateLease({ leasePath, operation: verb });
+        updateLease = acquireUpdateLease({ leasePath, operation: verb, identify: processStartIdentity });
       } catch (err) {
         const holder = (err as { holder?: { pid: number; operation: string } }).holder;
         console.error(

@@ -31,7 +31,7 @@ const fixture = async () => {
   const access = { context: scoped, fence: scoped,
     fieldVersion: async () => { throw new Error('Unexpected field probe'); },
     read: async () => { throw new Error('Unexpected situation read'); }, prefetch: async () => { throw new Error('Unexpected prefetch'); },
-    isPrivate: () => false } as SituationAccess;
+    isPrivate: () => false, eveningPursuits: () => [], namesPrivateIn: () => false, toolRoundCap: () => undefined } as SituationAccess;
   const home = (await dispatchers.commitmentCreate({ statement: 'Family-only secret', direction: 'outbound', derivation: 'user_declared', counterparty_contact_id: 'private-person' })).commitment;
   const business = (await dispatchers.commitmentCreate({ statement: 'Business delivery', direction: 'outbound', derivation: 'user_declared', counterparty_contact_id: 'private-person' })).commitment;
   const unknown = (await dispatchers.commitmentCreate({ statement: 'Unsorted secret', direction: 'outbound', derivation: 'user_declared' })).commitment;

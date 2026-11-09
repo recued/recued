@@ -207,7 +207,7 @@ export const resourceFixture = async (previous?: { dir: string; clock: { now: nu
     channels: [createUiChannel({ busSink: () => {} })], now });
   const composed = composePreapproval({ ownerId: 'realm', storage, sources, circuits: createCircuitBreakerStore(db), execution,
     profiles, clientTokens: clients, definitions, inboundTokens: inbound, notifications: block,
-    ...(mail ? { mail } : {}),
+    serverTimeZone: () => undefined, ...(mail ? { mail } : {}),
     reviewLink: id => 'https://owner.example/#approvals/preapproval/' + id, now });
   await storage.recover();
   const recipe: RecipeDefinition = { recipe_id: 'reviewed-resources', version: 1, ttl: 300,

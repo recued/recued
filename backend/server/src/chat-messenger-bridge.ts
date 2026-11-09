@@ -54,7 +54,11 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
   /** D-323 — the server's public web app address, read at send time, for the
    *  links an answer's install offers end with. Absent or null: the names and
    *  where to look. */
-  publicBaseUrl?: () => string | null }) => {
+  publicBaseUrl?: () => string | null;
+  /** D-188 — true while the owner's pause holds: no reply is sent to a messenger until Resume
+   *  (the emergency stop: nothing leaves). The pending replies keep their order. Absent ⇒ never
+   *  paused. */
+  isPaused?: () => boolean }) => {
   const { db, store, getKey } = options;
   const queue = createChatTurnQueueStore(db, getKey);
   db.exec(`
@@ -355,7 +359,7 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
     }
   };
   const pump = (): void => {
-    if (closed || !db.open || pumping || (getKey && !getKey())) return;
+    if (closed || !db.open || pumping || (getKey && !getKey()) || options.isPaused?.() === true) return;
     pumping = true;
     try {
       recover();

@@ -52,6 +52,7 @@ import {
   RpcError,
   isGatedActionTerminal,
   isEphemeralDishId,
+  readTriggerPreapprovalOffer,
 } from '@recued/contracts';
 import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
 import {
@@ -696,6 +697,28 @@ export const computeArgEditsDiff = (
 
 /** Build a `PreflightResumer` over `recued-server`'s `handleExecute` +
  *  `AuditLogStore`. */
+/** D-341 slices B2 and B3 — "Always allow for this webhook / schedule / trigger / form / scheduled
+ *  prompt": grant what the hold offered, before the held write goes on. The approval stands whatever
+ *  happens to the grant: one refused (the recipe, the prompt or a door changed since the ask) leaves
+ *  a plain approve. */
+const grantAnsweredTriggerPreapproval = async (
+  executeDeps: Pick<ExecuteHandlerDeps, 'triggerPreapprovalGranter'>,
+  checkpoint: Checkpoint,
+  context: PreflightAskContext,
+): Promise<void> => {
+  if (context.trigger_preapproval_answer !== true) return;
+  const offer = readTriggerPreapprovalOffer(checkpoint.preflight_context?.trigger_preapproval);
+  if (offer === undefined || executeDeps.triggerPreapprovalGranter === undefined) return;
+  try {
+    await executeDeps.triggerPreapprovalGranter.grantOffer(offer);
+  } catch (error) {
+    console.warn(
+      `[preflight-resumer] the pre-approval the owner chose was not granted: `
+        + `${error instanceof Error ? error.message : String(error)} (run_id=${checkpoint.run_id})`,
+    );
+  }
+};
+
 export const createPreflightResumer = (
   deps: CreatePreflightResumerDeps,
 ): PreflightResumer => {
@@ -1118,6 +1141,9 @@ export const createPreflightResumer = (
           || rawGatedAction.kind === 'already_dispatching') return;
         const chatCall = observeResumedChatToolCall(executeDeps.db,
           checkpoint.raw_op.execution_source, checkpoint.run_id);
+        // D-341 slice B3 — a scheduled prompt's held write answered "Always allow for this scheduled
+        // prompt": the grant goes before the write, as on the recipe path.
+        await grantAnsweredTriggerPreapproval(executeDeps, checkpoint, context);
         try {
           const outcome = await resumeRawOp(executeDeps, checkpoint, {
             ...(context.session_grant !== undefined
@@ -1208,6 +1234,7 @@ export const createPreflightResumer = (
       recordBrowserPassAnswer(executeDeps, checkpoint, 'approved', {
         ...(context.browser_pass_kind !== undefined ? { pass: context.browser_pass_kind } : {}),
       });
+      await grantAnsweredTriggerPreapproval(executeDeps, checkpoint, context);
       await updateMcpAction(
         actionStoreFor(executeDeps),
         checkpoint.run_id,

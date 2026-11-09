@@ -217,6 +217,22 @@ describe('D-212 — rotation refuses before it touches anything', () => {
     ).resolves.toMatchObject({ keyfilePath: keyfile() });
   });
 
+  it.skipIf(process.platform === 'win32')('⛔ proceeds past a lock whose live PID was reused — that process is not the server', async () => {
+    const { mnemonic } = generateRecoveryKey();
+    await enrolledRealm(mnemonic);
+    writeFileSync(
+      join(dir, 'recued-server.lock'),
+      JSON.stringify({ pid: process.pid, boot_at: 1, bind_port: 7717, proc_start: 'not-this-process' }),
+    );
+
+    await expect(
+      rotateKeyfilePassphrase({
+        dbPath: dbPath(), currentPassphrase: OLD, newPassphrase: NEW,
+        argon2_params: FAST, isProcessAlive: () => true,
+      }),
+    ).resolves.toMatchObject({ keyfilePath: keyfile() });
+  });
+
   it('refuses a wrong current passphrase and changes nothing', async () => {
     const { mnemonic } = generateRecoveryKey();
     await enrolledRealm(mnemonic);

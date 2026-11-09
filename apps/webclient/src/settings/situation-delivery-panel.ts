@@ -274,6 +274,9 @@ export const mountSituationDeliveryPanel = (opts: SituationDeliveryPanelOptions)
     try {
       const next = await opts.read();
       if (disposed || ownGeneration !== generation) return;
+      // D-340 slice 2 — the streams took over: Coming up is a part of them, set on Today, and the
+      // Agenda's card says so. This card leaves.
+      if (next.streams) { disposed = true; root.remove(); return; }
       status = next;
       unconfirmedSave = false;
       paint();

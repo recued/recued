@@ -10,8 +10,12 @@ import {
 
 import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
 import { situationPersonName } from './situations/model-projection.js';
+import type { MailFactClose, MailFactCloseTo } from './situations/mail-fact-records.js';
 import {
   AssetTypeError,
+  assetTypeAttributeNames,
+  assetTypeAttributesText,
+  assetTypeExtraAttributes,
   assetTypeIssueText,
   assetTypeIssues,
   assetTypeNeedsHolder,
@@ -72,10 +76,20 @@ import {
   type ApprovalValueLabels,
   type HeldCallNotices,
   type MemorySaveConflict,
+  ASSET_SOURCE_RANKS,
   type Asset,
   type AssetContributionKind,
   type AssetPatch,
   type AssetReading,
+  assetConditionHolds,
+  assetDateAt,
+  type AssetCondition,
+  type Booking,
+  type BookingLifecycleState,
+  BOOKING_TITLE_MAX,
+  type Commitment,
+  type Occasion,
+  type OccasionInput,
   type AssetRule,
   type WorkEntityKind,
   isReadableCollection,
@@ -98,6 +112,10 @@ import {
   executionSourceContractId,
   ownerApprovesCallsOf,
   isDelegatedMcpToken,
+  isOwnersOwnCall,
+  neededSwitchRefusalSentence,
+  readRefusalSentence,
+  topicGrantEntry,
   // D-237 P1 — the per-instance freshness verdict the AI-facing collection
   // reads now carry, alongside the CRM trio's `crm_freshness`.
   collectionSourceFreshnessFanOut,
@@ -182,11 +200,12 @@ import {
   runCancellationMessage,
 } from './run-result-agent-projection.js';
 import {
-  askAfterWaiting, conversationCarriesOn, HELD_CARRIES_ON_MESSAGE, notAskedYetMessage,
+  askAfterWaiting, conversationCarriesOn, HELD_CARRIES_ON_MESSAGE, notAskedYetMessage, noteWaitingInTurn,
 } from './chat-carries-on.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import { createMailReadHandler } from './mail-read-tool.js';
 import { checkContactWrite, contactAskLabels, createContactWriteHandler } from './contact-write-tool.js';
+import { checkEpisodeRecord, createEpisodeRecordHandler } from './episode-record-tool.js';
 import { crmChangeRefusal, crmContactChangeCheck } from './named-in-part.js';
 import { mailEvidenceMetadata } from './mail-evidence.js';
 import { mailboxAddressOf } from './mail-senders.js';
@@ -204,6 +223,7 @@ import type { ExecuteRequest, ExecuteResponse } from './types.js';
 import {
   AUTHOR_DEFAULT_READ_GRANT_CHECKER,
   collectionReadFencedHint,
+  ownerSwitchFix,
   type GatedReadGrantResolver,
 } from './read-grant-checker.js';
 import {
@@ -270,7 +290,8 @@ import type {
 import type { WorkEntityResolver } from './work-entity-resolver.js';
 import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
 import type { WorkEntityTargetedReadDeps } from './work-entity-write-executor.js';
-import { guardTaskMarkDone, handleWorkEntityUpsert } from './work-entity-crud-handler.js';
+import { commitmentSourceConfirmsClose, guardTaskMarkDone, handleWorkEntityUpsert, withCommitmentMutation } from './work-entity-crud-handler.js';
+import { AssetReminderOpenError, CommitmentLifecycleError, RenewalDateRequiredError } from './work-entity-ingredients.js';
 import {
   DEFAULT_LOCAL_CALENDAR_ID,
   DEFAULT_LOCAL_CALENDAR_SLUG,
@@ -290,7 +311,7 @@ import {
   runCanonicalSearchFanout,
   type CanonicalOpToolDescriptor,
 } from './canonical-op-tool-catalog.js';
-import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
+import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR, formatTier2ToolName } from '@recued/recipes';
 import { CANONICAL_OP_TOOL_PREFIX } from '@recued/contracts';
 import {
   dispatchRawOp,
@@ -331,6 +352,10 @@ export type ChatRecipeExecutor = (
  *  stores wired after the chat orchestrator (enrichment, the enrichment-
  *  visibility resolver, the executor composite) are picked up live. */
 export interface ChatToolHandlerDeps {
+  /** D-335 slice AG — whether the conversation's "Don't ask about browser actions" is on: then a
+   *  Browser Toolkit read that opens its page asks nothing, and runs beside the round's other reads.
+   *  Absent ⇒ such a read takes its turn among the round's calls that may ask. */
+  browserRequestPassLive?: (session_id: string) => boolean;
   readMailBody?: (record: import('@recued/contracts').CollectionRecord) => Promise<string | null>;
   mailAttachments?: MailAttachmentReader;
   documentPacks?: InstalledPackScan;
@@ -351,6 +376,15 @@ export interface ChatToolHandlerDeps {
    *  clock, which is how a staleness assertion becomes a flake. */
   now?: () => number;
   getSituationAccess?: () => import('./situations/access.js').SituationAccess | undefined;
+  /** D-343 slice 1 — the occasions made in Yours, for `work.update` of an occasion. Late-bound:
+   *  Yours is composed after the chat. */
+  getOccasions?: () => ChatOccasions | undefined;
+  /** D-343 slice 1 (ruling 15) — the mail facts, for `work.update` of one, which makes the
+   *  record it closes through. Late-bound: the mail facts are composed after the chat. */
+  getMailFacts?: () => MailFactClose | undefined;
+  /** D-343 slice 2 — the owner's closing records, for `episode.record`. Late-bound: the episode
+   *  store is composed after the chat. */
+  getClosingRecords?: () => import('./situations/closing-records.js').ClosingRecords | undefined;
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
   /** The unified local+remote file view. ⛔ WITHOUT IT `file.search` SEES ONE
@@ -781,6 +815,11 @@ export const wrapRecipeRunResult = (
       result: projected,
       run_failed: { detail: runFailureDetail(result) },
       ...runAddress,
+      // D-346 follow-up — what the run needed, offered under the owner's answer ("Reconnect …",
+      // "Turn it on"). Only the owner's own runs carry it, and the model never reads it.
+      ...(result.run_needs !== undefined && result.run_needs.length > 0
+        ? { fixes: result.run_needs.map((need) => ({ kind: 'run_need' as const, need })) }
+        : {}),
     };
   }
   return { ok: true, result: projected, ...runAddress };
@@ -939,7 +978,7 @@ const mcpPrivateRejection = (
   return {
     ok: false,
     reason: 'classification_blocked',
-    detail: `topic '${topic}' is not read-granted to this contract (read rejected)`,
+    detail: readRefusalSentence(`Reading the topic '${topic}'`, topicGrantEntry(topic as EnrichmentTopic), isOwnersOwnCall(ctx.execution_source)),
   };
 };
 
@@ -1168,9 +1207,7 @@ const buildLocalContactSource = (
     // `createMemorySearchHandler`) is that an ungranted read is a guided EMPTY, because an
     // errored read sends a reasoning model into a retry-to-timeout loop.
     if (!isCollectionReadGrantedForDispatch(deps, ctx, 'contact')) {
-      throw new Error(
-        'the local contact graph is not read-granted to this contract (data.contact)',
-      );
+      throw new Error(readRefusalSentence('Reading contacts', 'data.contact', isOwnersOwnCall(ctx.execution_source)));
     }
     const store = deps.getContactStore();
     if (!store) throw new Error('contact store unavailable');
@@ -2243,6 +2280,24 @@ export const isAiToolPrincipal = (gate: AiToolGrantGate, source: ExecutionSource
   source.actor === 'user_self' || source.actor === 'contracted_user'
   || source.channel === 'schedule' && source.prompt_schedule !== undefined && gate.isOwnerGoverned(source);
 
+/** D-346 follow-up (2026-11-08) — an AI tool's write refused because a switch it needs
+ *  (`entryKey`) is off for its caller. The owner's own call reads which switch and where to
+ *  turn it on; any other contract's call reads only that the tool is not available (the
+ *  owner's ruling). Before, both read "<tool> is not granted to this contract (write
+ *  rejected)", which named no switch to the owner and the reason to every app. */
+export const neededSwitchOff = (
+  tool: string,
+  entryKey: string,
+  source: ExecutionSource | undefined,
+): ChatDispatchResult => ({
+  ok: false,
+  reason: 'classification_blocked',
+  detail: neededSwitchRefusalSentence(`'${tool}'`, entryKey, isOwnersOwnCall(source)),
+  // The owner's own chat offers to turn it on under the answer ("Turn it on").
+  ...ownerSwitchFix(entryKey, source),
+});
+
+
 const admitMemoryRead = (
   gate: AiToolGrantGate | undefined,
   source: ExecutionSource | undefined,
@@ -3267,11 +3322,7 @@ const createMemoryRelationsHandler =
     const args = raw === undefined || raw === null ? {} : asObject(raw);
     if (!args) return invalidArgs('args must be an object');
     if (!admitMemoryWrite(deps.getOpAdmissionGate?.(), ctx.execution_source)) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: 'memory.relations is not granted to this contract: it needs the switch that saves to your memory',
-      };
+      return neededSwitchOff('memory.relations', MEMORY_WRITE_OP_ID, ctx.execution_source);
     }
     const groups = MEMORY_RELATION_GROUPS.map((g) => g.group);
     if (args.group === undefined || args.group === null) {
@@ -3299,7 +3350,8 @@ const createMemoryRelationsHandler =
  *  checks. A record it may not read is refused with the reason, never looked up. */
 const claimRecords = (deps: ChatToolHandlerDeps, ctx: ChatDispatchContext): ClaimRecords => ({
   contact: async (target) => {
-    const cannot = 'this contract cannot read contacts, so the claim cannot link one; write the person\'s name instead';
+    const cannot = `${readRefusalSentence('Reading contacts', 'data.contact', isOwnersOwnCall(ctx.execution_source))} `
+      + "So the claim cannot link one; write the person's name instead.";
     if (!isCollectionReadGrantedForDispatch(deps, ctx, 'contact')) return { refused: cannot };
     const access = deps.getSituationAccess?.();
     if (access) {
@@ -3328,7 +3380,7 @@ const claimRecords = (deps: ChatToolHandlerDeps, ctx: ChatDispatchContext): Clai
     if (!read.ok) return { refused: read.detail ?? 'that thing could not be read' };
     const result = read.result as { found?: unknown; refused?: unknown; hint?: unknown; entity?: { id?: unknown; name?: unknown } | null };
     if (result.refused === true) {
-      return { refused: typeof result.hint === 'string' ? result.hint : 'this contract cannot read that thing' };
+      return { refused: typeof result.hint === 'string' ? result.hint : 'that thing could not be read' };
     }
     if (result.found !== true || typeof result.entity?.id !== 'string') {
       return typeof result.hint === 'string' ? { refused: result.hint } : null;
@@ -3604,11 +3656,7 @@ const createMemoryWriteHandler =
     // permissive owner contract; a door needs `core.memory.write` (default-off).
     // Fail closed → `classification_blocked` when ungranted / no source / no gate.
     if (!admitMemoryWrite(deps.getOpAdmissionGate?.(), ctx.execution_source)) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: 'memory.write is not granted to this contract (write rejected)',
-      };
+      return neededSwitchOff('memory.write', MEMORY_WRITE_OP_ID, ctx.execution_source);
     }
 
     // Session provenance rides from the dispatch ctx; origin is stamped
@@ -3827,11 +3875,7 @@ const createMemoryForgetHandler =
     const reason = stated.length > 0 ? stated.slice(0, MEMORY_FORGET_REASON_MAX) : undefined;
 
     if (!admitMemoryWrite(deps.getOpAdmissionGate?.(), ctx.execution_source)) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: 'memory.forget is not granted to this contract (it needs the memory write grant)',
-      };
+      return neededSwitchOff('memory.forget', MEMORY_WRITE_OP_ID, ctx.execution_source);
     }
     const author = ctx.execution_source ? authoringContractId(ctx.execution_source) : undefined;
     const refused = (message: string): ChatDispatchResult =>
@@ -4024,9 +4068,8 @@ const buildPlatformDealSource = (
       // indistinguishable from "this person has no deals": a claim about the user's DATA
       // that the model states as fact. Same invariant as `contact.search`'s local source.
       if (!isCollectionReadGrantedForDispatch(deps, ctx, 'contact')) {
-        throw new Error(
-          'the local contact graph is not read-granted to this contract (data.contact), so deals cannot be resolved for a contact',
-        );
+        throw new Error(`${readRefusalSentence('Reading contacts', 'data.contact', isOwnersOwnCall(ctx.execution_source))} `
+          + 'So deals cannot be resolved for a contact.');
       }
       const contacts = deps.getContactStore();
       if (!contacts) throw new Error('contact store unavailable');
@@ -4670,10 +4713,18 @@ const recipeNotAskedYet = (
 ): ChatDispatchResult | null => {
   const waitingFor = askAfterWaiting(ctx.execution_source, ctx.turn_state);
   if (waitingFor === undefined || ctx.execution_source === undefined) return null;
+  return recipeMayAsk(recipe, ctx.execution_source, recipeAskLookups(deps))
+    ? { ok: false, reason: 'not_asked_yet', detail: notAskedYetMessage(waitingFor) }
+    : null;
+};
+
+/** What `recipeMayAsk` reads a recipe's steps against: their manifests, the packs' operations, the
+ *  owner's rulings on them, and the vendor-neutral writes' targets. */
+const recipeAskLookups = (deps: ChatToolHandlerDeps): RecipeAskLookups => {
   const getManifest = (slug: string) => deps.getExecutorConfig().manifests.get(slug);
   const packs = deps.scanInstalledPacks;
   const contracts = deps.getContractScan?.();
-  const lookups: RecipeAskLookups = {
+  return {
     getManifest,
     packOps: () => (packs !== undefined ? buildPackOpResolution(packs, getManifest) : new Map()),
     ...(contracts !== undefined
@@ -4682,9 +4733,6 @@ const recipeNotAskedYet = (
       : {}),
     ...(deps.neutralWriteTargets !== undefined ? { neutralWriteTargets: deps.neutralWriteTargets } : {}),
   };
-  return recipeMayAsk(recipe, ctx.execution_source, lookups)
-    ? { ok: false, reason: 'not_asked_yet', detail: notAskedYetMessage(waitingFor) }
-    : null;
 };
 
 const createRecipeRunHandler =
@@ -4760,7 +4808,7 @@ const parseTier2ToolName = (
   };
 };
 
-export const createChatTier2Dispatch =
+const dispatchTier2Once =
   (deps: ChatToolHandlerDeps): Tier2Handler =>
   async (toolName, raw, ctx) => {
     const parsed = parseTier2ToolName(toolName);
@@ -4833,6 +4881,58 @@ export const createChatTier2Dispatch =
       return refusalOf(e);
     }
   };
+
+/** D-335 slice AG — a Tier-2 call. One whose recipe runs beside the other calls of its round
+ *  (`concurrency_safe`) and may ask the owner takes its turn among the round's calls that may: one
+ *  at a time, and a call held for approval is noted as waiting before the next one in line looks,
+ *  so that one is not asked (D-337), as when the round ran in order. */
+export const createChatTier2Dispatch = (deps: ChatToolHandlerDeps): Tier2Handler => {
+  const dispatchOnce = dispatchTier2Once(deps);
+  return async (toolName, raw, ctx) => {
+    const release = await askTurnFor(deps, toolName, raw, ctx);
+    if (release === undefined) return dispatchOnce(toolName, raw, ctx);
+    try {
+      const result = await dispatchOnce(toolName, raw, ctx);
+      if (result.ok && result.run_held?.kind === 'approval') noteWaitingInTurn(ctx.turn_state, toolName);
+      return result;
+    } finally {
+      release();
+    }
+  };
+};
+
+/** D-335 slice AG — the turns of a round's calls that may ask the owner, in its `turn_state`. */
+const ASK_TURN = 'd335.ask_turn';
+/** D-335 slice AG — the Browser Toolkit's ops a read recipe may run: its page opened first when no tab
+ *  shows its address (slice AF), the only one of them that asks. */
+const BROWSER_READ_OPS: ReadonlySet<string> = new Set(['core.dom.tabs', 'core.dom.open', 'core.dom.inspect', 'core.dom.wait',
+  'core.dom.table', 'core.dom.screenshot', 'core.dom.scroll', 'core.ai.extract']);
+
+/** D-335 slice AG — the call's turn among its round's calls that may ask, waited for: release it once
+ *  the call is answered. Undefined when it takes none: a recipe that runs in order anyway, one that
+ *  cannot ask, and a Browser Toolkit read that opens nothing (its page a handle) or asks nothing
+ *  (the conversation's "Don't ask about browser actions" on). */
+const askTurnFor = async (deps: ChatToolHandlerDeps, toolName: string, raw: unknown, ctx: ChatDispatchContext)
+  : Promise<(() => void) | undefined> => {
+  const parsed = parseTier2ToolName(toolName);
+  const state = ctx.turn_state;
+  if (parsed === null || state === undefined || ctx.execution_source === undefined) return undefined;
+  const recipe = deps.getRecipeStore().get(parsed.recipe_id);
+  if (recipe?.metadata?.concurrency_safe !== true) return undefined;
+  if (!recipeMayAsk(recipe, ctx.execution_source, recipeAskLookups(deps))) return undefined;
+  const ops = recipe.steps.flatMap((step) => (typeof (step as { op?: unknown }).op === 'string' ? [(step as { op: string }).op] : []));
+  if (ops.length > 0 && ops.every((op) => BROWSER_READ_OPS.has(op))) {
+    const page = asObject(raw)?.page;
+    if (typeof page !== 'string' || !page.includes('://')) return undefined;
+    if (ctx.session_id !== undefined && deps.browserRequestPassLive?.(ctx.session_id) === true) return undefined;
+  }
+  const before = (state.get(ASK_TURN) as Promise<void> | undefined) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  state.set(ASK_TURN, before.then(() => mine));
+  await before;
+  return release;
+};
 
 // ────────────────────────────────────────────────────────────────
 // Tier 3 dispatch (`<connection_name>.<mcp_tool_name>`)
@@ -4921,7 +5021,11 @@ const admitWorkEntityCreate = (
   gate !== undefined
   && source !== undefined
   && isAiToolPrincipal(gate, source)
-  && gate.isOpGranted(source, kind === 'asset' ? ASSET_CREATE_OP_ID : WORK_ENTITY_CREATE_OP_ID[kind]);
+  && gate.isOpGranted(source, workEntityCreateOp(kind));
+
+/** The switch adding a `kind` needs. */
+const workEntityCreateOp = (kind: WorkCreateKind | 'asset'): string =>
+  kind === 'asset' ? ASSET_CREATE_OP_ID : WORK_ENTITY_CREATE_OP_ID[kind];
 
 /** The narrow slice of `KernelDispatchers` the two calendar write tools need.
  *  Declared here rather than importing the whole dispatcher bag so the chat
@@ -4964,6 +5068,331 @@ export const WORK_ENTITY_UPDATE_OP_ID: Readonly<Record<WorkCreateKind, string>> 
  *  `handleWorkEntityUpsert` does not carry a `done` field AT ALL — routing a
  *  completion through it would silently drop the claim. */
 export const TASK_MARK_DONE_OP_ID = 'core.work-entity.task.mark-done';
+export const COMMITMENT_FULFILL_OP_ID = 'core.work-entity.commitment.fulfill';
+export const COMMITMENT_CANCEL_OP_ID = 'core.work-entity.commitment.cancel';
+
+/** D-343 slice 1 — a commitment kept (`done: true`, `done_on` for a day before today) or
+ *  cancelled (`state: "cancelled"`) from the chat, on its own as a task is ticked off. A due
+ *  item stands for a commitment, so this closes it too. The owner's approved close is their
+ *  own completion, as their Done in Today is: a due item's clock then runs from the day it
+ *  was done, where a close nobody vouches for asks the owner for that day. */
+const closeCommitmentFromChat = async (
+  deps: ChatToolHandlerDeps,
+  crud: WorkEntityCrudRpcDeps,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+  id: string,
+  check: boolean,
+): Promise<ChatDispatchResult> => {
+  const other = Object.keys(args).filter((name) => !['kind', 'id', 'done', 'done_on', 'state'].includes(name) && args[name] !== undefined);
+  if (other.length > 0) {
+    return invalidArgs(`work.update: send a commitment's close on its own, without ${other.map((name) => `\`${name}\``).join(', ')}: closing it and changing it are separate changes`);
+  }
+  const cancels = args.state !== undefined;
+  if (cancels && (typeof args.state !== 'string' || args.state.trim() !== 'cancelled')) {
+    return invalidArgs('work.update: a commitment\'s only `state` is `cancelled`, for one no longer needed; `done: true` marks it kept');
+  }
+  if (args.done !== undefined && args.done !== true) {
+    return invalidArgs('work.update: a kept or cancelled commitment stays closed, so `done` is only `true` for one; add a new one with work.create');
+  }
+  if (cancels && args.done !== undefined) return invalidArgs('work.update: send `done: true` or `state: "cancelled"`, not both');
+  if (args.done_on !== undefined && args.done !== true) return invalidArgs('work.update: `done_on` goes with `done: true`');
+  const now = deps.now?.() ?? Date.now();
+  const at = args.done_on === undefined ? now
+    : typeof args.done_on === 'string' && args.done_on.trim().length === 10 ? assetReadingTime(args.done_on, now, ctx.time_zone) : null;
+  if (at === null) return invalidArgs('work.update: `done_on` is the day it was done, as YYYY-MM-DD, and not after today');
+  const to = cancels ? 'cancelled' : 'fulfilled';
+  const commitmentOp = to === 'fulfilled' ? COMMITMENT_FULFILL_OP_ID : COMMITMENT_CANCEL_OP_ID;
+  if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, commitmentOp)) {
+    return neededSwitchOff('work.update', commitmentOp, ctx.execution_source);
+  }
+  let current: Commitment;
+  try { current = crud.dispatchers.commitmentById(id); } catch (e) { return invalidArgs(`work.update: ${e instanceof Error ? e.message : String(e)}`); }
+  const closed: ChatDispatchResult = { ok: true, result: { updated: true, kind: 'commitment', id, ...(to === 'fulfilled' ? { done: true } : { cancelled: true }) } };
+  // A card approved after the same close landed (Today's Done, or another card) has nothing left
+  // to do, and succeeds, as the app's close does. Asked about first, it is refused below.
+  if (!check && current.lifecycle_state === to) return closed;
+  const refused = (e: unknown): ChatDispatchResult | null => {
+    if (e instanceof RenewalDateRequiredError && e.renewal) {
+      // Its new date closes it. The chat may enter one only an AI set; the owner's is theirs.
+      // ⚠ Said as `assetHeldText` says it: only the owner's own chat is told "the user set it".
+      const setBy = crud.store.readAsset(e.renewal.asset_id)?.field_sources[`dates.${e.renewal.field}`]?.kind;
+      // An AI write the owner approves is theirs (D-343 ruling 16), so their own chat may enter it.
+      const aiMay = ownersCall(ctx) || setBy === undefined || ASSET_SOURCE_RANKS[setBy] <= ASSET_SOURCE_RANKS.extracted;
+      const toOwner = ctx.execution_source === undefined || ctx.execution_source.actor === 'user_self';
+      const named = `${e.renewal.asset_name}'s \`${e.renewal.field}\``;
+      return invalidArgs(`work.update: “${current.statement}” closes once its new date is entered: `
+        + (aiMay ? `change \`${e.renewal.field}\` on ${e.renewal.asset_name} (kind \`asset\`, id \`${e.renewal.asset_id}\`) with work.update`
+          : toOwner ? `the user set ${named} themselves, so tell them to enter the new date under Yours → Due`
+            : `the owner set ${named} themselves, so tell the user the owner enters the new date under Yours → Due`));
+    }
+    if (e instanceof CommitmentLifecycleError) {
+      const said = e.from === 'fulfilled' ? 'is already kept' : e.from === 'cancelled' ? 'was cancelled'
+        : e.from === 'expired' ? 'lapsed on its date and stays closed' : `cannot be ${to === 'fulfilled' ? 'kept' : 'cancelled'} now`;
+      return invalidArgs(`work.update: “${current.statement}” ${said}`);
+    }
+    return null;
+  };
+  try { crud.dispatchers.commitmentCloseCheck({ commitment: current, to }); } catch (e) {
+    const words = refused(e); if (words) return words; throw e;
+  }
+  // D-343 slice 1 — a condition's reminder is kept by clearing the condition, which records it on
+  // the thing and closes the reminder kept. Live, the model kept "Replace alarm battery" and left
+  // the alarm saying its battery was low. Only the owner's own chat records the condition.
+  const condition = to === 'fulfilled' && ownersCall(ctx) ? crud.dispatchers.commitmentCondition(current) : null;
+  if (condition) {
+    return invalidArgs(`work.update: “${current.statement}” closes once \`${condition.field}\` is clear: send work.update with kind \`asset\`, `
+      + `id \`${condition.asset_id}\` and conditions {"${condition.field}": "clear"}, which records it on ${condition.asset_name} and keeps the reminder`);
+  }
+  if (current.pending_write) return invalidArgs(`work.update: a change to “${current.statement}” is waiting for its source to confirm it`);
+  if (!commitmentSourceConfirmsClose(crud.store, current)) {
+    return invalidArgs(`work.update: “${current.statement}” comes from a source that closes it there, not here`);
+  }
+  if (check) return WOULD_RUN;
+  const ownersOwn = ownerApproved(ctx);
+  try {
+    await withCommitmentMutation(crud.store, current.id, async () => {
+      // Re-read in the lock: a close from Today may have landed while this queued.
+      if (crud.store.readCommitment(current.id)?.lifecycle_state === to) return;
+      if (to === 'cancelled') await crud.dispatchers.commitmentCancel({ id: current.id, cancelled_at: at });
+      else await (ownersOwn ? crud.dispatchers.ownerCommitmentFulfill : crud.dispatchers.commitmentFulfill)({ id: current.id, fulfilled_at: at });
+    });
+  } catch (e) {
+    const words = refused(e); if (words) return words;
+    return executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return closed;
+};
+
+export const BOOKING_UPDATE_OP_ID = 'core.work-entity.booking.update';
+/** How a booking went, or that it is on: what the chat may set. `pending` is a pack's or the
+ *  owner's own step before a booking is confirmed, and the chat never goes back to it. */
+const BOOKING_CHAT_STATES: readonly BookingLifecycleState[] = ['completed', 'no_show', 'cancelled', 'confirmed'];
+/** A booking's time as the model names it: an ISO 8601 date-time with its offset, one instant.
+ *  A day, epoch ms, or a time with no offset names none. */
+const bookingTime = (value: unknown): number | null =>
+  typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/u.test(value.trim()) ? unambiguousDateMs(value) : null;
+
+/** D-343 slice 1 (ruling 14) — the chat changes a booking as the owner's booking dialog does:
+ *  how it went (`state`), its time (`starts_at`, then `ends_at` or its kept length) or its
+ *  title. Nothing here tells a booking's visitor, as the dialog does not; a booking made from
+ *  the reception page has one, so its result says they were not told, for the model to pass on. */
+const updateBookingFromChat = async (
+  deps: ChatToolHandlerDeps,
+  crud: WorkEntityCrudRpcDeps,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+  check: boolean,
+): Promise<ChatDispatchResult> => {
+  const id = typeof args.id === 'string' ? args.id.trim() : '';
+  if (id.length === 0) return invalidArgs('work.update requires the id of the row to change');
+  const other = Object.keys(args).filter((name) => !['kind', 'id', 'state', 'starts_at', 'ends_at', 'title'].includes(name) && args[name] !== undefined);
+  if (other.length > 0) {
+    return invalidArgs(`work.update: a booking takes \`state\`, \`starts_at\`, \`ends_at\` and \`title\`, not ${other.map((name) => `\`${name}\``).join(', ')}`
+      + (other.includes('done') ? '; how it went is its `state`, `completed` or `no_show`' : ''));
+  }
+  const patch: { lifecycle_state?: BookingLifecycleState; slot_start_at?: number; slot_end_at?: number; title?: string } = {};
+  const fields: string[] = [];
+  if (args.state !== undefined) {
+    const state = typeof args.state === 'string' ? args.state.trim() : '';
+    if (!(BOOKING_CHAT_STATES as readonly string[]).includes(state)) {
+      return invalidArgs("work.update: a booking's `state` is `completed`, `no_show`, `cancelled` or `confirmed`");
+    }
+    patch.lifecycle_state = state as BookingLifecycleState;
+    fields.push('state');
+  }
+  if (args.title !== undefined) {
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    if (title.length === 0 || title.length > BOOKING_TITLE_MAX) {
+      return invalidArgs(`work.update: a booking's \`title\` is what was booked, at most ${BOOKING_TITLE_MAX} characters`);
+    }
+    patch.title = title;
+    fields.push('title');
+  }
+  if (args.ends_at !== undefined && args.starts_at === undefined) return invalidArgs('work.update: send `ends_at` with `starts_at`, its new start');
+  let booking: Booking;
+  try { booking = crud.dispatchers.bookingById(id); } catch (e) { return invalidArgs(`work.update: ${e instanceof Error ? e.message : String(e)}`); }
+  if (args.starts_at !== undefined) {
+    const start = bookingTime(args.starts_at);
+    if (start === null) return invalidArgs('work.update: `starts_at` is a time with its offset, such as 2026-11-12T10:00+01:00');
+    let end: number | null;
+    if (args.ends_at !== undefined) {
+      end = bookingTime(args.ends_at);
+      if (end === null) return invalidArgs('work.update: `ends_at` is a time with its offset, such as 2026-11-12T11:00+01:00');
+      fields.push('starts_at', 'ends_at');
+    } else if (booking.slot_start_at !== undefined && booking.slot_end_at !== undefined) {
+      end = start + (booking.slot_end_at - booking.slot_start_at);
+      fields.push('starts_at');
+    } else {
+      return invalidArgs(`work.update: “${booking.title}” has no time yet, so send \`ends_at\` with \`starts_at\``);
+    }
+    if (end <= start) return invalidArgs('work.update: `ends_at` is after `starts_at`');
+    patch.slot_start_at = start;
+    patch.slot_end_at = end;
+  }
+  if (fields.length === 0) return invalidArgs("work.update: send a booking's new `state`, `starts_at` or `title`");
+  if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, BOOKING_UPDATE_OP_ID)) {
+    return neededSwitchOff('work.update', BOOKING_UPDATE_OP_ID, ctx.execution_source);
+  }
+  const changes = (patch.lifecycle_state !== undefined && patch.lifecycle_state !== booking.lifecycle_state)
+    || (patch.title !== undefined && patch.title !== booking.title)
+    || (patch.slot_start_at !== undefined && (patch.slot_start_at !== booking.slot_start_at || patch.slot_end_at !== booking.slot_end_at));
+  if (!changes) return invalidArgs(`work.update: “${booking.title}” already says that, so nothing would change`);
+  if (check) return WOULD_RUN;
+  try {
+    await crud.dispatchers.bookingUpdate({ id: booking.id, ...patch });
+  } catch (e) {
+    return executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const visitorNotTold = booking.reception_record_id !== undefined
+    && (patch.slot_start_at !== undefined || (patch.lifecycle_state === 'cancelled' && booking.lifecycle_state !== 'cancelled'));
+  return { ok: true, result: { updated: true, kind: 'booking', id, fields,
+    ...(visitorNotTold ? { note: 'Its visitor booked it through the user\'s reception page and has not been told. Say so.' } : {}) } };
+};
+
+/** D-343 slice 1 — the occasions made in Yours, as the chat changes them: read, and saved as Yours'
+ *  "Save occasion" saves them (`yours.command`), which pins one a contact or calendar made and
+ *  moves its clocks. */
+export interface ChatOccasions {
+  read(id: string): Occasion | null;
+  save(input: OccasionInput, owner: ExecutionSource): Promise<unknown>;
+}
+/** No contract can grant this yet, so only the owner's own chat, messenger or schedule (no
+ *  governing contract) changes an occasion, and an AI app is refused. */
+export const OCCASION_UPDATE_OP_ID = 'core.occasion.update';
+const OCCASION_TITLE_MAX = 500;
+
+/** D-343 slice 1 (ruling 14) — the chat changes an occasion made in Yours: its title, its date
+ *  (`on`: a yearly one keeps that month and day every year, a one-time one moves to it) or
+ *  whether it reminds (`muted`). A safety, legal or travel clock is not stopped from the chat:
+ *  Yours asks a second time before it stops one. Its reminders' tasks are closed as
+ *  commitments, which the agenda names (`represents`). */
+const updateOccasionFromChat = async (
+  deps: ChatToolHandlerDeps,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+  check: boolean,
+): Promise<ChatDispatchResult> => {
+  const occasions = deps.getOccasions?.();
+  if (!occasions) return executionError('work.update: occasions are unavailable');
+  const id = typeof args.id === 'string' ? args.id.trim() : '';
+  if (id.length === 0) return invalidArgs('work.update requires the id of the row to change');
+  const other = Object.keys(args).filter((name) => !['kind', 'id', 'title', 'on', 'muted'].includes(name) && args[name] !== undefined);
+  if (other.length > 0) {
+    return invalidArgs(`work.update: an occasion takes \`title\`, \`on\` and \`muted\`, not ${other.map((name) => `\`${name}\``).join(', ')}`);
+  }
+  if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, OCCASION_UPDATE_OP_ID)) {
+    return neededSwitchOff('work.update', OCCASION_UPDATE_OP_ID, ctx.execution_source);
+  }
+  const occasion = occasions.read(id);
+  if (!occasion) return invalidArgs(`work.update: there is no occasion \`${id}\`; situation.query names each with its id`);
+  const { created_at: _created, updated_at: _updated, ...current } = occasion;
+  const next: OccasionInput = { ...current };
+  const fields: string[] = [];
+  if (args.title !== undefined) {
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    if (title.length === 0 || title.length > OCCASION_TITLE_MAX) {
+      return invalidArgs(`work.update: an occasion's \`title\` is its name, at most ${OCCASION_TITLE_MAX} characters`);
+    }
+    next.title = title;
+    fields.push('title');
+  }
+  if (args.on !== undefined) {
+    if (typeof args.on !== 'string' || !isAssetDate(args.on)) return invalidArgs('work.update: `on` is a date as YYYY-MM-DD');
+    if (occasion.source_next_on === undefined) next.month_day = args.on.slice(5);
+    else {
+      const today = assetDateAt(deps.now?.() ?? Date.now(), ctx.time_zone ?? 'UTC');
+      if (args.on < today) return invalidArgs(`work.update: “${occasion.title}” happens once, so \`on\` is today or later`);
+      next.source_next_on = args.on;
+    }
+    fields.push('on');
+  }
+  if (args.muted !== undefined) {
+    if (typeof args.muted !== 'boolean') return invalidArgs('work.update: `muted` is `true` or `false`');
+    if (args.muted && occasion.rules.some((rule) => rule.enabled && rule.consequence === 'floor')) {
+      return invalidArgs(`work.update: “${occasion.title}” keeps a safety, legal or travel reminder, which only the user stops, in Yours`);
+    }
+    next.muted = args.muted;
+    fields.push('muted');
+  }
+  if (fields.length === 0) return invalidArgs("work.update: send an occasion's new `title`, `on` or `muted`");
+  if (next.title === occasion.title && next.month_day === occasion.month_day && next.source_next_on === occasion.source_next_on
+    && next.muted === occasion.muted) {
+    return invalidArgs(`work.update: “${occasion.title}” already says that, so nothing would change`);
+  }
+  if (check) return WOULD_RUN;
+  try {
+    await occasions.save(next, ctx.execution_source!);
+  } catch (e) {
+    return executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { ok: true, result: { updated: true, kind: 'occasion', id, fields } };
+};
+
+export const BOOKING_CREATE_OP_ID = 'core.work-entity.booking.create';
+/** The ops a mail fact's record is made and closed under: a bill's commitment, a reservation's
+ *  booking (made closed), any other fact's task. */
+const mailFactCloseOps = (type: string, to: MailFactCloseTo): readonly string[] =>
+  type === 'bill' ? [WORK_ENTITY_CREATE_OP_ID.commitment, to === 'cancelled' ? COMMITMENT_CANCEL_OP_ID : COMMITMENT_FULFILL_OP_ID]
+    : type === 'reservation' ? [BOOKING_CREATE_OP_ID] : [WORK_ENTITY_CREATE_OP_ID.task, TASK_MARK_DONE_OP_ID];
+const MAIL_FACT_CLOSES: Readonly<Record<string, string>> = {
+  bill: '`done: true` once it is paid, or `state: "cancelled"` once nothing is owed',
+  reservation: '`done: true` once it took place, or `state` `cancelled` or `no_show`',
+};
+
+/** D-343 slice 1 (ruling 15) — the chat closes a mail fact the user says is over ("I paid the
+ *  City Water bill") by making the record the agenda shows it through, already closed. Only mail
+ *  closes the fact itself, so a fact with a record changes through that record, and one its
+ *  email closed stays closed. */
+const closeMailFactFromChat = async (
+  deps: ChatToolHandlerDeps,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+  check: boolean,
+): Promise<ChatDispatchResult> => {
+  const facts = deps.getMailFacts?.();
+  if (!facts) return executionError('work.update: mail facts are unavailable');
+  const id = typeof args.id === 'string' ? args.id.trim() : '';
+  if (id.length === 0) return invalidArgs('work.update requires the id of the row to change');
+  const other = Object.keys(args).filter((name) => !['kind', 'id', 'done', 'done_on', 'state'].includes(name) && args[name] !== undefined);
+  if (other.length > 0) {
+    return invalidArgs(`work.update: a mail fact takes \`done\` or \`state\`, not ${other.map((name) => `\`${name}\``).join(', ')}`);
+  }
+  const fact = facts.read(id);
+  if (!fact) return invalidArgs(`work.update: there is no mail fact \`${id}\`; situation.query names each with its id`);
+  if (fact.record) {
+    return invalidArgs(`work.update: “${fact.title}” is kept as the ${fact.record.kind} “${fact.record.title}”: change that, `
+      + `with kind \`${fact.record.kind}\` and id \`${fact.record.id}\``);
+  }
+  if (fact.closed) return invalidArgs(`work.update: an email already closed “${fact.title}”`);
+  if (fact.closes.length === 0) return invalidArgs(`work.update: “${fact.title}” is a request the user mailed their server, which carries it out`);
+  const closes = `“${fact.title}” closes with ${MAIL_FACT_CLOSES[fact.type] ?? '`done: true`'}`;
+  const state = typeof args.state === 'string' ? args.state.trim() : args.state;
+  if (args.done !== undefined && args.done !== true) return invalidArgs(`work.update: ${closes}`);
+  if (state !== undefined && args.done !== undefined) return invalidArgs('work.update: send `done: true` or `state`, not both');
+  const to = state === undefined ? 'done' : state;
+  if ((state === undefined && args.done !== true) || !fact.closes.includes(to as MailFactCloseTo)) return invalidArgs(`work.update: ${closes}`);
+  if (args.done_on !== undefined && (to !== 'done' || fact.type === 'reservation')) {
+    return invalidArgs(fact.type === 'reservation' ? 'work.update: a reservation took place at its own time, so it takes no `done_on`'
+      : 'work.update: `done_on` goes with `done: true`');
+  }
+  const now = deps.now?.() ?? Date.now();
+  const at = args.done_on === undefined ? now
+    : typeof args.done_on === 'string' && args.done_on.trim().length === 10 ? assetReadingTime(args.done_on, now, ctx.time_zone) : null;
+  if (at === null) return invalidArgs('work.update: `done_on` is the day it was done, as YYYY-MM-DD, and not after today');
+  // The first switch closing it needs that is off is the one named.
+  const offOp = mailFactCloseOps(fact.type, to as MailFactCloseTo)
+    .find((op) => !admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, op));
+  if (offOp !== undefined) return neededSwitchOff('work.update', offOp, ctx.execution_source);
+  if (check) return WOULD_RUN;
+  try {
+    const record = await facts.close({ thing_id: id, to: to as MailFactCloseTo, at, ...(ctx.time_zone !== undefined ? { time_zone: ctx.time_zone } : {}) });
+    return { ok: true, result: { updated: true, kind: 'mail_fact', id, fields: [state === undefined ? 'done' : 'state'],
+      record: { kind: record.kind, id: record.id } } };
+  } catch (e) {
+    return executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
 
 /** Slice 3 — `work.update`. Two paths behind one tool, because the model should
  *  not have to know which verb the substrate files a change under.
@@ -4976,16 +5405,20 @@ export const TASK_MARK_DONE_OP_ID = 'core.work-entity.task.mark-done';
 const createWorkUpdateHandler =
   (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
+    const args = asObject(raw);
+    // An occasion is kept in Yours, and a mail fact is the mail's, not in the work graph.
+    if (args?.kind === 'occasion') return updateOccasionFromChat(deps, args, ctx, check);
+    if (args?.kind === 'mail_fact') return closeMailFactFromChat(deps, args, ctx, check);
     const crud = deps.getWorkEntityCrudDeps?.();
     if (!crud) return executionError('work-entity write path unavailable');
-    const args = asObject(raw);
     if (!args) return invalidArgs('args must be an object');
 
     const kind = args.kind;
     if (kind === 'asset') return updateAssetFromChat(deps, args, ctx, check);
+    if (kind === 'booking') return updateBookingFromChat(deps, crud, args, ctx, check);
     if (!isWorkCreateKind(kind)) {
       return invalidArgs(
-        `work.update requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset'].join(' / ')}`,
+        `work.update requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset', 'booking', 'occasion', 'mail_fact'].join(' / ')}`,
       );
     }
     const id = typeof args.id === 'string' ? args.id.trim() : '';
@@ -4995,6 +5428,17 @@ const createWorkUpdateHandler =
     for (const name of ['dates', 'readings', 'attributes', 'place', 'belongs_to'] as const) {
       if (args[name] !== undefined) return invalidArgs(`work.update: \`${name}\` applies to an asset only`);
     }
+    for (const name of ['starts_at', 'ends_at'] as const) {
+      if (args[name] !== undefined) return invalidArgs(`work.update: \`${name}\` applies to a booking only`);
+    }
+    for (const name of ['on', 'muted'] as const) {
+      if (args[name] !== undefined) return invalidArgs(`work.update: \`${name}\` applies to an occasion only`);
+    }
+    // D-343 slice 1 — a commitment is kept or cancelled on its own, as a task is ticked off.
+    if (kind === 'commitment' && (args.done !== undefined || args.done_on !== undefined || args.state !== undefined)) {
+      return closeCommitmentFromChat(deps, crud, args, ctx, id, check);
+    }
+    if (args.done_on !== undefined) return invalidArgs('work.update: `done_on` applies to a commitment only');
 
     // ⛔ EVERY FIELD GOES WHERE ITS KIND KEEPS IT, OR IS REFUSED. A dispatcher
     // ignores a field it does not have, and this tool reported each such field as
@@ -5021,7 +5465,7 @@ const createWorkUpdateHandler =
       put('body', kind === 'project' ? 'description' : 'body', args.body);
     }
     if (typeof args.state === 'string' && args.state.trim().length > 0) {
-      if (kind === 'note' || kind === 'commitment') return noPlace('state');
+      if (kind === 'note') return noPlace('state');
       put('state', 'state', args.state.trim());
     }
     if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
@@ -5083,7 +5527,7 @@ const createWorkUpdateHandler =
     const marksDone = typeof args.done === 'boolean';
 
     if (marksDone && kind !== 'task') {
-      return invalidArgs('work.update: `done` applies to a task only');
+      return invalidArgs('work.update: `done` applies to a task or a commitment');
     }
     if (marksDone && changed.length > 0) {
       return invalidArgs(
@@ -5101,11 +5545,7 @@ const createWorkUpdateHandler =
 
     const opId = marksDone ? TASK_MARK_DONE_OP_ID : WORK_ENTITY_UPDATE_OP_ID[kind];
     if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, opId)) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: `work.update is not granted to this contract for ${kind} (write rejected)`,
-      };
+      return neededSwitchOff('work.update', opId, ctx.execution_source);
     }
 
     if (check) return WOULD_RUN;
@@ -5218,11 +5658,7 @@ const createCalendarCreateHandler =
     }
 
     if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, CALENDAR_CREATE_OP_ID)) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: 'calendar.create is not granted to this contract (write rejected)',
-      };
+      return neededSwitchOff('calendar.create', CALENDAR_CREATE_OP_ID, ctx.execution_source);
     }
 
     const slug = typeof args.calendar_id === 'string' && args.calendar_id.trim().length > 0
@@ -5282,11 +5718,7 @@ const createCalendarUpdateHandler =
     const { slug, source_id: sourceId, patch } = named !== undefined ? { ...normalized, ...named } : normalized;
 
     if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, CALENDAR_UPDATE_OP_ID)) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: 'calendar.update is not granted to this contract (write rejected)',
-      };
+      return neededSwitchOff('calendar.update', CALENDAR_UPDATE_OP_ID, ctx.execution_source);
     }
 
     // D-329 — a check makes the write's own checks, its calendar's included: the event is
@@ -5403,11 +5835,7 @@ const workCreate = async (
   }
 
   if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, kind)) {
-    return {
-      ok: false,
-      reason: 'classification_blocked',
-      detail: `work.create is not granted to this contract for ${kind} (write rejected)`,
-    };
+    return neededSwitchOff('work.create', workEntityCreateOp(kind), ctx.execution_source);
   }
 
   // ⛔ EVERY FIELD GOES WHERE ITS KIND KEEPS IT, OR IS REFUSED — as in
@@ -5512,7 +5940,7 @@ const CHAT_ASSET_TYPE_WORDS: AssetTypeWords = {
   holder: '`holder_email`, the email address of the person it belongs to', describe: 'work.type',
 };
 const ASSET_CREATE_ARGS: ReadonlySet<string> = new Set(['kind', 'type', 'title', 'dates', 'readings', 'holder_email', 'attributes', 'place', 'belongs_to', 'body']);
-const ASSET_UPDATE_ARGS: ReadonlySet<string> = new Set(['kind', 'id', 'title', 'body', 'dates', 'readings', 'attributes', 'place', 'belongs_to']);
+const ASSET_UPDATE_ARGS: ReadonlySet<string> = new Set(['kind', 'id', 'title', 'body', 'dates', 'readings', 'conditions', 'attributes', 'place', 'belongs_to']);
 /** How much of what the user said about a thing the AI may keep on it. */
 const ASSET_ATTRIBUTES_MAX = 20;
 const ASSET_ATTRIBUTE_TEXT_MAX = 500;
@@ -5664,10 +6092,12 @@ const assetReadingsArg = (
   }
   return readings;
 };
-/** What an asset keeps in a group, against the names a call sent. */
-const assetFieldsText = (tool: string, asset: Asset, group: 'dates' | 'readings', extra: readonly string[]): string => {
+/** What an asset keeps in a group, against the names a call sent. Its observations are the
+ *  conditions the tools name. */
+const assetFieldsText = (tool: string, asset: Asset, group: 'dates' | 'readings' | 'observations', extra: readonly string[]): string => {
   const kept = Object.keys(asset[group]);
-  return `${tool}: \`${asset.name}\` keeps ${kept.length > 0 ? `the ${group} ${listedNames(kept)}` : `no ${group}`}, not ${listedNames(extra)}. The user can add the field in Yours`;
+  const words = group === 'observations' ? 'conditions' : group;
+  return `${tool}: \`${asset.name}\` keeps ${kept.length > 0 ? `the ${words} ${listedNames(kept)}` : `no ${words}`}, not ${listedNames(extra)}. The user can add the field in Yours`;
 };
 /** Who holds fields an AI may not change, as one clause about them. `owner` names the owner
  *  as the AI knows them: "the user" to the owner, "the owner" to anyone else. */
@@ -5683,12 +6113,14 @@ const assetHeldName = (path: string): string => path === 'name' ? 'its name' : p
   : path === 'belongs_to' ? 'what it belongs to' : path === 'attributes.note' ? 'its note' : `\`${path.slice(path.indexOf('.') + 1)}\``;
 const andList = (items: readonly string[]): string =>
   items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
-/** ⛔ The owner's ruling of 2026-10-25 ("readings mine, rest AI's"): an AI fills an empty
- *  field or replaces what an AI wrote. Where the owner set the value, or a document they
- *  confirmed or a device did, it is refused, before the owner is asked. Search keywords
- *  are editable retrieval metadata, under the owner's later ruling, not ranked facts. The
- *  reason is in plain clauses with an instruction to pass it on: live, a parenthesised "(the
- *  user entered it)" was dropped from 2 of 2 answers, which told the owner only to use Yours.
+/** ⛔ A write the owner does not approve (D-343 ruling 16): an AI fills an empty field or
+ *  replaces what an AI wrote. Where the owner set the value, or a document they confirmed or a
+ *  device did, it is refused, before the owner is asked. A write they approve is theirs and is
+ *  never held, so this is said to a household member's chat, a session the owner restricted,
+ *  and a write a contract runs without asking. Search keywords are editable retrieval
+ *  metadata, under the owner's later ruling, not ranked facts. The reason is in plain clauses
+ *  with an instruction to pass it on: live, a parenthesised "(the user entered it)" was
+ *  dropped from 2 of 2 answers, which told the owner only to use Yours.
  *  ⚠ The AI is told to say it, so it must be true of whoever it is talking to: a household
  *  member did not set the owner's values and has no Yours, and an AI app's user may not be
  *  the owner either. Only the owner's own chat is told "the user set it". */
@@ -5703,16 +6135,34 @@ const assetHeldText = (tool: string, held: AssetFieldHeldError['held'], ctx: Cha
   return `${tool}: ${andList(clauses)}, so an AI may not change ${them}. `
     + `Tell the user why, and that ${toOwner ? 'they' : 'the owner'} can change ${them} in Yours. Leave ${them} out to change the rest`;
 };
+/** D-343 ruling 16 — a date a thing's open reminder reads is recorded by keeping the reminder,
+ *  which the chat may do (`createReminderDateGuard`). The reminder leads, by id: live, a refusal
+ *  that began "Tell the user … in Yours" was passed on 6 of 6 times though the model had kept the
+ *  reminder. Only the owner's approved close records the date; another's leaves it to them. */
+const assetReminderOpenText = (tool: string, error: AssetReminderOpenError, ctx: ChatDispatchContext): string => {
+  const { commitment_id, statement, field } = error.reminder;
+  const records = ownersCall(ctx);
+  return `${tool}: “${statement}” is open, and keeping it ${records ? `records \`${field}\`` : 'records the date once the owner confirms it'}: `
+    + `send work.update with kind \`commitment\`, id \`${commitment_id}\` and \`done: true\`${records ? ', with `done_on` for the day it was done' : ''}. `
+    + `If it was not done and the date is only wrong, tell the user ${records ? 'they' : 'the owner'} can correct it in Yours. `
+    + `Leave \`${field}\` out to change the rest`;
+};
+/** Whether the owner answers this call's ask (`ownerApprovesCallsOf`): an AI app's, or one from
+ *  their own chat, messenger or scheduled prompt. Never a chat under a contract. */
+const ownersCall = (ctx: ChatDispatchContext): boolean => ctx.execution_source !== undefined && ownerApprovesCallsOf(ctx.execution_source);
+/** Whether the owner approved this run: an ask they answered, or a standing rule they accepted. */
+const ownerApproved = (ctx: ChatDispatchContext): boolean => ctx.owner_approved === true && ownersCall(ctx);
 /** How an AI's asset write is ranked (`AssetAiWrite`). A check runs as its write will once
  *  approved, and whose approval that is depends on where the call came from: in a chat under
- *  a contract, the write's readings stay the AI's. */
+ *  a contract, the write stays the AI's (D-343 ruling 16). */
 const assetAiWrite = (ctx: ChatDispatchContext, check: boolean): AssetAiWrite => check
-  ? { check: true, owner_approved: ctx.execution_source !== undefined && ownerApprovesCallsOf(ctx.execution_source) }
-  : { owner_approved: ctx.owner_approved === true };
+  ? { check: true, owner_approved: ownersCall(ctx) }
+  : { owner_approved: ownerApproved(ctx) };
 /** An asset write's refusal in its tool's words, or `null` for a failure of another kind. */
 const assetWriteRefusal = (tool: string, error: unknown, ctx: ChatDispatchContext): ChatDispatchResult | null => {
   if (error instanceof AssetArgRefusal) return invalidArgs(error.message);
   if (error instanceof AssetFieldHeldError) return invalidArgs(assetHeldText(tool, error.held, ctx));
+  if (error instanceof AssetReminderOpenError) return invalidArgs(assetReminderOpenText(tool, error, ctx));
   if (error instanceof AssetTypeError) return invalidArgs(`${tool}: ${assetTypeIssueText(error.type, error.issues, CHAT_ASSET_TYPE_WORDS)}`);
   if (error instanceof AssetValidationError) return invalidArgs(`${tool}: ${error.message}`);
   return null;
@@ -5743,11 +6193,7 @@ const createAssetFromChat = async (
     return invalidArgs('work.create requires a non-empty title for an asset: its name, such as "Maya\'s passport"');
   }
   if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, 'asset')) {
-    return {
-      ok: false,
-      reason: 'classification_blocked',
-      detail: 'work.create is not granted to this contract for asset (write rejected)',
-    };
+    return neededSwitchOff('work.create', ASSET_CREATE_OP_ID, ctx.execution_source);
   }
   const types = deps.getAssetTypes?.();
   if (!types) return executionError('asset types unavailable');
@@ -5800,6 +6246,7 @@ const createAssetFromChat = async (
       const issues = assetTypeIssues(type, {
         dates,
         readings: Object.fromEntries(Object.keys(givenReadings).map((field) => [field, null])),
+        attributes,
         ...(holder !== undefined ? { holder_contact: holder } : {}),
       });
       if (issues) return invalidArgs(`work.create: ${assetTypeIssueText(type, issues, CHAT_ASSET_TYPE_WORDS)}`);
@@ -5863,17 +6310,13 @@ const updateAssetFromChat = async (
   const other = Object.keys(args).filter((name) => !ASSET_UPDATE_ARGS.has(name) && args[name] !== undefined);
   if (other.length > 0) {
     return invalidArgs(
-      `work.update: an asset takes \`title\`, \`body\`, \`dates\`, \`readings\`, \`attributes\`, \`place\` and \`belongs_to\`, not ${other.map((name) => `\`${name}\``).join(', ')}`,
+      `work.update: an asset takes \`title\`, \`body\`, \`dates\`, \`readings\`, \`conditions\`, \`attributes\`, \`place\` and \`belongs_to\`, not ${other.map((name) => `\`${name}\``).join(', ')}`,
     );
   }
   const id = typeof args.id === 'string' ? args.id.trim() : '';
   if (id.length === 0) return invalidArgs('work.update requires the id of the row to change');
   if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, ASSET_UPDATE_OP_ID)) {
-    return {
-      ok: false,
-      reason: 'classification_blocked',
-      detail: 'work.update is not granted to this contract for asset (write rejected)',
-    };
+    return neededSwitchOff('work.update', ASSET_UPDATE_OP_ID, ctx.execution_source);
   }
   let prior: Asset;
   try {
@@ -5901,6 +6344,10 @@ const updateAssetFromChat = async (
       attributes.note = note;
       fields.push('body');
     }
+    // D-342 — a type that names its attributes (a pursuit) keeps the user's words under them, as
+    // a create of one does; one the thing already has stays its own.
+    const unnamed = assetTypeExtraAttributes(prior.class_id, attributes, (name) => prior.attributes[name] != null);
+    if (unnamed.length > 0) throw new AssetArgRefusal(`work.update: ${assetTypeAttributesText(prior.class_id!, unnamed)}`);
     if (Object.keys(attributes).length > 0) patch.attributes = attributes;
     const place = assetPlaceArg('work.update', args.place);
     if (place !== undefined) {
@@ -5940,10 +6387,33 @@ const updateAssetFromChat = async (
         fields.push('readings');
       }
     }
+    // D-343 slice 1 — a condition the user says is over ("I replaced the battery") or back,
+    // recorded as Yours' "Update condition" records it. A clear one ends the reminder it raised,
+    // kept. A device or recipe that reports it is paused by the entry, as by the owner's own.
+    const paused: string[] = [];
+    if (args.conditions !== undefined) {
+      if (!isPlainObject(args.conditions)) {
+        throw new AssetArgRefusal('work.update: `conditions` names each condition with `clear` or `present`, such as {"battery_low": "clear"}');
+      }
+      const extra = Object.keys(args.conditions).filter((field) => !Object.hasOwn(prior.observations, field));
+      if (extra.length > 0) throw new AssetArgRefusal(assetFieldsText('work.update', prior, 'observations', extra));
+      const at = deps.now?.() ?? Date.now();
+      const observations: Record<string, AssetCondition> = {};
+      for (const [field, value] of Object.entries(args.conditions)) {
+        if (value !== 'clear' && value !== 'present') throw new AssetArgRefusal(`work.update: \`conditions.${field}\` is \`clear\` or \`present\``);
+        if (assetConditionHolds(prior.observations[field], at) === (value === 'present')) {
+          throw new AssetArgRefusal(`work.update: \`${prior.name}\`'s \`${field}\` is already ${value}`);
+        }
+        observations[field] = { active: value === 'present', certainty: 'confirmed', as_of: at, evidence: [], source: '' };
+        if (prior.field_sources[`observations.${field}`]?.kind === 'observation') paused.push(field);
+      }
+      patch.observations = observations;
+      fields.push('conditions');
+    }
     // Same reasoning as the other kinds: an empty change would be put to the owner,
     // change nothing and report success.
     if (fields.length === 0) {
-      throw new AssetArgRefusal('work.update: send at least one change to the asset (title / body / dates / readings / attributes / place / belongs_to)');
+      throw new AssetArgRefusal('work.update: send at least one change to the asset (title / body / dates / readings / conditions / attributes / place / belongs_to)');
     }
     const { asset } = await crud.dispatchers.assetUpdate({
       ...patch,
@@ -5956,7 +6426,8 @@ const updateAssetFromChat = async (
         ? invalidArgs(`work.update: \`${prior.name}\` already says that, so nothing would change`)
         : WOULD_RUN;
     }
-    return { ok: true, result: { updated: true, kind: 'asset', id, fields } };
+    return { ok: true, result: { updated: true, kind: 'asset', id, fields, ...(paused.length > 0 ? { note: `A device or recipe reported `
+      + `${listedNames(paused)}. The user's entry now stands, and pauses it until they allow its automatic updates in Yours. Say so.` } : {}) } };
   } catch (e) {
     return assetWriteRefusal('work.update', e, ctx)
       ?? executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -5990,8 +6461,13 @@ const workRowName = (crud: NonNullable<ReturnType<NonNullable<ChatToolHandlerDep
  *  was put to the owner as "id: we1:asset:recued.asset:local:e1a798e8…", so with two cars
  *  they could not tell which one they were approving. */
 export const workAskLabels = async (deps: ChatToolHandlerDeps, raw: unknown): Promise<ApprovalValueLabels | undefined> => {
-  const crud = deps.getWorkEntityCrudDeps?.();
   const args = asObject(raw);
+  // D-343 slice 1 — an occasion and a mail fact by their titles ("Bill: City Water").
+  if ((args?.kind === 'occasion' || args?.kind === 'mail_fact') && typeof args.id === 'string') {
+    const title = args.kind === 'occasion' ? deps.getOccasions?.()?.read(args.id)?.title : deps.getMailFacts?.()?.read(args.id)?.title;
+    return title === undefined ? undefined : { id: { [args.id]: title } };
+  }
+  const crud = deps.getWorkEntityCrudDeps?.();
   if (!crud || !args) return undefined;
   const labels: Record<string, Record<string, string>> = {};
   const label = (key: string, kind: unknown): void => {
@@ -6042,11 +6518,7 @@ const createWorkTypeHandler =
       );
     }
     if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, 'asset')) {
-      return {
-        ok: false,
-        reason: 'classification_blocked',
-        detail: 'work.type is not granted to this contract: it needs the switch that adds things you own',
-      };
+      return neededSwitchOff('work.type', ASSET_CREATE_OP_ID, ctx.execution_source);
     }
     const types = deps.getAssetTypes?.();
     if (!types) return executionError('asset types unavailable');
@@ -6066,12 +6538,15 @@ const createWorkTypeHandler =
     }
     const type = types.get(id);
     if (!type) return invalidArgs(`work.type: ${unknownAssetTypeText(id, types, 'work.type with no `type`')}`);
+    const shape = describeAssetType(type);
     return {
       ok: true,
       result: {
         kind: 'asset',
-        ...describeAssetType(type),
-        note: `Add one with work.create: kind "asset", type "${type.id}", its title${assetTypeNeedsHolder(type) ? ', holder_email' : ''} and dates under these names as YYYY-MM-DD. Leave out a date the user did not give.`,
+        ...shape,
+        // D-342 slice 4 — a type that names attributes (a pursuit) keeps the user's words under them,
+        // with any time in them as the date it means (ruling 10): they are read on later days.
+        note: `Add one with work.create: kind "asset", type "${type.id}", its title${assetTypeNeedsHolder(type) ? ', holder_email' : ''} and dates under these names as YYYY-MM-DD${shape.attributes ? ', and attributes under these names, in the user\'s words' : ''}. Leave out a date the user did not give.${shape.attributes ? ' Write any time in the title or attributes as the date it means, with its year, never "next year" or "this morning": they are read on later days.' : ''}`,
       },
     };
   };
@@ -6104,59 +6579,95 @@ const createWorkSearchHandler =
   async (raw, ctx) =>
     runWorkEntitySearchTool(workEntityReadToolsDeps(deps), raw, ctx);
 
+/** D-342 — a typed thing's read names each attribute its type keeps, an unset one as null, as its
+ *  dates and readings are: an update calls no `work.type`, and changes what it read. */
+const withTypeAttributes = (read: ChatDispatchResult): ChatDispatchResult => {
+  if (!read.ok || !isPlainObject(read.result) || !isPlainObject(read.result.entity)) return read;
+  const entity = read.result.entity;
+  const attributes = isPlainObject(entity.attributes) ? entity.attributes : {};
+  const unset = entity.kind === 'asset' && typeof entity.class_id === 'string'
+    ? assetTypeAttributeNames(entity.class_id).filter((name) => attributes[name] == null) : [];
+  if (unset.length === 0) return read;
+  return { ...read, result: { ...read.result,
+    entity: { ...entity, attributes: { ...attributes, ...Object.fromEntries(unset.map((name) => [name, null])) } } } };
+};
 const createWorkReadHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) =>
-    runWorkEntityReadTool(workEntityReadToolsDeps(deps), raw, ctx);
+    withTypeAttributes(await runWorkEntityReadTool(workEntityReadToolsDeps(deps), raw, ctx));
 
 // ────────────────────────────────────────────────────────────────
 // Tier 2 source + manifest lookup
 // ────────────────────────────────────────────────────────────────
 
-export const createChatTier2Source = (deps: ChatToolHandlerDeps): Tier2Source => ({
-  listRecipes(): ReadonlyArray<Tier2RecipeEntry> {
-    // Enumerate every known recipe (SQLite + bundled) and project into
-    // `Tier2RecipeEntry`. Bundled recipes aren't in `listStored()`, so
-    // walk `ids()` and pull each via `get()` for the parsed
-    // `RecipeDefinition`; publisher_id comes from the stored row when
-    // present (SQLite path) and falls back to `metadata.author` for
-    // bundled-only entries. Kernel recipes (`metadata.author ===
-    // 'recued'`) get filtered out — they're runtime-bundled
-    // implementation detail per `RESERVED_HANDLES` and never surface
-    // in the marketplace / chat catalog. The downstream
-    // `isRecipeChatExposed` filter still applies (`chat_exposed:
-    // false` opt-out), so a kernel recipe missed here would still drop
-    // at catalog-build time. */
-    const store = deps.getRecipeStore();
-    const entries: Tier2RecipeEntry[] = [];
-    // D-320 §3.5 — read once per listing; see `ChatToolHandlerDeps.connectionChoices`.
-    const connectionSlotsOf = deps.connectionChoices?.();
-    for (const id of store.ids()) {
-      const recipe = store.get(id);
-      if (!recipe) continue;
-      if (recipe.metadata?.author === 'recued') continue;
-      const stored = store.getStored(id);
-      const publisher_id =
-        stored?.publisher_id ?? recipe.metadata?.author ?? '';
-      entries.push({
-        recipe_id: id,
-        publisher_id,
-        recipe,
-        // 2026-07-02 default flip — `source: 'inline'` = user-authored
-        // (Kitchen / compose / authored provisioning): an absent
-        // `chat_exposed` defaults EXPOSED for these. Bundled dir recipes
-        // (no stored row) and pack-installed rows (`'pair-sync'` /
-        // `'bundled'`) are distributed content: absent defaults HIDDEN —
-        // the author opts in with explicit `chat_exposed: true`.
-        user_authored: stored?.source === 'inline',
-        ...((slots) => (slots.length > 0 ? { connection_slots: slots } : {}))(
-          connectionSlotsOf?.(recipe) ?? [],
-        ),
-      });
-    }
-    return entries;
-  },
-});
+export const createChatTier2Source = (deps: ChatToolHandlerDeps): Tier2Source => {
+  // Enumerate every known recipe (SQLite + bundled) and project into
+  // `Tier2RecipeEntry`. Bundled recipes aren't in `listStored()`, so
+  // walk `ids()` and pull each via `get()` for the parsed
+  // `RecipeDefinition`; publisher_id comes from the stored row when
+  // present (SQLite path) and falls back to `metadata.author` for
+  // bundled-only entries. Kernel recipes (`metadata.author ===
+  // 'recued'`) get filtered out — they're runtime-bundled
+  // implementation detail per `RESERVED_HANDLES` and never surface
+  // in the marketplace / chat catalog. The downstream
+  // `isRecipeChatExposed` filter still applies (`chat_exposed:
+  // false` opt-out), so a kernel recipe missed here would still drop
+  // at catalog-build time.
+  // ⛔ ONE ENTRY, TWO READERS. The listing and the lookup by name build each recipe's entry here, so a
+  //   tool found by name is the one the catalog lists (D-347 slice C follow-up, 2026-11-08).
+  const entryOf = (
+    store: RecipeStore,
+    id: string,
+    connectionSlotsOf: ((recipe: RecipeDefinition) => ReadonlyArray<Tier2ConnectionSlot>) | undefined,
+  ): Tier2RecipeEntry | null => {
+    const recipe = store.get(id);
+    if (!recipe) return null;
+    if (recipe.metadata?.author === 'recued') return null;
+    const stored = store.getStored(id);
+    const publisher_id =
+      stored?.publisher_id ?? recipe.metadata?.author ?? '';
+    return {
+      recipe_id: id,
+      publisher_id,
+      recipe,
+      // 2026-07-02 default flip — `source: 'inline'` = user-authored
+      // (Kitchen / compose / authored provisioning): an absent
+      // `chat_exposed` defaults EXPOSED for these. Bundled dir recipes
+      // (no stored row) and pack-installed rows (`'pair-sync'` /
+      // `'bundled'`) are distributed content: absent defaults HIDDEN —
+      // the author opts in with explicit `chat_exposed: true`.
+      user_authored: stored?.source === 'inline',
+      ...((slots) => (slots.length > 0 ? { connection_slots: slots } : {}))(
+        connectionSlotsOf?.(recipe) ?? [],
+      ),
+    };
+  };
+  return {
+    listRecipes(): ReadonlyArray<Tier2RecipeEntry> {
+      const store = deps.getRecipeStore();
+      const entries: Tier2RecipeEntry[] = [];
+      // D-320 §3.5 — read once per listing; see `ChatToolHandlerDeps.connectionChoices`.
+      const connectionSlotsOf = deps.connectionChoices?.();
+      for (const id of store.ids()) {
+        const entry = entryOf(store, id, connectionSlotsOf);
+        if (entry) entries.push(entry);
+      }
+      return entries;
+    },
+    // A tool name is `<publisher>/<recipe_id>`, and a recipe id may hold a slash itself, so each slash is
+    // tried as the boundary: the entry is the one whose own publisher and id spell the name.
+    recipeNamed(name: string): Tier2RecipeEntry | null {
+      const store = deps.getRecipeStore();
+      for (let at = name.indexOf('/'); at > 0; at = name.indexOf('/', at + 1)) {
+        const id = name.slice(at + 1);
+        if (!store.get(id)) continue;
+        const entry = entryOf(store, id, deps.connectionChoices?.());
+        if (entry !== null && formatTier2ToolName(entry.publisher_id, entry.recipe_id) === name) return entry;
+      }
+      return null;
+    },
+  };
+};
 
 export const createChatManifestLookup =
   (deps: ChatToolHandlerDeps): IngredientKindLookup =>
@@ -6347,8 +6858,9 @@ export const wrapCollectionFence = (
             ok: true,
             result: {
               ...(container !== undefined ? { [container]: [] as unknown[] } : {}),
-              hint: collectionReadFencedHint(collection),
+              hint: collectionReadFencedHint(collection, isOwnersOwnCall(ctx.execution_source)),
             },
+            ...ownerSwitchFix(`data.${collection}`, ctx.execution_source),
           };
         }
         return handler(raw, ctx);
@@ -6448,7 +6960,7 @@ const recipeScheduleRefusal = (
     return "recipe.schedule is only for the owner's own chat and local MCP client (nothing was scheduled)";
   }
   if (!gate.isOpGranted(source, SCHEDULE_RECIPE_OP_ID)) {
-    return 'recipe.schedule is not granted to this contract (nothing was scheduled)';
+    return neededSwitchRefusalSentence("'recipe.schedule'", SCHEDULE_RECIPE_OP_ID, isOwnersOwnCall(source));
   }
   return undefined;
 };
@@ -6680,6 +7192,7 @@ export const buildChatTier1Handlers = (
   'calendar.create': createCalendarCreateHandler(deps),
   'calendar.update': createCalendarUpdateHandler(deps),
   'work.update': createWorkUpdateHandler(deps),
+  'episode.record': createEpisodeRecordHandler(deps),
   'file.search': createFileSearchHandler(deps),
   'recipe.run': createRecipeRunHandler(deps),
   'recipe.stop': createRecipeStopHandler(deps),
@@ -6707,12 +7220,12 @@ const wrapSphereFence = (handlers: Record<string, Tier1Handler>, deps: ChatToolH
     let before: string | undefined;
     if (tool === 'work.search' || tool === 'work.read') {
       try { before = signature(); }
-      catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }
+      catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'These records are not available for this contract.' } }; }
     }
     if (['contact.search', 'contact.read', 'mail.search', 'mail.read', 'document.read', 'document.search', 'calendar.search', 'memory.search', 'enrichment.search', 'deal.search', 'account.search', 'file.search'].includes(tool)) {
       if (access) {
         try { if (createReadScope(access, ctx.execution_source).limited) return { ok: true, result: { refused: true, hint: SPHERE_READ_REFUSAL } }; }
-        catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }
+        catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'These records are not available for this contract.' } }; }
       }
     }
     const result = await handler(raw, ctx);
@@ -6918,6 +7431,27 @@ export const createChatRawOpSource = (
     ...rawOpToolEntriesFrom(visibleRawOps(universe, (opId) => gate.isOpGranted(source, opId))),
     ...canonical,
   ];
+};
+
+/** D-346 follow-up (2026-11-08) — the pack actions installed but switched off for the OWNER
+ *  (Self (you) → Ops on the Contracts page), so `tools.search` can say so instead of "nothing
+ *  installed does it". The owner deserves to know everything; a contract's app learns nothing
+ *  about what is installed, so any other source gets none. A pack action is on for the owner
+ *  unless they switched it off (`ownerOnlyAdjustedAuthorDefault`), so this is what they turned
+ *  off, not every action they never turned on. */
+export const createChatRawOpTurnedOffSource = (
+  deps: ChatToolHandlerDeps,
+): ((source?: ExecutionSource) => RawOpToolEntry[]) => (source) => {
+  const scan = deps.scanInstalledPacks;
+  const gate = deps.getOpAdmissionGate?.();
+  if (!scan || !gate || !source || !gate.isOwnerGoverned(source)) return [];
+  const getManifest = (slug: string) => deps.getExecutorConfig().manifests.get(slug);
+  const recipeStore = deps.getRecipeStore?.();
+  const coverage = recipeStore
+    ? buildRecipeOpCoverage(recipeStore, buildPackOpResolution(scan, getManifest))
+    : undefined;
+  const universe = buildRawOpToolDescriptors(scan, getManifest, coverage);
+  return rawOpToolEntriesFrom(universe.filter((descriptor) => !gate.isOpGranted(source, descriptor.opId)));
 };
 
 /** D-225 § 9.5.1 step 2b — invoke a raw catalog op from chat.
@@ -7157,6 +7691,7 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
     'memory.write': checkedBy(createMemoryWriteHandler, deps),
     'memory.forget': checkedBy(createMemoryForgetHandler, deps),
     'contact.write': (args: unknown, ctx: ChatDispatchContext) => checkContactWrite(deps, args, ctx),
+    'episode.record': (args: unknown, ctx: ChatDispatchContext) => checkEpisodeRecord(deps, args, ctx),
     'recipe.stop': checkedBy(createRecipeStopHandler, deps),
     'recipe.schedule': checkedBy(createRecipeScheduleHandler, deps),
     'schedule.run_prompt': checkedBy((d, check) => createPromptScheduleHandler(d, 'run_prompt', check), deps),
@@ -7185,6 +7720,8 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
   // everything would be a second, silent gate; supplying none says the surface
   // does not exist, which is the truth.
   rawOpSource: createChatRawOpSource(deps),
+  // D-346 follow-up — what the owner switched off, for `tools.search` to name.
+  rawOpTurnedOffSource: createChatRawOpTurnedOffSource(deps),
   // D-247 D9 — shared by all three Tier-2 exposure surfaces.
   tier2GrantFilter: createChatTier2GrantFilter(deps),
   ownerCatalogGuard: createChatOwnerCatalogGuard(deps),

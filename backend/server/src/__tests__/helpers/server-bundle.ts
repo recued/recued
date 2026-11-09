@@ -7,7 +7,7 @@
  *  from its own folder (`<here>/../../..` in `recipe-store.ts`, `manifest-loader.ts` and
  *  `bundled-pack-source.ts`) and loads its external packages from the repo's `node_modules`. A
  *  bundle anywhere else boots against the wrong tree, or not at all. `dist/` itself is no home:
- *  a sweep rewrites it while tests run (`phase-e-package` runs `build.mjs`).
+ *  every `build.mjs` run empties it before it writes, and it is only as new as the last one.
  *
  *  It is rebuilt, in about half a second, when a file it was built from has changed or it was
  *  built in another checkout. `RECUED_TEST_SERVER_FROM_SOURCE=1` boots `bin.ts` through tsx

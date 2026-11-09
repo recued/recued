@@ -166,6 +166,18 @@ describe('pack-discovery config', () => {
     expect(b.map((x) => x.label)).toContain('✓ Certified');
   });
 
+  it('D-321 S8 — a pack whose used packs are not installed needs them, by name, in danger tone', () => {
+    const one = packBadges(pr({}), undefined, undefined, undefined, undefined, new Map([['p', ['Linear']]]));
+    expect(one).toEqual([expect.objectContaining({
+      label: 'Needs Linear', tone: 'danger', title: 'Linear is not installed, so the actions that use it cannot run.',
+    })]);
+    const two = packBadges(pr({}), undefined, undefined, undefined, undefined, new Map([['p', ['Linear', 'GitHub']]]));
+    expect(two[0]).toMatchObject({
+      label: 'Needs 2 packs', tone: 'danger', title: 'Linear, GitHub are not installed, so the actions that use them cannot run.',
+    });
+    expect(packBadges(pr({}), undefined, undefined, undefined, undefined, new Map([['other', ['Linear']]]))).toEqual([]);
+  });
+
   it('says nothing about a pack that is not in the unrunnable set', () => {
     expect(packBadges(pr({}), undefined, new Set(['someone-else'])).map((x) => x.label))
       .not.toContain('Needs update');

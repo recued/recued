@@ -69,6 +69,12 @@ export interface HousekeepingSchedulerRegistry {
   /** Resolves once the scheduler `stop()` stopped has ended every cycle it
    *  admitted (`HousekeepingScheduler.settled`). */
   settled(): Promise<void>;
+  /** D-188 — start the scheduler `stop()` set aside again: the master pause's Resume. ⛔ Resume
+   *  re-armed every other scheduler but not this one, so housekeeping (enrichment, the vendor
+   *  reconcilers, the update check, the certificate renewal) stayed off after a pause until the
+   *  process restarted. A maintenance window does not call it: per D-123 P7 the operator
+   *  restarts the daemon after one. A no-op when nothing was stopped or one is running. */
+  resume(): void;
 }
 
 export const createHousekeepingSchedulerRegistry = (): HousekeepingSchedulerRegistry => {
@@ -94,6 +100,13 @@ export const createHousekeepingSchedulerRegistry = (): HousekeepingSchedulerRegi
     },
     async settled() {
       await stopped?.settled?.();
+    },
+    resume() {
+      const next = stopped;
+      if (next === undefined || scheduler !== undefined) return;
+      stopped = undefined;
+      scheduler = next;
+      next.start();
     },
   };
 };

@@ -184,6 +184,20 @@ const extractUsage = (
  *  still exists (so the user/engine can cancel explicitly), but there is no
  *  automatic abort. See ./timeout.ts for the LLM timeout policy rationale.
  *  Exported so openai/google adapters reuse it. */
+/** What a failed fetch's `cause` says, as ` (…)`. Node's fetch reports only "fetch failed"; the cause
+ *  tells a refused connection from a reset, a name not found or a certificate (`connect ECONNREFUSED
+ *  127.0.0.1:7999`, `UND_ERR_SOCKET: other side closed`), so a failed model call's record says which.
+ *  The code is said once when the message holds it. Empty when there is no cause. */
+const fetchFailureCause = (e: unknown): string => {
+  const cause = e !== null && typeof e === 'object' ? (e as { cause?: unknown }).cause : undefined;
+  if (cause === null || typeof cause !== 'object') return '';
+  const { code, message } = cause as { code?: unknown; message?: unknown };
+  const codeText = typeof code === 'string' ? code : '';
+  const messageText = typeof message === 'string' ? message : '';
+  const text = messageText.includes(codeText) ? messageText : [codeText, messageText].filter((t) => t.length > 0).join(': ');
+  return text.length > 0 ? ` (${text.slice(0, 200)})` : '';
+};
+
 export const callProvider = async (
   url: string,
   headers: Record<string, string>,
@@ -236,7 +250,7 @@ export const callProvider = async (
       }
       throw new LLMError('AI_TIMEOUT', 'LLM call was cancelled');
     }
-    throw new LLMError('AI_LLM_UNAVAILABLE', `LLM call failed: ${(e as Error).message}`);
+    throw new LLMError('AI_LLM_UNAVAILABLE', `LLM call failed: ${(e as Error).message}${fetchFailureCause(e)}`);
   } finally {
     if (timer !== null) clearTimeout(timer);
   }

@@ -62,7 +62,7 @@ test('Contracts moves focus from an inventory row into its exact detail', async 
     `[${CONTRACTS_DETAIL_HEADING}="user_self"]`,
   );
   await expect(page).toHaveURL(/#contracts\/user_self$/);
-  await expect(heading).toHaveText('Owner (you)');
+  await expect(heading).toHaveText('Self (you)');
   await expect(heading).toHaveAttribute('tabindex', '-1');
   await expect(heading).toBeFocused();
 });

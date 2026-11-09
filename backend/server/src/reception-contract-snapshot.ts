@@ -86,6 +86,14 @@ export const grantedOperationsFor = (
 ): ((contractId: string) => readonly string[]) => (contractId) =>
   definitionStore.get(contractId)?.scope?.operation_ids ?? [];
 
+/** The door's tool allowlist, from its own stored scope: the SAME derivation the mint wrote its
+ *  grant rows from, so the ACCESS and TOOL axes can never disagree. Shared by the recipe runner and
+ *  the resume authority (D-341 B4), whose snapshot must equal the run's, field for field. */
+export const allowedToolsFor = (
+  definitionStore: ContractDefinitionStore,
+): ((contractId: string) => readonly string[]) => (contractId) =>
+  definitionStore.get(contractId)?.scope?.ingredient_ids ?? [];
+
 /** Build the snapshot for a reception dispatch, or fail closed.
  *
  *  Throws only on a source that is not a contract-bearing reception dispatch — that is a

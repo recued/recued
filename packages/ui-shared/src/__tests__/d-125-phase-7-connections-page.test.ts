@@ -902,6 +902,24 @@ describe('D-125 P7.1 — dialog stages', () => {
     expect(html).not.toContain('Save changes');
   });
 
+  it('D-321 P8 — a connection set up from a pack: the banner links back to the pack, an app address only', () => {
+    const state = baseState();
+    state.dialog.recentProbe = {
+      kind: 'api',
+      name: 'stripe',
+      status: 'ok',
+      return_to: { href: '#packs/billing-pack', label: 'Billing <Pro>' },
+    };
+    const html = renderConnectionsPage(state);
+    expect(html).toContain('Last checked for api/stripe: ok.');
+    expect(html).toContain('<a class="rx-link" href="#packs/billing-pack" data-connections-return-to>Back to Billing &lt;Pro&gt; →</a>');
+
+    state.dialog.recentProbe = { ...state.dialog.recentProbe, return_to: { href: 'https://example.com/', label: 'Billing' } };
+    expect(renderConnectionsPage(state)).not.toContain('data-connections-return-to');
+    delete state.dialog.recentProbe.return_to;
+    expect(renderConnectionsPage(state)).not.toContain('data-connections-return-to');
+  });
+
   it('renders a secret-free, accessible credential verification receipt', () => {
     const state = baseState();
     state.dialog.recentProbe = {

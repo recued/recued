@@ -23,6 +23,7 @@ import { isChatCatalogDeliveryMode, isChatModelSourceId } from '@recued/contract
 import type {
   CoordinationStrategy, FreePoolApiEntry, FreePoolEntry,
   LLMConfig, LLMProvider, LLMSlot, LlmGatewayDefaultRoute, Modalities,
+  ThinkingSetting,
 } from './types.js';
 import {
   isLLMMessageRole, isLlmGatewayCallerSystemPolicy,
@@ -44,6 +45,11 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
 
 const isString = (v: unknown): v is string => typeof v === 'string';
 const isBoolean = (v: unknown): v is boolean => typeof v === 'boolean';
+/** D-344 — a model's thinking setting: on or off (absent is the provider's default). */
+const parseThinking = (v: unknown, field: string): ThinkingSetting => {
+  if (v !== 'on' && v !== 'off') throw new LLMConfigValidationError(field, 'must be on | off');
+  return v;
+};
 const isFiniteNumber = (v: unknown): v is number =>
   typeof v === 'number' && Number.isFinite(v);
 const isPositiveSafeInteger = (v: unknown): v is number =>
@@ -179,6 +185,8 @@ const parseSlot = (v: unknown, field: string): LLMSlot | null => {
     }
     out.supports_thinking = v.supports_thinking;
   }
+  // D-344 — the owner's setting for the model's thinking.
+  if (v.thinking !== undefined) out.thinking = parseThinking(v.thinking, `${field}.thinking`);
   if (v.modalities !== undefined) {
     out.modalities = parseModalities(v.modalities, `${field}.modalities`);
   }
@@ -220,6 +228,8 @@ const parseApiEntry = (v: Record<string, unknown>, field: string): FreePoolApiEn
     }
     out.supports_search = v.supports_search;
   }
+  // D-344 — the owner's setting for the model's thinking.
+  if (v.thinking !== undefined) out.thinking = parseThinking(v.thinking, `${field}.thinking`);
   if (v.weight !== undefined) {
     if (!isFiniteNumber(v.weight) || v.weight < 0) {
       throw new LLMConfigValidationError(`${field}.weight`, 'must be a non-negative number');

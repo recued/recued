@@ -52,6 +52,10 @@ export const createCalendarCreateSurface = (deps: {
   let draft: CalendarCreateDraft | null = null, initial = '';
   let zone = '', creationId = '', error = '', loading = false, saving = false, disposed = false;
   let destinations: CalendarEventDestinations = { destinations: [], unavailable: [] };
+  // Whether the calendar list has loaded since the form opened. "No writable calendars" is said
+  // only of a list that loaded: a refused load (a paused server, a lost connection) says why in
+  // its own error, and "check your connections" would send the owner to the wrong place.
+  let listed = false;
   let pending: CalendarEventCreateRequest | null = null;
   let needsCheck = false, generation = 0;
   let leave: (() => void) | null = null;
@@ -117,7 +121,7 @@ export const createCalendarCreateSurface = (deps: {
       const result = await deps.callers.destinations();
       if (disposed || mine !== generation || !draft) return;
       if (!Array.isArray(result?.destinations) || !Array.isArray(result.unavailable)) throw new Error('The calendar list could not be confirmed.');
-      destinations = result;
+      destinations = result; listed = true;
       const before = draft.destination;
       if (!result.destinations.some(value => destinationKey(value) === draft!.destination)) {
         // Losing access to the selected destination must not silently move a
@@ -150,7 +154,7 @@ export const createCalendarCreateSurface = (deps: {
     const next = calendarWallClockValue(nextHour, zone);
     const start = next.slice(0, 10) === context.day ? next : `${context.day}T09:00`;
     const end = start === next ? calendarWallClockValue(nextHour + 3_600_000, zone) : `${context.day}T10:00`;
-    creationId = crypto.randomUUID(); destinations = { destinations: [], unavailable: [] };
+    creationId = crypto.randomUUID(); destinations = { destinations: [], unavailable: [] }; listed = false;
     draft = { destination: '', summary: '', description: '', location: '', start, end,
       allDay: false, startChoice: '', endChoice: '', guests: [], guestQuery: '' };
     initial = JSON.stringify(draft);
@@ -241,7 +245,7 @@ export const createCalendarCreateSurface = (deps: {
       ${destinations.unavailable.length ? `<details><summary>Some calendars are unavailable</summary><ul>${destinations.unavailable.map(value => `<li>${e(value.slug)}: ${e(value.reason)}</li>`).join('')}</ul></details>` : ''}
       <fieldset${saving || needsCheck ? ' disabled' : ''} class="calendar-create-fields">
         ${field('destination', 'Calendar', `<select class="data-input" ${attr('destination')}${loading ? ' disabled' : ''}><option value="">Choose a calendar</option>${destinations.destinations.map(value => `<option value="${e(destinationKey(value))}"${draft!.destination === destinationKey(value) ? ' selected' : ''}>${e(value.name)}${value.provider === 'local' ? '' : ` · ${e(value.slug)} · ${provider[value.provider]}`}</option>`).join('')}</select>`)}
-        ${!loading && !destinations.destinations.length ? '<p class="calendar-agenda-muted">No writable calendars are available. Check your connections or reload calendars.</p>' : ''}
+        ${!loading && listed && !destinations.destinations.length ? '<p class="calendar-agenda-muted">No writable calendars are available. Check your connections or reload calendars.</p>' : ''}
         ${field('summary', 'Title', `<input type="text" class="data-input" ${attr('summary')} maxlength="${CALENDAR_EVENT_EDIT_LIMITS.summary}" value="${e(draft.summary)}" required>`)}
         <label class="calendar-create-all-day"><input type="checkbox" ${attr('allDay')}${draft.allDay ? ' checked' : ''}> All day</label>
         <div class="calendar-create-times">${field('start', draft.allDay ? 'First day' : 'Starts', `<input type="${draft.allDay ? 'date' : 'datetime-local'}" class="data-input" ${attr('start')} value="${e(draft.start)}" required>`)}

@@ -23,6 +23,7 @@ import { buildRawOpToolDescriptors, visibleRawOps } from '../raw-op-tool-catalog
 import {
   createChatRawOpDispatch,
   createChatRawOpSource,
+  createChatRawOpTurnedOffSource,
   projectRawOpOutcome,
 } from '../chat-tool-handlers.js';
 import { notAskedYetMessage } from '../chat-carries-on.js';
@@ -582,6 +583,30 @@ describe('D-225 § 9.5.1 — the CHAT catalog gets the same raw-op source', () =
     // absence is also exactly what the gap WAS, so it must stay explicit rather
     // than become an accident again.
     expect(createChatRawOpSource(chatDeps())()).toEqual([]);
+  });
+
+  // D-346 follow-up (2026-11-08) — what the owner switched off, for `tools.search` to name.
+  // Only the owner learns it: a contract's app reads nothing about what is installed.
+  it('names the actions switched off for the owner, and nothing for any other caller', () => {
+    const all = createChatRawOpSource(chatDeps(scanInstalledPacks))();
+    expect(all.length).toBeGreaterThan(1);
+    const [off] = all.map((entry) => entry.name);
+    const opIdOf = (name: string) => name.replace(/^recued_op_/, '');
+    const withGate = (ownerGoverned: boolean) => ({
+      ...chatDeps(scanInstalledPacks),
+      getOpAdmissionGate: () => ({
+        isOwnerGoverned: () => ownerGoverned,
+        isOpGranted: (_source: unknown, opId: string) => opId !== opIdOf(off!),
+        isFrozenByPause: () => false,
+        isOwnerRecipeGranted: () => true,
+      }),
+    }) as unknown as Parameters<typeof createChatRawOpTurnedOffSource>[0];
+    const owner = { channel: 'chat', actor: 'user_self' } as never;
+    expect(createChatRawOpTurnedOffSource(withGate(true))(owner).map((entry) => entry.name)).toEqual([off]);
+    expect(createChatRawOpTurnedOffSource(withGate(false))(
+      { channel: 'mcp', actor: 'contracted_user', contract_id: 'ct_app_1' } as never,
+    )).toEqual([]);
+    expect(createChatRawOpTurnedOffSource(withGate(true))(undefined)).toEqual([]);
   });
 
   // ── D-247 open item 2 — §8 suppression, on the CHAT source ────────────

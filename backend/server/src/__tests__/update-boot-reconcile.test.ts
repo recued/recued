@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runUpdateBootReconcile, type UpdateAuditSink } from '../update/boot-reconcile.js';
-import type { ApplyOrchestratorPorts } from '../update/apply-orchestrator.js';
+import {
+  deriveCommittedRelease,
+  runRollback,
+  type ApplyOrchestratorPorts,
+} from '../update/apply-orchestrator.js';
 import type { UpdateLedgerEntry } from '../update/update-ledger.js';
 import { UpdateLeaseHeldError } from '../update/update-lease.js';
 
@@ -274,6 +278,116 @@ describe('runUpdateBootReconcile', () => {
     expect(p.requestRestart).toHaveBeenCalledOnce();
     expect(led.rows.some((r) => r.kind === 'rolled_back')).toBe(true);
     expect(rows[0]).toMatchObject({ action: 'update_rolled_back' });
+  });
+
+  // ⛔ THE SERVER'S OWN SCHEMA COMPARISON CAN TAKE A SNAPSHOT THE MANIFEST DID NOT ASK
+  // FOR (`runApply`). `apply_started` was written before it and still says `false`; the
+  // entries from the snapshot on say `true`, and a revert restores what was taken.
+  const failingTrial = async (ledger: ReturnType<typeof memLedger>) => {
+    const p = ports({ ledger, bootFailureCounter: memCounter({ count: 2, release: 'stable:1.4.0' }) });
+    const out = await runUpdateBootReconcile({
+      ports: p, channel: 'stable', currentVersion: '1.3.0', auditLog: memAudit().sink, ownerAlert: vi.fn(),
+    });
+    return { out, p };
+  };
+
+  it("⛔ restores the snapshot the schema comparison took, though apply_started says the manifest's false", async () => {
+    const ledger = memLedger([
+      entry({ kind: 'apply_started', id: 'a', migration: false }),
+      entry({
+        kind: 'snapshot_taken', id: 'b', migration: true,
+        detail: 'snapshot: 1.3.0 cannot run on 1 change(s) 1.4.0 makes to the database: table notes changed',
+      }),
+      entry({ kind: 'apply_staged', id: 'c', migration: true }),
+    ]);
+    const { out, p } = await failingTrial(ledger);
+    expect(out.action).toBe('auto-revert');
+    expect(p.restoreSnapshot).toHaveBeenCalledOnce();
+    expect(p.rollbackSwap).toHaveBeenCalledOnce();
+    expect(ledger.rows.find((r) => r.kind === 'rolled_back')?.migration).toBe(true);
+  });
+
+  it("⛔ and on a healthy boot the commit records it, so the owner's rollback later restores it too", async () => {
+    const ledger = memLedger([
+      entry({ kind: 'apply_started', id: 'a', migration: false }),
+      entry({ kind: 'snapshot_taken', id: 'b', migration: true }),
+      entry({ kind: 'apply_staged', id: 'c', migration: true }),
+    ]);
+    // A rollback ends in a restart, so it needs a supervisor, as production has.
+    const p = ports({ ledger, holdsDatabaseOpen: () => false, supervisorWillRespawn: () => true });
+    const out = await runUpdateBootReconcile({
+      ports: p, channel: 'stable', currentVersion: '1.4.0', auditLog: memAudit().sink, ownerAlert: vi.fn(),
+    });
+    expect(out).toMatchObject({ action: 'commit', releaseIdentity: 'stable:1.4.0' });
+    expect(ledger.rows.find((r) => r.kind === 'apply_committed')?.migration).toBe(true);
+    // What the owner's rollback reads (`rollbackContext` in release-config.ts), and does.
+    const rollback = deriveCommittedRelease(p.ledger);
+    expect(rollback?.appliedMigration).toBe(true);
+    expect(runRollback(p, rollback!)).toMatchObject({ status: 'rolled-back', restored_snapshot: true });
+    expect(p.restoreSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('and restores none for a false the comparison let through, though a snapshot file is there', async () => {
+    const ledger = memLedger([
+      entry({ kind: 'apply_started', id: 'a', migration: false }),
+      entry({ kind: 'apply_staged', id: 'c', migration: false }),
+    ]);
+    const { out, p } = await failingTrial(ledger);
+    expect(out.action).toBe('auto-revert');
+    expect(p.restoreSnapshot).not.toHaveBeenCalled();
+    expect(p.rollbackSwap).toHaveBeenCalledOnce();
+  });
+
+  // ⛔⛔ The auto-revert swapped `recued.old` back whatever the disk held. For a
+  // release that migrated the database with no pre-migration snapshot left, the
+  // old binary then met a schema it refuses to open: a server failing its health
+  // check became one that could not start. It now asks `decideRollback` first,
+  // like every other revert path, and refused it changes nothing.
+  const migratedRelease = () => memLedger([
+    entry({ kind: 'apply_started', id: 'a', migration: true }),
+    entry({ kind: 'apply_staged', id: 'b', migration: true }),
+  ]);
+  const bootFailing = async (failedBefore: number, over: Partial<ApplyOrchestratorPorts>) => {
+    const ledger = migratedRelease();
+    const ownerAlert = vi.fn();
+    const p = ports({ ledger, bootFailureCounter: memCounter({ count: failedBefore, release: 'stable:1.4.0' }), ...over });
+    const out = await runUpdateBootReconcile({ ports: p, channel: 'stable', currentVersion: '1.3.0', auditLog: memAudit().sink, ownerAlert });
+    return { out, p, ledger, ownerAlert };
+  };
+
+  it('⛔ a release that migrated, with no snapshot left, is not reverted — and the owner is told', async () => {
+    const { out, p, ledger, ownerAlert } = await bootFailing(2, { hasSnapshot: () => false });
+    expect(out).toMatchObject({ action: 'auto-revert-refused' });
+    expect(p.requestRestart).not.toHaveBeenCalled();
+    expect(p.rollbackSwap).not.toHaveBeenCalled();
+    expect(p.restoreSnapshot).not.toHaveBeenCalled();
+    expect(ledger.rows.map((r) => r.kind), 'still in flight: nothing recorded').toEqual(['apply_started', 'apply_staged']);
+    expect(ownerAlert).toHaveBeenCalledWith({
+      kind: 'auto-revert-refused',
+      release_identity: 'stable:1.4.0',
+      from_version: '1.3.0',
+      to_version: '1.4.0',
+      reason: 'boot health failed 3 times',
+      refusal: 'release migrated the schema and no pre-migration snapshot exists',
+    });
+  });
+
+  it('tells the owner once: a later failing boot refuses again without another alert', async () => {
+    const { out, ownerAlert } = await bootFailing(3, { hasSnapshot: () => false });
+    expect(out).toMatchObject({ action: 'auto-revert-refused' });
+    expect(ownerAlert).not.toHaveBeenCalled();
+  });
+
+  it('⛔ a snapshot gone by the time the drain hands over the disk abandons the swap', async () => {
+    let snapshot = true;
+    const { p, ledger } = await bootFailing(2, {
+      hasSnapshot: () => snapshot,
+      requestRestart: vi.fn((onDrained?: (ok: boolean) => void | Promise<void>) => { snapshot = false; void onDrained?.(true); }),
+    });
+    expect(p.requestRestart).toHaveBeenCalledOnce();
+    expect(p.rollbackSwap).not.toHaveBeenCalled();
+    expect(p.restoreSnapshot).not.toHaveBeenCalled();
+    expect(ledger.rows.some((r) => r.kind === 'rolled_back')).toBe(false);
   });
 
   it('⛔ repairs only the terminal when the supervisor journal proves the disk already reverted', async () => {

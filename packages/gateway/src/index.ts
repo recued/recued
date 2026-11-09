@@ -55,6 +55,9 @@ export {
   // 2026-11-04 — a held browser write whose page or element has gone fails instead of
   // being asked: the host reads the element, the Gateway asks it just before raising.
   type BrowserTargetHooks,
+  // D-341 slice B1 — a trigger's standing pre-approval (trigger × recipe version × writes): the
+  // host names them from the run and spends a use; the Gateway asks in its ask-branch.
+  type TriggerPreapprovalHooks,
 } from './commit-gateway.js';
 export { deriveCommitKind } from './commit-kind.js';
 

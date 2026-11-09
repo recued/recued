@@ -18,7 +18,7 @@ import {
   RpcError,
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
-import { cronZoneFor } from '@recued/contracts';
+import { cronZoneFor, type RunNeed } from '@recued/contracts';
 import { settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 import type { Schedule } from '@recued/scheduler';
 import {
@@ -26,6 +26,9 @@ import {
   countMissedCycles,
   buildMissedRunReport,
   buildBackfillMetadata,
+  isFixedTimeCron,
+  localMinuteAt,
+  scheduleCronZone,
   type BackfillMetadata,
   type MissedRunReport,
 } from '@recued/scheduler';
@@ -41,6 +44,7 @@ import {
   decideAutomationFailure,
   type AutomationUnitRef,
 } from './automation-failure-reporter.js';
+import { isRunRefusedForNow } from './pause-approval.js';
 
 export interface SchedulerConfig {
   promptScheduleTick?: (closed: () => boolean) => Promise<void>;
@@ -274,6 +278,8 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       reason: string,
       code: string | undefined,
       total_refusal: boolean,
+      // D-346 follow-up — what the run needed, so the notice says how to fix it.
+      needs?: readonly RunNeed[],
     ): { consecutive_failures: number; enabled?: false } => {
       const unit: AutomationUnitRef = {
         kind: 'schedule',
@@ -287,6 +293,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         reason,
         prior_consecutive_failures: schedule.consecutive_failures ?? 0,
         threshold: config.failureThreshold ?? CIRCUIT_BREAKER_THRESHOLD,
+        needs,
       });
       // A `conditional` code is the recipe deciding not to act and being right
       // to. It leaves the counter alone — it is not an episode and never was.
@@ -485,6 +492,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
             ? (result.errors[0] as { code?: string } | undefined)?.code
             : undefined,
           totalRefusal && !failed,
+          (result as { run_needs?: readonly RunNeed[] }).run_needs,
         )
         : { consecutive_failures: 0 };
       config.store.updateRun(schedule.schedule_id, {
@@ -505,7 +513,8 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       // ⛔ NOT RUN IS NOT FAILED. The server refused to start the run because it
       // is restarting: nothing ran, so nothing is written — no `last_run_at`
       // that would claim a run, no error, no counter. See the doc above.
-      if (e instanceof RpcError && e.code === 'draining') return false;
+      // D-188 — and the same when it is paused: the run was not started.
+      if (isRunRefusedForNow(e)) return false;
       const reason = visibleFailure(e);
       // A throw here is a shape failure (`bad_request` / `recipe_not_found`) or
       // an RpcError — it carries a `code` when it is one of ours and nothing
@@ -612,7 +621,20 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         // (manual trigger, overlapping timers on clock drift). When
         // the cron matches, no Smart Backfill is ever needed: the
         // current minute is the catch-up.
-        if (schedule.last_run_at !== null && startOfMinute(schedule.last_run_at) === tickMinute) continue;
+        //
+        // ⛔ OR A LATER MINUTE, OR THIS SAME LOCAL TIME. `===` let three re-runs
+        // through. A clock set back repeats minutes that already ran. An
+        // overlapping tick (a slow fire holds one tick while the next catches the
+        // schedule up and stamps a later minute) came back and fired this minute
+        // again. And a DST fall-back plays a local hour twice, so `30 1 * * *`
+        // matched both 01:30s. For a fixed-time cron, a tick whose local time is
+        // not after the last run's is that repeat (see `nextCronMatch`).
+        if (schedule.last_run_at !== null && (
+          startOfMinute(schedule.last_run_at) >= tickMinute
+          || (isFixedTimeCron(parts)
+            && localMinuteAt(tickMinute, scheduleCronZone(schedule, config.serverTimeZone?.()))
+              <= localMinuteAt(schedule.last_run_at, scheduleCronZone(schedule, config.serverTimeZone?.())))
+        )) continue;
         firingNow.add(schedule.schedule_id);
         try {
           if (await fireSchedule(schedule, tickMinute)) fired.push(schedule.schedule_id);
@@ -656,7 +678,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       // sample anything, but the rule survives its own rationale.
       if (missedAction === 'skip') {
         if (schedule.last_status !== 'skipped') {
-          const missed = countMissedCycles(schedule, nowMs);
+          const missed = countMissedCycles(schedule, nowMs, config.serverTimeZone?.());
           config.store.updateRun(schedule.schedule_id, {
             last_status: 'skipped',
             last_error: missed === 'unknown'
@@ -670,7 +692,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
 
       firingNow.add(schedule.schedule_id);
       try {
-        const backfill = buildBackfillMetadata(schedule, nowMs);
+        const backfill = buildBackfillMetadata(schedule, nowMs, config.serverTimeZone?.());
         if (await fireSchedule(schedule, tickMinute, backfill)) fired.push(schedule.schedule_id);
       } finally {
         firingNow.delete(schedule.schedule_id);
@@ -690,7 +712,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     // tick that fires schedules.
     if (config.onMissedRuns) {
       try {
-        await config.onMissedRuns(buildMissedRunReport(config.store.list(), nowMs));
+        await config.onMissedRuns(buildMissedRunReport(config.store.list(), nowMs, config.serverTimeZone?.()));
       } catch (error) {
         reportBackgroundError('missed-run projection failed', error);
       }

@@ -565,6 +565,46 @@ describe('watch poll-manager', () => {
     });
   });
 
+  // D-188 — the owner's pause holds every poll as a sealed vault does. ⛔ Before this, any
+  // caller of recompute() (a trigger or recipe change, a connection save or token refresh, a
+  // vault unlock) re-armed every loop the pause had stopped.
+  describe('D-188 — held while the server is paused', () => {
+    it('recompute() during a pause arms nothing, and the one after Resume re-arms', () => {
+      let paused = false;
+      const manager = makeManager({ isPaused: () => paused });
+      manager.recompute();
+      expect(manager.activeLoopCount()).toBe(1);
+
+      paused = true;
+      manager.recompute();
+      expect(manager.activeLoopCount()).toBe(0);
+      expect(manager.listEntries().map((e) => e.watch_key)).toEqual([KEY]);
+
+      paused = false;
+      manager.recompute();
+      expect(manager.activeLoopCount()).toBe(1);
+    });
+
+    it('a timer firing during a pause polls nothing and disarms, so Resume re-creates the loop', async () => {
+      let paused = false;
+      const manager = makeManager({ isPaused: () => paused });
+      manager.recompute();
+      pollOutcomes.push(okOutcome({ d1: { id: 'd1', stage: 'open' } }));
+      await timers.fireLatest();
+
+      paused = true;
+      await timers.fireLatest();
+      expect(pollCalls).toHaveLength(1);
+      expect(manager.activeLoopCount()).toBe(0);
+
+      paused = false;
+      manager.recompute();
+      pollOutcomes.push(okOutcome({ d1: { id: 'd1', stage: 'won' } }));
+      await timers.fireLatest();
+      expect(pollCalls).toHaveLength(2);
+    });
+  });
+
   describe('R21.1 — vault-locked gating', () => {
     it('recompute() while the vault is sealed disarms every loop and arms nothing', () => {
       let locked = false;

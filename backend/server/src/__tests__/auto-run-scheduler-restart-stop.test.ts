@@ -136,7 +136,8 @@ describe('auto-run stop() during a restart drain', () => {
     }
   });
 
-  it('a run refused because the server is draining reaches no breaker, notice or fire broadcast', async () => {
+  // D-188 — a run refused because the server is paused is "not run" the same way.
+  it.each(['draining', 'server_paused'])('a run refused with %s reaches no breaker, notice or fire broadcast', async (code) => {
     const db = new Database(':memory:');
     try {
       const circuitStore = createCircuitBreakerStore(db);
@@ -144,7 +145,7 @@ describe('auto-run stop() during a restart drain', () => {
       const onAutomationFailure = vi.fn();
       const onFired = vi.fn();
       const handle = build(db, ['r1'], async () => {
-        throw new RpcError('draining', 'The server is restarting; try again in a moment.', 503);
+        throw new RpcError(code, 'The server is restarting or paused.', 503);
       }, { circuitStore, onAutomationFailure, onFired });
       await handle.refreshRoster();
 

@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Recued Bridge",
+  "version": "0.0.8",
+  "description": "Requires Recued, the free app you run yourself: install it first at recued.com. Adds browser actions, notifications and approvals.",
+  "minimum_chrome_version": "120",
+
+  "icons": {
+    "16": "icons/logo-16.png",
+    "32": "icons/logo-32.png",
+    "48": "icons/logo-48.png",
+    "128": "icons/logo-128.png"
+  },
+
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "tabs",
+    "scripting",
+    "sidePanel"
+  ],
+
+  "host_permissions": [],
+
+  "optional_host_permissions": [
+    "*://*/*",
+    "<all_urls>"
+  ],
+
+  "action": {
+    "default_title": "Recued Bridge",
+    "default_icon": {
+      "16": "icons/logo-16.png",
+      "32": "icons/logo-32.png"
+    }
+  },
+
+  "side_panel": {
+    "default_path": "side-panel/index.html"
+  }
+}

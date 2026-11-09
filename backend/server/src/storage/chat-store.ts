@@ -67,7 +67,7 @@ import {
   isExecutionSource,
   executionSourceContractId,
 } from '@recued/contracts';
-import { chatSourceCitationsOf, type ChatSourceCitation, installOffersOf, type InstallOffer } from '@recued/contracts';
+import { chatFixesOf, chatSourceCitationsOf, type ChatFix, type ChatSourceCitation, installOffersOf, type InstallOffer } from '@recued/contracts';
 import type { ChatAnswerSource, ChatNotice } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
 import {
@@ -234,6 +234,20 @@ export const ensureChatSchema = (db: Database.Database): void => {
     CREATE TABLE IF NOT EXISTS chat_mail_work_evidence (
       session_id TEXT PRIMARY KEY,
       evidence_encrypted TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+    );
+    -- D-347: a turn's results kept raw for the next turns, bound to its session as the brief is.
+    CREATE TABLE IF NOT EXISTS chat_session_carry (
+      session_id      TEXT PRIMARY KEY,
+      carry_encrypted TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+    );
+    -- D-347 follow-up 3: when a fold last took the session's waiting statements, so a restarted server
+    --   rebuilds them from the conversation's own messages. A time, never their text.
+    CREATE TABLE IF NOT EXISTS chat_session_statements_folded (
+      session_id TEXT PRIMARY KEY,
+      folded_at  INTEGER NOT NULL,
       FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
     );
   `);
@@ -464,6 +478,8 @@ export const ensureChatSchema = (db: Database.Database): void => {
       hold_lapsed_at             INTEGER,
       value_labels_encrypted     TEXT,
       memory_conflicts_encrypted TEXT,
+      hold_always_allow          TEXT,
+      hold_always_allow_note     TEXT,
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
       FOREIGN KEY (message_id) REFERENCES chat_messages (message_id) ON DELETE SET NULL
     );
@@ -515,6 +531,9 @@ export const ensureChatSchema = (db: Database.Database): void => {
   if (!planCols.has('value_labels_encrypted')) db.exec('ALTER TABLE chat_plans ADD COLUMN value_labels_encrypted TEXT');
   // D-336 slice G — the notes in memory a held save meets.
   if (!planCols.has('memory_conflicts_encrypted')) db.exec('ALTER TABLE chat_plans ADD COLUMN memory_conflicts_encrypted TEXT');
+  // D-341 — the label of the trigger's pre-approval the hold's ask offers, for the card.
+  if (!planCols.has('hold_always_allow')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_always_allow TEXT');
+  if (!planCols.has('hold_always_allow_note')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_always_allow_note TEXT');
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_chat_plans_retry_origin
       ON chat_plans (session_id, retry_of_plan_id, created_at);
@@ -1272,6 +1291,8 @@ const messageFromRow = async (
   const data_diagnosis_resolution =
     parseDataDiagnosisResolution(row.metadata_blob);
   const install_offers = installOffersOf(parseMessageMetadataObject(row.metadata_blob).install_offers);
+  // D-346 follow-up — the fixes stamped on the answer, through the shared reader.
+  const fixes = chatFixesOf(parseMessageMetadataObject(row.metadata_blob).fixes);
   let source_citations: ChatSourceCitation[] = [];
   const execution_source = parseMessageMetadataObject(row.metadata_blob).execution_source;
   const storedSources = parseMessageMetadataObject(row.metadata_blob).source_citations_encrypted;
@@ -1328,6 +1349,7 @@ const messageFromRow = async (
       ? { data_diagnosis_resolution }
       : {}),
     ...(install_offers.length > 0 ? { install_offers } : {}),
+    ...(fixes.length > 0 ? { fixes } : {}),
     ...(source_citations.length > 0 ? { source_citations } : {}),
     ...(notice ? { notice } : {}),
     ...(answered_without_model ? { answered_without_model } : {}),
@@ -1400,6 +1422,8 @@ export interface AppendMessageInput {
   /** D-323 — the marketplace offers the turn's last `tools.search` returned.
    *  Kept in `metadata_blob`, beside the other optional extras. */
   install_offers?: readonly InstallOffer[];
+  /** D-346 follow-up — the fixes the turn's calls carry, kept beside the offers. */
+  fixes?: readonly ChatFix[];
   /** Native read provenance, encrypted with this exact assistant message. */
   source_citations?: readonly ChatSourceCitation[];
   /** Server-normalized, evidence-only diagnosis grounding. Stored in the
@@ -1667,6 +1691,19 @@ export interface ChatStore {
   readMailWorkEvidence?(session_id: string): Promise<string | null>;
   writeMailWorkEvidence?(session_id: string, json: string, beforeCommit?: () => void): Promise<void>;
   deleteMailWorkEvidence?(session_id: string): void;
+  /** D-347 — the results a turn kept raw for the next turns, under the closing brief's threshold
+   *  (`chat-turn-carry.ts`). Encrypted and bound to its session as the brief is, deleted with it;
+   *  optional for older Chat adapters, whose turns then close with a fold as before. */
+  readSessionCarry?(session_id: string): Promise<string | null>;
+  writeSessionCarry?(session_id: string, carry_json: string, now?: number): Promise<void>;
+  deleteSessionCarry?(session_id: string): void;
+  /** D-347 follow-up 3 — when a fold last took the owner's waiting statements (`chat-rolling-brief.ts`),
+   *  or null: the time of the newest user message saved when it ran. Everything the fold took was saved by
+   *  then, and a message sent during it is saved when its own turn runs, later, with a later send time, so
+   *  it is not mistaken for folded. A time, never their text. Optional for older Chat adapters, whose
+   *  restarted sessions start the list empty, as before. */
+  readStatementsFoldedAt?(session_id: string): number | null;
+  markStatementsFolded?(session_id: string): void;
   setTitle(session_id: string, title: string): boolean;
   setArchived(session_id: string, archived: boolean, now?: number): boolean;
   bumpSessionLastActiveAt(session_id: string, now?: number): boolean;
@@ -2436,6 +2473,42 @@ export const createChatStore = (
     setMailEvidenceStmt.run({ session_id, evidence_encrypted });
   };
   const deleteMailWorkEvidence = (session_id: string): void => { deleteMailEvidenceStmt.run(session_id); };
+  // D-347 — the carry, beside the brief and bound the same way.
+  const CARRY_AAD_ID = 'session_carry';
+  const getCarryStmt = db.prepare<{ session_id: string }>(
+    'SELECT carry_encrypted FROM chat_session_carry WHERE session_id = @session_id',
+  );
+  const setCarryStmt = db.prepare(
+    'INSERT OR REPLACE INTO chat_session_carry (session_id, carry_encrypted, updated_at) VALUES (@session_id, @carry_encrypted, @updated_at)',
+  );
+  const delCarryStmt = db.prepare('DELETE FROM chat_session_carry WHERE session_id = @session_id');
+  const readSessionCarry = async (session_id: string): Promise<string | null> => {
+    const row = getCarryStmt.get({ session_id }) as { carry_encrypted: string } | undefined;
+    if (row === undefined) return null;
+    // Unreadable reads as absent, as a brief does: the turn then opens on the brief alone.
+    try {
+      return await decodeChatContentFromStorage(row.carry_encrypted, { session_id, message_id: CARRY_AAD_ID }, getKey);
+    } catch {
+      return null;
+    }
+  };
+  const writeSessionCarry = async (session_id: string, carry_json: string, now: number = Date.now()): Promise<void> => {
+    const carry_encrypted = await encodeChatContentForStorage(carry_json, { session_id, message_id: CARRY_AAD_ID }, getKey);
+    setCarryStmt.run({ session_id, carry_encrypted, updated_at: now });
+  };
+  const deleteSessionCarry = (session_id: string): void => { delCarryStmt.run({ session_id }); };
+  // D-347 follow-up 3 — when a fold last took the session's waiting statements.
+  const getStatementsFoldedStmt = db.prepare<{ session_id: string }>(
+    'SELECT folded_at FROM chat_session_statements_folded WHERE session_id = @session_id',
+  );
+  const setStatementsFoldedStmt = db.prepare(
+    'INSERT OR REPLACE INTO chat_session_statements_folded (session_id, folded_at) '
+    + "SELECT @session_id, MAX(ts) FROM chat_messages WHERE session_id = @session_id AND role = 'user' "
+    + 'HAVING MAX(ts) IS NOT NULL',
+  );
+  const readStatementsFoldedAt = (session_id: string): number | null =>
+    (getStatementsFoldedStmt.get({ session_id }) as { folded_at: number } | undefined)?.folded_at ?? null;
+  const markStatementsFolded = (session_id: string): void => { setStatementsFoldedStmt.run({ session_id }); };
 
   const createSession = (input: CreateSessionInput): ChatSession => {
     const now = input.now ?? Date.now();
@@ -2837,6 +2910,7 @@ export const createChatStore = (
     ) : undefined;
     // D-323 — checked again here: a store keeps only what the reader accepts.
     const install_offers = installOffersOf(input.install_offers ?? []);
+    const fixes = chatFixesOf(input.fixes ?? []);
     const row = {
       message_id: input.id,
       session_id: input.session_id,
@@ -2857,7 +2931,7 @@ export const createChatStore = (
         ? JSON.stringify(input.attachments)
         : null,
       metadata_blob: scheduledSource || input.data_diagnosis || input.tool_call || reply_to_encrypted || source_citations_encrypted || install_offers.length > 0
-        || notice_encrypted || answered_without_model
+        || fixes.length > 0 || notice_encrypted || answered_without_model
         ? JSON.stringify({
             ...(scheduledSource ? { execution_source: scheduledSource } : {}),
             ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
@@ -2865,6 +2939,7 @@ export const createChatStore = (
             ...(reply_to_encrypted ? { reply_to_encrypted } : {}),
             ...(source_citations_encrypted ? { source_citations_encrypted } : {}),
             ...(install_offers.length > 0 ? { install_offers } : {}),
+            ...(fixes.length > 0 ? { fixes } : {}),
             ...(notice_encrypted ? { notice_encrypted } : {}),
             ...(answered_without_model ? { answered_without_model } : {}),
           })
@@ -2929,6 +3004,7 @@ export const createChatStore = (
         : {}),
       ...(reply_to ? { reply_to } : {}),
       ...(install_offers.length > 0 ? { install_offers } : {}),
+      ...(fixes.length > 0 ? { fixes } : {}),
       ...(sources.length > 0 ? { source_citations: sources } : {}),
       ...(notice ? { notice } : {}),
       ...(answered_without_model ? { answered_without_model } : {}),
@@ -3653,6 +3729,11 @@ export const createChatStore = (
     readMailWorkEvidence,
     writeMailWorkEvidence,
     deleteMailWorkEvidence,
+    readSessionCarry,
+    writeSessionCarry,
+    deleteSessionCarry,
+    readStatementsFoldedAt,
+    markStatementsFolded,
     setTitle,
     setArchived,
     bumpSessionLastActiveAt,

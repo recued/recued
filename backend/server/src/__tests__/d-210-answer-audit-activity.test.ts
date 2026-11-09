@@ -50,11 +50,18 @@ describe('D-210 — buildAnswerActivity', () => {
   });
 
   it('D-335 slice F — "Allow on <site> for this session" and "Always allow on <site>" are consent', () => {
-    for (const option of ['allow_site_session', 'allow_site_always']) {
+    // D-341 slice A — and the switch an ask from the owner's chat turns on.
+    for (const option of ['allow_site_session', 'allow_site_always', 'allow_request']) {
       const entry = buildAnswerActivity(record({ option, option_label: 'Always allow on github.com' }));
       expect(entry.action, option).toBe('approval_allow');
       expect(entry.detail).toContain(`(${option})`);
     }
+  });
+
+  it('D-341 slice B2 — "Always allow for this webhook / schedule / trigger" is consent', () => {
+    const entry = buildAnswerActivity(record({ option: 'allow_trigger', option_label: 'Always allow for this webhook' }));
+    expect(entry.action).toBe('approval_allow');
+    expect(entry.detail).toContain('(allow_trigger)');
   });
 
   it('records an UNKNOWN option as a denial, never as consent', () => {

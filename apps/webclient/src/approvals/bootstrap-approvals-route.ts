@@ -39,6 +39,7 @@ import {
   type AsksListCaller,
   type AsksPanelMount,
   type AsksPanelState,
+  type AsksGiveSecretCaller,
   type AsksSubmitAnswerCaller,
 } from './asks-panel.js';
 import {
@@ -61,6 +62,7 @@ import { serializeShellRoute } from '../shell/route.js';
 import { preapprovalHref, renderPreapprovalAsk } from './preapproval-route.js';
 import { localChangesHref } from './local-change-sets-route.js';
 import { createAskNoteDrafts } from './ask-note-drafts.js';
+import { onServerPauseChange } from '../shell/server-pause-signal.js';
 
 // ════════════════════════════════════════════════════════════════
 // Style payload + stable attribute hooks
@@ -436,6 +438,8 @@ export interface BootstrapApprovalsRouteOptions {
   runList: AsksListCaller;
   /** `notification.submitAnswer` caller seam — forwarded to the asks panel. */
   runSubmitAnswer: AsksSubmitAnswerCaller;
+  /** D-335 slice Z — `notification.giveSecret` caller seam, for a secret ask's card. */
+  runGiveSecret?: AsksGiveSecretCaller;
   /** Broadcast subscription seam. Used for asks and generic approval bus
    *  invalidations. */
   subscribe?: BroadcastSubscriber['on'];
@@ -938,6 +942,9 @@ export const bootstrapApprovalsRoute = (
             { attr: ASK_CARD_OPTION_ATTR, value: optionId },
             () => submitAskFromCard(ask.ask_id, optionId, note),
           ),
+        // D-335 slice Z — the secret a browser step waits for, in the card's own field.
+        ...(opts.runGiveSecret !== undefined ? { onSecret: async (value: string, remember: boolean) =>
+          (await opts.runGiveSecret!({ ask_id: ask.ask_id, value, remember })).given } : {}),
       },
       {
         ...(previousCard !== undefined ? { previousCard } : {}),
@@ -1531,6 +1538,12 @@ export const bootstrapApprovalsRoute = (
   if (opts.onApprovalChanged !== undefined) {
     unsubscribers.push(opts.onApprovalChanged(onApprovalChanged));
   }
+  // D-188 — an approval the owner's pause holds back reads so (`ServerPendingAsk.paused`):
+  // when the pause turns on or off, read the asks again.
+  unsubscribers.push(onServerPauseChange(() => {
+    if (disposed) return;
+    void panel.refresh();
+  }));
   if (opts.subscribe !== undefined) {
     unsubscribers.push(
       opts.subscribe('approval', () => {

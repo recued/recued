@@ -24,10 +24,12 @@
  *  with the handlers' own constants. */
 
 import { ANY_ARGUMENT, type ApprovalValueLabels } from './ask-detail-label.js';
+import { isAssetDate } from './assets.js';
 import type { Tier1ToolName } from './chat.js';
 import { COLLECTION_GRANT_PREFIX, PRIMITIVE_GRANT_PREFIX } from './grant-entry.js';
 import { memoryClaimArgLine } from './memory-relations.js';
 import type { WorkEntityKind } from './work-entities.js';
+import { PURSUIT_CLASS_ID } from './yours.js';
 
 /** What a switch lets happen, for a person deciding whether to allow it. */
 export interface GrantSwitchText {
@@ -158,6 +160,7 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   // ── Situations
   'core.situation.read': t('Read what is going on', 'Reads a short, ranked picture of what is going on around a time. Each kind of item also needs its own switches.'),
   'core.situation.prefetch': t('Look ahead before each chat turn', 'Lets Recued add a short picture of what is going on to your chat before the AI answers.'),
+  'core.situation.record': t('Record your day', 'Lets an AI record what you did or skipped on a day, in your words. Each day it records waits for your yes.'),
 
   // ── Memory, notes on records, links and history
   'core.memory.annotation.create': t('Add a note to a record', 'Sticks a small labelled fact onto a record, like a contact or an email.'),
@@ -280,13 +283,19 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.dom.read': t('Read from a web page', 'Reads text from a web page open in your browser, through the Browser Bridge.'),
   'core.dom.write': t('Type into a web page', 'Types into a web page open in your browser, through the Browser Bridge.'),
   'core.dom.inspect': t('See a whole web page', 'Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty.'),
-  'core.dom.click': t('Click on a web page', 'Clicks a link or a button on a web page open in your browser, through the Browser Bridge. A click can send, post or delete, and cannot be undone.'),
-  'core.dom.act': t('Act on a web page', 'Types, clicks and sends forms on a web page in your browser, several steps at once, through the Browser Bridge. A click or a sent form cannot be undone.'),
-  'core.dom.tabs': t('See your open tabs', 'Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge.'),
+  'core.dom.click': t('Click on a web page', 'Clicks a link or a button, or presses a key, on a web page in your browser. It goes through the Browser Bridge. A click or a key can send, post or delete, and cannot be undone.'),
+  'core.dom.act': t('Act on web pages', 'Reads, types, clicks and sends forms on web pages in your browser, through the Browser Bridge. It does several steps at once, across tabs. A click or a sent form cannot be undone.'),
+  'core.dom.tabs': t('See your open tabs', 'Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge. It can list the ones showing an address.'),
   'core.dom.open': t('Open a web page', 'Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site.'),
+  'core.dom.scroll': t('Scroll a web page', 'Scrolls a web page in your browser a screen at a time. It goes through the Browser Bridge, so what loads as you scroll shows. Changes nothing on the page.'),
   'core.dom.wait': t('Wait for a web page', 'Waits until part of a web page open in your browser shows or goes, through the Browser Bridge. Changes nothing on the page.'),
   'core.dom.table': t('Read a table on a web page', 'Reads a table on a web page open in your browser as rows of text, through the Browser Bridge. Password and card fields come back empty.'),
+  'core.dom.download': t('Save a file from a web page', 'Saves a file a web page in your browser links to, such as a PDF, among your files. It goes through the Browser Bridge and fetches the file as the page would, signed in as you are.'),
   'core.dom.screenshot': t('Take a screenshot of a web page', 'Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs "Allow screenshots" in the Bridge\'s side panel.'),
+  // D-345 — the HTTP Toolkit: your server's own fetch, no browser.
+  'core.http.get': t('Get a web address', 'Your server fetches a public web address and answers what the site sent: its status, type and text, or JSON. Nothing of yours is sent with it, and only public addresses are fetched, never one on your own network.'),
+  'core.http.read': t('Read a web address', 'Your server fetches a public web page and answers its text, as you would read it. Nothing of yours is sent, so a page that needs you signed in is read in your browser instead.'),
+  'core.http.download': t('Download a file from a web address', 'Your server downloads a file from a public web address and keeps it among your files. It takes files up to 25 MB, to read or use from there. Nothing of yours is sent with it.'),
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -307,7 +316,28 @@ const CRM_LIVE_NOTE = 'To search the CRM itself, the search switch of that CRM m
 
 /** The kind of thing a work tool adds or changes, as an approval names it. */
 const WORK_KIND_WORDS: Readonly<Partial<Record<WorkEntityKind, string>>> = {
-  task: 'a task', note: 'a note', commitment: 'a commitment', project: 'a project', asset: 'a thing you own',
+  task: 'a task', note: 'a note', commitment: 'a commitment', project: 'a project', asset: 'a thing you own', booking: 'a booking',
+};
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** A day as a card names it: "Thu 6 Nov". */
+const dayWords = (day: string): string => {
+  const at = new Date(`${day}T12:00:00Z`);
+  return `${DAY_NAMES[at.getUTCDay()]} ${at.getUTCDate()} ${MONTH_NAMES[at.getUTCMonth()]}`;
+};
+/** D-343 slice 2 — a day's records as its card lists them: the user's words for what they did,
+ *  and for what they skipped. */
+const recordsByOutcome = (records: unknown, outcome: 'done' | 'skipped'): string[] => (Array.isArray(records) ? records : [])
+  .flatMap((record: unknown) => {
+    const row = record !== null && typeof record === 'object' && !Array.isArray(record) ? record as Record<string, unknown> : {};
+    return row.outcome === outcome && typeof row.title === 'string' ? [row.title] : [];
+  });
+/** D-343 slice 5 — a day's records as its checklist: what was done, then what was skipped, each in
+ *  the owner's words and in the order the call gives them. The card that records them shows it once
+ *  they are kept ("✓ Ran 5 km · – Spanish lesson, skipped"). */
+export const episodeRecordChecklist = (args: unknown): Array<{ title: string; outcome: 'done' | 'skipped' }> => {
+  const records = args !== null && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>).records : undefined;
+  return (['done', 'skipped'] as const).flatMap(outcome => recordsByOutcome(records, outcome).map(title => ({ title, outcome })));
 };
 /** D-329 — what one call of an AI tool does, in the owner's words: the tool's title, or
  *  for the work tools the kind of thing it adds or changes ("Change a thing you own"). A
@@ -318,8 +348,28 @@ export const tier1CallTitle = (tool: string, args: unknown): string | undefined 
   const call = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
   const words = typeof call.kind === 'string' && Object.hasOwn(WORK_KIND_WORDS, call.kind)
     ? WORK_KIND_WORDS[call.kind as WorkEntityKind] : undefined;
-  if (words !== undefined && tool === 'work.create') return `Add ${words}`;
-  if (words !== undefined && tool === 'work.update') return call.done === true ? 'Tick a task off' : `Change ${words}`;
+  // D-342 slice 4 — a pursuit is an asset of its own type, and no thing the owner owns.
+  if (words !== undefined && tool === 'work.create') return call.kind === 'asset' && call.type === PURSUIT_CLASS_ID ? 'Add a pursuit' : `Add ${words}`;
+  // D-343 slice 2 — the day the records are for, as the card heads them ("Record your day · Thu 6 Nov").
+  if (tool === 'episode.record') return `Record your day${typeof call.day === 'string' && isAssetDate(call.day) ? ` · ${dayWords(call.day)}` : ''}`;
+  // D-343 slice 1 — an occasion made in Yours, which is no work row.
+  if (tool === 'work.update' && call.kind === 'occasion') return call.muted === true ? 'Stop an occasion’s reminders' : 'Change an occasion';
+  // D-343 slice 1 (ruling 15) — a mail fact closed, in the words its grants use.
+  if (tool === 'work.update' && call.kind === 'mail_fact') {
+    return call.state === 'no_show' ? 'Mark a reservation a no-show' : call.state === 'cancelled' ? 'Mark a mail fact cancelled' : 'Mark a mail fact done';
+  }
+  if (words !== undefined && tool === 'work.update') {
+    // D-343 slice 1 — a commitment is kept or cancelled, in the words its grants use.
+    if (call.kind === 'commitment' && call.done === true) return 'Mark a commitment kept';
+    if (call.kind === 'commitment' && call.state === 'cancelled') return 'Cancel a commitment';
+    // D-343 slice 1 — how a booking went, or its new time.
+    if (call.kind === 'booking') {
+      const ended = { completed: 'Mark a booking completed', no_show: 'Mark a booking a no-show', cancelled: 'Cancel a booking' };
+      if (typeof call.state === 'string' && Object.hasOwn(ended, call.state)) return ended[call.state as keyof typeof ended];
+      if (call.starts_at !== undefined) return 'Move a booking';
+    }
+    return call.done === true ? 'Tick a task off' : `Change ${words}`;
+  }
   if (tool === 'contact.write') {
     return typeof call.target_id === 'string' && call.target_id.trim() !== '' ? 'Change a contact' : 'Add a contact';
   }
@@ -327,8 +377,9 @@ export const tier1CallTitle = (tool: string, args: unknown): string | undefined 
 };
 
 /** What a work tool's call names by its `id`, in the owner's words. */
-const WORK_KIND_NOUNS: Readonly<Partial<Record<WorkEntityKind, string>>> = {
-  task: 'Task', note: 'Note', commitment: 'Commitment', project: 'Project', asset: 'Thing',
+const WORK_KIND_NOUNS: Readonly<Partial<Record<WorkEntityKind | 'occasion' | 'mail_fact', string>>> = {
+  task: 'Task', note: 'Note', commitment: 'Commitment', project: 'Project', asset: 'Thing', booking: 'Booking', occasion: 'Occasion',
+  mail_fact: 'Mail fact',
 };
 /** D-336 slice G (§3.9) — a held save's conflicts as an approval lists them, after its
  *  arguments: what it contradicts, in memory or (slice S) among the saves asked while it
@@ -377,10 +428,16 @@ export const tier1CallDetails = (
   labels?: ApprovalValueLabels,
   conflicts?: unknown,
 ): { args: Record<string, unknown>; labels?: ApprovalValueLabels } => {
+  // D-343 slice 2 — a day's records as a checklist: what was done and what was skipped. The day
+  // is in the title.
+  if (tool === 'episode.record') {
+    const done = recordsByOutcome(args.records, 'done'); const skipped = recordsByOutcome(args.records, 'skipped');
+    return { args: { ...(done.length > 0 ? { Done: done } : {}), ...(skipped.length > 0 ? { Skipped: skipped } : {}) } };
+  }
   // A key's name on the approval, or `null` for a key the title already says.
   const shownAs: Record<string, string | null> = {};
   const noun = typeof args.kind === 'string' && Object.hasOwn(WORK_KIND_NOUNS, args.kind)
-    ? WORK_KIND_NOUNS[args.kind as WorkEntityKind] : undefined;
+    ? WORK_KIND_NOUNS[args.kind as keyof typeof WORK_KIND_NOUNS] : undefined;
   if (noun !== undefined && (tool === 'work.create' || tool === 'work.update')) {
     Object.assign(shownAs, { kind: null, id: noun, belongs_to: 'Part of' });
   }
@@ -565,6 +622,12 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
       { entry: 'core.work-entity.asset.update', when: 'to change things you own', kind: 'asset' },
       { entry: 'core.work-entity.task.mark-done', when: 'to tick a task off', kind: 'task' },
     ],
+  },
+  'episode.record': {
+    title: 'Record your day',
+    summary: 'Records what you did or skipped on a day, in your words, as your history.',
+    needs: [{ entry: 'core.situation.record' }],
+    note: 'Naming an item from your agenda also needs the read switch for that kind of item.',
   },
   'file.search': {
     title: 'Search your files',

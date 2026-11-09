@@ -39,7 +39,7 @@
  *
  *  Spec: D-268. */
 
-import { classifyAutomationFailure, type AutomationFailureBasis } from '@recued/contracts';
+import { classifyAutomationFailure, type AutomationFailureBasis, type RunNeed } from '@recued/contracts';
 import type { NotificationBlock, NotificationMessage } from '@recued/notification';
 
 /** Which automation kind failed. The three unattended dispatch paths. */
@@ -103,31 +103,70 @@ const trimReason = (message: string): string => {
  *  run failed and what the failure said; it does not know that a token expired,
  *  that a provider is down, or what the owner should do about it. An
  *  assurance-shaped guess reads as authoritative and is worse than the fact. */
+/** D-346 follow-up (2026-11-08) — what a failed run needed, said in its notice with where to
+ *  fix it: the pack's page (its sign-in, its programs, its Access tab). The first need that
+ *  names its pack; none ⇒ undefined, and the notice keeps the rules link alone. The owner's
+ *  ruling: the notice should carry the fix, not only the automation's rules. */
+export const automationFixFor = (
+  needs: readonly RunNeed[] | undefined,
+): { readonly text: string; readonly link_url: string } | undefined => {
+  for (const need of needs ?? []) {
+    if (need.pack_slug === undefined || need.pack_slug === '') continue;
+    const link_url = `#packs/${encodeURIComponent(need.pack_slug)}`;
+    switch (need.kind) {
+      case 'switch':
+        return {
+          text: `${need.label ?? 'Its pack'} runs a program on your server that is switched off for you: `
+            + 'turn it on under Self (you) on its Access tab.',
+          link_url,
+        };
+      case 'program':
+        return {
+          text: `${need.tool ?? 'A program it runs'} is ${need.problem === 'not_found' ? 'not installed on your server' : 'not ready on your server'}: `
+            + 'its pack’s page says what to do.',
+          link_url,
+        };
+      case 'connection':
+        return {
+          text: need.problem === 'reconnect'
+            ? `${need.label ?? need.slot} did not accept its sign-in: reconnect it from its pack’s page.`
+            : `${need.label ?? need.slot} is not set up: set it up from its pack’s page.`,
+          link_url,
+        };
+    }
+  }
+  return undefined;
+};
+
 export const describeAutomationFailureNotice = (input: {
   readonly unit: AutomationUnitRef;
   readonly reason: string;
   readonly consecutive_failures: number;
   readonly stopped: boolean;
   readonly threshold: number;
+  /** What the run needed and where to fix it (`automationFixFor`), when it named one. */
+  readonly fix?: { readonly text: string; readonly link_url: string } | undefined;
 }): NotificationMessage => {
   const label = unitLabel(input.unit);
   const reason = trimReason(input.reason);
+  const fix = input.fix === undefined ? '' : `${input.fix.text} `;
   if (input.stopped) {
     const times = input.consecutive_failures === 1
       ? 'after one failure'
       : `after ${input.consecutive_failures} failures`;
+    // Stopped, it has to be re-armed from its rules, so the link stays there; the fix is said.
     return {
       title: `${label} has stopped`,
       text:
-        `Recued turned this automation off ${times}. ${reason} `
+        `Recued turned this automation off ${times}. ${reason} ${fix}`
         + 'It will not run again until you re-arm it.',
       link_url: automationRuleLink(input.unit),
     };
   }
   return {
     title: `${label} failed`,
-    text: `${reason} Recued will stop this automation if it fails ${input.threshold} times.`,
-    link_url: automationRuleLink(input.unit),
+    text: `${reason} ${fix}Recued will stop this automation if it fails ${input.threshold} times.`,
+    link_url: input.fix?.link_url ?? automationRuleLink(input.unit),
   };
 };
 
@@ -150,6 +189,9 @@ export const decideAutomationFailure = (input: {
   readonly reason: string;
   readonly prior_consecutive_failures: number;
   readonly threshold: number;
+  /** D-346 follow-up — what the run needed (`ServerExecuteResponse.run_needs`), so its
+   *  notice says how to fix it. */
+  readonly needs?: readonly RunNeed[] | undefined;
 }): AutomationFailureReport => {
   const disposition = classifyAutomationFailure({
     code: input.code,
@@ -182,6 +224,7 @@ export const decideAutomationFailure = (input: {
           consecutive_failures,
           stopped: disarm,
           threshold: input.threshold,
+          fix: automationFixFor(input.needs),
         }),
       }
       : {}),

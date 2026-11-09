@@ -166,6 +166,7 @@ const storedEntry = (row: {
   recipe_id: string; publisher_id: string; version: number;
   recipe_hash: string; recipe_json: string;
   source: string; installed_at: number;
+  pack_slug?: string | null;
 }, ops: PackOperationIndex | null): FullEntry | null => {
   const recipe = JSON.parse(row.recipe_json);
   // ⚠ A kernel recipe should never reach the stored table — it is not in
@@ -182,6 +183,8 @@ const storedEntry = (row: {
     // values, and 'imported' is the legacy alias for 'pair-sync'.
     source: row.source === 'bundled' ? 'bundled' : 'pair-sync',
     installed_at: row.installed_at,
+    // D-321 W1 — the pack that installed it, for the page of a pack that uses it.
+    ...(typeof row.pack_slug === 'string' && row.pack_slug !== '' ? { pack_slug: row.pack_slug } : {}),
     ...projections(recipe, ops),
   };
 };

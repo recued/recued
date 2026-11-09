@@ -156,9 +156,14 @@ describe('D-338 the model sees a notice only when the owner quotes it', () => {
     const notice = await f.noticeOf();
     await f.send('s', 'can I move the dentist to Thursday?', 'quoted', notice.id);
     await f.settled('s', 1);
-    expect(JSON.parse(JSON.parse(f.calls[0]!.prompt).user_message)).toEqual({
+    // The quote leads the model's copy of the message. An Agenda's is followed by how to close the
+    // day it lists (D-343 slice 3, pinned in d-343-closing-day.test.ts), on the turn's own clock.
+    const userMessage = String(JSON.parse(f.calls[0]!.prompt).user_message);
+    const quote = userMessage.split('\n', 1)[0]!;
+    expect(JSON.parse(quote)).toEqual({
       reply_to: { message_id: notice.id, role: 'notice', text: SEEN }, message: 'can I move the dentist to Thursday?',
     });
+    expect(userMessage.slice(quote.length)).toMatch(/^(?:\n\[This replies to their notice “Agenda · Tue 3 Nov”[^]*\])?$/u);
     const reply = (await f.store.listMessages('s')).find((m) => m.content === 'can I move the dentist to Thursday?')!;
     expect(reply.reply_to).toEqual({ message_id: notice.id,
       preview: { role: 'notice', text: AGENDA.text.replace(/\s+/gu, ' '), title: 'Agenda · Tue 3 Nov' } });

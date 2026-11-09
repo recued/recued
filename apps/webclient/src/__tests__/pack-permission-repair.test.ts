@@ -8,7 +8,7 @@ const manifest: BulkPackManifest = { manifest_version: 1, slug: 'scope-pack', pu
 const draft = (): PackInstallResume => ({ pack: { ...manifest, installed: false, pre_install: false, recipe_count: 1,
   recipe_refs: manifest.recipes, body_visibility_grant_keys: [], body_visibility_grant_count: 0, manifest },
   marketplace: false, permissions: [], chosen_connection: 'native', also_unticked: [], also_connections: [],
-  webhook_picks: [['mail-webhook', 'saved-door']], template_keep: [['mail-template', 'existing']], dependency_access: [['foundation', 'write']] });
+  webhook_picks: [['mail-webhook', 'saved-door']], template_keep: [['mail-template', 'existing']] });
 const review = (): PackVendorPermissionReview => ({ fingerprint: 'a'.repeat(64), resolved: true, changes: [{
   pack_slug: manifest.slug, pack_name: manifest.name, slot: 'graph', required_scopes: ['Mail.Read', 'Mail.Send'],
   current_connections: [], connections: [{ name: 'native', display_name: 'Native', authentication: 'direct_oauth',

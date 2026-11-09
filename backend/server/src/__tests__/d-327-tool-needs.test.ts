@@ -38,6 +38,7 @@ import {
   WORK_ENTITY_UPDATE_OP_ID,
 } from '../chat-tool-handlers.js';
 import { CONTACT_WRITE_OP_ID } from '../contact-write-tool.js';
+import { EPISODE_RECORD_OP_ID } from '../episode-record-tool.js';
 import { documentReadRecipe } from '../document-read-tool.js';
 import { SITUATION_READ_OP } from '../situations/access.js';
 
@@ -97,6 +98,8 @@ const EXPECTED: Readonly<Record<Tier1ToolName, readonly string[]>> = {
   'calendar.create': [CALENDAR_CREATE_OP_ID],
   'calendar.update': [CALENDAR_UPDATE_OP_ID],
   'work.update': [...Object.values(WORK_ENTITY_UPDATE_OP_ID), ASSET_UPDATE_OP_ID, TASK_MARK_DONE_OP_ID],
+  // D-343 slice 2 — a cited item's read switch is checked too, for the kind it is.
+  'episode.record': [EPISODE_RECORD_OP_ID],
   'file.search': fencedCollection('file.search'),
   // Each step meets its own op gate inside the run; the tool checks nothing first.
   'recipe.run': [],

@@ -598,6 +598,25 @@ describe('applyRestore', () => {
     expect(res.db_bytes).toBeGreaterThan(0);
   });
 
+  it.skipIf(process.platform === 'win32')('⛔ ignores a lock whose live PID was reused — that process is not the server', async () => {
+    const built = await buildArchive(7);
+
+    const tgt = newDir();
+    const dbPath = join(tgt, 'recued-server.db');
+    writeFileSync(
+      join(tgt, 'recued-server.lock'),
+      JSON.stringify({ pid: process.pid, boot_at: 1, bind_port: 7717, proc_start: 'not-this-process' }),
+    );
+
+    const res = await applyRestore(
+      { dbPath, dataPath: tgt, configPath: null },
+      impOpts(built),
+      { isProcessAlive: () => true },
+    );
+    expect(existsSync(dbPath)).toBe(true);
+    expect(res.db_bytes).toBeGreaterThan(0);
+  });
+
   it('overlaySingleBlobFile rejects a source whose bytes do not content-address to the name', async () => {
     // The streaming restore can't materialize a forged blob the way the old
     // in-memory path could (mutating decoded records), so the blob-name-lies

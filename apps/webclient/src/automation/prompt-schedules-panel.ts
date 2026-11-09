@@ -1,6 +1,6 @@
 import type { ChatTurnAcceptance, PromptSchedule, PromptScheduleInput, PromptScheduleRunOutcome,
   PromptScheduleRunRequest, PromptScheduleTarget, PromptScheduleUpdate, PromptScheduleTiming, PromptSchedulePreview } from '@recued/contracts';
-import { describeCron, zonedWallClockToEpochMs } from '@recued/contracts';
+import { describeCron, isChatModelSourceId, zonedWallClockToEpochMs, type ChatModelSourceId } from '@recued/contracts';
 import { stampZone, renderActionLabel, type IconName } from '@recued/ui-shared';
 import { reminderWallClockValue } from '../data/reminders-surface.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
@@ -8,6 +8,19 @@ import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { serializeChatAnswerAddress, serializeChatPlanAddress, serializeChatSessionAddress } from '../shell/route.js';
 import { mountPromptSchedulePreview } from './prompt-schedule-preview.js';
 import type { AutomationChip } from './by-recipe.js';
+import { createTriggerPreapprovalSupport, mountTriggerPreapprovalPanel, type TriggerPreapprovalPanelCallers,
+  type TriggerPreapprovalPanelMount, type TriggerPreapprovalSupport } from '../contracts/trigger-preapproval-panel.js';
+
+/** D-344 slice D — a schedule's model, named as Settings → AI / Models names the sources. */
+const SCHEDULE_MODEL_LABELS: Record<ChatModelSourceId, string> = {
+  slot_1: 'Slot 1: fast',
+  slot_2: 'Slot 2: better, slower thinking',
+  free_pool: 'Free pool',
+};
+const SCHEDULE_MODEL_CHOICES: ReadonlyArray<readonly [string, string]> = [
+  ['', 'Chat default'], ['slot_1', SCHEDULE_MODEL_LABELS.slot_1], ['slot_2', SCHEDULE_MODEL_LABELS.slot_2],
+  ['free_pool', SCHEDULE_MODEL_LABELS.free_pool],
+];
 
 export interface PromptSchedulesPanelState {
   readonly rows: readonly PromptSchedule[];
@@ -54,6 +67,9 @@ export const mountPromptSchedulesPanel = (options: {
   hideCreate?: boolean;
   onCreateClosed?: () => void;
   onStateChange?: (state: PromptSchedulesPanelState) => void;
+  /** D-341 slice B3 — each card's "What it may do without asking": the prompt's standing
+   *  pre-approvals. Absent (or compact) ⇒ no section. */
+  triggerPreapprovals?: TriggerPreapprovalPanelCallers;
 }) => {
   const { host, call } = options, doc = host.ownerDocument;
   const zone = stampZone();
@@ -130,6 +146,38 @@ export const mountPromptSchedulesPanel = (options: {
   let listError = '', filter: AutomationChip | null = null;
   let editorPreview: ReturnType<typeof mountPromptSchedulePreview> | undefined;
   const closePreview = () => { editorPreview?.dispose(); editorPreview = undefined; };
+  /** D-341 slice B3 — each card's "What it may do without asking", by schedule: kept across the
+   *  renders that rebuild every card (moved into the new one, open or not, mid-grant or not). */
+  const preapprovalSections = new Map<string, { host: HTMLDetailsElement; panel: TriggerPreapprovalPanelMount | null }>();
+  // Hidden on a server from before pre-approvals, asked once for the panel.
+  let preapprovalSupport: TriggerPreapprovalSupport | null = null;
+  const preapprovalSection = (schedule_id: string): HTMLDetailsElement | null => {
+    const callers = options.triggerPreapprovals;
+    if (callers === undefined || options.compact) return null;
+    const kept = preapprovalSections.get(schedule_id);
+    if (kept !== undefined) return kept.host;
+    const section = doc.createElement('details');
+    (preapprovalSupport ??= createTriggerPreapprovalSupport((args) => callers.choices(args)))
+      .show(section, { kind: 'prompt_schedule', schedule_id });
+    section.dataset.promptSchedulePreapprovals = schedule_id;
+    section.append(node('summary', 'What it may do without asking'));
+    const item: { host: HTMLDetailsElement; panel: TriggerPreapprovalPanelMount | null } = { host: section, panel: null };
+    preapprovalSections.set(schedule_id, item);
+    section.addEventListener('toggle', () => {
+      if (!section.open || item.panel !== null || disposed || !host.contains?.(section)) return;
+      item.panel = mountTriggerPreapprovalPanel({
+        host: section, trigger: { kind: 'prompt_schedule', schedule_id }, callers, document: doc,
+      });
+    });
+    return section;
+  };
+  const dropPreapprovalSections = (keep: ReadonlySet<string>): void => {
+    for (const [schedule_id, item] of preapprovalSections) {
+      if (keep.has(schedule_id) || item.panel?.pending() === true) continue;
+      item.panel?.dispose();
+      preapprovalSections.delete(schedule_id);
+    }
+  };
   const runRequests = new Map<string, PromptScheduleRunRequest>();
   const readRunRequest = (key: string, row: PromptSchedule): PromptScheduleRunRequest | undefined => {
     const remembered = runRequests.get(key);
@@ -191,6 +239,7 @@ export const mountPromptSchedulesPanel = (options: {
       const fact = (label: string, value: string) => { const item = doc.createElement('div'); item.append(node('dt', label), node('dd', value)); facts.append(item); };
       if (row.next_run_at !== null) fact('Next run', format(row.next_run_at, row.time_zone));
       if (row.notify_on_done === true) fact('When done', 'Notifies you');
+      if (row.model_source_id) fact('Model', SCHEDULE_MODEL_LABELS[row.model_source_id]);
       const outcome = row.last_outcome;
       const lastStatus = outcome?.status ?? (row.last_status === 'completed' ? 'finished' : row.last_status);
       if (lastStatus) fact('Last run', `${outcomeLabels[lastStatus]}${row.last_run_at === null ? '' : ` · ${format(row.last_run_at, row.time_zone)}`}`);
@@ -259,6 +308,8 @@ export const mountPromptSchedulesPanel = (options: {
         confirming = { id: row.schedule_id, revision: row.revision }; render(`${row.schedule_id}:keep`);
       }, 'delete'); remove.dataset.promptFocus = `${row.schedule_id}:remove`; remove.className = 'prompt-schedule-remove';
       card.append(actions);
+      const preapprovals = preapprovalSection(row.schedule_id);
+      if (preapprovals !== null) card.append(preapprovals);
       if (confirming?.id === row.schedule_id) {
         const revision = confirming.revision;
         const confirm = node('p', 'Remove this schedule? Its conversation stays. A turn already running can finish.');
@@ -269,6 +320,7 @@ export const mountPromptSchedulesPanel = (options: {
       }
       content.append(card);
     }
+    dropPreapprovalSections(new Set(rows.map(row => row.schedule_id)));
     if (loaded && !shown.length) { const empty = node('p', filter !== null ? 'No scheduled prompts match this filter.' : options.compact ? 'No scheduled prompt is linked to this conversation.' : 'Run an AI request once or on a recurring schedule. Each schedule has its own conversation.'); empty.className = 'prompt-schedule-empty'; content.append(empty); }
     if (shown.length) { const note = node('p', 'Chatting in a schedule’s conversation does not change the saved request. Pausing cancels queued runs; a running turn can finish.'); note.className = 'prompt-schedule-note'; content.append(note); }
     if (focus) (Array.from(shell.querySelectorAll<HTMLElement>('[data-prompt-focus]')).find(el => el.dataset.promptFocus === focus)
@@ -352,6 +404,15 @@ export const mountPromptSchedulesPanel = (options: {
     form.append(notifyLabel, notifyHelp);
     const showNotify = () => { notifyLabel.hidden = !notifyNamed; notifyHelp.hidden = !notifyNamed; };
     showNotify();
+    // D-344 slice D — the model its runs use, offered once the server says it takes one: a schedule
+    // it sent names the field, or the timing preview says so. A server before it refuses the field.
+    let modelNamed = row?.model_source_id !== undefined || rows.some(saved => saved.model_source_id !== undefined);
+    const model = doc.createElement('select');
+    for (const [value, label] of SCHEDULE_MODEL_CHOICES) { const option = node('option', label); option.value = value; model.append(option); }
+    model.value = row?.model_source_id ?? ''; model.dataset.promptScheduleModel = '';
+    field('Model', model);
+    const showModel = () => { model.parentElement!.hidden = !modelNamed; };
+    showModel();
     const showTiming = () => {
       const recurring = mode.value === 'recurring';
       time.parentElement!.hidden = recurring; frequency.parentElement!.hidden = !recurring;
@@ -380,6 +441,7 @@ export const mountPromptSchedulesPanel = (options: {
       calculate: async timing => {
         const result = await call('chat.schedule.preview', timing);
         if (result.notify_on_done_available === true && !notifyNamed) { notifyNamed = true; showNotify(); }
+        if (result.model_choice_available === true && !modelNamed) { modelNamed = true; showModel(); }
         return result;
       } }); editorPreview = preview;
     for (const field of [mode, time, frequency, clock, weekday, cron, timezone]) {
@@ -397,7 +459,10 @@ export const mountPromptSchedulesPanel = (options: {
     form.addEventListener('submit', (event) => {
       event.preventDefault(); if (busy || disposed || scope !== scopeVersion) return;
       let input: PromptScheduleInput;
-      try { input = { title: title.value, prompt: prompt.value, ...readTiming(), ...(notifyNamed ? { notify_on_done: notify.checked } : {}) }; }
+      try {
+        input = { title: title.value, prompt: prompt.value, ...readTiming(), ...(notifyNamed ? { notify_on_done: notify.checked } : {}),
+          ...(modelNamed ? { model_source_id: isChatModelSourceId(model.value) ? model.value : null } : {}) };
+      }
       catch (failure) { feedback.textContent = humanizeRpcError(failure); return; }
       busy = true; save.disabled = true; cancel.disabled = true; feedback.textContent = '';
       form.setAttribute('aria-busy', 'true'); save.innerHTML = renderActionLabel(saveIcon, row ? 'Saving changes…' : 'Creating schedule…');
@@ -460,6 +525,10 @@ export const mountPromptSchedulesPanel = (options: {
       else edit();
     },
     refresh,
-    dispose() { disposed = true; closePreview(); ++seq; ++scopeVersion; for (const unsub of unsubs) unsub?.(); host.remove(); },
+    dispose() {
+      disposed = true; closePreview(); ++seq; ++scopeVersion; for (const unsub of unsubs) unsub?.();
+      for (const item of preapprovalSections.values()) item.panel?.dispose();
+      preapprovalSections.clear(); host.remove();
+    },
   };
 };

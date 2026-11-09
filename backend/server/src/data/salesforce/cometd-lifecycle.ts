@@ -110,6 +110,14 @@ export interface WireSalesforceCometDLifecycleInput {
     message: string,
     meta?: Record<string, unknown>,
   ) => void;
+  /** D-188 — the master pause. While it holds no subscriber runs: the stream reads Salesforce,
+   *  and nothing comes in during the emergency stop (the owner's ruling of 2026-11-08). A
+   *  subscriber stops at its next look and starts again once resumed, from its replay id, so
+   *  Salesforce redelivers what it still keeps. A token refresh or a boot during a pause starts
+   *  none. Absent ⇒ never paused. */
+  isPaused?: () => boolean;
+  /** How often the pause is looked at. Tests shorten it. */
+  pausePollMs?: number;
   /** D-139 P1b — per-connection engagement-entity capability list.
    *  Returns the closed list of engagement / relationship entities the
    *  describe-probe (P1b) marked PushTopic-streamable for this
@@ -173,7 +181,7 @@ export const wireSalesforceCometDLifecycle = (
   };
 
   const shouldRun = (connection_name: string): boolean =>
-    !closed && desired.has(connection_name);
+    !closed && desired.has(connection_name) && input.isPaused?.() !== true;
 
   const logFailure = (
     action: string,
@@ -380,6 +388,24 @@ export const wireSalesforceCometDLifecycle = (
     observe(stopForConnection(connection_name), 'stop', connection_name);
   };
 
+  // D-188 — follow the owner's pause: a running subscriber stops (`shouldRun` is false, so no
+  // replacement starts), and a wanted one starts once resumed. Looked at on a short timer, so
+  // it needs no edge from the pause and holds whatever started it.
+  const followPause = (): void => {
+    if (closed || input.isPaused === undefined) return;
+    if (input.isPaused()) {
+      for (const name of [...subscribers.keys()]) observe(stopForConnection(name), 'pause stop', name);
+    } else {
+      for (const name of desired) {
+        if (!subscribers.has(name)) observe(startForConnection(name), 'resume start', name);
+      }
+    }
+  };
+  const pauseTimer = input.isPaused === undefined
+    ? undefined
+    : setInterval(followPause, input.pausePollMs ?? 5_000);
+  pauseTimer?.unref?.();
+
   // Boot scan — start every existing Salesforce connection's
   // subscriber. Each start is fire-and-forget at the wiring level;
   // errors land in the log via the per-step catches above.
@@ -408,6 +434,7 @@ export const wireSalesforceCometDLifecycle = (
       // lifetime, but activate() becomes inert after this point.
       closed = true;
       desired.clear();
+      if (pauseTimer !== undefined) clearInterval(pauseTimer);
       stopAllPromise = (async () => {
         const names = new Set([
           ...subscribers.keys(),

@@ -45,6 +45,7 @@ import {
   approvalElsewhereMessage,
   HELD_FOR_APPROVAL_MESSAGE,
   projectRunResultForAgent,
+  withoutRenderAlias,
 } from './run-result-agent-projection.js';
 import {
   dispatchRawOp,
@@ -77,6 +78,7 @@ import {
   MCP_ACTION_NOTIFICATION_METHOD,
   MCP_ACTION_STATUS_TOOL_NAME,
   isMcpActionTerminal,
+  mcpActionDispatcherAlive,
   projectMcpActionPublicState,
   type McpActionKind,
   type McpActionRecord,
@@ -104,6 +106,7 @@ import type {
 import {
   admitByOpRisk,
   cliPrincipalFromExecutionSource,
+  contractUnavailableSentence,
   derivePerOpDependencyReads,
   ENGAGEMENT_BODY_CONTENT_REGISTRY_KEY,
   ENGAGEMENT_VENDOR_VALUES,
@@ -444,8 +447,17 @@ const resolveMcpDoorReadGrantChecker = (deps: McpDeps): ReadGrantChecker =>
  *  passes `isVerbOpGranted('core.peer.receive-ask')` (the CONTRACT overlay, a
  *  different axis) and then the receiver's default-closed per-(peer, label)
  *  exposure check. This one answers "may this token call this tool at all". */
-/** What a key is told for a tool it may not call. D-327: a contract's key takes its tools
- *  from the contract's switches, so that is where it points.
+/** What a key is told for a tool it may not call.
+ *
+ *  ⛔ D-346 follow-up (2026-11-08) — ONE PLAIN SENTENCE FOR EVERY KEY. The owner ruled that a
+ *  caller other than the owner's own chat reads only that a tool is not available for its
+ *  contract, *"althought it can still be owner using that contract"*: not why, not where it is
+ *  switched on. The three wordings below it (a seller's customer; the older kind of contract,
+ *  whose key keeps the tool list it was issued with; a contract's key pointed at the Contracts
+ *  page) are gone; the notes below keep the record of what each case was.
+ *
+ *  (Before:) D-327: a contract's key takes its tools from the contract's switches, so that is
+ *  where it pointed.
  *
  *  ⛔ NOT FOR THE KEY OF THE OLDER KIND OF CONTRACT. That key keeps the tool list it was
  *  issued with, and the page that edited that list is gone, so its switches cannot add a
@@ -457,19 +469,17 @@ const resolveMcpDoorReadGrantChecker = (deps: McpDeps): ReadGrantChecker =>
  *  ⚠ Model-facing: the AI relays it (chat-prompt log). */
 const MCP_KEY_TOOL_REFUSAL = (
   tool_name: string,
-  deps: Pick<McpDeps, 'customerContractGrants' | 'keyReadsContractTools'>,
-): string => {
-  if (deps.customerContractGrants === true) {
-    return `Tool '${tool_name}' is not granted by this customer contract.`;
-  }
-  return deps.keyReadsContractTools === false
-    ? `Tool '${tool_name}' is not granted to this key. Its contract is the kind made before `
-      + 'Recued 26.10.24: the key keeps the tools it was made with, so switching this tool on '
-      + 'in the web app cannot add it. To use it, make a new contract on the Contracts page, '
-      + "switch the tool on there, and connect with that contract's key."
-    : `Tool '${tool_name}' is not granted to this key. Switch it on for the key's contract `
-      + 'on the Contracts page of the web app (Ops, Entities, Recipes).';
-};
+  _deps: Pick<McpDeps, 'customerContractGrants' | 'keyReadsContractTools'>,
+): string => contractUnavailableSentence(`Tool '${tool_name}'`);
+
+/** D-346 follow-up (2026-11-08) — an op or a tool the bound contract does not allow, read as
+ *  the key refusal above is: only that it is not available for this contract. They said "not
+ *  granted by this customer contract" to every app (the op gate) and "(Settings → Contracts →
+ *  Ops)" (the Tier-1 gate), a page that is not there. ⚠ Model-facing (chat-prompt log). */
+const MCP_CONTRACT_TOOL_REFUSAL = (
+  tool_name: string,
+  _deps: Pick<McpDeps, 'customerContractGrants'>,
+): string => contractUnavailableSentence(`Tool '${tool_name}'`);
 
 const isCheckedListGranted = (deps: McpDeps, tool_name: string): boolean => {
   const gate = deps.inboundTokenAuthorize;
@@ -2351,7 +2361,8 @@ const textProjectedExecuteResult = async (
         projected,
       })
     : projected;
-  const response = textWithImages(projectedWithAction);
+  // D-335 slice Q — the agent reads the output once (`withoutRenderAlias`).
+  const response = textWithImages(withoutRenderAlias(projectedWithAction));
   return isFailedExecuteResponse(result)
     ? markMcpZeroCustomerUsage(response)
     : response;
@@ -2375,6 +2386,18 @@ export const reconcileMcpAction = async (
   record: McpActionRecord,
 ): Promise<McpActionRecord> => {
   if (!deps.mcpActionStore || isMcpActionTerminal(record.status)) return record;
+  // Has the resume this `running` record describes been abandoned?
+  // ⛔ BY WHETHER ITS DISPATCHER IS ALIVE, NOT BY THE RECORD'S AGE. Fifteen
+  // minutes untouched used to mean "crash residue", which a resumed op longer
+  // than that also was, and so was any dispatch a laptop slept through: the
+  // stdio poller woke first and finished it `in_doubt` while the server was
+  // still running it. A live dispatcher always settles its record; a dead one
+  // never will, so it is abandoned now. Only a record that names no dispatcher
+  // (written before they were recorded, or where the platform cannot say)
+  // still falls back to the age.
+  const dispatcherAlive = record.status === 'running' ? mcpActionDispatcherAlive(record) : null;
+  const abandoned = dispatcherAlive === false
+    || (dispatcherAlive === null && Date.now() - record.updated_at > MCP_ACTION_STALE_RUNNING_MS);
   let checkpoint = null as Awaited<ReturnType<NonNullable<McpDeps['checkpointStore']>['get']>>;
   try {
     if (record.current_checkpoint_id !== undefined && deps.checkpointStore) {
@@ -2405,7 +2428,7 @@ export const reconcileMcpAction = async (
     // A running resume may legitimately leave the old awaiting anchor in place
     // until handleExecute writes the next/terminal anchor. Only return it to a
     // recoverable wait after the recipe's default hard timeout has elapsed.
-    if (Date.now() - record.updated_at > MCP_ACTION_STALE_RUNNING_MS && checkpoint !== null) {
+    if (abandoned && checkpoint !== null) {
       return await deps.mcpActionStore.markAwaiting(
         record.run_id,
         anchor.checkpoint_id ?? checkpoint.checkpoint_id,
@@ -2475,7 +2498,7 @@ export const reconcileMcpAction = async (
         checkpoint.checkpoint_id,
       ) ?? record;
     }
-    if (Date.now() - record.updated_at > MCP_ACTION_STALE_RUNNING_MS) {
+    if (abandoned) {
       return await deps.mcpActionStore.markAwaiting(
         record.run_id,
         checkpoint.checkpoint_id,
@@ -2485,7 +2508,7 @@ export const reconcileMcpAction = async (
     return record;
   }
 
-  if (record.status === 'running' && Date.now() - record.updated_at <= MCP_ACTION_STALE_RUNNING_MS) {
+  if (record.status === 'running' && !abandoned) {
     return record;
   }
 
@@ -2750,7 +2773,7 @@ const preflightMcpCustomerUsage = (
     if (!isCustomerStatusGranted(deps)) {
       return {
         ok: false,
-        result: err('customer.status is not granted by this customer contract.'),
+        result: err(contractUnavailableSentence(`Tool '${CUSTOMER_STATUS_TOOL_NAME}'`)),
       };
     }
     if (Object.keys(args).length > 0) {
@@ -2761,7 +2784,7 @@ const preflightMcpCustomerUsage = (
     if (customerGrant === false) {
       return {
         ok: false,
-        result: err(`Tool '${params.name}' is not granted by this customer contract.`),
+        result: err(MCP_CONTRACT_TOOL_REFUSAL(params.name, deps)),
       };
     }
     if (
@@ -2927,7 +2950,7 @@ const handleToolCall = async (
       return err('customer.status is available only to an admitted seller customer token.');
     }
     if (!isCustomerStatusGranted(deps)) {
-      return err('customer.status is not granted by this customer contract.');
+      return err(contractUnavailableSentence(`Tool '${CUSTOMER_STATUS_TOOL_NAME}'`));
     }
     if (Object.keys(args).length > 0) {
       return err('customer.status does not accept arguments.');
@@ -2935,7 +2958,7 @@ const handleToolCall = async (
   } else {
     const customerGrant = rawOpContractGrant(deps, params.name);
     if (customerGrant === false) {
-      return err(`Tool '${params.name}' is not granted by this customer contract.`);
+      return err(MCP_CONTRACT_TOOL_REFUSAL(params.name, deps));
     }
     // ⛔⛔ D-228 slice 6 — AN ABSENT CHECKLIST DENIES, and the missing `deps.
     // inboundTokenAuthorize &&` term is the whole change. That term made an
@@ -3025,9 +3048,7 @@ const handleToolCall = async (
     if (registryEntry.tier === 1 && deps.opAdmissionGate !== undefined) {
       const source = buildMcpExecutionSource(deps);
       if (!deps.opAdmissionGate.isOpGranted(source, primitiveGrantEntry(params.name))) {
-        return err(
-          `Tool '${params.name}' is not granted by this contract (Settings → Contracts → Ops).`,
-        );
+        return err(MCP_CONTRACT_TOOL_REFUSAL(params.name, deps));
       }
     }
     // D-329 — a Tier-1 write is held for the owner, as a write raw op is: the ask fans out
@@ -3408,7 +3429,7 @@ const handleToolCall = async (
             message: outcome.message,
           }));
         case 'result':
-          return textWithImages(projectRunResultForAgent(outcome.result));
+          return textWithImages(withoutRenderAlias(projectRunResultForAgent(outcome.result)));
         // D-337 slice K — only a chat's own turn asks to be told so (`askAfter`); never here.
         case 'not_asked':
           return err(`${outcome.op_id} was not asked: a call before it waits for the owner's approval.`);
@@ -3924,7 +3945,7 @@ const handleToolCall = async (
         return err(
           JSON.stringify({
             code: 'bad_request',
-            message: 'recued_getAudit: not read-granted to this contract (read rejected)',
+            message: contractUnavailableSentence("Tool 'recued_getAudit'"),
           }),
         );
       }

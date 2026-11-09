@@ -2281,9 +2281,38 @@ export interface CliInvocationCwdSpec {
   arg: string;
 }
 
+/** D-346 § 9 — what a program takes in an `existing_paths` argument besides a
+ *  path. A closed list; a new form is a new member, which both validators and the
+ *  executor learn together.
+ *  - `glob`: a value holding a glob character (`*`, `?`, `[`, `]`, `{`, `}`) is
+ *    the program's to match and is not checked (eslint, markdownlint);
+ *  - `line`: a trailing `:<number>` is the program's line (vitest's `file:line`),
+ *    and the path before it is checked. */
+export const CLI_EXISTING_PATH_ACCEPTS = ['glob', 'line'] as const;
+export type CliExistingPathAccepts = (typeof CLI_EXISTING_PATH_ACCEPTS)[number];
+
+/** D-346 § 9 — one caller argument that names a folder or a file the program
+ *  reads, which must already be on the server. Like `cwd`, a single `{arg}`
+ *  token; unlike it, the argument is one the argv passes. `accepts` names what
+ *  else the program takes there (`CLI_EXISTING_PATH_ACCEPTS`); without it the
+ *  whole value is a path. */
+export interface CliExistingPathSpec {
+  arg: string;
+  accepts?: CliExistingPathAccepts;
+}
+
 export interface CliMethodBinding {
   kind: 'cli_invocation';
   cwd?: CliInvocationCwdSpec;
+  /** D-346 § 9 — the arguments naming a folder or file that must be on the
+   *  server before the program starts. The executor checks each, as it checks
+   *  `cwd`, and refuses in words that name the path: ripgrep, told
+   *  `--no-messages`, says only "exited with code 2" for a folder that is not
+   *  there. Only what the program reads: never a path it creates (`git worktree
+   *  add -- {path}`), and never an engine-owned one (a materialized input, the
+   *  output folder). A server without the check ignores it, and the program
+   *  fails as before. */
+  existing_paths?: CliExistingPathSpec[];
   argv_template: CliArgvTemplateEntry[];
   stdin_handling?: CliStdinHandling;
   /** D-185 — the op's output declaration (the retired `out`/`stdout_handling`/

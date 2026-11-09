@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_INSTANCE_PREFS,
+  type ExecutionBrowserFlowEntry,
   type ExecutionCaseLearnedEntry,
   type InstancePrefs,
 } from '@recued/contracts';
@@ -28,6 +29,11 @@ import {
   LEARNING_PANEL_READ_STATUS_ATTR,
   LEARNING_PANEL_FORGET_ATTR,
   LEARNING_PANEL_FORGET_ERROR_ATTR,
+  LEARNING_PANEL_FLOW_ATTR,
+  LEARNING_PANEL_FLOW_ERROR_ATTR,
+  LEARNING_PANEL_FLOW_FORGET_ATTR,
+  LEARNING_PANEL_FLOW_RECIPE_ATTR,
+  LEARNING_PANEL_FLOWS_ATTR,
   LEARNING_PANEL_HOST_ATTR,
   LEARNING_PANEL_STYLES,
   LEARNING_PANEL_OFF_HINT_ATTR,
@@ -1426,5 +1432,124 @@ describe('Learning history read recovery', () => {
     expect(h.draft).toHaveBeenCalledTimes(1); expect(h.forget).toHaveBeenCalledExactlyOnceWith({ case_id: b.case_id });
     expect(h.get).toHaveBeenCalledTimes(1); expect(h.set).not.toHaveBeenCalled(); expect(h.panel.hasUnsavedChanges()).toBe(false);
     h.panel.dispose();
+  });
+});
+
+// D-335 slice W4 — the browser steps the owner kept from the "Worth remembering?" ask, listed beside
+// the cases: their steps in the owner's words, Make a recipe, and a two-tap Forget.
+describe('D-335 slice W4 — browser steps you kept', () => {
+  const flow = (over: Partial<ExecutionBrowserFlowEntry> = {}): ExecutionBrowserFlowEntry => ({
+    flow_id: 'f1', kept_at: Date.UTC(2026, 10, 5), sites: ['github.com'],
+    steps: [
+      { do: 'type', url: 'https://github.com/new', title: 'New repository',
+        element: { role: 'text box', label: 'Repository name', selector: '#name' }, value: 'recued-notes', at: 1 },
+      { do: 'type', url: 'https://github.com/new', title: 'New repository',
+        element: { role: 'password field', label: 'Password' }, secret: true, at: 2 },
+      { do: 'click', url: 'https://github.com/new', title: 'New repository',
+        element: { role: 'button', label: 'Create repository', selector: '#create' }, at: 3 },
+      { do: 'press', url: 'https://github.com/x/recued-notes', title: 'recued-notes',
+        element: { role: 'search box', label: 'Search', selector: '#q' }, key: 'Enter', at: 4 },
+    ],
+    ...over,
+  });
+  const mountWithFlows = (opts: {
+    flows?: ExecutionBrowserFlowEntry[];
+    cases?: ExecutionCaseLearnedEntry[];
+    recipe?: () => Promise<{ ok: boolean; recipe?: unknown; issues: string[]; reason?: string }>;
+    handoff?: () => boolean | void;
+    wired?: boolean;
+  } = {}) => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    let flows = opts.flows ?? [flow()];
+    const runFlowForget = vi.fn(async (args: { flow_id: string }) => {
+      flows = flows.filter((entry) => entry.flow_id !== args.flow_id);
+      return { removed: true };
+    });
+    const runFlowRecipe = vi.fn(opts.recipe ?? (async () => ({ ok: true, recipe: { recipe_id: 'browser-flow-github-com-f1' },
+      issues: ['Step 2 types into the password field “Password”: what was typed was not kept, so the recipe asks for it.'] })));
+    const onFlowDraftReady = vi.fn(opts.handoff ?? (() => true));
+    const panel = mountLearningPanel({
+      host: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      runPrefsGet: async () => ({ prefs: prefs() }),
+      runPrefsSet: async (args) => ({ prefs: prefs(args.patch) }),
+      runCasesList: async () => ({ cases: opts.cases ?? [], browser_flows: flows }),
+      runCaseForget: async () => ({ removed: true, cases_remaining: 0 }),
+      ...(opts.wired === false ? {} : { runFlowForget, runFlowRecipe, onFlowDraftReady }),
+    });
+    return { host, panel, runFlowForget, runFlowRecipe, onFlowDraftReady };
+  };
+
+  it('lists each kept flow by its site, its steps in words, and where they moved to another page; never a secret', async () => {
+    const h = mountWithFlows();
+    await h.panel.whenLoaded();
+    const listed = findByAttr(h.host, LEARNING_PANEL_FLOWS_ATTR)!;
+    expect(textOf(listed)).toContain('Browser steps you kept');
+    const item = findByAttr(listed, LEARNING_PANEL_FLOW_ATTR)!;
+    expect(item.getAttribute(LEARNING_PANEL_FLOW_ATTR)).toBe('f1');
+    const words = textOf(item);
+    for (const line of ['On github.com', 'On “New repository” (github.com)', 'Typed “recued-notes” into the text box “Repository name”',
+      'Typed into the password field “Password” (what was typed is not kept)', 'Clicked the button “Create repository”',
+      'On “recued-notes” (github.com)', 'Pressed Enter in the search box “Search”']) {
+      expect(words).toContain(line);
+    }
+    // With flows kept, "Nothing yet" would say nothing was kept.
+    expect(findByAttr(h.host, LEARNING_PANEL_CASES_EMPTY_ATTR)).toBeNull();
+  });
+
+  it('Make a recipe hands the recipe and what to look at first to the Kitchen', async () => {
+    const h = mountWithFlows();
+    await h.panel.whenLoaded();
+    findByAttr(h.host, LEARNING_PANEL_FLOW_RECIPE_ATTR)!.dispatchClick();
+    await h.panel.whenForgetSettled();
+    expect(h.runFlowRecipe).toHaveBeenCalledWith({ flow_id: 'f1' });
+    expect(h.onFlowDraftReady).toHaveBeenCalledWith({ flow_id: 'f1', recipe: { recipe_id: 'browser-flow-github-com-f1' },
+      notes: ['Step 2 types into the password field “Password”: what was typed was not kept, so the recipe asks for it.'] });
+    expect(findByAttr(h.host, LEARNING_PANEL_FLOW_ERROR_ATTR)).toBeNull();
+  });
+
+  it('a recipe that could not be made, or not opened, says so beside its flow', async () => {
+    const failed = mountWithFlows({ recipe: async () => ({ ok: false, reason: 'unknown_flow',
+      issues: ['There is no such browser flow: it may have been forgotten.'] }) });
+    await failed.panel.whenLoaded();
+    findByAttr(failed.host, LEARNING_PANEL_FLOW_RECIPE_ATTR)!.dispatchClick();
+    await failed.panel.whenForgetSettled();
+    expect(textOf(findByAttr(failed.host, LEARNING_PANEL_FLOW_ERROR_ATTR)!))
+      .toBe('Recued could not make a recipe of it: There is no such browser flow: it may have been forgotten.');
+    expect(failed.onFlowDraftReady).not.toHaveBeenCalled();
+    const unopened = mountWithFlows({ handoff: () => false });
+    await unopened.panel.whenLoaded();
+    findByAttr(unopened.host, LEARNING_PANEL_FLOW_RECIPE_ATTR)!.dispatchClick();
+    await unopened.panel.whenForgetSettled();
+    expect(textOf(findByAttr(unopened.host, LEARNING_PANEL_FLOW_ERROR_ATTR)!)).toContain('could not open it in Kitchen');
+  });
+
+  it('Forget takes two taps, then the list is read again', async () => {
+    const h = mountWithFlows();
+    await h.panel.whenLoaded();
+    findByAttr(h.host, LEARNING_PANEL_FLOW_FORGET_ATTR)!.dispatchClick();
+    expect(h.runFlowForget).not.toHaveBeenCalled();
+    expect(textOf(findByAttr(h.host, LEARNING_PANEL_FLOW_FORGET_ATTR)!)).toBe('Tap again to forget');
+    findByAttr(h.host, LEARNING_PANEL_FLOW_FORGET_ATTR)!.dispatchClick();
+    await h.panel.whenForgetSettled();
+    expect(h.runFlowForget).toHaveBeenCalledWith({ flow_id: 'f1' });
+    expect(findByAttr(h.host, LEARNING_PANEL_FLOWS_ATTR)).toBeNull();
+  });
+
+  it('a host that wires no flow controls lists no flows; every class they use has a rule', async () => {
+    const unwired = mountWithFlows({ wired: false });
+    await unwired.panel.whenLoaded();
+    expect(findByAttr(unwired.host, LEARNING_PANEL_FLOWS_ATTR)).toBeNull();
+    const h = mountWithFlows();
+    await h.panel.whenLoaded();
+    const classes = new Set<string>();
+    const walk = (n: FakeElement): void => {
+      for (const cls of (n.className ?? '').split(/\s+/u)) if (cls.startsWith('learning-')) classes.add(cls);
+      for (const c of n.children) walk(c);
+    };
+    walk(h.host);
+    expect(classes.has('learning-flow-steps')).toBe(true);
+    expect([...classes].filter((cls) => !LEARNING_PANEL_STYLES.includes(`.${cls}`))).toEqual([]);
   });
 });

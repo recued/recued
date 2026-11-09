@@ -1115,6 +1115,38 @@ describe('D-137 Trio #A — Tier 2 source', () => {
     expect(entries[0]?.recipe_id).toBe('user/recipe');
   });
 
+  // D-347 slice C follow-up (2026-11-08) — what a lookup by name reads, without walking every recipe.
+  it('reads one entry by its tool name, as the listing holds it, a slash in the id and all', () => {
+    const r1 = buildRecipe('a/b', 'recued-core');
+    const r2 = buildRecipe('c', 'third-party');
+    const kernel = buildRecipe('recued/run-ingredient', 'recued');
+    let walks = 0;
+    const source = createChatTier2Source(
+      buildDepsStub({
+        getRecipeStore: () =>
+          ({
+            ids: () => { walks += 1; return ['a/b', 'c', 'recued/run-ingredient']; },
+            get: (id: string) => (id === 'a/b' ? r1 : id === 'c' ? r2 : id === 'recued/run-ingredient' ? kernel : null),
+            getStored: (id: string) =>
+              id === 'a/b' ? { publisher_id: 'recued-core' } : id === 'c' ? { publisher_id: 'third-party', source: 'inline' } : null,
+            listStored: () => [],
+          }) as never,
+      }),
+    );
+    const listed = source.listRecipes();
+    expect(listed.map((e) => e.recipe_id)).toEqual(['a/b', 'c']);
+    walks = 0;
+    for (const entry of listed) {
+      expect(source.recipeNamed!(`${entry.publisher_id}/${entry.recipe_id}`)).toEqual(entry);
+    }
+    // Another publisher's name, a kernel recipe, an id the store does not hold, no slash at all.
+    expect(source.recipeNamed!('third-party/a/b')).toBeNull();
+    expect(source.recipeNamed!('recued/recued/run-ingredient')).toBeNull();
+    expect(source.recipeNamed!('nobody/ghost')).toBeNull();
+    expect(source.recipeNamed!('no-slash')).toBeNull();
+    expect(walks).toBe(0);
+  });
+
   it('falls back to metadata.author when stored row is absent (bundled-only)', () => {
     const bundled = buildRecipe('a/b', 'recued-core');
     const source = createChatTier2Source(

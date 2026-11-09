@@ -66,6 +66,7 @@ import {
   RUN_MODAL_PRESET_ATTR,
   RUN_MODAL_MISSED_POLICY_ATTR,
   RUN_MODAL_NEW_MISSED_POLICY_ATTR,
+  RUN_MODAL_NEXT_STEP_ATTR,
   RUN_MODAL_PANEL_CLASS,
   RUN_MODAL_REPEAT_ATTR,
   RUN_MODAL_RUN_AT_ATTR,
@@ -506,13 +507,28 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       });
       if (destroyed) return;
       const completionFocus = captureFocusIdentity();
-      state = { ...state, executing: false, result };
+      // D-321 P2 / C2 — what a failed step needed, as the host reads it.
+      const step = opts.nextStepForResult?.(result) ?? null;
+      state = {
+        ...state, executing: false, result, result_next_step: step === null ? null : { result, step },
+        next_action_status: 'idle', next_action_error: null,
+      };
       paint(completionFocus);
       opts.onRan?.(result);
     } catch (err) {
       if (destroyed) return;
       const completionFocus = captureFocusIdentity();
-      state = { ...state, executing: false, run_error: runErrMessage(err) };
+      const run_error = runErrMessage(err);
+      // D-321 P2 — a refusal the host can turn into a next step shows it instead.
+      const step = opts.nextStepFor?.(err) ?? null;
+      state = {
+        ...state,
+        executing: false,
+        run_error,
+        run_next_step: step === null ? null : { error: run_error, step },
+        next_action_status: 'idle',
+        next_action_error: null,
+      };
       paint(completionFocus);
     }
   };
@@ -823,9 +839,41 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     );
   };
 
+  /** D-346 follow-up — the shown next step's one-click fix ("Turn it on"). The step shown
+   *  is the one the dialog draws: a failed result's, else a refused run's, else the notice
+   *  above Run. A press while it works does nothing. */
+  async function runNextAction(): Promise<void> {
+    const shown = state.result_next_step?.result === state.result && state.result_next_step !== null
+      ? state.result_next_step.step
+      : state.run_next_step?.error === state.run_error && state.run_next_step !== null
+        ? state.run_next_step.step
+        : state.before_run;
+    const action = shown?.action;
+    if (action === undefined || state.next_action_status === 'running') return;
+    state = { ...state, next_action_status: 'running', next_action_error: null };
+    paint();
+    try {
+      await action.run();
+      if (destroyed) return;
+      state = { ...state, next_action_status: 'done' };
+    } catch (err) {
+      if (destroyed) return;
+      state = { ...state, next_action_status: 'failed', next_action_error: runErrMessage(err) };
+    }
+    paint();
+  }
+
   function onClick(ev: Event): void {
     const start = ev.target as Element | null;
     if (start === null || typeof start.closest !== 'function') return;
+    // D-321 P2 — a next step's link goes to another page of the app, and the
+    // dialog over this one goes with it. One opened in a new tab or window
+    // leaves the dialog where it is.
+    if (start.closest(`[${RUN_MODAL_NEXT_STEP_ATTR}]`) !== null) {
+      const mouse = ev as MouseEvent;
+      if (!mouse.metaKey && !mouse.ctrlKey && !mouse.shiftKey && !mouse.altKey) close();
+      return;
+    }
     const actor = start.closest<HTMLElement>(`[${RUN_MODAL_ACTION_ATTR}]`);
     if (actor === null) return;
     // Pointer activation need not focus a button. Capture the action's own
@@ -834,6 +882,10 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     const action = actor.getAttribute(RUN_MODAL_ACTION_ATTR) ?? '';
     if (action === 'close') {
       close();
+      return;
+    }
+    if (action === 'next-action') {
+      void runNextAction();
       return;
     }
     if (action === 'tab:run' || action === 'tab:schedule' || action === 'tab:trigger') {
@@ -1319,6 +1371,15 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   // to Run never costs a `schedules.list`. A later tab switch lazy-loads.
   if (caps.canSchedule && state.tab === 'schedule') void loadSchedules();
   if (caps.canTrigger && state.tab === 'trigger') void loadTriggers();
+  // D-321 C2 — what would stop a run, read once as the dialog opens. A read that
+  // fails says nothing: the run still reports its own outcome.
+  if (opts.beforeRun !== undefined) {
+    void opts.beforeRun().then((step) => {
+      if (destroyed || step === null) return;
+      state = { ...state, before_run: step, next_action_status: 'idle', next_action_error: null };
+      paint(captureFocusIdentity());
+    }, () => undefined);
+  }
   // D-320 — the recipe's slots, for the Run tab's Connection lines. A read that
   // fails leaves none: the run takes the dish's choice or the default.
   if (opts.connectionSlots !== undefined) {

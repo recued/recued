@@ -88,6 +88,8 @@ export const OP_ENTITIES = [
   'reminder', 'situation',
   // capabilities with no stored entity behind them
   'ai', 'browser', 'schedule', 'watch',
+  // D-345 — the server's own fetch of a public web address (the HTTP Toolkit).
+  'web',
   // ⚠ NO KERNEL OP CARRIES THESE TWO — they exist for the Tier-1 chat primitives
   // (`TIER1_TOOL_ENTITY` in `chat.ts`), which share this vocabulary so the panel can
   // render ONE group per entity across both registries. `crm` is `deal.search` /
@@ -167,6 +169,7 @@ export const OP_ENTITY_LABEL: Readonly<Record<OpEntity, string>> = {
   recipe: 'Recipes',
   ai: 'AI models',
   browser: 'Browser',
+  web: 'Web addresses',
   schedule: 'Schedules',
   watch: 'Triggers',
 };
@@ -596,6 +599,9 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   nativeOp('core.work-entity.read', 'work-entity', 'read', 'work'),
   op('core.situation.read', 'situation', 'situation-query', 'read', 'situation'),
   nativeOp('core.situation.prefetch', 'situation', 'read', 'situation'),
+  // D-343 slice 2 — the owner's closing records (`episode.record`): what they did or skipped
+  // on a day, kept as episodes. A write the owner approves; off for AI apps until granted.
+  nativeOp('core.situation.record', 'situation', 'write', 'situation'),
 
   // ── memory — the provenance / audit / annotation + links graph + timeline
   //    (CLAUDE.md: data.memory = audit/memory + provenance links + annotations).
@@ -1132,10 +1138,27 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.dom.wait', 'dom', 'dom-wait', 'read', 'browser'),
   op('core.dom.table', 'dom', 'dom-table', 'read', 'browser'),
   op('core.dom.screenshot', 'dom', 'dom-screenshot', 'read', 'browser'),
+  // Slice U (2026-11-05): `core.dom.scroll(target, page, ref?, selector?, to?, screen?)` → a `scroll`
+  // → `{ page, url, title, screen, screens }`, a screen at a time; a read, as a person scrolling is.
+  op('core.dom.scroll', 'dom', 'dom-scroll', 'read', 'browser'),
+  // Slice AP (2026-11-07): `core.dom.download(target, page, ref?, selector?, address?)` → a
+  // `download_file` → `{ page, url, title, address, file_ref, filename, mime_type, size_bytes, sha256 }`:
+  // the file a page links to, fetched as the page would fetch it and kept among the owner's files
+  // (`browser_download`), its bytes never in the output. A read: it changes nothing on the page.
+  op('core.dom.download', 'dom', 'dom-download', 'read', 'browser'),
   // Slice J (2026-11-04): `core.dom.act(target, page, steps)` runs typing, clicks, sends and
   // waits on one page in order (`browser-act.ts`), approved once, through the Bridge's own
   // actions, and stops at the first step that cannot be done or whose check fails.
   op('core.dom.act', 'dom', 'dom-act', 'write', 'browser'),
+  // D-345 (2026-11-07): the HTTP Toolkit, the server's own fetch of a public web address, no browser
+  // and nothing of the owner's sent (`http-toolkit/public-fetch.ts`: public addresses only, each
+  // redirect checked). `core.http.get(address, headers_only?)` → what the site answered (JSON parsed,
+  // text up to 40,000 characters); `core.http.read(address, from?)` → the page as readable text, a
+  // part at a time; `core.http.download(address)` → the file kept among the owner's files
+  // (`http_download`), its ref, never its bytes. Reads, as `core.dom.download` is: they change nothing.
+  op('core.http.get', 'http', 'http-get', 'read', 'web'),
+  op('core.http.read', 'http', 'http-read', 'read', 'web'),
+  op('core.http.download', 'http', 'http-download', 'read', 'web'),
 ];
 
 // ────────────────────────────────────────────────────────────────

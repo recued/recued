@@ -310,8 +310,9 @@ export const createPreapprovalExecutionRuntime = (deps: {
       try { result = await dispatch(); }
       catch (error) {
         if (run.binding.run_id === run.binding.root_run_id) {
-          const restart = error instanceof RpcError && (error.code === 'run_killed' || error.code === 'draining')
-            && deps.isStopping?.() === true;
+          // D-188 — a run not started because the server is paused is handed back the same way.
+          const restart = error instanceof RpcError && ((error.code === 'run_killed' || error.code === 'draining')
+            && deps.isStopping?.() === true || error.code === 'server_paused');
           if (!(restart && await handBack(run))) await repository.finishRun(run.binding, 'failed');
         }
         throw error;

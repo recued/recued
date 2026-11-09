@@ -21,6 +21,7 @@
  *  before. */
 
 import {
+  contractUnavailableSentence,
   isGrantedReadAdmissible,
   projectEngagementRowForMCP,
   RpcError,
@@ -73,7 +74,7 @@ export const handleContactEngagementsList = (
   ) {
     throw new RpcError(
       'bad_request',
-      'mcp.contact.engagements.list: not read-granted to this contract (read rejected)',
+      `mcp.contact.engagements.list: ${contractUnavailableSentence('Reading contact engagements')}`,
       400,
     );
   }

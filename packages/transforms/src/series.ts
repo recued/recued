@@ -94,6 +94,63 @@ export const window_change: TransformFn = (p) => {
   };
 };
 
+const median = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+};
+
+/** D-339 — the window's latest value against its own usual: the median of the
+ * window's earlier samples, never the latest itself, with the median absolute
+ * deviation beside it for a "usual range". The latest is reported whenever it
+ * exists; with too few earlier samples (`count` says how many) or a latest
+ * older than `max_age_ms`, there is no usual to compare it with. */
+const usual = (p: Row) => {
+  const none = { status: 'unknown', latest: null, median: null, mad: null, count: null,
+    difference: null, percent_difference: null, evidence: [] as Row[] };
+  const points = samples(p, p.value_field, true);
+  if (!points || !finite(p.window_ms) || p.window_ms <= 0
+    || !finite(p.min_count) || !Number.isInteger(p.min_count) || p.min_count < 1
+    || (p.max_age_ms !== undefined && (!finite(p.max_age_ms) || p.max_age_ms < 0))) return none;
+  const window = points.filter(point => point.at >= (p.now as number) - (p.window_ms as number));
+  const last = window[window.length - 1];
+  if (!last) return none;
+  const latest = { value: last.value as number, at: last.at };
+  if (p.max_age_ms !== undefined && (p.now as number) - last.at > (p.max_age_ms as number)) {
+    return { ...none, latest, evidence: [last.row] };
+  }
+  const earlier = window.slice(0, -1).map(point => point.value as number);
+  const evidence = window.map(point => point.row);
+  if (earlier.length < (p.min_count as number)) return { ...none, latest, count: earlier.length, evidence };
+  const middle = median(earlier);
+  const mad = median(earlier.map(value => Math.abs(value - middle)));
+  const difference = latest.value - middle;
+  const percent_difference = middle === 0 ? null : difference / Math.abs(middle) * 100;
+  if (![middle, mad, difference, percent_difference ?? 0].every(Number.isFinite)) return none;
+  return { status: 'known', latest, median: middle, mad, count: earlier.length, difference, percent_difference, evidence };
+};
+
+/** With `series_fields`, one result per series (a metric from one source, say),
+ * sorted by its key, so each is compared only with its own history. A row
+ * missing a key part belongs to no series; a malformed field list gives []. */
+export const baseline: TransformFn = (p) => {
+  if (p.series_fields === undefined) return usual(p);
+  const fields = p.series_fields;
+  if (!Array.isArray(fields) || !fields.length || !fields.every(name => field(name)) || !Array.isArray(p.rows)) return [];
+  const series = new Map<string, { key: Row; rows: Row[] }>();
+  for (const row of p.rows) {
+    if (!object(row)) continue;
+    const parts = fields.map(name => getField(row, name as string));
+    if (!parts.every(scalar)) continue;
+    const id = JSON.stringify(parts);
+    const entry = series.get(id) ?? { key: Object.fromEntries(fields.map((name, i) => [name, parts[i]])), rows: [] };
+    entry.rows.push(row);
+    series.set(id, entry);
+  }
+  return [...series.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, entry]) => ({ series: entry.key, ...usual({ ...p, rows: entry.rows }) }));
+};
+
 const coordinate = (lat: unknown, lon: unknown): lat is number =>
   finite(lat) && finite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
 const radians = (degrees: number): number => degrees * Math.PI / 180;

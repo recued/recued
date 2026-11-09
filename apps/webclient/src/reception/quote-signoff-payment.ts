@@ -1,5 +1,6 @@
 import type { QuoteSignoffSummary, ServerRecipeListEntry } from '@recued/contracts';
 import { RunModal } from '@recued/ui-shared';
+import { wireRunModal } from '../shell/run-modal.js';
 
 export interface QuoteSignoffPaymentOptions {
   listRecipes: () => Promise<{ recipes: readonly ServerRecipeListEntry[] }>;
@@ -55,7 +56,7 @@ export const createQuoteSignoffPayment = (opts: QuoteSignoffPaymentOptions & {
       const entry = matches[0]!;
       await readCurrent();
       if (disposed) return;
-      handle = RunModal.wireRunModal({
+      handle = wireRunModal({
         recipe: { ...entry, recipe: { ...entry.recipe,
           metadata: { ...entry.recipe.metadata, name: `Record payment — ${target.invoice_ref}` },
           variables: { ...entry.recipe.variables, invoice_id: {

@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
 import { createRuntimeConfigStore } from '@recued/config';
-import type { Asset, AssetRule } from '@recued/contracts';
+import type { Asset, AssetRule, MailFactThing } from '@recued/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createBootTrace } from '../cli/boot-trace.js';
@@ -29,7 +29,7 @@ import { createProactiveHistoryStore } from '../storage/proactive-history-store.
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { createSituationStore, type SituationStore } from '../storage/situation-store.js';
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
-import { createWorkEntityDispatchers, RenewalDateRequiredError } from '../work-entity-ingredients.js';
+import { AssetReminderOpenError, createWorkEntityDispatchers, RenewalDateRequiredError } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import { autoRegisterRecuedBuiltinSources } from '../work-entity-source-boot.js';
 import { unlockServerVault } from './helpers/unlocked-vault.js';
@@ -211,8 +211,10 @@ describe('D-325 rule situations — composed', () => {
         baseVault: storage.baseVault, auditLog: storage.auditLog, cacheBlobs: app.cacheBlobs, warehouseBus: app.warehouseBus,
         contactStore: app.contactStoreRef, mailFactStore: storage.mailFactStoreRef, gateRegistry: storage.gateRegistry,
         accountStore: storage.accountStore, eventBus: storage.eventBus, keys: app.keys, connectionStore: app.connectionStoreRef,
-        workEntityStore: storage.workEntityStoreRef, enrichmentCascade: app.enrichmentCascadeRef });
-      return { storage, collection };
+        workEntityStore: storage.workEntityStoreRef, enrichmentCascade: app.enrichmentCascadeRef,
+        ...(app.occasionsRef ? { occasionsRef: app.occasionsRef } : {}), ...(app.mailFactsRef ? { mailFactsRef: app.mailFactsRef } : {}),
+        ...(app.closingRecordsRef ? { closingRecordsRef: app.closingRecordsRef } : {}) });
+      return { storage, app, collection };
     } catch (error) { storage.db.close(); throw error; }
   };
   it('the server resolves a published notice when its cycle ends, an occasion’s when it is deleted, and a task when it closes', async () => {
@@ -250,6 +252,81 @@ describe('D-325 rule situations — composed', () => {
       await expect(dispatchers.ownerCommitmentFulfill({ id })).rejects.toBeInstanceOf(RenewalDateRequiredError);
       await expect(dispatchers.commitmentFulfill({ id })).rejects.toBeInstanceOf(RenewalDateRequiredError);
       expect(work.readCommitment(id)!.lifecycle_state).toBe('pending');
+    } finally { storage.db.close(); }
+  }, 60_000);
+  it('the server refuses an AI’s write of a date an open reminder reads, and names the reminder to keep (D-343 ruling 16)', async () => {
+    const { storage, collection } = await composedServer();
+    try {
+      const work = storage.workEntityStoreRef!; const dispatchers = collection.workEntityDispatchers!;
+      const service: AssetRule = { id: 'service', title: 'Service boiler', enabled: true, muted: false, pinned: false, consequence: 'routine',
+        expiry_policy: 'escalate_overdue', when: { kind: 'interval', field: 'last_serviced_on', every: { amount: 12, unit: 'months' } },
+        reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [{ amount: 1, unit: 'months' }], on_day: true } };
+      const last = new Date(Date.now() - 350 * DAY).toISOString().slice(0, 10);
+      const boiler = work.writeAsset({ source_id: 'recued.asset', source, name: 'Boiler', dates: { last_serviced_on: last }, rules: [service] }, Date.now());
+      await collection.assetOccurrences!.reconcileAsset(boiler.id);
+      const [row] = createAssetOccurrenceStore(storage.db).byAsset(boiler.id);
+      const write = { id: boiler.id, source: { kind: 'extracted' as const, ref: 'chat:sess-1' },
+        dates: { last_serviced_on: new Date().toISOString().slice(0, 10) } };
+      // Approved or not, the reminder is the one to keep: the date would cancel it.
+      await expect(dispatchers.assetUpdate(write, { owner_approved: true })).rejects.toMatchObject(
+        { name: 'AssetReminderOpenError', reminder: { commitment_id: row!.commitment_id, field: 'last_serviced_on' } });
+      await expect(dispatchers.assetUpdate(write, { check: true })).rejects.toBeInstanceOf(AssetReminderOpenError);
+      expect(work.readAsset(boiler.id)!.dates.last_serviced_on).toBe(last);
+      expect(work.readCommitment(row!.commitment_id!)!.lifecycle_state).toBe('pending');
+    } finally { storage.db.close(); }
+  }, 60_000);
+  it('the server hands the chat the occasions made in Yours, and saves a change as Yours does (D-343 slice 1)', async () => {
+    const { storage, app } = await composedServer();
+    try {
+      const occasions = app.occasionsRef!.current!;
+      const party = createProactiveHistoryStore(storage.db, createProactiveProposalStore(storage.db)).saveOccasion({ title: 'Summer party',
+        month_day: '06-20', people: [], muted: false, rules: [] }, Date.now());
+      expect(occasions.read(party.id)).toMatchObject({ title: 'Summer party', month_day: '06-20' });
+      await occasions.save({ ...occasions.read(party.id)!, title: 'Summer barbecue', month_day: '06-27' },
+        { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'local' });
+      expect(occasions.read(party.id)).toMatchObject({ title: 'Summer barbecue', month_day: '06-27' });
+      // Only the owner's own change reaches Yours, whatever let it through.
+      await expect(occasions.save({ ...occasions.read(party.id)!, title: 'Party' }, { channel: 'chat', actor: 'contracted_user',
+        chat_session_id: 'chat-2', user_id: 'member-1', contract_id: 'household-1' } as never)).rejects.toThrow('Only the owner changes an occasion');
+      expect(occasions.read(party.id)!.title).toBe('Summer barbecue');
+    } finally { storage.db.close(); }
+  }, 60_000);
+  it('the server hands the chat the mail facts, and closes one by making the record it shows through (D-343 slice 1)', async () => {
+    const { storage, app } = await composedServer();
+    try {
+      storage.mailFactStoreRef!.saveThing({ thing_id: 'mthing_water', type: 'bill', identity_keys: ['bill:mthing_water'],
+        variables: { issuer: 'City Water', due_at: '2026-11-10', state: 'issued' }, passes: {}, variable_email_at: {}, last_email_at: Date.now(),
+        missing: [], complete: true, created_at: Date.now(), updated_at: Date.now() } as MailFactThing);
+      const facts = app.mailFactsRef!.current!;
+      expect(facts.read('mthing_water')).toMatchObject({ title: 'Bill: City Water', closed: false, record: null });
+      const record = await facts.close({ thing_id: 'mthing_water', to: 'done', at: Date.now() });
+      expect(storage.workEntityStoreRef!.readCommitment(record.id)).toMatchObject({ statement: 'Pay City Water', lifecycle_state: 'fulfilled' });
+      expect(facts.read('mthing_water')!.record).toEqual(record);
+    } finally { storage.db.close(); }
+  }, 60_000);
+  it('the server hands the chat the owner’s closing records, kept where Yours lists episodes (D-343 slice 2)', async () => {
+    const { storage, app } = await composedServer();
+    try {
+      const closing = app.closingRecordsRef!.current!;
+      const day = new Date(Date.now() - DAY).toISOString().slice(0, 10);
+      const [record] = closing.record({ day, time_zone: 'UTC', records: [{ title: 'Went for a walk', outcome: 'done' }] });
+      expect(record).toMatchObject({ title: 'Went for a walk', outcome: 'done', basis: 'declared', storage_reason: 'owner_record' });
+      expect(createProactiveHistoryStore(storage.db, createProactiveProposalStore(storage.db)).episode(record!.id)).toMatchObject({ title: 'Went for a walk' });
+    } finally { storage.db.close(); }
+  }, 60_000);
+  it('the server names the condition a reminder stands for while it holds, for the chat’s close (D-343 slice 1)', async () => {
+    const { storage, collection } = await composedServer();
+    try {
+      const work = storage.workEntityStoreRef!; const dispatchers = collection.workEntityDispatchers!;
+      const recall: AssetRule = { id: 'recall', title: 'Check vehicle recall', enabled: true, muted: false, pinned: false, consequence: 'floor',
+        expiry_policy: 'escalate_overdue', when: { kind: 'condition', field: 'open_recall', certainty: 'conditional' },
+        reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [], on_day: true } };
+      const car = work.writeAsset({ source_id: 'recued.asset', source, name: 'Family car', rules: [recall],
+        observations: { open_recall: { active: true, certainty: 'confirmed', as_of: Date.now() - DAY, evidence: [], source: '' } } }, Date.now());
+      await collection.assetOccurrences!.reconcileAsset(car.id);
+      const [row] = createAssetOccurrenceStore(storage.db).byAsset(car.id);
+      expect(dispatchers.commitmentCondition(work.readCommitment(row!.commitment_id!)!))
+        .toEqual({ asset_id: car.id, asset_name: 'Family car', field: 'open_recall' });
     } finally { storage.db.close(); }
   }, 60_000);
 });

@@ -590,3 +590,61 @@ describe('tool-argument grounding — the date arm is not a hole', () => {
     expect(found).toHaveLength(1);
   });
 });
+
+/** D-335 slice AB — `address` is an identifier for a mail address; the page a browser `go` step
+ *  loads is a place. Measured: 3 of the 6 runs of D-335 E's search task lost a round to a right
+ *  guess of the article's address. */
+describe('D-335 slice AB — the page a browser step goes to is a place, not an identifier', () => {
+  const PACKET = 'user_message: On Wikipedia (https://en.wikipedia.org/wiki/Main_Page), search for Ada Lovelace';
+  const GUESS = 'https://en.wikipedia.org/wiki/Ada_Lovelace';
+  const at = (tool: string) => ({ tool, packet: PACKET });
+
+  it('a go step of Act on web pages is sent with an address nothing gave, under each name the tool has', () => {
+    for (const tool of ['recued-core/act-on-web-page', 'kitchen/act-on-web-page', 'recued_kitchen__act-on-web-page']) {
+      expect(ungroundedArgumentsInCall({ steps: [{ do: 'go', address: GUESS }] }, PACKET, at(tool)), tool).toEqual([]);
+    }
+    // The step's kind under `type` or `action`, as the step parser reads it, and a go after other steps.
+    expect(ungroundedArgumentsInCall({ steps: [{ do: 'read' }, { type: 'go', address: GUESS }] }, PACKET,
+      at('kitchen/act-on-web-page'))).toEqual([]);
+  });
+
+  it('still refuses another tool, another step, an address that is not a web one, and a call naming no tool', () => {
+    const one = (args: unknown, context?: { tool: string; packet: string }) => ungroundedArgumentsInCall(args, PACKET, context);
+    expect(one({ steps: [{ do: 'go', address: GUESS }] }, at('mail.send'))).toHaveLength(1);
+    expect(one({ steps: [{ do: 'click', address: GUESS }] }, at('kitchen/act-on-web-page'))).toHaveLength(1);
+    expect(one({ steps: [{ do: 'go', address: 'sarah.chen@northwind.com' }] }, at('kitchen/act-on-web-page'))).toHaveLength(1);
+    expect(one({ steps: [{ do: 'go', address: GUESS }] })).toHaveLength(1);
+    // A mail address under the same key, anywhere else, is still an identifier.
+    expect(one({ address: 'sarah.chen@northwind.com' }, at('contact.update'))).toHaveLength(1);
+  });
+});
+
+/** A literal word (`TODO`, `TBD`, `FIXME`, `N/A` …) is a placeholder only where an
+ *  identifier goes. Live (2026-11-08, `qwen3.7-plus`): "find the TODO notes in the
+ *  folder …" had `pattern: "TODO"` and `"todo"` refused as placeholders, three calls
+ *  in one turn, before ripgrep ran. */
+describe('tool-argument grounding — a literal word is text where text goes', () => {
+  const PACKET = 'user_message: find the TODO notes in the folder /Users/me/projects';
+
+  it('lets the words through as a search pattern, a query, a title or a note', () => {
+    for (const value of ['TODO', 'todo', 'FIXME', 'TBD', 'N/A', 'XXX', 'PLACEHOLDER']) {
+      for (const key of ['pattern', 'query', 'q', 'text', 'title', 'body', 'subject', 'note']) {
+        expect(ungroundedArgumentsInCall({ [key]: value, root_dir: '/Users/me/projects' }, PACKET), `${key} = ${value}`).toEqual([]);
+      }
+    }
+  });
+
+  it('still refuses them where an identifier goes, even when the owner wrote the word', () => {
+    for (const key of ['to', 'email', 'contact_id', 'deal_id', 'id', 'recipient']) {
+      const found = ungroundedArgumentsInCall({ [key]: 'TODO' }, PACKET);
+      expect(found, key).toHaveLength(1);
+      expect(found[0]?.why).toBe('literal placeholder');
+    }
+  });
+
+  it('keeps the bracketed, template, angle and underscore forms placeholders in a query too', () => {
+    for (const value of ['[search_term]', '{{step.find.term}}', '<term>', '__term__']) {
+      expect(ungroundedArgumentsInCall({ query: value }, PACKET), value).toHaveLength(1);
+    }
+  });
+});

@@ -1,7 +1,7 @@
 /** Shared read-only selection logic. Later execution and authority gates still apply. */
 import type { Schedule } from '@recued/scheduler';
-import { cronMatchesAt, resolveMissedAction } from '@recued/scheduler';
-import { cronZoneFor, MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter, type EventTrigger } from '@recued/contracts';
+import { cronMatchesAt, resolveMissedAction, scheduleCronZone } from '@recued/scheduler';
+import { MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter, type EventTrigger } from '@recued/contracts';
 import { eventPath, matchesPattern, RUN_OUTCOME_PLATFORM, type WarehouseEvent } from '@recued/warehouse-events';
 
 export const isTriggerRunOutcomeLoop = (trigger: Pick<EventTrigger, 'trigger_id' | 'recipe_id'>, event: WarehouseEvent,
@@ -14,8 +14,10 @@ export const isTriggerRunOutcomeLoop = (trigger: Pick<EventTrigger, 'trigger_id'
 export const selectRecurringScheduleTick = (schedule: Schedule, at: number, serverTimeZone?: string): 'regular' | 'fire' | 'ask' | 'skip' | 'none' => {
   const parts = schedule.cron_expression.trim().split(/\s+/);
   if (parts.length !== 5) return 'none';
-  const zone = cronZoneFor(schedule, serverTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
-  return cronMatchesAt(parts, new Date(Math.floor(at / 60_000) * 60_000), zone) ? 'regular' : resolveMissedAction(schedule, at);
+  // One zone for the match and the missed-run count: read in two, a daily cron
+  // also "caught up" every day at the host's hour (`scheduleCronZone`).
+  const zone = scheduleCronZone(schedule, serverTimeZone);
+  return cronMatchesAt(parts, new Date(Math.floor(at / 60_000) * 60_000), zone) ? 'regular' : resolveMissedAction(schedule, at, serverTimeZone);
 };
 export const selectTriggerEvent = (trigger: EventTrigger, event: WarehouseEvent): boolean => {
   if (!matchesPattern(trigger.pattern, eventPath(event.platform, event.slug, event.entity_type, event.event_kind))) return false;

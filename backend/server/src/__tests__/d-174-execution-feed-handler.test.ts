@@ -1,7 +1,7 @@
 /** D-174 Runs/Audit — `execution.list` + `execution.get` handler tests. */
 
 import Database from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MCP_TOOL_CATALOG,
   SERVER_RPC_METHOD_SET,
@@ -405,6 +405,36 @@ describe('D-174 execution.get', () => {
     const out = await handleExecutionGet(deps, { run_id: 'local-proof-run' });
     expect(out.run.gateway.per_call_trace[0]!.local_receipt).toEqual({ receipt_id: receipt.receipt_id, kind: receipt.kind, committed_at: 505 });
     expect(JSON.stringify(out)).not.toContain('never project this field');
+  });
+  it('D-341 slice B1 — names the trigger pre-approval a write ran under, and only on that write', async () => {
+    await append('preapproved-run', 500);
+    await writeCommit('preapproved-run', { commit_id: 'asked', dispatched_at: 501, completed_at: 510, status: 'succeeded' });
+    await writeCommit('preapproved-run', { commit_id: 'preapproved', dispatched_at: 511, completed_at: 520, status: 'succeeded' });
+    const asked = await commitStore.get('asked');
+    const preapproved = await commitStore.get('preapproved');
+    if (!asked || !preapproved) throw new Error('Missing fixture Commit');
+    deps.commitStore = { ...commitStore, listByRun: async () => [asked, { ...preapproved, trigger_preapproval: { id: 'tpa_1' } }] };
+    const out = await handleExecutionGet(deps, { run_id: 'preapproved-run' });
+    expect(out.run.gateway.per_call_trace.map((row) => [row.commit_id, row.trigger_preapproval]))
+      .toEqual([['asked', undefined], ['preapproved', { id: 'tpa_1' }]]);
+  });
+  it('D-341 slice B1 — lists what the run made without asking, from the pre-approvals\' own record', async () => {
+    await append('preapproved-records-run', 500);
+    await append('asked-run', 600);
+    const runWrites = vi.fn((run_id: string) => run_id === 'preapproved-records-run'
+      ? [{ preapproval_id: 'tpa_1', op: 'recued-core.body-signals.daily_metric.batch', uses: 2 }] : []);
+    deps.triggerPreapprovals = {
+      runWrites,
+      get: (id: string) => (id === 'tpa_1' ? { trigger: { kind: 'webhook', ingress_id: 'whi_1' } } : undefined) as never,
+    };
+    const out = await handleExecutionGet(deps, { run_id: 'preapproved-records-run' });
+    // A Records write runs through no commit: this list is its only record on the run.
+    expect(out.run.gateway.per_call_trace).toEqual([]);
+    expect(out.run.preapproved).toEqual([
+      { preapproval_id: 'tpa_1', trigger_kind: 'webhook', op: 'recued-core.body-signals.daily_metric.batch', writes: 2 }]);
+    expect((await handleExecutionGet(deps, { run_id: 'asked-run' })).run).not.toHaveProperty('preapproved');
+    delete deps.triggerPreapprovals;
+    expect((await handleExecutionGet(deps, { run_id: 'preapproved-records-run' })).run).not.toHaveProperty('preapproved');
   });
   it('joins audit summary, redacted checkpoint approvals, errors, links, real gateway trace, stored verdict, and degraded markers', async () => {
     const errors: RecipeError[] = [

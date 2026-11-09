@@ -5,6 +5,7 @@ import type { AssetClockRow } from '../storage/asset-clock-store.js';
 import { assetIntervalCycle, assetObjectiveCycle } from './asset-interval-cycle.js';
 
 const DAY = 86_400_000;
+const MAX_TIME = 8.64e15;
 /** An asset's own place labels, which its children inherit when they have none. */
 export const assetPlaceLabels = (asset: Pick<Asset, 'anchors'>): string[] =>
   asset.anchors.flatMap(anchor => anchor.kind === 'place' && typeof anchor.name === 'string' && anchor.name.trim() ? [anchor.name] : []);
@@ -67,6 +68,15 @@ export const assetRuleTimings = (asset: Asset, input: {
     if (clock.active && !clock.act_by && !clock.question) timing.act_by = rule.when.kind === 'condition'
       ? asset.observations[rule.when.field]?.as_of : rule.when.kind === 'objective' ? asset.readings[rule.when.field]?.as_of : undefined;
     if (rule.reaction.occurrence === 'notice' && timing.when) timing.lapses_at = timing.when.to;
+    // D-340 §4 — a state holds over [as-of, until): that is its window, and the clock index
+    // lets it lapse at `until` with no writer. A state with no `until` holds until cleared.
+    if (rule.reaction.state && rule.when.kind === 'condition' && clock.active) {
+      const condition = asset.observations[rule.when.field];
+      if (condition) {
+        timing.when = { from: condition.as_of, to: condition.until ?? MAX_TIME };
+        if (condition.until !== undefined) timing.lapses_at = condition.until;
+      }
+    }
     if (clock.question) timing.act_by = asset.created_at;
     return timing;
   });

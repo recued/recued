@@ -140,3 +140,24 @@ describe('LLM provider HTTP lifecycle', () => {
     });
   });
 });
+
+// D-347 follow-up (2026-11-08) — Node's fetch says only "fetch failed"; its cause says which failure.
+describe('a fetch that fails before any answer', () => {
+  const failingWith = (cause?: unknown) => {
+    globalThis.fetch = (async () => {
+      throw Object.assign(new TypeError('fetch failed'), cause === undefined ? {} : { cause });
+    }) as unknown as typeof fetch;
+    return callProvider('https://api.example.com/v1/chat/completions', {}, {}, 1_000);
+  };
+
+  it('names its cause once, its code with the message that lacks it', async () => {
+    await expect(failingWith(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:7999'), { code: 'ECONNREFUSED' })))
+      .rejects.toMatchObject({ code: 'AI_LLM_UNAVAILABLE', message: 'LLM call failed: fetch failed (connect ECONNREFUSED 127.0.0.1:7999)' });
+    await expect(failingWith(Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' })))
+      .rejects.toMatchObject({ message: 'LLM call failed: fetch failed (UND_ERR_SOCKET: other side closed)' });
+  });
+
+  it('reads as before when there is no cause', async () => {
+    await expect(failingWith()).rejects.toMatchObject({ code: 'AI_LLM_UNAVAILABLE', message: 'LLM call failed: fetch failed' });
+  });
+});

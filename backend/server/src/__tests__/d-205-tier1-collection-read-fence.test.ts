@@ -45,6 +45,8 @@ import type { GrantEntryResolver } from '../contract-grant-resolve.js';
 import {
   collectionReadFencedHint,
   createReadGrantChecker,
+  ownerSwitchFix,
+  workEntityReadVerbOpFencedHint,
   type GatedReadGrantResolver,
 } from '../read-grant-checker.js';
 
@@ -246,8 +248,9 @@ describe.each([
     const env = (result as { result: { matches: unknown[]; hint?: string } }).result;
     expect(env.matches).toHaveLength(0);
     expect(env.hint).toBeDefined();
-    expect(env.hint!).toMatch(/not read-granted/i);
-    expect(env.hint!).toContain(`data.${platform}`);
+    // D-346 follow-up (2026-11-08) — an app reads only that it is not available, no grant id.
+    expect(env.hint!).toMatch(/is not available for this contract/);
+    expect(env.hint!).not.toContain('data.');
     expect(env.hint!).toMatch(/not .*not found|NOT an empty result/i);
     expect(env.hint!).toMatch(/do not retry/i);
   });
@@ -281,8 +284,8 @@ describe('D-205 #3 — work.search / work.read fence per KIND (task/note/commitm
     const env = (result as { result: { entities: unknown[]; total: number; hint?: string } }).result;
     expect(env.entities).toHaveLength(0);
     expect(env.total).toBe(0);
-    expect(env.hint).toMatch(/not read-granted/i);
-    expect(env.hint).toContain('data.note');
+    expect(env.hint).toMatch(/is not available for this contract/);
+    expect(env.hint).not.toContain('data.');
   });
 
   it('work.read: a revoked KIND must NOT read as "not found" — the hint says so', async () => {
@@ -301,7 +304,8 @@ describe('D-205 #3 — work.search / work.read fence per KIND (task/note/commitm
     }).result;
     expect(env.entity).toBeNull();
     expect(env.hint).toBeDefined();
-    expect(env.hint!).toContain('data.commitment');
+    expect(env.hint!).toMatch(/is not available for this contract/);
+    expect(env.hint!).not.toContain('data.');
     expect(env.hint!).toMatch(/NOT "not found"/i);
     expect(env.hint!).toMatch(/may well exist/i);
   });
@@ -329,6 +333,38 @@ describe('D-205 #3 — work.search / work.read fence per KIND (task/note/commitm
 // the gate's grant lookup is stubbed. `feedback_test_real_gate_not_mock_for_admission`.
 // ════════════════════════════════════════════════════════════════
 
+// D-346 follow-up (2026-11-08) — the owner's ruling: the owner's own call reads which switch
+// is off and where; any other contract only that it is not available. Both keep the three
+// loads: not an empty result, tell the user, do not retry.
+describe('the read refusals, for the owner and for an app', () => {
+  it('a data collection: the owner reads its switch on Entities, an app no grant', () => {
+    const owner = collectionReadFencedHint('task', true);
+    expect(owner).toContain('Reading the task collection is turned off for you. To allow it, turn on "Your tasks" under Self (you) → Entities on the Contracts page.');
+    expect(owner).toMatch(/NOT an empty result/);
+    expect(owner).toMatch(/Tell the owner that, and do not retry this call\./);
+    const app = collectionReadFencedHint('task', false);
+    expect(app).toContain('Reading the task collection is not available for this contract.');
+    expect(app).toMatch(/NOT an empty result/);
+    expect(app).toMatch(/do not retry this call/);
+    expect(app).not.toContain('data.');
+  });
+
+  it('offers the owner\'s switch under their answer, and nothing for an app', () => {
+    expect(ownerSwitchFix('data.task', { channel: 'chat', actor: 'user_self' } as ExecutionSource))
+      .toEqual({ fixes: [{ kind: 'switch', entry_key: 'data.task', label: 'Your tasks' }] });
+    expect(ownerSwitchFix('data.task', doorSource)).toEqual({});
+  });
+
+  it('the verb: the owner reads its own switch on Ops, an app no grant', () => {
+    const owner = workEntityReadVerbOpFencedHint(true);
+    expect(owner).toContain('turn on "Read tasks, notes and more" under Self (you) → Ops on the Contracts page.');
+    expect(owner).not.toMatch(/data\./);
+    const app = workEntityReadVerbOpFencedHint(false);
+    expect(app).toContain('Reading work items is not available for this contract.');
+    expect(app).not.toMatch(/core\.work-entity\.read|data\./);
+  });
+});
+
 describe('work.search / work.read — the core.work-entity.read verb-op fence', () => {
   const verbDeps = (verbGranted: boolean) =>
     ({
@@ -355,7 +391,8 @@ describe('work.search / work.read — the core.work-entity.read verb-op fence', 
     }).result;
     expect(env.entities).toHaveLength(0);
     expect(env.total).toBe(0);
-    expect(env.hint).toMatch(/core\.work-entity\.read/);
+    expect(env.hint).toMatch(/Reading work items is not available for this contract/);
+    expect(env.hint).not.toMatch(/core\.work-entity\.read/);
   });
 
   it('an UNGRANTED verb fences work.read — and NOT as "not found"', async () => {
@@ -371,7 +408,8 @@ describe('work.search / work.read — the core.work-entity.read verb-op fence', 
     }).result;
     expect(env.entity).toBeNull();
     expect(env.hint).toBeDefined();
-    expect(env.hint!).toMatch(/core\.work-entity\.read/);
+    expect(env.hint!).toMatch(/Reading work items is not available for this contract/);
+    expect(env.hint!).not.toMatch(/core\.work-entity\.read/);
     expect(env.hint!).toMatch(/NOT "not found"/i);
     expect(env.hint!).toMatch(/may well exist/i);
   });
@@ -385,7 +423,9 @@ describe('work.search / work.read — the core.work-entity.read verb-op fence', 
     const hint = (result as { result: { hint?: string } }).result.hint!;
 
     expect(hint).not.toMatch(/data\.task/);
-    expect(hint).toMatch(/will NOT lift this/i);
+    // An app is named no grant at all now, so none it could chase; the owner is named the
+    // verb's own switch ("Read tasks, notes and more"), which no data switch shares.
+    expect(hint).not.toMatch(/data\./);
   });
 
   it('BEHAVIOR-PRESERVING: a GRANTED verb reaches the resolver', async () => {
@@ -410,7 +450,7 @@ describe('work.search / work.read — the core.work-entity.read verb-op fence', 
 
     expect(result.ok).toBe(true);
     expect((result as { result: { hint?: string } }).result.hint).toMatch(
-      /core\.work-entity\.read/,
+      /Reading work items is not available for this contract/,
     );
   });
 
@@ -431,7 +471,7 @@ describe('work.search / work.read — the core.work-entity.read verb-op fence', 
     const result = await handlers['work.search']!({ kind: 'task', limit: 5 }, doorCtx());
     const hint = (result as { result: { hint?: string } }).result.hint!;
 
-    expect(hint).toMatch(/core\.work-entity\.read/);
+    expect(hint).toMatch(/Reading work items is not available for this contract/);
     expect(hint).not.toMatch(/data\.task/);
   });
 });
@@ -497,8 +537,8 @@ describe('D-205 #3 — contact.search honours the data.contact collection grant'
     expect(env.partial).toBe(true);
     const localFailure = env.partial_failures?.find((f) => f.source === 'local');
     expect(localFailure).toBeDefined();
-    expect(localFailure!.reason).toMatch(/not read-granted/i);
-    expect(localFailure!.reason).toMatch(/data\.contact/);
+    expect(localFailure!.reason).toMatch(/is not available for this contract/);
+    expect(localFailure!.reason).not.toMatch(/data\.contact/);
   });
 
   it('SEPARATE AXES: revoking data.contact does NOT suppress a granted CRM mirror', async () => {
@@ -697,7 +737,7 @@ describe('D-205 #3 residual — the LINK join is MOOT: the fan-out never joins t
     expect(JSON.stringify(revoked)).not.toContain(SECRET_NAME);
     expect(
       revokedEnv.partial_failures?.find((f) => f.source === 'local')?.reason,
-    ).toMatch(/data\.contact/);
+    ).toMatch(/Reading contacts is not available for this contract/);
 
     // BEHAVIOR-PRESERVING: granted, it resolves. The fence is not blanket.
     const granted = await searchWith(
@@ -719,7 +759,7 @@ describe('D-205 #3 — contact.read sits behind the same data.contact fence', ()
   it('a door without the grant reads nothing, is told why, and leaks nothing', async () => {
     const get = vi.fn().mockReturnValue({ _id: CONTACT_EMAIL, email: CONTACT_EMAIL, name: SECRET_NAME });
     const result = await read(buildDeps({ get, grants: [] }), doorCtx());
-    expect(result).toEqual({ ok: true, result: { contacts: [], hint: collectionReadFencedHint('contact') } });
+    expect(result).toEqual({ ok: true, result: { contacts: [], hint: collectionReadFencedHint('contact', false) } });
     expect(get).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain(SECRET_NAME);
   });

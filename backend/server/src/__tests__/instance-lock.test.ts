@@ -234,3 +234,72 @@ describe('instance-lock', () => {
     expect(info.boot_at).toBe(2);
   });
 });
+
+/** A lock outlives an unclean exit, and its PID can then name an unrelated
+ *  live process. `proc_start` is what tells the writer from a later process
+ *  given its number; unknown on either side leaves the PID to decide. Real
+ *  processes and the real identity: `stale-lock-reused-pid.test.ts`. */
+describe('instance-lock — a PID reused after an unclean exit', () => {
+  let dataPath: string;
+  let lockPath: string;
+
+  beforeEach(() => {
+    dataPath = mkdtempSync(join(tmpdir(), 'recued-lock-'));
+    lockPath = join(dataPath, 'recued-server.lock');
+  });
+
+  afterEach(() => {
+    rmSync(dataPath, { recursive: true, force: true });
+  });
+
+  const heldBy9999 = (procStart?: string): void => writeFileSync(lockPath, JSON.stringify({
+    pid: 9999, boot_at: 123, bind_port: 7717, ...(procStart !== undefined ? { proc_start: procStart } : {}),
+  }));
+  const lockSeeing = (starts: Record<number, string>): InstanceLock => createInstanceLock({
+    lockPath,
+    currentPid: () => 1234,
+    isAlive: (pid) => pid === 9999,
+    identify: (pid) => starts[pid] ?? null,
+  });
+
+  it('⛔ reclaims a lock whose live PID started at another time — it is not the writer', () => {
+    heldBy9999('start-A');
+    const info = lockSeeing({ 9999: 'start-B', 1234: 'start-mine' }).claim({ boot_at: 456, bind_port: 7717 });
+    expect(info).toEqual({ pid: 1234, boot_at: 456, bind_port: 7717, proc_start: 'start-mine' });
+  });
+
+  it('still refuses when the live PID is the process that wrote the lock', () => {
+    heldBy9999('start-A');
+    expect(() => lockSeeing({ 9999: 'start-A' }).claim({ boot_at: 456, bind_port: 7717 }))
+      .toThrow(LockHeldError);
+  });
+
+  it('⚠ refuses on the PID alone when the start cannot be read — unknown is not proof', () => {
+    heldBy9999('start-A');
+    expect(() => lockSeeing({}).claim({ boot_at: 456, bind_port: 7717 })).toThrow(LockHeldError);
+  });
+
+  it('judges a lock from before start identities were kept by its PID, as before', () => {
+    heldBy9999();
+    expect(() => lockSeeing({ 9999: 'start-B' }).claim({ boot_at: 456, bind_port: 7717 }))
+      .toThrow(LockHeldError);
+  });
+
+  it('records the holder\'s supervisor, so `recued restart` can ask a supervised server to restart itself', () => {
+    const lock = lockSeeing({});
+    lock.claim({ boot_at: 456, bind_port: 7717, supervisor: 'launchd' });
+    expect(JSON.parse(readFileSync(lockPath, 'utf-8')).supervisor).toBe('launchd');
+    expect(lock.inspect()?.supervisor).toBe('launchd');
+  });
+
+  it("records the claimer's start and reads it back; none where the platform cannot say", () => {
+    const lock = lockSeeing({ 1234: 'start-mine' });
+    lock.claim({ boot_at: 456, bind_port: 7717 });
+    expect(JSON.parse(readFileSync(lockPath, 'utf-8')).proc_start).toBe('start-mine');
+    expect(lock.inspect()?.proc_start).toBe('start-mine');
+
+    lock.release();
+    lockSeeing({}).claim({ boot_at: 789, bind_port: 7717 });
+    expect(JSON.parse(readFileSync(lockPath, 'utf-8'))).not.toHaveProperty('proc_start');
+  });
+});

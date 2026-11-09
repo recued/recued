@@ -426,7 +426,7 @@ describe('mail-send — WHERE the gate lands, through the real composition root'
     // depends on resolved arguments.)
     expect(String(result.errors[0]?.message)).toContain('D-153 policy gate denied');
     expect(String(result.errors[0]?.message)).toContain('mail-send');
-    expect(String(result.errors[0]?.message)).toContain('not in contract.allowed_tools');
+    expect(String(result.errors[0]?.message)).toContain('is not available for this contract.');
     expect(mailSendSpy).not.toHaveBeenCalled();
   });
 });

@@ -323,6 +323,30 @@ describe.skipIf(process.platform === 'win32')('D-321 — the version check befor
       expect(refused.install_docs).toBeUndefined();
     });
 
+    it('installed outside the PATH, it says where the program is instead of how to install it', async () => {
+      // A LaunchAgent's PATH has no Homebrew and no ~/.local/bin, so a program
+      // installed there was "not found" with an install command for it.
+      const home = realpathSync(mkdtempSync(join(tmpdir(), 'recued-d321-home-')));
+      dirs.push(home);
+      const folder = join(home, '.local', 'bin');
+      mkdirSync(folder, { recursive: true });
+      const found = join(folder, 'recued-d321-elsewhere');
+      writeFileSync(found, '#!/bin/sh\nexit 0\n');
+      chmodSync(found, 0o755);
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('PATH', '/usr/bin:/bin');
+      const refused = await refusal(executor(), call('recued-d321-elsewhere', null, {
+        tool_install: [{ manager: 'npm', package: 'elsewhere' }],
+      } as Partial<CliCall>));
+      expect(refused).toMatchObject({ reason: 'not_found', found_at: found });
+      expect(refused.install).toBeUndefined();
+      expect(refused.message).toBe(
+        "cli tool 'recued-d321-elsewhere' was not found — the binary may not be installed or is not on the server's PATH. "
+          + `It is installed at ${found}, but the server's PATH does not include ${folder}. `
+          + `Start the server from a terminal where it works, or add ${folder} to the PATH the server starts with.`,
+      );
+    });
+
     it('a hint that does not pass is never shown', async () => {
       const missing = missingTool();
       const refused = await refusal(executor(), call(missing, null, {

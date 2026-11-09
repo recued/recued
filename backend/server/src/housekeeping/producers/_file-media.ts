@@ -65,6 +65,10 @@ const AI_ENRICHABLE_FILE_ORIGINS: ReadonlySet<string> = new Set([
   // A copy of a file in a folder the owner has Recued watch, brought into Chat
   // by her from the Files tab.
   'watched_folder',
+  // D-335 slice AP — saved from a web page by the owner's AI, in a run the owner started.
+  'browser_download',
+  // D-345 — downloaded from a public web address by the server, in a run the owner started.
+  'http_download',
 ]);
 
 export const fileOriginOf = (record: CollectionRecord): string | null => {

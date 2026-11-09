@@ -1,5 +1,6 @@
 import { FILE_PREVIEW_TEXT_CHARACTERS } from '@recued/contracts';
 import type { DocxParts } from './docx-parts.js';
+import { readPreviewWorker } from './read-preview-worker.js';
 
 const wordNamespaces = new Set(['http://schemas.openxmlformats.org/wordprocessingml/2006/main',
   'http://purl.oclc.org/ooxml/wordprocessingml/main']);
@@ -84,19 +85,6 @@ export const drawDocxContent = (doc: Document, body: HTMLElement, parts: DocxPar
 };
 
 export const renderDocxPreview = async (doc: Document, host: HTMLElement, bytes: Uint8Array, signal: AbortSignal): Promise<boolean> => {
-  const parts = await new Promise<DocxParts | undefined>((resolve, reject) => {
-    if (signal.aborted) { resolve(undefined); return; }
-    const worker = new Worker(new URL('file-preview/docx.worker.js', doc.baseURI), { type: 'module' });
-    const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); worker.terminate(); };
-    const abort = () => { finish(); resolve(undefined); };
-    const timer = setTimeout(() => { finish(); reject(new Error('This DOCX preview took too long. Download the file to open it.')); }, 5000);
-    signal.addEventListener('abort', abort, { once: true });
-    worker.onmessage = (event: MessageEvent<{ parts?: DocxParts; error?: string }>) => {
-      finish(); if (event.data.parts) resolve(event.data.parts); else reject(new Error(event.data.error ?? 'This DOCX file could not be read.'));
-    };
-    worker.onerror = event => { event.preventDefault(); finish(); reject(new Error('The document reader could not load. Download the file or retry the preview.')); };
-    try { const input = bytes.slice(); worker.postMessage(input, [input.buffer]); }
-    catch (error) { finish(); reject(error); }
-  });
+  const parts = await readPreviewWorker<DocxParts>(doc, 'docx', bytes, signal);
   return parts && !signal.aborted ? drawDocxContent(doc, host, parts) : false;
 };

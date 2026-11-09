@@ -27,7 +27,18 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(__dirname, '..');
 const SRC = join(PKG_ROOT, 'src');
-const OUT = join(PKG_ROOT, 'dist');
+
+/** `--out <dir>` builds into another folder than `dist/`. The clean below empties the
+ *  folder before anything is bundled, so a build in `dist/` takes `bin.js` away from every
+ *  process reading it, and leaves it gone if the bundle fails. A test builds in a folder of
+ *  its own (`phase-e-package.test.ts`). Keep that folder inside this package, as `dist/` is:
+ *  the bundle finds its external packages in the repo's `node_modules`. */
+const outAt = process.argv.indexOf('--out');
+if (outAt !== -1 && !process.argv[outAt + 1]) {
+  console.error('[build] --out needs a folder');
+  process.exit(2);
+}
+const OUT = outAt === -1 ? join(PKG_ROOT, 'dist') : resolve(process.argv[outAt + 1]);
 
 /** The declared inventory of every npm package our code reaches, and what each
  *  artifact must do with it. See `backend/server/dependency-manifest.json` — it is the
@@ -172,7 +183,7 @@ const SEA_EXTERNAL = [
 // packaged tree; `make-e2e-seed.mjs` writes outside it.
 const PRESERVED_DIST_DIRS = new Set(['binary', 'binary-docker', 'release']);
 
-console.log('[build] cleaning dist/ (preserving release artifacts)');
+console.log(`[build] cleaning ${OUT} (preserving release artifacts)`);
 if (existsSync(OUT)) {
   for (const entry of readdirSync(OUT)) {
     if (PRESERVED_DIST_DIRS.has(entry)) continue;

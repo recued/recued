@@ -102,6 +102,7 @@ export {
 } from './connection-mcp.js';
 export {
   createConnectionNotificationHandler,
+  type ConnectionNoticeHook,
   type ConnectionNotificationHandlerDeps,
   type InAppEmitFn,
   type NotificationBusBody,

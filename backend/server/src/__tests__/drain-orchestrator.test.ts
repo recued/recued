@@ -330,3 +330,38 @@ describe('drain — release_lock', () => {
     expect(released).toBe(true);
   });
 });
+
+/** ⛔ A machine that sleeps mid-drain. The budget was on the wall clock, which
+ *  jumps by the time slept, so every step after the sleep got 50 ms and was
+ *  aborted — and an update's restart was abandoned as `drain_incomplete`. The
+ *  budget runs on a clock that stops while the machine sleeps; the wall clock
+ *  only stamps `started_at`. */
+describe('drain — a machine that slept', () => {
+  it('⛔ a wall-clock jump mid-drain leaves the remaining steps their budget', async () => {
+    let wall = 1_700_000_000_000;
+    const { drain } = newOrchestrator({
+      stop_accepting_rpc: async () => { wall += 2 * 60 * 60 * 1_000; },  // the lid shuts during this step
+      pause_scheduler: async () => { await new Promise((r) => setTimeout(r, 120)); },
+    }, { now: () => wall });
+    const result = await drain.drain({ reason: 'test', intent: 'restart' });
+    expect(result.aborted).toEqual([]);
+    expect(result.completed).toContain('pause_scheduler');
+    expect(result.duration_ms).toBeLessThan(60_000);
+    expect(drain.state.started_at).toBe(1_700_000_000_000);
+  });
+
+  it('⛔ by default a jump of Date.now does not shorten the budget', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(1_700_000_000_000);
+      const { drain } = newOrchestrator({
+        stop_accepting_rpc: async () => { vi.setSystemTime(1_700_000_000_000 + 2 * 60 * 60 * 1_000); },
+        pause_scheduler: async () => { await new Promise((r) => setTimeout(r, 120)); },
+      });
+      const result = await drain.drain({ reason: 'test', intent: 'restart' });
+      expect(result.aborted).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

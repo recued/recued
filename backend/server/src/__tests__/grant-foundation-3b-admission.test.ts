@@ -293,32 +293,25 @@ describe('createOpAdmissionGate — isFrozenByPause (D-188 master pause)', () =>
     expect(gate.isFrozenByPause(door(liveDoor()))).toBe(true);
   });
 
-  it('SECURITY: paused does NOT freeze the contract-free owner HID (resume + direct control stay alive)', () => {
+  // D-188 — the owner's ruling of 2026-11-08: the pause is the emergency stop, nothing leaves
+  // the server until Resume, the owner's own hands included. The contract-free owner HID and the
+  // system channels used to pass; a run already going now stops at its next step. Resume is an
+  // rpc (`server.setPaused`), not an op dispatch, so it never meets this gate.
+  it('paused ⇒ the owner\'s own hands and the system channels freeze too', () => {
     paused = true;
-    expect(gate.isFrozenByPause(humanHid)).toBe(false);
+    expect(gate.isFrozenByPause(humanHid)).toBe(true);
+    expect(gate.isFrozenByPause(systemSchedule)).toBe(true);
+    expect(gate.isFrozenByPause(door('tok-synthetic'))).toBe(true);
   });
 
-  it('paused does NOT freeze the system channels at the gate (the scheduler-pause half stops those)', () => {
-    paused = true;
-    expect(gate.isFrozenByPause(systemSchedule)).toBe(false);
-  });
-
-  it('paused does NOT freeze a dead / synthetic door (ungoverned ⇒ bypass; it dispatches nothing anyway)', () => {
-    paused = true;
-    expect(gate.isFrozenByPause(door('tok-synthetic'))).toBe(false);
-  });
-
-  it('the freeze set is EXACTLY the governed set — parity with the isOpGranted bypass', () => {
+  it('the freeze set is every source, governed or not, and none once resumed', () => {
     paused = true;
     const liveId = liveDoor();
-    // governed ⇒ resolveGrantGoverningContractId defined ⇒ frozen
-    for (const src of [ownerChat, ownerMessenger, door(liveId)]) {
-      expect(resolveGrantGoverningContractId(src, defStore, () => NOW)).toBeDefined();
+    for (const src of [ownerChat, ownerMessenger, door(liveId), humanHid, systemSchedule]) {
       expect(gate.isFrozenByPause(src)).toBe(true);
     }
-    // contract-free ⇒ undefined ⇒ NOT frozen (the SAME bypass isOpGranted uses)
-    for (const src of [humanHid, systemSchedule, door('tok-synthetic')]) {
-      expect(resolveGrantGoverningContractId(src, defStore, () => NOW)).toBeUndefined();
+    paused = false;
+    for (const src of [ownerChat, ownerMessenger, door(liveId), humanHid, systemSchedule]) {
       expect(gate.isFrozenByPause(src)).toBe(false);
     }
   });

@@ -1,6 +1,6 @@
 import { downloadStoredFile } from '../files/file-preview.js';
 import { mountPromptSchedulesPanel, type PromptScheduleClient } from '../automation/prompt-schedules-panel.js';
-import { approvalValueLabel, isMentionOnlyEmail, memorySaveConflictRows, renderResourceReview, tier1CallDetails, tier1CallTitle, type ApprovalValueLabels, type MemoryClaim } from '@recued/contracts';
+import { approvalValueLabel, episodeRecordChecklist, isMentionOnlyEmail, memorySaveConflictRows, renderResourceReview, tier1CallDetails, tier1CallTitle, type ApprovalValueLabels, type MemoryClaim } from '@recued/contracts';
 import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
 import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
 import { assetChatHref, assetChatMessage, readAssetChatMessage, type ChatAssetContext } from './asset-context.js';
@@ -31,6 +31,7 @@ import {
 import { createHistorySessionPages, type HistorySessionScope } from './history-session-pages.js';
 import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
+import { isServerPausedNow, onServerPauseChange } from '../shell/server-pause-signal.js';
 import { ANSWER_SOURCES_STYLES, buildAnswerSources } from './source-citations.js';
 import { ANSWER_TEXT_STYLES, renderAnswerText } from './answer-text.js';
 import { formatChatMarkdownExport, type ChatExportFormat } from './transcript-export.js';
@@ -39,6 +40,7 @@ import { createAnswerCopy, ANSWER_COPY_STYLES } from './answer-copy.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 import { NOTICE_RULE_TEXT, noticeHeading, withoutAiLabel } from './message-labels.js';
 import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
+import { buildChatFixes, chatFixRows, CHAT_FIXES_STYLES } from './chat-fixes.js';
 /** D-174 P2 — top-level Chat route.
  *
  *  This hosts the existing D-137 chat substrate at `#chat`: server-owned
@@ -55,6 +57,12 @@ import {
   type Upload,
 } from '@recued/ui-shared';
 import { createComposerAttachments } from './composer-attachments.js';
+import {
+  BROWSER_ACTIONS_SWITCH_STYLES,
+  mountBrowserActionsSwitch,
+  type BrowserActionsSwitch,
+  type BrowserActionsSwitchCallers,
+} from './browser-actions-switch.js';
 import { createHistoryMessageSearch, HISTORY_MESSAGE_RESULT_ATTR } from './history-message-search.js';
 import { appendHistoryHighlights } from './history-highlights.js';
 import { captureTranscriptPosition, restoreTranscriptPosition, transcriptAtBottom, type TranscriptPosition } from './transcript-position.js';
@@ -340,6 +348,10 @@ export const CHAT_ROUTE_PLAN_APPROVE_ATTR =
   'data-recued-chat-route-plan-approve';
 export const CHAT_ROUTE_PLAN_CANCEL_ATTR =
   'data-recued-chat-route-plan-cancel';
+/** D-341 — a held write's "Always allow for this scheduled prompt": approves it with the
+ *  standing pre-approval its ask offers (`chat.plan.approve`'s `always_allow`). */
+export const CHAT_ROUTE_PLAN_ALWAYS_ATTR =
+  'data-recued-chat-route-plan-always';
 /** Approved plans deliberately return through an editable Chat draft. The
  * continuation action fills the composer but never sends on Mary's behalf. */
 export const CHAT_ROUTE_PLAN_CONTINUE_ATTR =
@@ -348,6 +360,9 @@ export const CHAT_ROUTE_PLAN_CONTINUE_ATTR =
  * one-time plan approval. `chat.send` acceptance never creates it. */
 export const CHAT_ROUTE_PLAN_RECEIPT_ATTR =
   'data-recued-chat-route-plan-receipt';
+/** D-343 slice 5 — a day's records once kept: the card's checklist (§3.3 step 5). */
+export const CHAT_ROUTE_PLAN_CHECKLIST_ATTR =
+  'data-recued-chat-route-plan-checklist';
 /** Opens the durable execution audit row correlated by the server. Never
  * derived from the receipt's opaque `result_ref`. */
 export const CHAT_ROUTE_PLAN_RUN_ATTR =
@@ -636,10 +651,12 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient, Prom
    *  lands and no-ops on the already-resolved card). `edited_args` is the
    *  owner's change, made while approving (D-336 slice E): sent only for
    *  what the card says it may change (`editable_args`), a held save's
-   *  relationship and summary, so the approval binds to what the card shows. */
+   *  relationship and summary, so the approval binds to what the card shows.
+   *  `always_allow` (D-341) approves with the standing pre-approval the held
+   *  write's ask offers, sent only when the card offers it (`always_allow`). */
   (
     method: 'chat.plan.approve' | 'chat.plan.cancel',
-    payload: { plan_id: string; edited_args?: { claim?: MemoryClaim | null; summary?: string } },
+    payload: { plan_id: string; edited_args?: { claim?: MemoryClaim | null; summary?: string }; always_allow?: true },
   ): Promise<{ plan: ChatPlanProposal }>;
   /** D-336 slice L — a thing added from a name the card's picker found nothing for, as Yours
    *  adds one (`asset.create`). */
@@ -2464,6 +2481,31 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   font-size: 11px;
   line-height: 1.45;
 }
+[${CHAT_ROUTE_PLAN_CHECKLIST_ATTR}] {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${CHAT_ROUTE_PLAN_CHECKLIST_ATTR}] > li {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[${CHAT_ROUTE_PLAN_CHECKLIST_ATTR}] .chat-plan-checklist-mark {
+  flex: none;
+  width: 1em;
+  text-align: center;
+  font-weight: 700;
+}
+[${CHAT_ROUTE_PLAN_CHECKLIST_ATTR}] > li[data-outcome="skipped"] {
+  color: var(--muted);
+}
 [${CHAT_ROUTE_PLAN_RUN_ATTR}] {
   display: inline-flex;
   align-items: center;
@@ -2589,6 +2631,7 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-details:focus-visible,
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-technical summary:focus-visible,
 [${CHAT_ROUTE_PLAN_APPROVE_ATTR}]:focus-visible,
+[${CHAT_ROUTE_PLAN_ALWAYS_ATTR}]:focus-visible,
 [${CHAT_ROUTE_PLAN_CANCEL_ATTR}]:focus-visible,
 [${CHAT_ROUTE_PLAN_CONTINUE_ATTR}]:focus-visible,
 [${CHAT_ROUTE_PLAN_RETRY_ATTR}]:focus-visible,
@@ -2620,6 +2663,7 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   gap: 8px;
 }
 [${CHAT_ROUTE_PLAN_APPROVE_ATTR}],
+[${CHAT_ROUTE_PLAN_ALWAYS_ATTR}],
 [${CHAT_ROUTE_PLAN_CANCEL_ATTR}],
 [${CHAT_ROUTE_PLAN_CONTINUE_ATTR}],
 [${CHAT_ROUTE_PLAN_RETRY_ATTR}],
@@ -2641,6 +2685,7 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   font-weight: 650;
 }
 [${CHAT_ROUTE_PLAN_APPROVE_ATTR}][disabled],
+[${CHAT_ROUTE_PLAN_ALWAYS_ATTR}][disabled],
 [${CHAT_ROUTE_PLAN_CANCEL_ATTR}][disabled],
 [${CHAT_ROUTE_PLAN_CONTINUE_ATTR}][disabled],
 [${CHAT_ROUTE_PLAN_RETRY_ATTR}][disabled],
@@ -2660,6 +2705,7 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
     gap: 3px;
   }
   [${CHAT_ROUTE_PLAN_APPROVE_ATTR}],
+  [${CHAT_ROUTE_PLAN_ALWAYS_ATTR}],
   [${CHAT_ROUTE_PLAN_CANCEL_ATTR}],
   [${CHAT_ROUTE_PLAN_CONTINUE_ATTR}],
   [${CHAT_ROUTE_PLAN_RETRY_ATTR}],
@@ -2851,10 +2897,12 @@ export const CHAT_ROUTE_STYLES = [
   CHAT_QUEUE_STYLES,
   CHAT_QUOTED_REPLY_STYLES,
   CHAT_INSTALL_OFFERS_STYLES,
+  CHAT_FIXES_STYLES,
   ANSWER_SOURCES_STYLES,
   ANSWER_TEXT_STYLES,
   ANSWER_COPY_STYLES,
   PLAN_CLAIM_STYLES,
+  BROWSER_ACTIONS_SWITCH_STYLES,
 ].join('\n');
 
 export interface ChatConnectedSourcePollScheduler {
@@ -2877,6 +2925,9 @@ export interface BootstrapChatRouteOptions {
    *  `navigator` and no `MediaRecorder`. `null` from either source means this
    *  context cannot record and the mic control never renders. */
   voiceCapture?: VoiceCaptureFactory;
+  /** D-341 slice A — the switch beside Send that lets this conversation's browser actions run
+   *  without asking (`collection.contract.get/setRequestPass`). Absent ⇒ no switch. */
+  browserActions?: BrowserActionsSwitchCallers;
   /** D-262 slice 4 — reply speech. Omitted in production (built from
    *  `speechSynthesis`); supplied by tests, which have no browser. `null`
    *  means this context cannot speak and the setting simply has no effect. */
@@ -3077,6 +3128,9 @@ const formatSessionRecency = (ms: number, now: number): string => {
 };
 
 type ChatHistoryGroupId = 'today' | 'week' | 'older' | 'archived';
+
+/** A plan card's answer: yes once, yes with its trigger's standing pre-approval (D-341), or no. */
+type PlanAction = 'approve' | 'always' | 'cancel';
 
 interface ChatHistoryGroup {
   readonly id: ChatHistoryGroupId;
@@ -4270,6 +4324,20 @@ export const bootstrapChatRoute = (
   // keyboard/pointer dismissal has one exact focus-return target.
   let openHistoryActions: HTMLDetailsElement | null = null;
   let openComposerActions: HTMLDetailsElement | null = null;
+  // D-341 slice A — the switch beside Send: one a conversation, kept across the composer's renders.
+  let browserActionsSwitch: BrowserActionsSwitch | null = null;
+  // A new chat's switch is held until its first send creates the conversation (`adopt`).
+  const browserActionsFor = (session_id: string | undefined): HTMLElement | null => {
+    if (opts.browserActions === undefined) return null;
+    const id = session_id ?? '';
+    if (browserActionsSwitch === null || browserActionsSwitch.session_id !== id) {
+      browserActionsSwitch?.dispose();
+      browserActionsSwitch = mountBrowserActionsSwitch({ document: doc, session_id: id, callers: opts.browserActions });
+    } else if (id !== '') {
+      browserActionsSwitch.refreshIfOlder(15_000);
+    }
+    return browserActionsSwitch.element;
+  };
   let sessionAction:
     | {
         readonly sessionId: string;
@@ -5546,7 +5614,7 @@ export const bootstrapChatRoute = (
   // card can say "Approving…" or "Cancelling…" instead of an ambiguous
   // shared loading label. View-local like `collapsedActivity`; dies with the
   // tab.
-  const pendingPlanActions = new Map<string, 'approve' | 'cancel'>();
+  const pendingPlanActions = new Map<string, PlanAction>();
   // D-336 slice E — a held save's relationship as its card shows it, by plan. View-local:
   // what the owner changed and has not yet said yes to dies with the tab.
   const planClaimDrafts = new Map<string, PlanClaimDraft>();
@@ -5560,7 +5628,7 @@ export const bootstrapChatRoute = (
    * after cancellation. */
   const focusPlanResolutionTarget = (
     planId: string,
-    attemptedAction: 'approve' | 'cancel',
+    attemptedAction: PlanAction,
   ): void => {
     const queryable = routeRoot as unknown as {
       querySelectorAll?: (
@@ -5582,7 +5650,9 @@ export const bootstrapChatRoute = (
         : plan?.status === 'proposed'
           ? attemptedAction === 'approve'
             ? CHAT_ROUTE_PLAN_APPROVE_ATTR
-            : CHAT_ROUTE_PLAN_CANCEL_ATTR
+            : attemptedAction === 'always'
+              ? CHAT_ROUTE_PLAN_ALWAYS_ATTR
+              : CHAT_ROUTE_PLAN_CANCEL_ATTR
           : null;
     const cardQueryable = card as unknown as {
       querySelector?: (selectors: string) => HTMLElement | null;
@@ -5645,14 +5715,14 @@ export const bootstrapChatRoute = (
   // line; the broadcast + reconnect paths keep the card itself truthful.
   const resolvePlan = async (
     plan_id: string,
-    action: 'approve' | 'cancel',
+    action: PlanAction,
   ): Promise<void> => {
     if (pendingPlanActions.has(plan_id)) return;
     // D-336 slice E — a held save's relationship and summary, as its card shows them, are
     // part of approving it. Left as proposed, nothing is sent and the save runs as the agent
     // wrote it.
     const card = state.thread.plan_cards.find((candidate) => candidate.plan_id === plan_id);
-    const claimDraft = action === 'approve' && card !== undefined && planClaimEditable(card)
+    const claimDraft = action !== 'cancel' && card !== undefined && planClaimEditable(card)
       ? planClaimDrafts.get(plan_id) : undefined;
     const edit = claimDraft === undefined ? undefined : planClaimEdit(claimDraft);
     if (claimDraft !== undefined) {
@@ -5670,8 +5740,12 @@ export const bootstrapChatRoute = (
     focusPlanResolutionTarget(plan_id, action);
     try {
       const { plan } = await opts.conn(
-        action === 'approve' ? 'chat.plan.approve' : 'chat.plan.cancel',
-        { plan_id, ...(edited !== undefined ? { edited_args: edited } : {}) },
+        action === 'cancel' ? 'chat.plan.cancel' : 'chat.plan.approve',
+        {
+          plan_id,
+          ...(edited !== undefined ? { edited_args: edited } : {}),
+          ...(action === 'always' ? { always_allow: true as const } : {}),
+        },
       );
       if (disposed) return;
       state = {
@@ -6532,8 +6606,32 @@ export const bootstrapChatRoute = (
     return host;
   };
 
+  /** D-343 slice 5 (§3.3 step 5) — a day's records once kept, as its checklist: a tick for each one
+   *  done and a dash for each one skipped, in the owner's words. */
+  const renderRecordChecklist = (rows: ReturnType<typeof episodeRecordChecklist>): HTMLElement => {
+    const list = doc.createElement('ul');
+    list.setAttribute(CHAT_ROUTE_PLAN_CHECKLIST_ATTR, '');
+    for (const row of rows) {
+      const item = doc.createElement('li');
+      item.setAttribute('data-outcome', row.outcome);
+      const mark = doc.createElement('span');
+      mark.className = 'chat-plan-checklist-mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = row.outcome === 'done' ? '✓' : '–';
+      item.appendChild(mark);
+      const words = doc.createElement('span');
+      words.textContent = row.outcome === 'done' ? row.title : `${row.title}, skipped`;
+      item.appendChild(words);
+      list.appendChild(item);
+    }
+    return list;
+  };
   const renderPlanCard = (host: HTMLElement, card: PlanApprovalCard): void => {
     const actionTitle = planActionTitle(card.tool, card.args);
+    // D-343 slice 5 — a day's records, kept: the card shows them as the day's checklist in place of
+    // its details. They ran exactly as shown, so the details are what was recorded.
+    const checklist = card.tool === 'episode.record' && card.execution?.status === 'completed' && card.payload_available !== false
+      ? episodeRecordChecklist(card.args) : [];
     const preparedMode =
       approvedPlanContinuationDraft?.planId === card.plan_id
         ? approvedPlanContinuationDraft.mode
@@ -6669,7 +6767,7 @@ export const bootstrapChatRoute = (
       receipt.appendChild(receiptLabel);
       const receiptTitle = doc.createElement('strong');
       receiptTitle.className = 'chat-plan-receipt-title';
-      receiptTitle.textContent = planExecutionTitle(card.execution);
+      receiptTitle.textContent = checklist.length > 0 ? 'Your day is recorded' : planExecutionTitle(card.execution);
       receipt.appendChild(receiptTitle);
       const receiptDetail = doc.createElement('p');
       receiptDetail.className = 'chat-plan-receipt-detail';
@@ -6678,7 +6776,7 @@ export const bootstrapChatRoute = (
         receipt.setAttribute('data-local-mutation-receipt', card.execution.local_receipt.receipt_id);
         if (opts.localUndo) receipt.appendChild(localUpdateUndoControl(doc, opts.localUndo, card.execution.local_receipt.receipt_id));
       }
-      receipt.appendChild(receiptDetail);
+      receipt.appendChild(checklist.length > 0 ? renderRecordChecklist(checklist) : receiptDetail);
       const runId = executionRunId;
       if (runId !== undefined) {
         const sessionId =
@@ -6917,7 +7015,8 @@ export const bootstrapChatRoute = (
         details.appendChild(row);
       }
     }
-    if (details.children.length > 0) {
+    // The checklist above already lists them.
+    if (details.children.length > 0 && checklist.length === 0) {
       el.appendChild(argsLabel);
       el.appendChild(details);
     }
@@ -6966,6 +7065,29 @@ export const bootstrapChatRoute = (
         void resolvePlan(card.plan_id, 'approve');
       });
       actions.appendChild(approve);
+      // D-341 — a held write whose ask also offers its trigger's standing pre-approval: the
+      // card offers it too, in the ask's own words.
+      if (card.held === true && card.always_allow !== undefined) {
+        const always = doc.createElement('button');
+        always.type = 'button';
+        always.setAttribute(CHAT_ROUTE_PLAN_ALWAYS_ATTR, '');
+        always.textContent = pendingAction === 'always' ? 'Allowing…' : card.always_allow;
+        always.disabled = card.payload_available === false;
+        if (busy || card.payload_available === false) {
+          always.setAttribute('aria-disabled', 'true');
+        }
+        if (pendingAction === 'always') {
+          always.setAttribute('aria-busy', 'true');
+        }
+        always.addEventListener('click', () => {
+          if (
+            pendingPlanActions.has(card.plan_id)
+            || card.payload_available === false
+          ) return;
+          void resolvePlan(card.plan_id, 'always');
+        });
+        actions.appendChild(always);
+      }
       const cancel = doc.createElement('button');
       cancel.type = 'button';
       cancel.setAttribute(CHAT_ROUTE_PLAN_CANCEL_ATTR, '');
@@ -6986,15 +7108,19 @@ export const bootstrapChatRoute = (
         note.setAttribute('role', 'status');
         note.setAttribute('aria-live', 'polite');
       }
+      // A held write runs on the yes, so there is nothing to carry on in Chat: its card says
+      // what "Always allow" lets happen where it offers it, in the ask's words, and else nothing.
       note.textContent =
         card.payload_available === false
           ? 'Recued cannot get the exact details back. Mark it cancelled so it can never run.'
-          : pendingAction === 'approve'
+          : pendingAction === 'approve' || pendingAction === 'always'
             ? 'Saving your yes…'
             : pendingAction === 'cancel'
               ? 'Cancelling…'
-              : 'Once you say yes, you choose when to carry on in Chat.';
-      actions.appendChild(note);
+              : card.held === true
+                ? card.always_allow !== undefined ? card.always_allow_note ?? '' : ''
+                : 'Once you say yes, you choose when to carry on in Chat.';
+      if (note.textContent !== '') actions.appendChild(note);
       el.appendChild(actions);
     } else if (
       card.status === 'approved'
@@ -8950,6 +9076,10 @@ export const bootstrapChatRoute = (
     }
     inputRow.appendChild(input);
     inputRow.appendChild(send);
+    // D-341 slice A — below the input, the switch that lets this conversation's browser actions run
+    // without asking.
+    const browserActionsRow = browserActionsFor(state.thread.session?.id);
+    if (browserActionsRow !== null) composer.appendChild(browserActionsRow);
     // D-262 § 5 — a refused microphone SAYS SO. A denial that resolved into a
     // button quietly returning to idle is indistinguishable from a broken
     // feature, and the person's next move (grant permission vs check the
@@ -9761,7 +9891,9 @@ export const bootstrapChatRoute = (
             const rowStatus = openingThisSession
               ? { attr: 'opening', copy: 'Opening…' }
               : turnsInFlightBySession.has(session.id)
-                ? { attr: 'working', copy: 'Working…' }
+                // D-188 — while the server is paused no turn starts (the emergency stop): the chat
+                // waits, it is not working. Redrawn when the pause turns on or off.
+                ? isServerPausedNow() ? { attr: 'waiting', copy: 'Waits for Resume' } : { attr: 'working', copy: 'Working…' }
                 : sessionHasUnread(session)
                   && session.id !== state.activeSessionId
                   ? { attr: 'answered', copy: 'New reply' }
@@ -10451,6 +10583,12 @@ export const bootstrapChatRoute = (
         const installOffers = chatInstallOfferLinks(message);
         if (installOffers.length > 0 && doc !== undefined) {
           messageRow.appendChild(buildChatInstallOffers(doc, installOffers));
+        }
+        // D-346 follow-up (2026-11-08) — what the answer's calls could not do and how the
+        // owner fixes it: a link, or "Turn it on" for a switch of theirs.
+        const fixRows = chatFixRows(message);
+        if (fixRows.length > 0 && doc !== undefined) {
+          messageRow.appendChild(buildChatFixes(doc, message.id, fixRows, render));
         }
         if (sourceTurn !== null) {
           const sourceFailure = state.thread.turn_failures.some(
@@ -11153,6 +11291,11 @@ export const bootstrapChatRoute = (
       focusPlanLanding(highlightedPlanId);
     }
   };
+  // D-188 — a chat waiting on the pause says so in the history list; redraw it when the pause
+  // turns on or off (the heartbeat reports it within one beat).
+  const stopHistoryPauseListener = onServerPauseChange(() => {
+    renderPreservingHandoffFocus(refreshHistoryResults);
+  });
 
   const connectedSourceStatusKey = (): string =>
     JSON.stringify(connectedSourceStatus);
@@ -12564,6 +12707,8 @@ export const bootstrapChatRoute = (
         title: deriveSessionTitle(firstMessage),
       });
       if (!stillOwnsDraft()) return null;
+      // D-341 slice A — the draft's switch, set on the new conversation before its first message goes.
+      if (browserActionsSwitch !== null) await browserActionsSwitch.adopt(session_id);
       const snapshot = await opts.conn('chat.session.get', {
         session_id,
         // Windowed like every other conversation read, though this one is
@@ -12878,6 +13023,9 @@ export const bootstrapChatRoute = (
       if (disposed || state.activeSessionId !== session.id) return;
       if (pendingSubmission?.key !== submissionKey) pendingSubmission = { key: submissionKey, id: crypto.randomUUID() };
       const submission = pendingSubmission;
+      // D-341 slice A — a message sent with the switch off ends a request approved ahead another
+      // device may have turned on; not awaited, it lands long before the turn's first browser write.
+      void browserActionsSwitch?.endIfOff(session.id);
       const sendAck = await opts.conn('chat.send', { ...sendPayload, submission_id: submission.id });
       if (pendingSubmission === submission) pendingSubmission = null;
       const parked = parkedComposerDrafts.get(session.id);
@@ -13701,6 +13849,7 @@ export const bootstrapChatRoute = (
       answerCodeCopy.dispose();
       answerCopy.dispose();
       queueView.dispose(); deliveryView.dispose(); messengerList.dispose(); historyFilters.dispose();
+      stopHistoryPauseListener();
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
       // running would keep a socket open against a surface nobody is watching.
       composerAttachments?.destroy();

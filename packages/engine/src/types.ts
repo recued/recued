@@ -36,6 +36,7 @@ import type {
   RecordsExecutionBinding,
   RecordsExecutionCall,
   RecipeStep,
+  TriggerPreapprovalHooks,
 } from '@recued/contracts';
 import type { ValidationIssue } from '@recued/recipes';
 import type { ContextRecipeSnapshotResult } from './context-recipe.js';
@@ -90,6 +91,11 @@ export interface CliInvocationCall {
    * checked where it is rendered (`renderInstallHints`): a stored catalog may
    * carry entries no validator saw. */
   tool_install?: readonly unknown[];
+  /** D-321 — folders added at the END of the program's PATH because the owner
+   * set where the program is (`owner-tool-path.ts`): its own folder, and its
+   * interpreter's when it names one. Set by the cli executor when it applies
+   * the owner's location, never by a catalog or the gateway. */
+  path_after?: readonly string[];
   stepMeta?: StepMeta;
 }
 
@@ -193,6 +199,16 @@ export type ProgressEvent =
 
 /** Callback supplied by the caller to receive progress events. */
 export type ProgressCallback = (event: ProgressEvent) => void;
+
+/** What the per-call admission would refuse a catalog operation for, checked before the
+ *  approval ask (`ExecutionContext.operationRefusal`): its deny code and the exact words
+ *  the caller reads at dispatch. */
+export interface OperationRefusal {
+  /** `op_not_granted`: switched off for its caller. `server_paused`: the owner paused
+   *  the server (D-188), which stops this caller. */
+  readonly code: 'op_not_granted' | 'server_paused';
+  readonly message: string;
+}
 
 /** D-177 catalog-gate session-grant loop — the per-operation envelope the
  *  catalog gate hands the host's grant seam (the host adds the run-level
@@ -414,8 +430,11 @@ export interface ExecutionContext {
   /** Host-owned execution scope for the effective run signal, including the
    * engine's linked budget deadline. Hosts can bind it to asynchronous call
    * context without changing recipe inputs or sharing mutable state across
-   * runs. The callback must execute and await `run` within that scope. */
-  withRunAbortSignal?<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T>;
+   * runs. The callback must execute and await `run` within that scope.
+   * D-335 slice Z — `extendBudget` is the run's own D-116 hook, for the host to offer to a step that
+   * waits for the owner (a browser step asking for a secret), as the `wait` transform's sleep is. */
+  withRunAbortSignal?<T>(signal: AbortSignal | undefined, run: () => Promise<T>,
+    extendBudget?: (ms: number) => void): Promise<T>;
   /** Optional server-side executor for catalog connector bindings with
    *  `kind: "cli_invocation"`. When absent, admitted CLI catalog ops fail
    *  closed after the catalog gate with `no_cli_executor`. */
@@ -697,6 +716,19 @@ export interface ExecutionContext {
    *  does not list is refused without asking the owner to approve it first.
    *  Absent: every connection (an owner's run, a contract that lists none). */
   admitsConnection?: (connection_name: string) => boolean;
+  /** D-346 follow-up (2026-11-08) — the refusal a dispatch of this catalog operation would
+   *  meet because its caller may not use it (the per-call admission's `op_not_granted`,
+   *  in the words that caller reads), or undefined. Checked before the approval ask, as
+   *  `admitsConnection` is: the admission refuses such a call only as it dispatches, so an
+   *  action switched off for its caller was held for the owner's approval and then
+   *  refused. `operation_key` is the catalog's own key (`deal.update`). Absent: nothing
+   *  is refused here (a run no contract governs).
+   *
+   *  Also the admission's `server_paused` (D-188, the owner's ruling of 2026-11-08):
+   *  nothing new is asked while the server is paused, so a caller the pause stops is
+   *  refused here, in the words it would read at dispatch, rather than held for an
+   *  approval that could only end in that refusal. */
+  operationRefusal?: (slug: string, operation_key: string) => OperationRefusal | undefined;
   /** Resolve the enrolled API connection's concrete base URL for REST
    *  continuation safety checks. Used by operation-local `link_header`
    *  pagination so GitHub Enterprise / Salesforce instance URLs compare
@@ -746,6 +778,13 @@ export interface ExecutionContext {
    *  `resolveOpenProjection`). Absent (dbless / unit / no resolver) ⇒ every
    *  catalog `ask` holds exactly as pre-loop. */
   catalogSessionGrants?: CatalogSessionGrantHooks;
+  /** D-341 slice B1 — a trigger's standing pre-approval, at the catalog gate: a catalog op held
+   *  in a run a webhook, a schedule or an event trigger started goes ahead without asking when the
+   *  owner pre-approved it for that trigger and recipe version. Asked in the ask branch only, after
+   *  no session grant matched, below destructive, for a hold no review lift added, and only where
+   *  the owner's policy leaves the ask waivable (`never`, or `ask` before the lift). The host spends
+   *  a use when it admits. Absent ⇒ these ops ask, as before. */
+  triggerPreapprovals?: TriggerPreapprovalHooks;
   /** D-136 P7.E — origin of the recipe execution. Surfaced on
    *  `StepMeta.trigger_source` so kernel storage adapters that read
    *  enrichment data can apply policy gates (e.g. `mcp_exposed:

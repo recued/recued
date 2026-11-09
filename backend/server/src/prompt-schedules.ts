@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { isChatModelSourceId, type ChatModelHint, type ChatModelRoutingLayer, type ChatModelSourceId } from '@recued/contracts';
 import { RpcError, type PromptSchedule, type PromptScheduleInput,
   type PromptScheduleTarget, type PromptScheduleUpdate, type ScheduledPromptOrigin,
   type ChatTurnAcceptance, type ChatQueuedTurnStatus } from '@recued/contracts';
@@ -8,7 +9,8 @@ import { encodeChatContentForStorage, decodeChatContentFromStorage,
   type ChatKeyProvider, type ChatStore } from './storage/chat-store.js';
 import type { ChatTurnQueue } from './chat-turn-queue.js';
 import type { ChatOrchestrator, ChatBroadcastEmitter, BroadcastChatEvent } from './chat-orchestrator.js';
-import { readPromptScheduleOutcome, promptScheduleWorkStamp } from './prompt-schedule-outcome.js';
+import { readPromptScheduleOutcome, promptScheduleWorkStamp, scheduleTurnSql } from './prompt-schedule-outcome.js';
+import { ensureHeldResultSchema } from './storage/chat-held-result-store.js';
 import { resolvePromptScheduleTiming, previewPromptScheduleTiming } from './prompt-schedule-timing.js';
 import { createPromptScheduleHealthStore, currentPromptQueueIssue, type PromptScheduleQueueFailure, type PromptScheduleFailureSignal } from './prompt-schedule-health.js';
 import { ensurePromptScheduleDoneTables } from './prompt-schedule-done.js';
@@ -48,9 +50,17 @@ export const createPromptSchedules = (deps: {
   broadcast?: ChatBroadcastEmitter | undefined; now?: () => number;
   recordChange?: (action: string, id: string, revision: number) => void;
   readPlans: (session: string, turn: string) => Promise<ReadonlyArray<import('@recued/contracts').ChatPlanRecord>>;
+  /** D-344 slice D — the turn's model preference for a schedule's model, as the chat's picker sends
+   *  it, read against the live configuration when the run starts. Absent: the schedule's model is kept
+   *  but its runs take the chat's default. */
+  modelPrefFor?: (source_id: ChatModelSourceId) => { current: ChatModelRoutingLayer; model_hint?: ChatModelHint;
+    source_id?: ChatModelSourceId };
 }) => {
   const { db, store, queue } = deps;
   const now = deps.now ?? Date.now;
+  // The turns a run carried its conversation on in (D-337 slice F), which a schedule's waiting
+  // approvals and work count as its own (`scheduleTurnSql`).
+  ensureHeldResultSchema(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS chat_prompt_schedules (
       schedule_id TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
@@ -63,6 +73,9 @@ export const createPromptSchedules = (deps: {
       revision INTEGER NOT NULL, due_at INTEGER NOT NULL, turn_id TEXT, payload TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS chat_prompt_occurrences_schedule ON chat_prompt_occurrences(schedule_id, due_at);
+    -- Whether a turn is one of a schedule's runs, or carries one on (scheduleTurnSql), is looked up by
+    -- the turn: a schedule keeps all its runs, and scanning a year of a recurring one's took over a second.
+    CREATE INDEX IF NOT EXISTS chat_prompt_occurrences_turn ON chat_prompt_occurrences(turn_id);
     CREATE TABLE IF NOT EXISTS chat_prompt_schedule_tombstones (schedule_id TEXT PRIMARY KEY);
     CREATE TRIGGER IF NOT EXISTS chat_prompt_delete BEFORE DELETE ON chat_prompt_schedules BEGIN
       INSERT OR IGNORE INTO chat_prompt_schedule_tombstones VALUES (OLD.schedule_id);
@@ -91,6 +104,16 @@ export const createPromptSchedules = (deps: {
     JSON.parse(await decodeChatContentFromStorage(payload, { session_id: session, message_id: id }, deps.getKey)) as T;
   const encode = (value: unknown, session: string, id: string): Promise<string> =>
     encodeChatContentForStorage(JSON.stringify(value), { session_id: session, message_id: id }, deps.getKey);
+  /** D-341 slice B3 — what a scheduled prompt's standing pre-approval pins its prompt by: an HMAC of
+   *  the text under the chat key (a plain digest where the chat has none), so the run's source, which
+   *  commits and audit rows keep, carries no checkable fingerprint of what the owner wrote. */
+  const promptVersionOf = async (prompt: string): Promise<string> => {
+    const input = `d-341 prompt version\0${prompt}`;
+    if (!deps.getKey) return hash(input);
+    const key = await deps.getKey();
+    if (!key) throw new Error('Chat vault is locked.');
+    return createHmac('sha256', key).update(input).digest('hex');
+  };
   const announce = (session: string): void => {
     try { deps.broadcast?.emit({ kind: 'chat.session_changed', session_id: session, field: 'queue', value: true }); }
     catch { /* A reload reads the authoritative row. */ }
@@ -100,9 +123,8 @@ export const createPromptSchedules = (deps: {
     WHERE o.schedule_id=? AND o.occurrence_id<>? AND
       (q.status IN ('queued','running','cancelling') OR o.turn_id IS NULL AND o.revision=?) LIMIT 1`)
     .get(id, except, revision);
-  const hasApprovals = (id: string): boolean => !!db.prepare(`SELECT 1 FROM chat_prompt_occurrences o
-    JOIN chat_plans p ON p.session_id=o.session_id AND p.turn_id=o.turn_id
-    WHERE o.schedule_id=? AND p.status='proposed' LIMIT 1`).get(id);
+  const hasApprovals = (id: string): boolean => !!db.prepare(`SELECT 1 FROM chat_plans p
+    WHERE p.status='proposed' AND ${scheduleTurnSql('p.session_id', 'p.turn_id')} LIMIT 1`).get({ schedule_id: id });
   const get = async (id: string): Promise<PromptSchedule> => {
     const found = db.prepare(`SELECT s.*, n.queue_revision, n.queue_due_at, n.queue_since_at, admitted.turn_id AS admitted_turn_id
       FROM chat_prompt_schedules s LEFT JOIN chat_prompt_schedule_notices n ON n.schedule_id=s.schedule_id
@@ -114,6 +136,7 @@ export const createPromptSchedules = (deps: {
       LEFT JOIN chat_turn_queue q ON q.turn_id=o.turn_id WHERE o.schedule_id=? ORDER BY o.due_at DESC, o.rowid DESC LIMIT 1`)
       .get(id) as { occurrence_id: string; turn_id: string | null; due_at: number; revision: number; status: PromptSchedule['last_status'] } | undefined;
     const schedule: PromptSchedule = { ...saved, notify_on_done: saved.notify_on_done === true,
+      model_source_id: saved.model_source_id ?? null,
       enabled: found.enabled === 1, revision: found.revision, next_run_at: found.next_run_at,
       ...(latest ? { last_run_at: latest.due_at, last_turn_id: latest.turn_id,
         last_status: latest.status ?? (latest.revision === found.revision ? 'queued' : 'cancelled') } : {}) };
@@ -133,12 +156,15 @@ export const createPromptSchedules = (deps: {
   };
   const validate = (raw: unknown, allowPast = false): PromptScheduleInput => {
     const args = object(raw);
-    if (Object.keys(args).some(key => !['title', 'prompt', 'mode', 'time_zone', 'run_at', 'cron_expression', 'creation_id', 'notify_on_done'].includes(key))) return bad('Unknown scheduled prompt field.');
+    if (Object.keys(args).some(key => !['title', 'prompt', 'mode', 'time_zone', 'run_at', 'cron_expression', 'creation_id', 'notify_on_done', 'model_source_id'].includes(key))) return bad('Unknown scheduled prompt field.');
     const title = text(args.title, 'Title', 160), prompt = text(args.prompt, 'Prompt', 32000);
-    const { title: _title, prompt: _prompt, creation_id: _creation, notify_on_done: notify, ...timing } = args;
+    const { title: _title, prompt: _prompt, creation_id: _creation, notify_on_done: notify, model_source_id: model, ...timing } = args;
     if (notify !== undefined && typeof notify !== 'boolean') return bad('Notify when done must be true or false.');
+    // D-344 slice D — the model its runs use: a slot, the free pool, or `null` for the chat's default.
+    if (model !== undefined && model !== null && !isChatModelSourceId(model)) return bad('Model must be slot_1, slot_2, free_pool or null.');
     return { title, prompt, ...resolvePromptScheduleTiming(timing, now(), allowPast).timing,
-      ...(notify !== undefined ? { notify_on_done: notify } : {}) };
+      ...(notify !== undefined ? { notify_on_done: notify } : {}),
+      ...(isChatModelSourceId(model) ? { model_source_id: model } : {}) };
   };
   const next = (input: PromptScheduleInput): number | null => input.mode === 'one_shot'
     ? Date.parse(input.run_at!) : nextCronMatch(input.cron_expression!.split(' '), Math.floor(now() / 60000) * 60000 + 60000, undefined, input.time_zone);
@@ -199,7 +225,7 @@ export const createPromptSchedules = (deps: {
   const update = async (raw: PromptScheduleUpdate | unknown, check = false,
     access: PromptScheduleOwnerAccess = {}): Promise<PromptSchedule | null> => {
     const args = object(raw);
-    if (Object.keys(args).some(key => !['schedule_id', 'expected_revision', 'title', 'prompt', 'time_zone', 'run_at', 'cron_expression', 'notify_on_done'].includes(key))) return bad('Unknown schedule edit field. Mode cannot be changed.');
+    if (Object.keys(args).some(key => !['schedule_id', 'expected_revision', 'title', 'prompt', 'time_zone', 'run_at', 'cron_expression', 'notify_on_done', 'model_source_id'].includes(key))) return bad('Unknown schedule edit field. Mode cannot be changed.');
     if (!Number.isSafeInteger(args.expected_revision) || Number(args.expected_revision) < 1) return bad('An expected_revision is required to edit a schedule.');
     const before = target(args), old = await get(before.schedule_id);
     if (old.managed_by !== undefined && !access.managed) throw new RpcError('forbidden', MANAGED_REFUSAL, 403);
@@ -208,13 +234,13 @@ export const createPromptSchedules = (deps: {
     const input = validate({ title: old.title, prompt: old.prompt, mode: old.mode, time_zone: old.time_zone,
       ...(old.run_at !== undefined ? { run_at: new Date(old.run_at).toISOString() } : {}),
       ...(old.cron_expression ? { cron_expression: old.cron_expression } : {}),
-      notify_on_done: old.notify_on_done === true,
-      ...Object.fromEntries(Object.entries(args).filter(([key]) => ['title', 'prompt', 'time_zone', 'run_at', 'cron_expression', 'notify_on_done'].includes(key))) }, keepPastTime);
+      notify_on_done: old.notify_on_done === true, model_source_id: old.model_source_id ?? null,
+      ...Object.fromEntries(Object.entries(args).filter(([key]) => ['title', 'prompt', 'time_zone', 'run_at', 'cron_expression', 'notify_on_done', 'model_source_id'].includes(key))) }, keepPastTime);
     if (check) return null;
     const { last_outcome: _outcome, pending_approvals: _approvals, pending_work: _work,
       run_now_available: _available, run_request_scope: _scope, ...definition } = old;
     const changed: PromptSchedule = { ...definition, title: input.title, prompt: input.prompt, time_zone: input.time_zone,
-      notify_on_done: input.notify_on_done === true,
+      notify_on_done: input.notify_on_done === true, model_source_id: input.model_source_id ?? null,
       ...(input.run_at ? { run_at: Date.parse(input.run_at) } : {}), ...(input.cron_expression ? { cron_expression: input.cron_expression } : {}),
       revision: before.revision + 1, next_run_at: old.enabled ? next(input) : null };
     const payload = await encode(changed, old.session_id, old.schedule_id);
@@ -304,11 +330,16 @@ export const createPromptSchedules = (deps: {
     db.prepare('UPDATE chat_prompt_occurrences SET turn_id=? WHERE occurrence_id=?').run(turn, key);
     const saved = await decode<PromptSchedule>(occurrence.payload, occurrence.session_id, `occurrence:${key}`);
     assertActive();
+    // D-341 slice B3 — the version of the text this occurrence runs, from its own snapshot: a
+    // pre-approval for an edited prompt never covers a run of the old one, nor the other way round.
     const origin: ScheduledPromptOrigin = { schedule_id: saved.schedule_id, occurrence_id: key,
       revision: occurrence.revision, due_at: occurrence.due_at, cron: saved.cron_expression ?? 'one_shot',
-      ...(manual ? { trigger: 'manual' as const } : {}) };
+      ...(manual ? { trigger: 'manual' as const } : {}), prompt_sha256: await promptVersionOf(saved.prompt) };
+    // D-344 slice D — the schedule's model, as the chat's picker sends one; else the chat's default.
+    const model_pref = saved.model_source_id && deps.modelPrefFor ? deps.modelPrefFor(saved.model_source_id) : undefined;
     return deps.runTurn({ session_id: saved.session_id, message: saved.prompt, picker_state: { current: 'self' },
       model_routing_snapshot: queue.routing(saved.session_id), time_zone: saved.time_zone,
+      ...(model_pref !== undefined ? { model_pref } : {}),
       scheduled_prompt: origin, queue_turn_id: turn, assert_active: assertActive, complete_turn: complete });
   });
   type DueRow = Row & { scan_rowid: number };
@@ -422,11 +453,21 @@ export const createPromptSchedules = (deps: {
       && 'kind' in event.event && event.event.kind === 'engine.decoder_unavailable'
       && health.recordTurnFailure(event.session_id, event.turn_id)) announce(event.session_id);
   };
+  /** D-341 slice B3 — a scheduled prompt as its pre-approvals name it: its title, and the version
+   *  of its text now (`promptVersionOf`). Null once removed. */
+  const promptVersion = async (id: string): Promise<{ title: string; prompt_sha256: string } | null> => {
+    const found = row(id);
+    if (!found) return null;
+    const saved = await decode<PromptSchedule>(found.payload, found.session_id, id);
+    return { title: saved.title, prompt_sha256: await promptVersionOf(saved.prompt) };
+  };
   return { list, get, create, update, control, runNow, tick, beforeDeleteSession, isFailureCurrent, recordFailure,
+    promptVersion,
     setRunGate: (owner: 'agenda', gate: PromptScheduleRunGate | undefined): void => {
       if (gate) runGates.set(owner, gate); else runGates.delete(owner);
     },
     heldNoticeIds: health.heldNoticeIds,
-    preview: (raw: unknown) => ({ ...previewPromptScheduleTiming(raw, now()), notify_on_done_available: true as const }) };
+    preview: (raw: unknown) => ({ ...previewPromptScheduleTiming(raw, now()), notify_on_done_available: true as const,
+      model_choice_available: true as const }) };
 };
 export type PromptSchedules = ReturnType<typeof createPromptSchedules>;

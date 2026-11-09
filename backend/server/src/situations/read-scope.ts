@@ -20,7 +20,11 @@ export const scopeWorkFields = <T extends Record<string, unknown>>(row: T, allow
   return value;
 };
 
-export const SPHERE_READ_REFUSAL = 'This contract is restricted to selected spheres. This operation cannot enforce that boundary. Use situation.query for the permitted records, or ask the owner to change the contract. This is a permission refusal, not an empty result; do not retry this operation.';
+/** D-346 follow-up (2026-11-08) — only a contract's call is held to spheres (the owner's never
+ *  is), so it reads only that the operation is not available, and where it may read instead;
+ *  it said why ("restricted to selected spheres … cannot enforce that boundary") and to ask
+ *  the owner to change the contract. */
+export const SPHERE_READ_REFUSAL = 'This operation is not available for this contract. Use situation.query for the records it may read. This is a permission refusal, not an empty result; do not retry this operation.';
 export const createReadScope = (access: SituationAccess, source: ExecutionSource | undefined) => {
   const context = access.fence(source);
   const limited = !context.owner && !context.all_spheres;

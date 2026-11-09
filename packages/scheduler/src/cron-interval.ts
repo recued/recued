@@ -75,10 +75,36 @@ export const cronMatchesAt = (
   return parts.every((part, i) => cronFieldMatches(part, fields[i]));
 };
 
+/** Is this a FIXED-TIME cron, one pinned to a wall-clock time? Neither its
+ *  minute nor its hour field starts with `*`. Classic cron's line: a fixed-time
+ *  job runs once when a DST fall-back repeats its hour, while a wildcard job
+ *  (`0 * * * *`, or a `*` step in the minute field) runs again, because its
+ *  second match is a different hour of real time. */
+export const isFixedTimeCron = (parts: readonly string[]): boolean =>
+  !(parts[0] ?? '*').startsWith('*') && !(parts[1] ?? '*').startsWith('*');
+
+/** The wall-clock minute `at` reads as in `timeZone` (host-local when absent),
+ *  in minutes since that wall clock's epoch. It moves forward with time except
+ *  where the clock repeats itself: a DST fall-back, or a clock set back. */
+export const localMinuteAt = (at: number, timeZone?: string): number => {
+  const offset = timeZone === undefined
+    ? -new Date(at).getTimezoneOffset() * 60_000
+    : zoneOffsetMsAt(at, timeZone);
+  return Math.floor((at + offset) / 60_000);
+};
+
 /** Find the next minute (inclusive) that matches the cron expression,
  *  scanning forward from `startMs`. Returns the timestamp in ms, or
  *  null if no match is found within `maxMinutes` (default 527040 =
- *  366 days — covers all cron patterns including leap years). */
+ *  366 days — covers all cron patterns including leap years).
+ *
+ *  ⛔ A FIXED-TIME CRON MATCHES A REPEATED HOUR ONCE. A DST fall-back plays a
+ *  local hour twice, and `30 1 * * *` matched both 01:30s: the schedule ran
+ *  twice, and the missed-run check, which scans with this, counted the second
+ *  as missed. Once the scan has passed a later local minute, a match that reads
+ *  earlier is the repeat, and a fixed-time cron skips it (`isFixedTimeCron`).
+ *  A scan that STARTS inside the repeat cannot know what came before it; the
+ *  scheduler's tick dedupe covers that edge against the last run. */
 export const nextCronMatch = (
   parts: string[],
   startMs: number,
@@ -128,19 +154,26 @@ export const nextCronMatch = (
     return dayUniform ? dayOffset : zoneOffsetMsAt(at, zone);
   };
 
+  const fixedTime = isFixedTimeCron(parts);
+  let latestLocal = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < maxMinutes; i++) {
     let fields: number[];
+    let local: number;
     if (timeZone === undefined) {
       const at = new Date(ms);
       fields = [at.getMinutes(), at.getHours(), at.getDate(), at.getMonth() + 1, at.getDay()];
+      local = ms - at.getTimezoneOffset() * 60_000;
     } else {
-      const shifted = new Date(ms + offsetAt(ms, timeZone));
+      local = ms + offsetAt(ms, timeZone);
+      const shifted = new Date(local);
       fields = [
         shifted.getUTCMinutes(), shifted.getUTCHours(), shifted.getUTCDate(),
         shifted.getUTCMonth() + 1, shifted.getUTCDay(),
       ];
     }
-    if (parts.every((part, f) => cronFieldMatches(part, fields[f]))) return ms;
+    const repeated = local < latestLocal;
+    if (local > latestLocal) latestLocal = local;
+    if (!(fixedTime && repeated) && parts.every((part, f) => cronFieldMatches(part, fields[f]))) return ms;
     ms += 60_000; // advance one minute
   }
   return null;

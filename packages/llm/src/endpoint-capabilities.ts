@@ -71,6 +71,7 @@ import { createHash } from 'node:crypto';
 import type { ContentPart, LLMMessage, LLMSlot } from './types.js';
 import { LLMError } from './types.js';
 import { joinTextParts } from './adapters/content-parts.js';
+import { THINKING_SWITCH_FIELDS } from './thinking-switch.js';
 
 /** The shapes endpoints actually use to say "not that role".
  *
@@ -138,6 +139,7 @@ export const systemRoleUnsupported = (slot: LLMSlot): boolean =>
 export const resetEndpointCapabilities = (): void => {
   unsupported.clear();
   jsonUnsupported.clear();
+  thinkingUnsupported.clear();
   schemaUnsupported.clear();
   contextBounds.clear();
   imageSeen.clear();
@@ -202,6 +204,7 @@ export const forgetEndpoint = (slot: LLMSlot): void => {
   const key = endpointFingerprint(slot);
   unsupported.delete(key);
   jsonUnsupported.delete(key);
+  thinkingUnsupported.delete(key);
   schemaUnsupported.delete(key);
   // ⛔ The learned window is forgotten too. The module header's governing
   // constraint is CLEARABILITY, and a bound is the one learned fact here that
@@ -355,6 +358,32 @@ export const noteJsonModeUnsupported = (slot: LLMSlot): void => {
 
 export const jsonModeUnsupported = (slot: LLMSlot): boolean =>
   jsonUnsupported.has(endpointFingerprint(slot));
+
+// ── Thinking switch (D-344) ─────────────────────────────────────────
+//
+// The owner's setting for a model's thinking goes out as its provider's switch
+// (`thinking-switch.ts`), chosen by the host for an OpenAI-compatible server: a
+// guess for one it does not know. An endpoint that refuses it is retried once
+// without it and remembered for the process, so a wrong guess costs one refused
+// request. Not announced to storage: a restart re-pays one request, and a
+// change of server software can make a refused switch good again.
+
+const thinkingUnsupported = new Set<string>();
+
+/** Did the provider REFUSE the thinking switch, as opposed to failing for another reason? Narrow as
+ *  {@link isJsonModeRejection} is: a request-boundary refusal naming the switch's field. */
+export const isThinkingSwitchRejection = (e: unknown): boolean =>
+  e instanceof LLMError
+  && !e.retryable
+  && e.code !== 'AI_TOKEN_BUDGET_EXCEEDED'
+  && THINKING_SWITCH_FIELDS.test(e.message);
+
+export const noteThinkingSwitchUnsupported = (slot: LLMSlot): void => {
+  thinkingUnsupported.add(endpointFingerprint(slot));
+};
+
+export const thinkingSwitchUnsupported = (slot: LLMSlot): boolean =>
+  thinkingUnsupported.has(endpointFingerprint(slot));
 
 // ── Context window ──────────────────────────────────────────────────
 //

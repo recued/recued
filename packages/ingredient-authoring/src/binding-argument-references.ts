@@ -36,7 +36,7 @@ export const bindingArgumentTokenAt = (value: string, syntax: BindingArgumentSyn
 
 const operationKeys = new Set(['op','ingredient','risk','approval','approval_reason','spends_per_call','args','bind','description','required_scopes','idempotency','accepts_media','produces_media','editable_args','record_id_arg','response_schema','request_schema','timeout_ms','cache_ttl_ms','tags']);
 const restKeys = new Set(['kind','method','path_template','static_query','static_headers','static_body','merge_query','response_schema']);
-const cliKeys = new Set(['kind','argv_template','cwd','input_materialize','output_capture','shape','storage','exit_code_handling','env','progress']);
+const cliKeys = new Set(['kind','argv_template','cwd','existing_paths','input_materialize','output_capture','shape','storage','exit_code_handling','env','progress']);
 /** Known usages remain navigable when rename coverage is incomplete; completeness is required for edits. */
 export const operationBindingArgumentReferences = (operation: unknown) => {
   const fields: BindingArgumentField[] = [], references: BindingArgumentReference[] = [], schemaReferences: BindingArgumentReference[] = [], engineKeys: string[] = [];
@@ -81,6 +81,10 @@ export const operationBindingArgumentReferences = (operation: unknown) => {
       if (bind[name] !== undefined) keys(bind[name], new Set(allowed), `CLI ${name}`);
     }
     field(['bind','cwd','arg'],'cli'); field(['bind','input_materialize','arg']); field(['bind','output_capture','from_input_arg']); field(['bind','progress','watch_path'], 'cli');
+    // D-346 § 9 — each existing path names its argument as a {token}, renamed with it.
+    const existing = bind.existing_paths;
+    if (Array.isArray(existing)) for (let i = 0; i < existing.length; i++) { keys(existing[i], new Set(['arg', 'accepts']), 'CLI existing path'); field(['bind','existing_paths',i,'arg'], 'cli'); }
+    else if (existing !== undefined) refuse('CLI existing_paths must be an array before rename.');
     const dir = bindingArgumentValue(bind, ['output_capture','dir_arg']);
     if (typeof dir === 'string' && dir) { engineKeys.push(dir); field(['bind','output_capture','dir_arg'], 'literal', true); }
   } else refuse('Rename currently supports REST paths and CLI invocations only.');

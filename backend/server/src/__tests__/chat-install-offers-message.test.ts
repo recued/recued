@@ -24,6 +24,19 @@ const fixture = () => {
   return { db, store, append };
 };
 
+// D-346 follow-up (2026-11-08) — the fixes stamped on an answer are kept beside its offers.
+describe('an answer’s fixes', () => {
+  const FIX = { kind: 'switch' as const, entry_key: 'data.task', label: 'Your tasks' };
+  it('are returned with the answer and read back with it; a malformed one is dropped', async () => {
+    const f = fixture();
+    const written = await f.append('f1', { fixes: [FIX, { kind: 'switch', entry_key: 'pub/cat.op', label: 'x' }] });
+    expect(written.fixes).toEqual([FIX]);
+    const page = await f.store.listMessagePage('s', 10);
+    expect(page.messages.find((message) => message.id === 'f1')?.fixes).toEqual([FIX]);
+    expect(await f.append('f2')).not.toHaveProperty('fixes');
+  });
+});
+
 describe('an answer’s install offers', () => {
   it('are returned with the answer and read back with it', async () => {
     const f = fixture();

@@ -11,12 +11,12 @@
  * never marked failed: nothing ran.
  */
 
-import { RpcError } from '@recued/contracts';
 import { settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
 import type {
   WebhookDeliveryStore,
   WebhookOutboxClaim,
 } from './storage/webhook-delivery-store.js';
+import { isRunRefusedForNow } from './pause-approval.js';
 
 export interface WebhookOutboxDispatchInput {
   idempotency_key: string;
@@ -177,7 +177,8 @@ export const dispatchWebhookOutboxOnce = async (
       // same "not run" as above, for this claim and every one after it. (A
       // target that ran before the refusal is dispatched in the consumer store,
       // and the replay skips it.)
-      if (error instanceof RpcError && error.code === 'draining') {
+      if (isRunRefusedForNow(error)) {
+        // D-188 — or it is paused: kept, the same way.
         handBack(index);
         break;
       }

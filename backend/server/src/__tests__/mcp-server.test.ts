@@ -588,6 +588,28 @@ describe('D-196 MCP customer usage metering', () => {
     expect(customerUsage.reserve).not.toHaveBeenCalled();
   });
 
+  // D-335 slice Q — the engine writes a run's sections twice, as `render` and the old `sidebar`;
+  // an agent was sent both, every recipe result costing it twice.
+  it('an agent reads a run\'s output once: the sidebar copy of render is left out of its text', async () => {
+    const dispatch = createMcpHttpDispatch({
+      ...makeDeps(),
+      commitStore: {
+        writePending: vi.fn().mockResolvedValue(undefined),
+        recordOutcome: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ExecuteHandlerDeps['commitStore'],
+      customerUsage: makeCustomerUsage(),
+    } as unknown as McpDeps);
+    const response = await dispatch({
+      jsonrpc: '2.0',
+      id: 'output-once',
+      method: 'tools/call',
+      params: { name: 'recued_runRecipe', arguments: { recipe: SIMPLE_RECIPE } },
+    }, 'bearer-usage') as { result: { content: Array<{ text: string }> } };
+    const parsed = JSON.parse(response.result.content[0]!.text) as { success: boolean; output: Record<string, unknown> };
+    expect(parsed.success).toBe(true);
+    expect(parsed.output).toEqual({ render: [expect.objectContaining({ type: 'text', data: 'hello world' })] });
+  });
+
   it('releases usage for a recipe call that returns success:false', async () => {
     const customerUsage = makeCustomerUsage();
     const dispatch = createMcpHttpDispatch({
@@ -795,6 +817,42 @@ describe('D-196 MCP customer usage metering', () => {
     expect(customerStatus.getStatus).toHaveBeenCalledTimes(1);
   });
 
+  // D-346 follow-up (2026-11-08) — the owner's ruling: a customer's app reads only that the tool
+  // is not available for its contract. It read "customer.status is not granted by this customer
+  // contract". Both doors: the HTTP dispatch's usage preflight and the tool call itself.
+  it('tells a customer whose contract does not allow customer.status only that it is not available', async () => {
+    const customerStatus = { getStatus: vi.fn() };
+    const deps = {
+      ...makeDeps(),
+      boundContractId: 'ct_customer_1',
+      boundContractActive: true,
+      inboundTokenAuthorize: vi.fn(() => false),
+      customerUsage: makeCustomerUsage(),
+      customerStatus,
+      contractOverlay: customerStatusGrantOverlay(false),
+    } as unknown as McpDeps;
+    const said = "Tool 'recued_customerStatus' is not available for this contract.";
+
+    const response = await createMcpHttpDispatch(deps)(
+      {
+        jsonrpc: '2.0',
+        id: 'customer-status-off',
+        method: 'tools/call',
+        params: { name: 'recued_customerStatus', arguments: {} },
+      },
+      'bearer-usage',
+    ) as { result: { isError?: boolean; content: Array<{ text: string }> } };
+    expect(response.result.isError).toBe(true);
+    expect(response.result.content[0]!.text).toBe(said);
+
+    const direct = await _testing.handleToolCall({ name: 'recued_customerStatus', arguments: {} }, deps) as {
+      isError?: boolean; content: Array<{ text: string }>;
+    };
+    expect(direct.isError).toBe(true);
+    expect(direct.content[0]!.text).toBe(said);
+    expect(customerStatus.getStatus).not.toHaveBeenCalled();
+  });
+
   it('rejects customer.status arguments instead of accepting model-supplied customer ids', async () => {
     const customerUsage = makeCustomerUsage();
     const customerStatus = { getStatus: vi.fn() };
@@ -902,6 +960,31 @@ describe('D-196 MCP customer usage metering', () => {
     expect(customerStatus.getStatus).not.toHaveBeenCalled();
   });
 
+  // D-346 follow-up (2026-11-08) — any contract's app reads only that a tool is not available
+  // for it (the owner's ruling); it read "not granted by this customer contract" whatever it was.
+  it('tells an app whose contract does not allow a raw op only that it is not available', async () => {
+    const dispatch = createMcpHttpDispatch({
+      ...makeDeps(),
+      boundContractId: 'ct_app_1',
+      boundContractActive: true,
+      inboundTokenAuthorize: vi.fn(() => false),
+      opAdmissionGate: { isFrozenByPause: () => false, isOpGranted: vi.fn(() => false) },
+    } as unknown as McpDeps);
+    const denied = await dispatch(
+      {
+        jsonrpc: '2.0',
+        id: 'app-raw-denied',
+        method: 'tools/call',
+        params: { name: 'recued_op_recued-core.crm-pack.deal.create', arguments: {} },
+      },
+      'bearer-usage',
+    ) as { result: { isError?: boolean; content: Array<{ text: string }> } };
+    expect(denied.result.isError).toBe(true);
+    expect(denied.result.content[0]!.text).toBe(
+      "Tool 'recued_op_recued-core.crm-pack.deal.create' is not available for this contract.",
+    );
+  });
+
   it('gates seller-customer raw op calls by the bound contract, not the token checklist', async () => {
     const inboundTokenAuthorize = vi.fn(() => false);
     const opAdmissionGate = {
@@ -951,7 +1034,7 @@ describe('D-196 MCP customer usage metering', () => {
     ) as { result: { isError?: boolean; content: Array<{ text: string }> } };
     expect(denied.result.isError).toBe(true);
     expect(denied.result.content[0]!.text).toContain(
-      'not granted by this customer contract',
+      'is not available for this contract',
     );
     expect(inboundTokenAuthorize).not.toHaveBeenCalled();
   });
@@ -1943,7 +2026,7 @@ describe('MCP per-ingredient dispatch', () => {
 
     expect((res as { isError?: boolean }).isError).toBe(true);
     const text = (res as { content: Array<{ text: string }> }).content[0].text;
-    expect(text).toMatch(/not granted/);
+    expect(text).toMatch(/is not available for this contract/);
     expect(text).toMatch(/forbidden-slug/);
   });
 
@@ -1951,7 +2034,10 @@ describe('MCP per-ingredient dispatch', () => {
   // works for THIS key. The older kind of contract's key keeps the tools it was
   // made with; sending it to the switches (as every key was until 2026-10-25)
   // left an owner flipping a switch that changed nothing.
-  it('D-327 — tells each kind of key the step that can add the tool', async () => {
+  // D-346 follow-up (2026-11-08) — the owner ruled that any caller but the owner's own chat
+  // reads only that a tool is not available for its contract, "althought it can still be owner
+  // using that contract": every kind of key now reads the same plain sentence.
+  it('D-327 / D-346 — every kind of key reads only that the tool is not available', async () => {
     const manifests = createManifestRegistry('/nonexistent');
     manifests.register({ ...httpTool, slug: 'forbidden-slug', name: 'Forbidden Slug' });
     const refusal = async (extra: Record<string, unknown>): Promise<string> => {
@@ -1969,22 +2055,14 @@ describe('MCP per-ingredient dispatch', () => {
       return (res as { content: Array<{ text: string }> }).content[0].text;
     };
 
-    const older = await refusal({ keyReadsContractTools: false });
-    expect(older).toContain('the kind made before Recued 26.10.24');
-    expect(older).toContain('make a new contract on the Contracts page');
-    expect(older).toContain('switching this tool on in the web app cannot add it');
-    expect(older).not.toContain('Switch it on');
-
-    for (const extra of [{ keyReadsContractTools: true }, {}]) {
-      const current = await refusal(extra);
-      expect(current).toContain("Switch it on for the key's contract on the Contracts page");
-      expect(current).not.toContain('make a new contract');
+    for (const extra of [
+      { keyReadsContractTools: false },
+      { keyReadsContractTools: true },
+      {},
+      { customerContractGrants: true, keyReadsContractTools: false },
+    ]) {
+      expect(await refusal(extra)).toBe("Tool 'recued_ingredient_forbidden-slug' is not available for this contract.");
     }
-
-    // A seller's customer has no Contracts page: it gets its contract's wording,
-    // whatever its key's kind.
-    const customer = await refusal({ customerContractGrants: true, keyReadsContractTools: false });
-    expect(customer).toBe("Tool 'recued_ingredient_forbidden-slug' is not granted by this customer contract.");
   });
 
   it('unknown slug on server route surfaces a clear error', async () => {

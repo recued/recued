@@ -6,6 +6,7 @@ import { startServer, type RunningServer } from '../server.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { createServerStateStore } from '../server-state.js';
+import { MAIL_REPLY_PAUSED_REASON } from '../collections/mail/message-read.js';
 import { STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import {
   createClientTokenStore,
@@ -963,3 +964,55 @@ describe('WebSocket server — paired connections', () => {
     }
   });
 });
+
+// D-188 — opening an email while paused shows the stored copy. The dispatcher's pause gate leaves
+// that read open for the collection handlers, which must read the SAME flag; a handler left
+// without it would read the mailbox during the emergency stop with nothing to stop it.
+describe('the pause, handed to the collection reads', () => {
+  it('opens an email from the stored copy while paused, through the whole rpc path', async () => {
+    const db = new Database(':memory:');
+    const clientTokens = createClientTokenStore(db, { argon2_params: { t: 1, m: 8, p: 1 } });
+    const issued = await clientTokens.issue({
+      client_kind: 'webclient', client_label: 'Pause read test', metadata: { instance_id: 'pause-read-owner' },
+    });
+    const state = createServerStateStore(db);
+    state.setPaused(true);
+    let fetched = 0;
+    const record = { record_id: 'mail:1', source_id: 'uid-1@INBOX', received_at: 1, modified_at: 1, size_bytes: 12,
+      body_inline: 'Stored email', hot_fields: { from: 'sender@example.test', to: ['owner@example.test'], cc: [],
+        subject: 'A request', direction: 'inbound' } };
+    const mailbox = { get: (id: string) => (id === record.record_id ? record : null), accountEmail: 'owner@example.test',
+      provider: { fetchMessage: async () => { fetched += 1; return null; } } };
+    const server = await startServer(0, {
+      clientTokens,
+      bootstrapDeps: { bootstrap: { bind_port: 0, webhooks_enabled: false }, state, version: 'test' },
+      collectionDeps: {
+        registry: { get: (platform: string, slug: string) => (platform === 'mail' && slug === 'work' ? mailbox : undefined) } as never,
+        mailEnroll: { instances: { getIncarnation: () => null } } as never,
+      },
+    });
+    const ws = await connectWs(server.port, `${issued.token_id}.${issued.bearer}`);
+    try {
+      const answer = new Promise<any>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('no answer to the email read')), 3000);
+        ws.on('message', (data) => {
+          const message = JSON.parse(data.toString());
+          if (message.type !== 'rpc_result' || message.request_id !== 'read') return;
+          clearTimeout(timeout); resolve(message);
+        });
+      });
+      ws.send(JSON.stringify({ type: 'rpc', request_id: 'read', method: 'collection.mail.message.get',
+        args: { slug: 'work', record_id: 'mail:1' } }));
+      const message = await answer;
+      expect(message.error).toBeUndefined();
+      expect(message.result).toMatchObject({ body: 'Stored email', read: 'stored', reply: null, forward: null,
+        reply_unavailable_reason: MAIL_REPLY_PAUSED_REASON });
+      expect(fetched).toBe(0);
+    } finally {
+      ws.terminate();
+      await server.close();
+      db.close();
+    }
+  });
+});
+

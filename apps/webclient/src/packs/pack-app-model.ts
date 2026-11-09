@@ -104,6 +104,9 @@ export interface PackAppRecipe {
   /** The installed row, so the host can hand it straight to the run modal
    *  (which takes a `ServerRecipeListEntry`) without a second lookup. */
   entry: ServerRecipeListEntry;
+  /** D-321 W1 — an automation of a pack this one uses (its manifest's
+   *  `dependencies`): that pack's slug. Absent for the pack's own. */
+  from_pack?: string;
 }
 
 export interface PackAppSurface {
@@ -117,7 +120,12 @@ export interface PackAppSurface {
   operations: PackAppRecipe[];
   /** Trigger-driven recipes. Their source preconditions do not exist at an
    * arbitrary button press, so Pack Use links to lifecycle management instead
-   * of auto-running them as views or exposing a manual Run control. */
+   * of auto-running them as views or exposing a manual Run control.
+   *
+   * D-321 W1 — every one that starts on its own: the pack's visible ones, then
+   * those its author marked internal (a watcher and its timeout), then those of
+   * the packs it uses (`from_pack`). Since D-319 none runs until it is switched
+   * on, and this is where the pack shows them. */
   automations: PackAppRecipe[];
   /** Recipe slugs the manifest ships that are NOT installed on this server.
    *  REPORTED, never silently dropped: a half-installed pack rendering as a
@@ -125,8 +133,8 @@ export interface PackAppSurface {
   missing: string[];
 }
 
-/** Recipes the manifest ships, in declaration order, excluding the ones the
- *  pack author marked internal.
+/** Recipes the manifest ships, in declaration order: the ones it shows
+ *  (`visible`), or the ones the pack author marked internal.
  *
  *  `visible` is an optional annotation with no runtime consumer before this
  *  module, so its default is a judgement rather than a lookup: ABSENT reads as
@@ -134,13 +142,23 @@ export interface PackAppSurface {
  *  (`true` for user-facing, `false` for guards like
  *  `<pack>-require-records-runtime`), so the default only governs v1 manifests
  *  — where showing a pack's recipes is far better than showing none. */
-const shippedVisibleSlugs = (manifest: BulkPackManifest): string[] => {
+const shippedSlugs = (manifest: BulkPackManifest, visible: boolean): string[] => {
   const plan = normalizeBulkPackInstallPlan(manifest);
   const slugs: string[] = [];
   for (const content of plan.contents) {
     if (content.type !== 'recipe') continue;
-    if (content.visible === false) continue;
+    if ((content.visible !== false) !== visible) continue;
     if (!slugs.includes(content.slug)) slugs.push(content.slug);
+  }
+  return slugs;
+};
+const shippedVisibleSlugs = (manifest: BulkPackManifest): string[] => shippedSlugs(manifest, true);
+
+/** D-321 W1 — the packs this one names in `dependencies`, in its order. */
+const usedPackSlugs = (manifest: BulkPackManifest): string[] => {
+  const slugs: string[] = [];
+  for (const dependency of manifest.dependencies ?? []) {
+    if (dependency.type === 'pack' && !slugs.includes(dependency.slug)) slugs.push(dependency.slug);
   }
   return slugs;
 };
@@ -290,15 +308,42 @@ export const rosterForUsage = (
 export interface PackAppIndex {
   readonly byRecipeId: ReadonlyMap<string, ServerRecipeListEntry>;
   readonly ops: PackOperationIndex;
+  /** D-321 W1 — the installed recipes by the pack that installed them
+   *  (`ServerRecipeListEntry.pack_slug`). */
+  readonly byPack: ReadonlyMap<string, readonly ServerRecipeListEntry[]>;
 }
 
 export const buildPackAppIndex = (
   installed: readonly ServerRecipeListEntry[],
   roster: readonly RecordsUsagePack[],
-): PackAppIndex => ({
-  byRecipeId: new Map(installed.map((entry) => [entry.recipe_id, entry])),
-  ops: buildPackOperationIndex(roster),
-});
+): PackAppIndex => {
+  const byPack = new Map<string, ServerRecipeListEntry[]>();
+  for (const entry of installed) {
+    if (typeof entry.pack_slug !== 'string' || entry.pack_slug === '') continue;
+    byPack.set(entry.pack_slug, [...(byPack.get(entry.pack_slug) ?? []), entry]);
+  }
+  return {
+    byRecipeId: new Map(installed.map((entry) => [entry.recipe_id, entry])),
+    ops: buildPackOperationIndex(roster),
+    byPack,
+  };
+};
+
+/** A recipe as an entry on the surface: its name and description. */
+const appRecipeOf = (entry: ServerRecipeListEntry): PackAppRecipe => {
+  const metadata = entry.recipe.metadata as
+    { name?: unknown; description?: unknown } | undefined;
+  return {
+    recipe_id: entry.recipe_id,
+    name: typeof metadata?.name === 'string' && metadata.name.trim() !== ''
+      ? metadata.name
+      : entry.recipe_id,
+    description: typeof metadata?.description === 'string'
+      ? metadata.description
+      : '',
+    entry,
+  };
+};
 
 /** ⛔⛔ TAKES A PACK WHOSE MANIFEST IS IN HAND, AND THE TYPE IS THE GUARD.
  *  `packs.list` sends no manifest for ANY pack (`PackListEntry.manifest`), so an
@@ -324,18 +369,7 @@ export const packAppSurface = (
       missing.push(slug);
       continue;
     }
-    const metadata = entry.recipe.metadata as
-      { name?: unknown; description?: unknown } | undefined;
-    const item: PackAppRecipe = {
-      recipe_id: entry.recipe_id,
-      name: typeof metadata?.name === 'string' && metadata.name.trim() !== ''
-        ? metadata.name
-        : entry.recipe_id,
-      description: typeof metadata?.description === 'string'
-        ? metadata.description
-        : '',
-      entry,
-    };
+    const item = appRecipeOf(entry);
     if (classifyRecipeAction(entry.recipe) !== 'manual') {
       automations.push(item);
       continue;
@@ -386,6 +420,25 @@ export const packAppSurface = (
     (spendsPerRun(entry, index.ops) ? operations : views).push(item);
   }
 
+  // D-321 W1 — what starts on its own, also where Use never looked: a recipe
+  // the author marked internal, and the packs this one uses. A hidden one not
+  // installed is not reported as missing: `missing` names what the owner would
+  // look for.
+  const listed = new Set(automations.map((automation) => automation.recipe_id));
+  const addAutomation = (entry: ServerRecipeListEntry, from_pack?: string): void => {
+    if (listed.has(entry.recipe_id) || classifyRecipeAction(entry.recipe) === 'manual') return;
+    listed.add(entry.recipe_id);
+    automations.push({ ...appRecipeOf(entry), ...(from_pack !== undefined ? { from_pack } : {}) });
+  };
+  for (const slug of shippedSlugs(pack.manifest, false)) {
+    const entry = byId.get(slug);
+    if (entry !== undefined) addAutomation(entry);
+  }
+  for (const used of usedPackSlugs(pack.manifest)) {
+    if (used === pack.slug) continue;
+    for (const entry of index.byPack.get(used) ?? []) addAutomation(entry, used);
+  }
+
   return { views, lookups, operations, automations, missing };
 };
 
@@ -400,4 +453,5 @@ export const hasAppSurface = (surface: PackAppSurface): boolean =>
   surface.views.length > 0
   || surface.lookups.length > 0
   || surface.operations.length > 0
-  || surface.automations.length > 0;
+  // D-321 W1 — its own: what the packs it uses start is theirs to open.
+  || surface.automations.some((automation) => automation.from_pack === undefined);

@@ -78,6 +78,12 @@ export const ATTENTION_GATEWAY_ASK_DETAILS_ATTR =
 /** D-336 slice N — a held chat write's link to its card in Chat, on its gateway-ask row. */
 export const ATTENTION_GATEWAY_ASK_CHAT_LINK_ATTR =
   'data-recued-attention-gateway-ask-chat-link';
+/** D-188 — on a gateway-ask row the owner's pause holds back: why its approve waits. */
+export const ATTENTION_GATEWAY_ASK_PAUSED_ATTR =
+  'data-recued-attention-gateway-ask-paused';
+/** …and on each answer that waits for Resume (shown, not sent). */
+export const ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR =
+  'data-recued-attention-gateway-ask-paused-option';
 export const ATTENTION_CHAT_PLAN_LINK_ATTR =
   'data-recued-attention-chat-plan-link';
 export const ATTENTION_CHAT_PLAN_RESOLUTION_ATTR =
@@ -475,7 +481,10 @@ export const ATTENTION_TOPBAR_STYLES = `
   cursor: wait;
   opacity: 0.72;
 }
-[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action[disabled]:not([aria-busy="true"]) {
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action[disabled]:not([aria-busy="true"]),
+/* D-188 — an answer the owner's pause holds back looks unavailable, as it is (found live: it
+   read as an active Approve beside the note saying it waits). */
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action[${ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR}] {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -1321,12 +1330,18 @@ const renderGatewayAskRow = (
   const waited = age === '' ? 'Waiting' : age === 'just now' ? 'Raised just now' : `Waiting ${age}`;
   const showBody = ask.title !== undefined && ask.title.trim() !== '';
   const busy = resolving.has(ask.ask_id);
+  // D-188 — an approval the owner's pause holds back: only its declining answers work until
+  // Resume, so the rest stay visible but unavailable, and the row says why.
+  const pausedAllowed = ask.paused !== undefined ? new Set(ask.paused.allowed_options) : undefined;
   const optionButtons = ask.options
     .map((option) => {
       const label = option.label.trim() || option.id;
+      const held = pausedAllowed !== undefined && !pausedAllowed.has(option.id);
       const busyAttrs = busy
         ? ' aria-disabled="true" aria-busy="true"'
-        : '';
+        : held
+          ? ` aria-disabled="true" ${ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR}=""`
+          : '';
       const busyClass = busy ? ' is-busy' : '';
       return `
         <button type="button"
@@ -1340,6 +1355,9 @@ const renderGatewayAskRow = (
       `;
     })
     .join('');
+  const pausedNote = ask.paused === undefined ? '' : `
+        <p class="attention-row-meta" role="status"
+          ${ATTENTION_GATEWAY_ASK_PAUSED_ATTR}="${escapeHtml(ask.ask_id)}">${escapeHtml(ask.paused.message)}</p>`;
   // D-336 slice N — a held chat write links to its card in Chat, where it can be changed
   // before the yes: this row stays read-only (D-270). It closes the tray as the chat plan's
   // "Review in Chat" does (`open-chat-plan`).
@@ -1364,7 +1382,7 @@ const renderGatewayAskRow = (
         <h3 class="attention-row-title">${escapeHtml(title)}</h3>
         <span class="attention-row-meta">${escapeHtml(waited)} &middot; Answer to continue</span>
         ${renderGatewayAskDetails(ask)}
-        ${showBody ? renderGatewayAskBody(ask.text) : ''}
+        ${showBody ? renderGatewayAskBody(ask.text) : ''}${pausedNote}
       </div>
       <div class="attention-row-actions">${chatLink}
         ${optionButtons}
@@ -4255,6 +4273,8 @@ export const mountApprovalAttentionPopover = (
     }
     if (action === 'gateway-ask-answer') {
       event.preventDefault();
+      // D-188 — an answer the pause holds back is shown, not sent.
+      if (actionEl.getAttribute(ATTENTION_GATEWAY_ASK_PAUSED_OPTION_ATTR) !== null) return;
       const askId = actionEl.getAttribute('data-ask-id');
       const optionId = actionEl.getAttribute('data-option-id');
       if (askId !== null && optionId !== null) {

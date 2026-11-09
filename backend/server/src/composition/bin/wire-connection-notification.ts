@@ -25,6 +25,7 @@
 import type { ConnectionKindHandler } from '@recued/ingredients';
 import {
   createConnectionNotificationHandler,
+  type ConnectionNoticeHook,
   type ConnectionNotificationHandlerDeps,
 } from '@recued/ingredients';
 import { NOTIFICATION_DELIVERY_CHANNELS, totalRecord } from '@recued/contracts';
@@ -49,6 +50,9 @@ export interface ComposeConnectionNotificationDeps {
   collectionRegistry: CollectionRegistry;
   /** D-325 P31/P43 — the owner's named connection per channel. */
   selectConnection?: SubtypeDispatcherDeps['selectConnection'];
+  /** D-338 — the chat's notice hook (`chat-notices.ts`), the one the remote channels take, so
+   *  the Agenda and every other notification sent here is a notice in the owner's chat too. */
+  notices?: ConnectionNoticeHook;
 }
 
 export interface ConnectionNotificationBundle {
@@ -103,6 +107,7 @@ export const composeConnectionNotification = (
       sendToOwner: (args) =>
         handleOwnerNotificationMailSend({ registry: collectionRegistry }, args),
     },
+    ...(deps.notices !== undefined ? { notices: deps.notices } : {}),
   };
 
   const notificationHandler =

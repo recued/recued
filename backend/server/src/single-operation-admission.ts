@@ -2,13 +2,14 @@
  * read-only future-execution preparation. Required child calls are probed
  * independently; this primitive never flattens their ask into a denial. */
 import {
-  CONNECTION_NOT_ADMITTED_DETAIL, RpcError, deriveDispatchScope, executionSourceHasContract, isCatalogForm,
-  kernelOpForBackingSlug, readOwnerOperationOverride,
+  CONNECTION_NOT_ADMITTED_DETAIL, RpcError, deriveDispatchScope, executionSourceHasContract, grantRefusalSentence,
+  isCatalogForm, isOwnersOwnCall, kernelOpForBackingSlug, readOwnerOperationOverride,
   type AdmissionDecision, type ContractSnapshot, type ExecutionSource, type IngredientManifest,
 } from '@recued/contracts';
 import { evaluatePreflightAdmission } from '@recued/gateway';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { remoteFileConnectionNamesIn } from './collections/file/remote-file-byte-resolver.js';
+import { SERVER_PAUSED_DETAIL } from './pause-approval.js';
 
 /** The refusal's words live in contracts, shared with the engine's catalog gateway,
  *  which checks the same contract list before an approval is asked for. */
@@ -61,14 +62,16 @@ export const createSingleOperationAdmission = (deps: SingleOperationAdmissionDep
   });
   if (decision.verdict !== 'deny' && deps.opAdmissionGate?.isFrozenByPause(deps.source)) {
     return Object.freeze({ verdict: 'deny', code: 'server_paused',
-      detail: 'server is paused — contracted and AI operations are halted until the owner resumes' });
+      detail: SERVER_PAUSED_DETAIL });
   }
   const covered = deps.granted_recipe_steps && deps.recipeCoversOp(opId);
   const granted = deps.opAdmissionGate?.isOpGranted(deps.source, opId) ?? true;
   if (covered && !granted) deps.onRecipeCoverage?.(opId);
   if (decision.verdict !== 'deny' && !granted && !covered) {
+    // Plain words naming where it is turned on (`grant-refusal-copy.ts`); it said "is not
+    // granted to this dispatch's governing contract (revoked)" for one never granted.
     return Object.freeze({ verdict: 'deny', code: 'op_not_granted',
-      detail: `operation '${String(opId)}' is not granted to this dispatch's governing contract (revoked)` });
+      detail: grantRefusalSentence(`'${String(opId)}'`, isOwnersOwnCall(deps.source), 'Ops') });
   }
   if (decision.verdict !== 'deny' && deps.contractOverlay) {
     for (const connection of remoteFileConnectionNamesIn(input)) {

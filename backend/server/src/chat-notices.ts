@@ -107,6 +107,49 @@ export interface ChatNoticeDeps {
   readonly now?: () => number;
 }
 
+/** A notice row in a conversation: its text, and its title and where it went encrypted beside it,
+ *  shown in an open app at once. The messenger's notices and the app's own (D-343) are written so. */
+const appendNotice = async (deps: Pick<ChatNoticeDeps, 'chatStore' | 'signature' | 'broadcast'>, session_id: string,
+  vendor: string, message: { text: string; title?: string; link_url?: string }, ts: number): Promise<ChatMessage> => {
+  const id = `notice:${randomUUID()}`;
+  const written = await deps.chatStore.appendMessage({
+    id,
+    session_id,
+    role: 'notice',
+    content: message.text,
+    target_server: 'self',
+    picker_at_send: { display_name: 'self', signature: deps.signature },
+    model_used: { provider: 'recued', model_id: 'notice' },
+    notice: {
+      vendor,
+      ...(message.title !== undefined && message.title.trim() ? { title: message.title.trim() } : {}),
+      ...(message.link_url !== undefined ? { link_url: message.link_url } : {}),
+    },
+    ts,
+  });
+  try {
+    deps.broadcast?.emit({ kind: 'chat.message_complete', session_id, turn_id: id, final: written });
+  } catch { /* the conversation shows it on its next read */ }
+  return written;
+};
+
+/** Where an app conversation's own notice says it went: the app, not a messenger. */
+export const APP_NOTICE_VENDOR = 'app';
+
+/** D-343 slice 4 (ruling 20) — Today's "Close the day": a new conversation in the app holding the
+ *  evening notice, so the app's reply quotes it as a messenger reply quotes one there, with or
+ *  without a messenger. Titled as the notice is. Its id is a plain conversation's. */
+export const createNoticeConversationOpener = (deps: Pick<ChatNoticeDeps, 'signature' | 'broadcast' | 'now'> & {
+  readonly chatStore: Pick<ChatStore, 'appendMessage' | 'createSession'>;
+  readonly mintId?: () => string;
+}) => async (notice: { title: string; text: string }): Promise<{ session_id: string; message_id: string }> => {
+  const now = deps.now ?? Date.now;
+  const session_id = (deps.mintId ?? randomUUID)();
+  deps.chatStore.createSession({ id: session_id, title: notice.title, now: now() });
+  const written = await appendNotice(deps, session_id, APP_NOTICE_VENDOR, notice, now());
+  return { session_id, message_id: written.id };
+};
+
 /** The hook the messenger channels call before a notify goes out. */
 export const createChatNotices = (deps: ChatNoticeDeps): RemoteNoticeHook => {
   ensureChatNoticeTables(deps.db);
@@ -125,28 +168,10 @@ export const createChatNotices = (deps: ChatNoticeDeps): RemoteNoticeHook => {
         title: noticeTitleLine(message.title),
         text: `${message.text}\n\n${noticeRuleLine(vendor)}`,
         async sent(vendor_message_id) {
-          const id = `notice:${randomUUID()}`;
-          const written = await deps.chatStore.appendMessage({
-            id,
-            session_id,
-            role: 'notice',
-            content: message.text,
-            target_server: 'self',
-            picker_at_send: { display_name: 'self', signature: deps.signature },
-            model_used: { provider: 'recued', model_id: 'notice' },
-            notice: {
-              vendor,
-              ...(message.title !== undefined && message.title.trim() ? { title: message.title.trim() } : {}),
-              ...(message.link_url !== undefined ? { link_url: message.link_url } : {}),
-            },
-            ts: now(),
-          });
+          const written = await appendNotice(deps, session_id, vendor, message, now());
           if (vendor_message_id !== undefined && vendor_message_id.length > 0) {
-            receiptStmt.run(session_id, vendor, vendor_message_id, id);
+            receiptStmt.run(session_id, vendor, vendor_message_id, written.id);
           }
-          try {
-            deps.broadcast?.emit({ kind: 'chat.message_complete', session_id, turn_id: id, final: written });
-          } catch { /* the conversation shows it on its next read */ }
         },
       };
     },

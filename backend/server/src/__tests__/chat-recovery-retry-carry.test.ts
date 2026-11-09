@@ -46,14 +46,17 @@ const BRIEF: RollingBrief = {
 
 /** Round 1 claims an absence and dispatches nothing — exactly what
  *  `assertedAbsenceWithoutLooking` retries on. Returns every packet sent. */
-const runWithAbsenceOnFirstReply = async (): Promise<string[]> => {
+const runWithAbsenceOnFirstReply = async (
+  // D-346 follow-up — the guard presumes a tool that could have looked, as owner chat offers.
+  available_tools: ReadonlyArray<{ recipe_slug: string }> = [{ recipe_slug: 'work.search' }],
+): Promise<string[]> => {
   const prompts: string[] = [];
   let round = 0;
   setSessionBrief('s', BRIEF);
   await runChatTurn(
     {
       session_id: 's', turn_id: 't', picker_target: 'self',
-      dispatch_peer_name: null, available_tools: [],
+      dispatch_peer_name: null, available_tools,
       content: { chat_tail: [], user_message: "what is ring 09's cost?" },
       correction_context: [], model_layer: 'byok',
     } as never,
@@ -99,6 +102,14 @@ describe('recovery retries carry the brief', () => {
     // this the grounding assertion would pass vacuously on a one-packet turn.
     expect(prompts.length).toBeGreaterThanOrEqual(2);
     expect(prompts[1]).toContain('output_feedback');
+  });
+
+  // D-346 follow-up (2026-11-08) — a turn offered no tool could not have looked, so what it
+  // says it does not have is taken as said. Live, at the AI door, the guard turned "I don't
+  // have the ability to save memories" into "I could not verify the model's reply", 3 of 3.
+  it('takes the reply as said when the turn offered no tool to look with', async () => {
+    const prompts = await runWithAbsenceOnFirstReply([]);
+    expect(prompts).toHaveLength(1);
   });
 
   it('keeps the carried brief in the REPAIR packet, not just the first', async () => {
@@ -519,7 +530,8 @@ describe('a rejected reply cannot become a blank or unverified saved answer', ()
     const events: unknown[] = [];
     const result = await runChatTurn({
       session_id: `repair-${next}`, turn_id: 'repair-turn', picker_target: 'self', dispatch_peer_name: null,
-      available_tools: [], content: { chat_tail: [], user_message: 'find the contact details' }, correction_context: [], model_layer: 'byok',
+      // D-346 follow-up — a tool that could have looked: the absence repair presumes one.
+      available_tools: [{ recipe_slug: 'contact.search' }], content: { chat_tail: [], user_message: 'find the contact details' }, correction_context: [], model_layer: 'byok',
     }, {
       executeAiCall: async () => {
         calls += 1;

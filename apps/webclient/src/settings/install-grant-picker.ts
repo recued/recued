@@ -66,6 +66,7 @@
 import {
   installAccessOptions,
   installGrantableOps,
+  normalizeBulkPackInstallPlan,
   type BulkPackManifest,
   type CompositionReviewOperationFamily,
   type InstallAccessTier,
@@ -100,12 +101,21 @@ export interface InstallGrantPickerModel {
    *  the transparency caption under each radio. Op ids are sorted for a stable
    *  byte-identical render across reinstalls. */
   grantsByAccess: Record<InstallAccessTier, string[]>;
+  /** Whether the choice limits the owner's own use too: true when the pack ships
+   *  recipes, which the install switches on for the owner only up to the chosen
+   *  level (`seedPackRecipeGrants`, D-247 D15.1). A pack of connection actions alone
+   *  limits only the apps it is shared with: the owner reaches every one of its actions
+   *  whatever is chosen (each change asks them first), since the install writes them
+   *  no grant and the operation groups gate nothing (2026-08-07). 578 of the 1,079
+   *  shipped packs are of that kind (2026-11-08). */
+  bindsOwner: boolean;
 }
 
 /** Build the model from grantable entries. Returns `null` only when there are
  *  none. */
 const buildInstallGrantModel = (
   connOps: ReadonlyArray<TieredOp>,
+  bindsOwner: boolean,
 ): InstallGrantPickerModel | null => {
   if (connOps.length === 0) return null;
 
@@ -130,6 +140,7 @@ const buildInstallGrantModel = (
       write: opsAtRisk('write'),
       all: opsAtRisk('admin', 'destructive'),
     },
+    bindsOwner,
   };
 };
 
@@ -163,7 +174,10 @@ export const installGrantModelFromManifest = (
   // after install; an op naming no ingredient counts, so a malformed composition
   // shows the choice rather than skip it) lives in contracts, so the server
   // derives the tiers of the packs an install brings in exactly as this does.
-  return buildInstallGrantModel(installGrantableOps(manifest, recipeRisk));
+  return buildInstallGrantModel(
+    installGrantableOps(manifest, recipeRisk),
+    normalizeBulkPackInstallPlan(manifest).recipes.length > 0,
+  );
 };
 
 /** Kitchen authoring path — derive the model from the decompose preview's
@@ -177,7 +191,8 @@ export const installGrantModelFromReviewFamilies = (
   const connOps: TieredOp[] = families
     .filter((f) => f.surface === 'api')
     .map((f) => ({ id: f.key, risk: f.risk_tier }));
-  return buildInstallGrantModel(connOps);
+  // An authored composition installs no recipe of its own here.
+  return buildInstallGrantModel(connOps, false);
 };
 
 /** MCP enrollment path — derive from the exact rows the owner reviewed. The
@@ -188,6 +203,7 @@ export const installGrantModelFromMcpReviewRows = (
   rows: ReadonlyArray<McpPackReviewRow>,
 ): InstallGrantPickerModel | null => buildInstallGrantModel(
   rows.map((row) => ({ id: row.op, risk: row.stored.risk })),
+  false,
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -203,6 +219,9 @@ export const INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR = 'data-recued-igp-
 export const INSTALL_GRANT_ACCESS_OPTION_ATTR = 'data-recued-install-grant-access';
 /** D-310 REV 2 — the note that this Pack's own workflows need more than Read. */
 export const INSTALL_GRANT_OWN_NEEDS_ATTR = 'data-recued-install-grant-own-needs';
+/** The note shown in place of the Access choice while a Pack of connection actions
+ *  alone is shared with no one but the owner (the choice would change nothing). */
+export const INSTALL_GRANT_OWNER_ONLY_ATTR = 'data-recued-install-grant-owner-only';
 /** The scope section wrapper (§7.2 / D-196 — audience picker). */
 export const INSTALL_GRANT_SCOPE_ATTR = 'data-recued-install-grant-scope';
 /** One broad audience checkbox. Carries legacy `data-scope` vocabulary. */
@@ -335,9 +354,19 @@ const COPY = {
   access_heading: 'Access — step 1 of 2',
   access_intro:
     'Choose what to allow. Whatever you pick here goes to the '
-    + 'people you choose in step 2, including yourself. Each level includes '
+    + 'people you choose in step 2, including yourself: for you, it decides which of '
+    + 'this Pack’s workflows you can use. Each level includes '
     + 'the ones above it. Nothing is allowed until you install, and you can change '
     + 'both later under the Pack’s Access tab.',
+  // A Pack of connection actions alone (`bindsOwner: false`): the choice limits only
+  // the apps it is shared with, so it is offered for them, and not while only you are.
+  access_intro_shared:
+    'Choose what the apps you share it with in step 2 may do. Each level includes the '
+    + 'ones above it. You can use every action of this Pack either way, and each change '
+    + 'asks you first. You can change both later under the Pack’s Access tab.',
+  access_owner_only:
+    'You can use every action of this Pack, and each change asks you first. This choice '
+    + 'is for the apps you share it with, so it shows once you tick one in step 2.',
   // "Grants:" read as the complete set for the tier. It is the ops the tier ADDS
   // — the server grants the cumulative band (write ⇒ read + write) — so a tier
   // listing one write op while also granting every read op looked exhaustive.
@@ -347,6 +376,10 @@ const COPY = {
     'Who gets what you chose in step 1. “You” counts as one of them, like any '
     + 'other: unchecking it revokes your own use of these operations. You can '
     + 'change this later in the pack’s Access tab.',
+  scope_intro_actions_only:
+    'Who may use this Pack. Anyone you tick other than you gets what you choose in '
+    + 'step 1; unticking “You” stops your own use of its actions. You can change this '
+    + 'later in the pack’s Access tab.',
 } as const;
 
 // ════════════════════════════════════════════════════════════════
@@ -410,6 +443,12 @@ export const renderInstallGrantPicker = (
     opts.audience ?? (opts.scope ? installAudienceFromLegacyScope(opts.scope) : undefined),
   );
   const disabled = opts.disabled === true;
+  // The owner's ruling (2026-11-08): the dialog shows the Access choice where it decides
+  // something. For a Pack with recipes it limits the owner too; for one of connection
+  // actions alone, only the apps it is shared with, so it shows once one is ticked.
+  const sharedWithOthers = audience.all_customers || audience.all_other_contracts
+    || (audience.customer_tier_ids?.length ?? 0) > 0 || (audience.contract_ids?.length ?? 0) > 0;
+  const choiceShown = model.bindsOwner || sharedWithOthers;
 
   const section = doc.createElement('section');
   section.setAttribute(INSTALL_GRANT_PICKER_ATTR, '');
@@ -424,10 +463,13 @@ export const renderInstallGrantPicker = (
 
   const intro = doc.createElement('p');
   intro.className = 'igp-intro';
-  intro.textContent = COPY.access_intro;
+  intro.textContent = model.bindsOwner
+    ? COPY.access_intro
+    : sharedWithOthers ? COPY.access_intro_shared : COPY.access_owner_only;
+  if (!choiceShown) intro.setAttribute(INSTALL_GRANT_OWNER_ONLY_ATTR, '');
   section.appendChild(intro);
 
-  if (opts.carriedOver !== undefined) {
+  if (choiceShown && opts.carriedOver !== undefined) {
     const carried = doc.createElement('p');
     carried.className = 'igp-carried-over';
     carried.setAttribute(INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR, opts.carriedOver);
@@ -437,7 +479,7 @@ export const renderInstallGrantPicker = (
 
   const list = doc.createElement('ul');
   list.className = 'igp-access-list';
-  for (const tier of model.accessOptions) {
+  for (const tier of choiceShown ? model.accessOptions : []) {
     const item = doc.createElement('li');
     item.className = 'igp-access-row';
     const label = doc.createElement('label');
@@ -482,10 +524,10 @@ export const renderInstallGrantPicker = (
 
     list.appendChild(item);
   }
-  section.appendChild(list);
+  if (choiceShown) section.appendChild(list);
 
   // D-310 REV 2 — what this Pack's own workflows need, when that is more than Read.
-  if (opts.ownNeeds !== undefined && model.accessOptions.includes(opts.ownNeeds)) {
+  if (choiceShown && opts.ownNeeds !== undefined && model.accessOptions.includes(opts.ownNeeds)) {
     const note = doc.createElement('p');
     const short = TIER_ORDER.indexOf(access) < TIER_ORDER.indexOf(opts.ownNeeds);
     note.className = short ? 'igp-own-needs igp-own-needs-short' : 'igp-own-needs';
@@ -506,7 +548,7 @@ export const renderInstallGrantPicker = (
 
   const scopeIntro = doc.createElement('p');
   scopeIntro.className = 'igp-intro';
-  scopeIntro.textContent = COPY.scope_intro;
+  scopeIntro.textContent = model.bindsOwner ? COPY.scope_intro : COPY.scope_intro_actions_only;
   scopeSection.appendChild(scopeIntro);
 
   if (opts.audienceCarriedOver === true) {

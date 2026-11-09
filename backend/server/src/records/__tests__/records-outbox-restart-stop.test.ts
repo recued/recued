@@ -116,7 +116,8 @@ describe('records outbox during a restart drain', () => {
     db.close();
   });
 
-  const compose = async (extra: { isStopping?: () => boolean; isDraining?: () => boolean } = {}) => {
+  const compose = async (extra: { isStopping?: () => boolean; isDraining?: () => boolean;
+    isServerPaused?: () => boolean } = {}) => {
     const packSlug = await recordsCatalogSlug(OWNER);
     composeRecordsOutbox({
       recordsStore: store,
@@ -135,7 +136,10 @@ describe('records outbox during a restart drain', () => {
           value: { allowed: true },
         }],
       } as never,
-      executeDeps: { ...(extra.isDraining ? { isDraining: extra.isDraining } : {}) } as never,
+      executeDeps: {
+        ...(extra.isDraining ? { isDraining: extra.isDraining } : {}),
+        ...(extra.isServerPaused ? { isServerPaused: extra.isServerPaused } : {}),
+      } as never,
       backgroundServices: {
         register: (entry: { stop: () => Promise<void> | void }) => { stops.push(entry.stop); },
       } as unknown as BackgroundServiceRegistry,
@@ -180,6 +184,26 @@ describe('records outbox during a restart drain', () => {
     await vi.waitFor(() => expect(store.listOutbox(OWNER, 'delivered')).toHaveLength(1));
     expect(run.calls).toBe(1);
     expect(stops).toHaveLength(second + 1);
+  });
+
+  // D-188 — the owner's pause holds the drain the same way: nothing is delivered, nothing is
+  // counted against the delivery, and it goes out after Resume.
+  it('holds every delivery while the server is paused, and delivers it once resumed', async () => {
+    job('a');
+    let paused = true;
+    await compose({ isServerPaused: () => paused });
+    await flush();
+    await flush();
+    expect(run.calls).toBe(0);
+    expect(store.listOutbox(OWNER, 'pending')).toHaveLength(1);
+    expect(store.listPendingDeliveries()[0]!.retry_count).toBe(0);
+
+    // The permitting case, as for a drain: the same outbox delivers once not paused (its
+    // first tick after Resume; here a new compose, whose interval is a minute).
+    paused = false;
+    await compose({ isServerPaused: () => paused });
+    await vi.waitFor(() => expect(store.listOutbox(OWNER, 'delivered')).toHaveLength(1));
+    expect(run.calls).toBe(1);
   });
 
   it('stop() returns within the grace while a watcher run never finishes; the rest stay pending', async () => {

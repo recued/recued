@@ -161,6 +161,13 @@ export interface PollManagerDeps {
    *  The coordinator calls `recompute()` on unlock to re-arm. Absent →
    *  un-gated (legacy / tests). */
   isVaultUnlocked?: () => boolean;
+  /** D-188 — the master pause holds every poll exactly as a locked vault does: `recompute()`
+   *  disarms instead of arming, and a tick that lands while paused disarms its loop. A poll
+   *  reads a vendor, and nothing comes in during the emergency stop (the owner's ruling of
+   *  2026-11-08). Resume re-runs `recompute()` once the flag is off. ⛔ Before this, any of
+   *  `recompute()`'s callers (a trigger or recipe change, a connection save or token refresh, a
+   *  vault unlock) re-armed every loop the pause had stopped. Absent → never paused. */
+  isPaused?: () => boolean;
 }
 
 export interface PollManagerHandle {
@@ -193,6 +200,9 @@ export interface PollManagerHandle {
 }
 
 export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle => {
+  /** No poll runs: the vault is locked, or (D-188) the server is paused. */
+  const held = (): boolean =>
+    (deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked()) || deps.isPaused?.() === true;
   const now = deps.now ?? (() => Date.now());
   const setTimer =
     deps.setTimer ?? ((handler: () => void, delayMs: number) => setTimeout(handler, delayMs));
@@ -397,7 +407,7 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
     // re-schedules — permanently dormant. The steady-state pause is
     // recompute() disarming every loop; this catches the in-flight timer
     // that fired between the lock and that recompute.
-    if (deps.isVaultUnlocked && !deps.isVaultUnlocked()) {
+    if (held()) {
       disarm(watch_key);
       return;
     }
@@ -446,7 +456,7 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
         // snapshot untouched lets the post-unlock poll re-detect it.
         if (
           loops.get(watch_key)?.generation !== generation ||
-          (deps.isVaultUnlocked && !deps.isVaultUnlocked())
+          held()
         ) {
           return;
         }
@@ -497,7 +507,7 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
       } finally {
         loop.in_flight = false;
         if (loops.get(watch_key)?.generation === generation && !stopped) {
-          if (deps.isVaultUnlocked && !deps.isVaultUnlocked()) {
+          if (held()) {
             // Vault locked mid-poll: go dormant by DISARMING (not
             // re-arming) so the unlock recompute() re-creates the loop.
             // Re-arming would either leave a timerless loop recompute()
@@ -563,7 +573,7 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
     // connection enroll, the tick self-heal) while locked. The signature
     // flips to "all paused" so the automation surface reflects it; the
     // coordinator re-runs recompute() on unlock to re-arm.
-    if (deps.isVaultUnlocked && !deps.isVaultUnlocked()) {
+    if (held()) {
       for (const watch_key of [...loops.keys()]) disarm(watch_key);
       const sig = signatureOf(demandIndex, new Set());
       if (lastSignature !== null && sig !== lastSignature) {

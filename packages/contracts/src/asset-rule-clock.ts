@@ -1,6 +1,6 @@
 /** D-325 — rule arithmetic, with the owner's clock passed in. These functions
  * decide dates and thresholds; they never write or choose a reminder cadence. */
-import { AssetValidationError, isAssetDate, type Asset, type AssetEvidence, type AssetReading, type AssetRule, type AssetRuleOffset } from './assets.js';
+import { AssetValidationError, assetConditionHolds, isAssetDate, type Asset, type AssetEvidence, type AssetReading, type AssetRule, type AssetRuleOffset } from './assets.js';
 import { createZonedDateTimeFormatter } from './zoned-date-time-formatter.js';
 
 const DAY = 86_400_000;
@@ -94,13 +94,16 @@ export const evaluateAssetRuleClock = (asset: RuleClockSubject, rule: AssetRule,
   if (when.kind === 'condition') {
     const condition = asset.observations[when.field];
     if (!condition || condition.as_of > context.now) return empty;
+    // D-340 §4 — past its `until`, a condition no longer holds: it reads as recovered,
+    // with no writer needed, which also closes an occurrence it opened.
+    const holds = assetConditionHolds(condition, context.now);
     // Neither active nor recovered: an open occurrence is the owner's false alarm.
-    if (assetConditionExpected(asset, when.field, condition.active)) {
+    if (assetConditionExpected(asset, when.field, holds)) {
       return { ...empty, cycle: `${when.field}:${condition.as_of}`, expected: true, evidence: condition.evidence };
     }
-    return { ...empty, cycle: `${when.field}:${condition.as_of}`, active: condition.active
+    return { ...empty, cycle: `${when.field}:${condition.as_of}`, active: holds
       && (when.certainty === 'conditional' || condition.certainty === 'confirmed'),
-    recovered: !condition.active, evidence: condition.evidence };
+    recovered: !holds, evidence: condition.evidence };
   }
   const current = asset.readings[when.field];
   if (!current || current.as_of > context.now || current.unit !== when.unit) return empty;

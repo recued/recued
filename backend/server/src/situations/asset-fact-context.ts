@@ -1,4 +1,4 @@
-import { assetFactRefKey, assetFieldValue, assetRuleInput, parseAssetFactContextRequest, parseQualifiedWorkEntityId, SITUATION_CONTEXT_MAX_BYTES,
+import { assetConditionHolds, assetFactRefKey, assetFieldValue, assetRuleInput, parseAssetFactContextRequest, parseQualifiedWorkEntityId, SITUATION_CONTEXT_MAX_BYTES,
   type AssetEvidence, type AssetFactContext, type AssetFactContextNode, type AssetFactContextRef,
   type AssetFactContextRequest, type AssetFieldRef, type SituationRef, type AssetWriterDelivery, type AssetWriterDeliveryOutcome } from '@recued/contracts';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
@@ -114,7 +114,9 @@ const readAssetFactContext = (deps: AssetFactContextDeps, raw: AssetFactContextR
   const fieldNode = (ref: AssetFieldRef): AssetFactContextNode => {
     const original = assetFieldValue(asset, ref); let value: unknown = original; let unsupported = false;
     if (original && ref.group === 'readings') { const reading = asset.readings[ref.field]!; value = { value: reading.value, unit: reading.unit, as_of: reading.as_of }; }
-    else if (original && ref.group === 'observations') { const observation = asset.observations[ref.field]!; value = { active: observation.active, certainty: observation.certainty, as_of: observation.as_of }; }
+    // D-340 §4 — `active` is whether it holds now: past its `until`, a condition is over.
+    else if (original && ref.group === 'observations') { const observation = asset.observations[ref.field]!; value = { active: assetConditionHolds(observation, packet.read_at), certainty: observation.certainty, as_of: observation.as_of,
+      ...(observation.until !== undefined ? { until: observation.until } : {}) }; }
     else if (original !== null && typeof original === 'object') { value = null; unsupported = true; omit('unsupported_value'); }
     return { kind: 'field', ref, label: fieldName(ref.field), value, known: original !== null && original !== undefined,
       source: context.owner ? structuredClone(asset.field_sources[`${ref.group}.${ref.field}`] ?? null) : null,

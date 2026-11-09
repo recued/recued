@@ -13,8 +13,8 @@ export const copyFilePreviewAssets = (output) => {
   for (const name of ['pdf.mjs', 'pdf.worker.mjs']) cpSync(join(root, 'legacy/build', name), join(target, name));
   for (const name of ['cmaps', 'standard_fonts', 'wasm', 'iccs']) cpSync(join(root, name), join(target, name), { recursive: true });
   cpSync(join(root, 'LICENSE'), join(target, 'LICENSE'));
-  buildSync({ entryPoints: [fileURLToPath(new URL('../src/files/docx-worker.ts', import.meta.url))],
-    outfile: join(output, 'file-preview/docx.worker.js'), bundle: true, format: 'esm', platform: 'browser',
+  for (const kind of ['docx', 'xlsx']) buildSync({ entryPoints: [fileURLToPath(new URL(`../src/files/${kind}-worker.ts`, import.meta.url))],
+    outfile: join(output, `file-preview/${kind}.worker.js`), bundle: true, format: 'esm', platform: 'browser',
     // The reader needs preview limits only, without the app registry side effects
     // of the contracts entry point. Keep its cold worker small and self-contained.
     alias: { '@recued/contracts': fileURLToPath(new URL('../../../packages/contracts/src/file-lifecycle.ts', import.meta.url)) },

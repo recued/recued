@@ -7,6 +7,8 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import type { AIOutput, InternalToolRegistry, RecuedServerSignature, ToolEntry } from '@recued/contracts';
 import {
+  BROWSER_TOOLKIT_LISTED,
+  BROWSER_TOOLKIT_LISTED_NOTE,
   CARRIED_TOOLS_LIMIT,
   CARRIED_TOOLS_NOTE,
   carryRecipeTools,
@@ -162,5 +164,57 @@ describe('D-337 slice W — the continuation\'s model reads them, and is told th
   it('in full mode every recipe is listed already, and nothing is said of it', async () => {
     const packet = await run(continuing, 'full');
     expect(packet.in_flight_context ?? '').not.toContain(CARRIED_TOOLS_NOTE);
+  });
+});
+
+describe('D-335 slice X — the Browser Toolkit listed in full while a Bridge is connected', () => {
+  const TOOLKIT = BROWSER_TOOLKIT_LISTED.map((slug) => entry(`recued-core/${slug}`, 2, slug === 'act-on-web-page' || slug === 'open-web-page'
+    ? 'write' : 'read'));
+  // A recipe of another publisher that takes a toolkit recipe's name is not the toolkit.
+  const LOOKALIKE = entry('someone-else/act-on-web-page', 2, 'write');
+  const run = async (connected: boolean | undefined, mode: 'lean-core' | 'full' = 'lean-core') => withStore(async (store) => {
+    const packets: Array<{ available_tools?: Array<{ recipe_slug: string; args_schema?: unknown }>; in_flight_context?: string }> = [];
+    const executeAiCall = vi.fn<ExecuteChatAiCall>(async (_manifest, aiInput) => {
+      packets.push(JSON.parse(aiInput['llm.prompt'] as string) as (typeof packets)[number]);
+      return { body: { response: 'Done.', events: [], tool_calls: [] } satisfies AIOutput };
+    });
+    const all = [CORE, ...TOOLKIT, LOOKALIKE, OTHER];
+    const registry: InternalToolRegistry = {
+      list: () => all, listByTier: (tier) => all.filter((e) => e.tier === tier),
+      getByName: (name) => all.find((e) => e.name === name) ?? null,
+      dispatch: vi.fn(async () => ({ ok: true, result: {} }) as const),
+      subscribeRefresh: () => () => undefined,
+    };
+    const orchestrator = createChatOrchestrator({ chatStore: store, registry, selfSignature: signature, executeAiCall,
+      now: () => NOW, catalogProjection: { mode },
+      ...(connected !== undefined ? { browserBridgeConnected: () => connected } : {}) } as never);
+    await orchestrator.runTurn({ session_id: 's1', picker_state: { current: 'self' }, message: 'What is on my Wikipedia tab?' } as never);
+    return packets[0]!;
+  });
+
+  it('a Bridge connected: the toolkit\'s main tools in full, the turn told so, and no lookalike', async () => {
+    const packet = await run(true);
+    const listed = packet.available_tools!.filter((tool) => tool.recipe_slug.includes('/'));
+    expect(listed.map((tool) => tool.recipe_slug)).toEqual(TOOLKIT.map((tool) => tool.name));
+    expect(listed.every((tool) => tool.args_schema !== undefined)).toBe(true);
+    expect(packet.in_flight_context).toContain(BROWSER_TOOLKIT_LISTED_NOTE);
+    // D-335 slice AI — a page the user gives the address of is called for by it straight away.
+    expect(BROWSER_TOOLKIT_LISTED_NOTE).toContain('for a page the user gives the address of, in their browser or not, call the '
+      + 'one for the task with that address first, not List browser tabs or Open a web page.');
+    // D-335 slice AO — and to end a batch with the read or ask of the page its steps lead to.
+    expect(BROWSER_TOOLKIT_LISTED_NOTE).toContain('End it with a read or an ask of the page its steps lead to, such as a search '
+      + 'and then its results, so the answer comes in that same call.');
+  });
+
+  it('no Bridge connected, or none said: no recipe listed, nothing said', async () => {
+    for (const connected of [false, undefined]) {
+      const packet = await run(connected);
+      expect(packet.available_tools!.filter((tool) => tool.recipe_slug.includes('/'))).toEqual([]);
+      expect(packet.in_flight_context ?? '').not.toContain(BROWSER_TOOLKIT_LISTED_NOTE);
+    }
+  });
+
+  it('in full mode every recipe is listed already, and nothing is said of it', async () => {
+    expect((await run(true, 'full')).in_flight_context ?? '').not.toContain(BROWSER_TOOLKIT_LISTED_NOTE);
   });
 });

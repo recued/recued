@@ -135,6 +135,8 @@ describe('composeServeLifecycle', () => {
       bind_port: 4321,
       // What `recued status` names as running (the owner, 2026-10-16).
       version: SERVER_VERSION,
+      // What lets `recued restart` ask a supervised server to restart itself.
+      supervisor: 'dev',
     });
   });
 

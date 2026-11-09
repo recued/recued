@@ -369,7 +369,17 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
     const first = envelope.asks[0]!;
     const repeat = 'Repeat — the previous delivery could not be confirmed.';
     let email: OutboundEmail;
-    if (envelope.asks.length === 1) email = composeAsk(first.ask_id, {
+    // D-340 slice 3 — inside a stream: the stream's message, which lists its reminders by number,
+    // then each one's answers by that number. The subject keeps the tag a reply is matched by.
+    if (envelope.lead) email = {
+      subject: `${envelope.lead.title} ${composeAskTag(first.ask_id)}`,
+      body_text: [envelope.lead.text,
+        envelope.asks.map((ask, index) => envelope.closed_ask_ids?.includes(ask.ask_id) ? `${index + 1}: closed`
+          : [`${index + 1}: ${ask.options.map(option => option.label).join(', ')}`, answerLink?.(ask.ask_id)].filter(Boolean).join('\n')).join('\n'),
+        envelope.asks.length === 1 ? 'Reply with an answer, for example: later. A reply without one changes nothing.'
+          : 'Reply with the item number and answer, for example: 2 later. A reply without an item changes nothing.'].join('\n\n'),
+    };
+    else if (envelope.asks.length === 1) email = composeAsk(first.ask_id, {
       ...first.message,
       text: envelope.repeat ? `${repeat}\n\n${first.message.text}` : first.message.text,
       link_url: first.message.link_url ? safeHttpUrl(first.message.link_url) ?? undefined : undefined,
@@ -385,7 +395,7 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
         + '\n\nReply with the item number and answer, for example: 2 later. A reply without an item changes nothing.',
     };
     if (envelope.repeat) email = { ...email, subject: `Repeat: ${email.subject}`,
-      ...(envelope.asks.length > 1 ? { body_text: `${repeat}\n\n${email.body_text}` } : {}) };
+      ...(envelope.asks.length > 1 || envelope.lead ? { body_text: `${repeat}\n\n${email.body_text}` } : {}) };
     return { ...email, reconciliation_id: envelope.attempt_id };
   };
 

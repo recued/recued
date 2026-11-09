@@ -22,6 +22,7 @@ import type { NotificationBlock, NotificationMessage } from '@recued/notificatio
 import type { AuditLogStore } from '@recued/storage';
 import type { PromptSchedules } from './prompt-schedules.js';
 import { PUSH_GRACE_MS, settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
+import { isToolBudgetExhaustedAnswer } from './chat-turn-budget.js';
 
 /** Which schedules notify, from when; and which runs have had their notice. */
 export const ensurePromptScheduleDoneTables = (db: Database.Database): void => {
@@ -39,6 +40,15 @@ export const ensurePromptScheduleDoneTables = (db: Database.Database): void => {
     );
   `);
 };
+
+/** D-340 slice 4 — a run a daily or weekly stream carried inside its message (`included`), or one it
+ *  let go (`skipped`): marked as a notice is once it went, so it never goes twice. */
+export const claimPromptScheduleDone = (db: Database.Database, schedule_id: string, turn_id: string, outcome: 'included' | 'skipped', at: number): boolean =>
+  db.prepare('INSERT OR IGNORE INTO chat_prompt_done_notices (schedule_id, turn_id, outcome, at) VALUES (?, ?, ?, ?)')
+    .run(schedule_id, turn_id, outcome, at).changes === 1;
+/** Whether a run's notice went, or was carried or let go. */
+export const promptScheduleDoneClaimed = (db: Database.Database, schedule_id: string, turn_id: string): boolean =>
+  db.prepare('SELECT 1 FROM chat_prompt_done_notices WHERE schedule_id=? AND turn_id=?').get(schedule_id, turn_id) !== undefined;
 
 /** How much of an answer a notice carries; the rest is a tap away. */
 export const DONE_TEXT_MAX_CHARS = 1_500;
@@ -107,6 +117,8 @@ export const createPromptScheduleDoneRuntime = (deps: {
           if (deps.isQuiet(now())) continue;
           const answer = await deps.readAnswer(schedule.session_id, outcome.message_id);
           if (!answer || answer.role !== 'assistant' || !answer.content.trim() || !available()) continue;
+          // D-340 slice 4 — a managed run that ran out of its rounds has no answer worth a notice.
+          if (schedule.managed_by !== undefined && isToolBudgetExhaustedAnswer(answer.content)) { claim.run(schedule_id, turn, 'skipped', now()); continue; }
           // Claimed before the push: a run's notice goes at most once, a failed push included.
           if (claim.run(schedule_id, turn, 'sent', now()).changes !== 1) continue;
           const { message, hash } = promptScheduleDoneMessage(schedule, answer, deps.getPublicBaseUrl?.());

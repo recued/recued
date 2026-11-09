@@ -25,6 +25,7 @@ import {
   resolveEnrichmentPoolPolicyDefault,
   resolveEnrichmentTrustDefault,
 } from '@recued/contracts';
+import { isServerPausedIn } from '../server-state.js';
 
 // ────────────────────────────────────────────────────────────────
 // Trust store — per-topic CRUD
@@ -242,11 +243,17 @@ export const createTrustStore = (db: Database.Database): TrustStore => {
 /** Whether a paused-AI window is currently active. The transient
  *  timestamp lives on `housekeeping_config.pause_background_ai_until`
  *  — when set + `now < pause_background_ai_until`, every AI-surface
- *  producer skips the idle cycle / reactive dispatch path. */
+ *  producer skips the idle cycle / reactive dispatch path.
+ *
+ *  D-188 — the master "Pause server" pauses background AI too: it is the emergency stop,
+ *  nothing leaves the server until Resume (the owner's ruling of 2026-11-08). The mail-fact
+ *  AI pass and the scheduled digests' summaries read only this, and kept calling the model
+ *  through a master pause. */
 export const isAiPaused = (
   db: Database.Database,
   now: number,
 ): boolean => {
+  if (isServerPausedIn(db)) return true;
   const row = db
     .prepare(
       `SELECT pause_background_ai_until FROM housekeeping_config WHERE id = 'singleton'`,

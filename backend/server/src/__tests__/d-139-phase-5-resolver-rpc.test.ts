@@ -898,7 +898,7 @@ describe('D-139 P5 — recued_contactEngagementsList per-token gate', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     )) as any;
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/not granted to this key/);
+    expect(res.content[0].text).toBe("Tool 'recued_contactEngagementsList' is not available for this contract.");
   });
 
   it('returns "not configured" when the resolver bundle is absent', async () => {

@@ -9,6 +9,9 @@ import type {
  *  (Together, Groq, Ollama, vLLM, etc.) via a custom base_url. */
 export type LLMProvider = 'anthropic' | 'openai' | 'openai-compatible' | 'google';
 
+/** D-344 — the owner's setting for a model's thinking: on or off. Absent is the provider's default. */
+export type ThinkingSetting = 'on' | 'off';
+
 /** Adapter registry key. The executor picks an adapter by this key after the
  *  match resolver runs — no transport branching downstream of the registry lookup. */
 export type AdapterKey = LLMProvider;
@@ -97,7 +100,8 @@ export interface LLMCompletionOptions {
   model: string;
   /** Upper bound for output tokens. */
   max_tokens: number;
-  /** Enable extended reasoning when the slot supports it. Ignored otherwise. */
+  /** D-344 — the model's thinking: `true` on, `false` off, absent the provider's default. An
+   *  adapter sends its provider's switch only when this is set (Anthropic's `thinking` only on). */
   thinking?: boolean;
   /** Enable provider's built-in web search tool when supported. */
   search?: boolean;
@@ -180,6 +184,10 @@ export interface LLMSlot {
   supports_json?: boolean;
   /** @deprecated Derived from `speed === 'thinking'`. Kept for backward compat. */
   supports_thinking?: boolean;
+  /** D-344 — the owner's setting for this model's thinking, sent as its provider's switch on every
+   *  call through it (`thinking-switch.ts`). Absent: the provider's default, and Anthropic's
+   *  thinking for the `thinking` tier only, as before. */
+  thinking?: ThinkingSetting;
   /** DETECTED, never declared — does this endpoint accept a `system` message?
    *
    *  `prompt -> system` when true or absent; `prompt -> first user turn` when
@@ -263,6 +271,8 @@ export interface FreePoolApiEntry {
    *  input. */
   image_input_ok?: boolean;
   supports_search?: boolean;
+  /** D-344 — see {@link LLMSlot.thinking}. */
+  thinking?: ThinkingSetting;
   enabled: boolean;
   weight?: number;
   daily_cap_tokens?: number;

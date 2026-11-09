@@ -94,7 +94,7 @@ describe('D-187 slice 3 — the verb-op term gates each native read handler', ()
           { enrichmentStore: {} as never, readGrantChecker: denyVerbOp },
           { topic: PUBLIC_TOPIC },
         ),
-      ).toThrow(/not read-granted/);
+      ).toThrow(/is not available for this contract/);
     });
   });
 
@@ -107,7 +107,7 @@ describe('D-187 slice 3 — the verb-op term gates each native read handler', ()
           { enrichmentStore: {} as never, db: {} as never, readGrantChecker: denyVerbOp },
           { query_vector: [0.1, 0.2], topic: PUBLIC_TOPIC, limit: 5 },
         ),
-      ).toThrow(/not read-granted/);
+      ).toThrow(/is not available for this contract/);
     });
   });
 
@@ -143,13 +143,13 @@ describe('D-187 slice 3 — the verb-op term gates each native read handler', ()
     it('a denied verb-op rejects the read even though data.contact is entry-granted', () => {
       expect(() =>
         handleContactEngagementsList({} as never, {}, { readGrantChecker: denyVerbOp }),
-      ).toThrow(/not read-granted/);
+      ).toThrow(/is not available for this contract/);
     });
 
     it('a denied data.contact rejects the read even though the verb-op is granted', () => {
       expect(() =>
         handleContactEngagementsList({} as never, {}, { readGrantChecker: denyCollection }),
-      ).toThrow(/not read-granted/);
+      ).toThrow(/is not available for this contract/);
     });
   });
 });

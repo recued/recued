@@ -47,6 +47,7 @@ import {
 } from '@recued/contracts';
 import { copyRecipeRunSummary, renderRecipeRunSummary, RUN_SUMMARY_COPY_ATTR } from './recipe-run-summary.js';
 import type { RunReviewWorkspace } from '../shell/route.js';
+import { renderRunNeedsOffer } from '../shell/run-needs-offer.js';
 import { RUN_REVIEW_LABEL, RUN_REVIEW_LINK_ATTR, runReviewHref } from '../logs/run-review.js';
 import {
   formatValue,
@@ -2899,7 +2900,8 @@ export const renderRecipeResultPanel = (
             ${failureReason === null
               ? ''
               : `<p class="recipes-result-reason" ${RECIPES_ROUTE_RESULT_REASON_ATTR}>${e(failureReason)}</p>`}
-          </div>`
+          </div>
+          ${failureReason === null ? '' : renderRunNeedsOffer(result)}`
         : ''}
       ${refusedNote}
       <div class="recipes-result-tools">

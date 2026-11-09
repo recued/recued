@@ -7,6 +7,112 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.11.9 — 2026-11-09
+
+Approve changes ahead for scheduled and triggered work, while every proposed commitment still
+waits for your review. Browser tools read pages as text, work across tabs and handle files.
+Pursuits keep what you are working toward, daily and weekly streams bring your day together,
+and spreadsheets open in their own viewer.
+
+### Before you update
+
+- **Update Recued before installing or updating Browser Toolkit or HTTP Toolkit.** Their new
+  versions need this release; an older server refuses them and keeps the version it has.
+- **Some browser improvements need Browser Bridge 0.0.8.** These include reading whole pages,
+  frames and web components; keys, navigation, scrolling and screenshots by screen; file transfer;
+  and Keep signed in. With an older Bridge, those steps say to update it or work as before.
+  Publishing Recued does not update your installed Bridge.
+- **The new hosted app controls need this release.** Approve-ahead controls stay hidden on an
+  older server. Update your server to use the new features.
+
+### Added
+
+- **Approve ahead for unattended work.** A webhook, recipe schedule, event trigger, auto-run or
+  public form can make changes you allow without asking each time. Its page lists what its recipe
+  may do; choose the changes and how many times each run may make them. A held approval offers
+  "Always allow" too. The permission lasts until you end it, and a changed recipe asks again.
+- **Approve ahead for a scheduled prompt.** "Always allow for this scheduled prompt" covers the
+  change on later runs, once a run, until you end it or edit the prompt. Browser actions can be
+  allowed across sites, up to 100 a run, and recipes it starts can be allowed individually.
+  Blocked sites, file uploads, sign-in codes and changes that always need review still ask or stop.
+  Contracts lists what is happening without asking, and the run says which permission it used.
+- **Allow browser actions for your conversation.** The switch below Chat's input lets your AI
+  act across sites without asking each time, until you turn it off, send a message with it off,
+  or eight hours pass. Blocked sites stay blocked, and uploads and sign-in secrets still ask.
+- **Read and ask about web pages.** Inspect returns a compact outline with the links, fields and
+  buttons your AI can use. Read the text of a web page returns paragraphs, headings and tables.
+  Both can find text or a section and read on from the saved page. Ask a web page uses a separate
+  model to answer from that page, with the words its answer rests on.
+- **Work across tabs in one call.** Act on web pages performs up to 20 steps across tabs, reading
+  as it goes and reporting each tab's results. Your AI can name controls by their text. Actions
+  report what changed, and reads of several tabs run together. With Bridge 0.0.8, steps also
+  navigate, go back, reload, close tabs, hover, press keys and scroll.
+- **Sign in without giving your AI the secret.** A step asks you for a password, PIN or sign-in
+  code in its own field, and types it into that field on that site. You can remember passwords
+  and PINs for that field; codes are never remembered. Contracts lists remembered logins.
+- **Files from and into web pages.** Save a linked file among your files, up to 25 MB when your
+  server can fetch it publicly, or 2.5 MB through your signed-in browser with Bridge 0.0.8.
+  Uploading one of your files to a form always asks first. A PDF opened in a tab is kept so your
+  AI can read its text, including with the PDFToText pack.
+- **HTTP Toolkit.** Get an API response, read a page's text or download a file from a public web
+  address directly from your server, without a browser. Files up to 25 MB are kept among your
+  files. It sends none of your credentials and refuses addresses on your private network.
+- **Keep browser steps as a recipe.** When you say the browser work was right, Recued keeps its
+  steps in Settings → Privacy → Learning. Make a recipe opens them in Kitchen for review and
+  saving, with typed values as settings. Passwords and codes are never kept in those steps.
+- **Pursuits in Yours.** Add what you are working toward, keep a dated "Where I am" note, and end
+  a pursuit when you are done. Your chat can propose and update pursuits with your approval.
+  Agenda suggestions consider active pursuits and the time your day leaves for them.
+- **Daily and weekly streams.** Set them on Today to receive one message at each chosen time,
+  with the day's reminders and their actions, optional AI suggestions and a choice to include
+  private items. Close the day records what you did or skipped; Episodes groups the records by
+  day, and each pursuit keeps its history. Conditions that hold until a chosen time appear at
+  the top of Today.
+- **Body signals.** The Body packs keep a Body in Yours and its days in Records, accept Apple
+  Health webhook intake and write a summary. A baseline compares a value with its own usual.
+- **Thinking per model.** Settings → AI / Models offers Provider default, Off or On for each
+  slot and free-pool model. Chat's recipe AI steps prefer its chosen model, and a scheduled
+  prompt can choose its own model.
+- **XLSX previews.** Open an Excel workbook in the file viewer and switch between worksheets.
+- **Keep signed in, with Bridge 0.0.8.** Choose sites and the days, hours and interval when the
+  Bridge keeps their open tabs signed in. It leaves blocked sites alone and avoids interrupting
+  your AI or a tab you are using.
+
+### Changed
+
+- **Every proposed commitment needs your review.** Neither a standing pre-approval nor
+  "Allow this session" lets later proposals through. Quote approvals no longer offer a session
+  answer that never worked there.
+- **Pause is an emergency stop.** Incoming and outgoing work waits until Resume, including
+  manual writes and approvals. Stored email and calendar events remain readable, and held cards
+  and chats say why they are waiting.
+- **Packs explain what they need.** Missing programs and sign-ins link to their setup, a pack's
+  dependencies show their own state, and install explains which other packs it brings in.
+  Removing a pack names what uses it; failed runs offer the setup the failing step needed.
+- **Chat spends fewer rounds finding and rereading tools.** Browser tools are available while a
+  Bridge is connected, named pages can be read before the first AI step, recipe results reach
+  the model once, and recent results carry into later turns before they need summarizing.
+- **Updates check database compatibility locally.** Starting with an update from this version,
+  a server checks a release that says it needs no snapshot against what both versions create on
+  empty databases. An incompatible change, or a check that cannot tell, takes the snapshot;
+  insufficient disk space for it stops the update.
+- **Browser Bridge source ships in this repository**, with its build included in the check
+  that the published source produces the same artifacts.
+
+### Fixed
+
+- **Scheduled prompts wait on their continuation's approvals.** Their cards show what is held,
+  Run now waits, and a later run no longer claims the previous run's approved work as its own.
+- **Approving a webhook's or form's held change saves it**, and can save its permission for
+  later runs too.
+- **A fast, temporary AI network failure gets one retry.** Provider errors and timeouts are
+  recorded beside the turn, and the next message no longer routinely waits for a closing summary.
+- **Schedules handle clock changes and sleep.** A cron minute runs once across a repeated hour,
+  overlapping tick or clock moved back; checks use the schedule's timezone, and auto-runs wake
+  promptly after sleep. Process locks recognize a PID reused by another program.
+- **Update rollback preserves the right snapshot**, including snapshots over 2 GiB, and a
+  failed boot cannot restore a snapshot from an already committed release.
+
 ## 26.11.5 — 2026-11-05
 
 Your AI can fill in and send a form on a web page with one approval, pick one of a field's

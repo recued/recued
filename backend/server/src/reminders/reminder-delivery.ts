@@ -58,6 +58,9 @@ export interface ReminderDeliveryDeps {
    *  owner's credentials cannot send, so the check waits as the executors do,
    *  and rings once it is unlocked. Absent ⇒ always ready. */
   isVaultUnlocked?: () => boolean;
+  /** D-188 — true while the owner's pause holds: due reminders wait, as in quiet hours, and
+   *  ring after Resume (the emergency stop: nothing leaves). Absent ⇒ never paused. */
+  isPaused?: () => boolean;
   publicBaseUrl?: () => string | null;
   now?: () => number;
 }
@@ -95,7 +98,7 @@ export const createReminderDelivery = (deps: ReminderDeliveryDeps): ReminderDeli
     const due = deps.store.listDue(current, REMINDER_DELIVERY_BATCH);
     result.due = due.length;
     if (due.length === 0) return result;
-    if (deps.isQuiet(current) || deps.isVaultUnlocked?.() === false) {
+    if (deps.isQuiet(current) || deps.isVaultUnlocked?.() === false || deps.isPaused?.() === true) {
       result.held = due.length;
       return result;
     }

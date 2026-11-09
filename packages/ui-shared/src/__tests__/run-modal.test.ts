@@ -43,6 +43,10 @@ import {
   RUN_MODAL_CONFIG_ATTR,
   RUN_MODAL_FACT_ATTR,
   RUN_MODAL_FACTS_ATTR,
+  RUN_MODAL_NEXT_STEP_ATTR,
+  RUN_MODAL_NEXT_ACTION_DONE_ATTR,
+  RUN_MODAL_ACTION_ATTR,
+  RUN_MODAL_BEFORE_RUN_ATTR,
   RUN_MODAL_REASON_ATTR,
   RUN_MODAL_OVERLAY_ATTR,
   RUN_MODAL_PRESET_ATTR,
@@ -1714,5 +1718,192 @@ describe('run-modal: a kind of email the owner made (D-315 §4.5)', () => {
     expect(create).toHaveBeenLastCalledWith({
       recipe_id: 'daily-brief', publisher_id: 'recued-core', on: 'mail_fact.custom_wine_club_box', where: { colour: 'white' },
     });
+  });
+});
+
+/** D-321 P2 — a refused run's next step. A run refused for a missing pack or a
+ *  connection not set up ended on the server's sentence; the host now reads a
+ *  next step from the error, and the dialog shows it in the message's place. */
+describe('D-321 P2 — a refused run offers its next step', () => {
+  const refusal = (): Error =>
+    Object.assign(new Error("Recipe 'search-web-exa' needs a connection for 'exa'"), {
+      code: 'connection_not_set_up',
+      details: { slot: 'exa' },
+    });
+  const nextStepFor = (err: unknown) =>
+    (err as { code?: unknown }).code === 'connection_not_set_up'
+      ? {
+        lead: 'This needs an <Exa> connection.',
+        links: [
+          { text: 'Set up Exa', href: '#connections/others/enroll/exa' },
+          { text: 'Somewhere else', href: 'https://example.com/' },
+        ],
+      }
+      : null;
+
+  it('shows the next step in place of the message, and only links into the app', async () => {
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => { throw refusal(); }), nextStepFor });
+    await handle.confirmRun();
+    const html = handle.element.innerHTML;
+    expect(html).toContain('This needs an &lt;Exa&gt; connection.');
+    expect(html).toContain(`href="#connections/others/enroll/exa" ${RUN_MODAL_NEXT_STEP_ATTR}>Set up Exa</a>`);
+    // A link out of the app would close the dialog over a page it never left.
+    expect(html).not.toContain('example.com');
+    expect(html).not.toContain("needs a connection for 'exa'");
+  });
+
+  it('a later problem shows its own message, never the earlier next step', async () => {
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => { throw refusal(); }), nextStepFor });
+    await handle.confirmRun();
+    expect(handle.element.innerHTML).toContain(RUN_MODAL_NEXT_STEP_ATTR);
+    handle.setConfigText('{not json');
+    await handle.confirmRun();
+    expect(handle.getState().run_error).not.toBeNull();
+    expect(handle.element.innerHTML).not.toContain(RUN_MODAL_NEXT_STEP_ATTR);
+    expect(handle.element.innerHTML).not.toContain('Set up Exa');
+  });
+
+  it('an error the host has no next step for keeps its message', async () => {
+    const execute = vi.fn(async () => { throw Object.assign(new Error('Recipe not installed'), { code: 'not_found' }); });
+    const handle = wire({ recipe: recipeEntry(), execute, nextStepFor });
+    await handle.confirmRun();
+    expect(handle.element.innerHTML).toContain('Recipe not installed');
+    expect(handle.element.innerHTML).not.toContain(RUN_MODAL_NEXT_STEP_ATTR);
+  });
+
+  it('following the link closes the dialog; opening it in a new tab does not', async () => {
+    const onClose = vi.fn();
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => { throw refusal(); }), nextStepFor, onClose });
+    await handle.confirmRun();
+    const overlay = handle.element as unknown as FakeEl;
+    const link = { closest: (sel: string) => (sel === `[${RUN_MODAL_NEXT_STEP_ATTR}]` ? {} : null) };
+    overlay.dispatch('click', { target: link, ctrlKey: true } as never);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(overlay.removed).toBe(false);
+    overlay.dispatch('click', { target: link });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(overlay.removed).toBe(true);
+  });
+});
+
+/** D-321 P2 / C2 — a run that returned errors: what its step needed sits under
+ *  the reason, which stays. */
+describe('D-321 P2 / C2 — a failed run offers what its step needed', () => {
+  const failed = (needs: boolean): ServerExecuteResponse => executeResponse(false, {
+    errors: [{ code: 'OAUTH_EXPIRED', message: 'exa-catalog returned 401 Unauthorized', source: { step_id: 'search' } }],
+    ...(needs ? { run_needs: [{ kind: 'connection', step_id: 'search', problem: 'reconnect', slot: 'exa', label: 'Exa' }] } : {}),
+  } as Partial<ServerExecuteResponse>);
+  const nextStepForResult = (result: ServerExecuteResponse) =>
+    (result as { run_needs?: unknown[] }).run_needs?.length
+      ? { lead: 'Exa did not accept this run’s sign-in.', links: [{ text: 'Reconnect Exa', href: '#connections/others/review-access/api/exa' }] }
+      : null;
+
+  it('shows it under the reason, and keeps the reason', async () => {
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => failed(true)), nextStepForResult });
+    await handle.confirmRun();
+    const html = handle.element.innerHTML;
+    expect(html).toContain('exa-catalog returned 401 Unauthorized (step search)');
+    expect(html).toContain('Exa did not accept this run’s sign-in.');
+    expect(html).toContain(`href="#connections/others/review-access/api/exa" ${RUN_MODAL_NEXT_STEP_ATTR}>Reconnect Exa</a>`);
+    expect(html.indexOf(RUN_MODAL_REASON_ATTR)).toBeLessThan(html.indexOf(RUN_MODAL_NEXT_STEP_ATTR));
+  });
+
+  it('a later run that needed nothing shows none, nor does one that succeeded', async () => {
+    const execute = vi.fn<() => Promise<ServerExecuteResponse>>()
+      .mockResolvedValueOnce(failed(true))
+      .mockResolvedValueOnce(failed(false))
+      .mockResolvedValueOnce(executeResponse(true));
+    const handle = wire({ recipe: recipeEntry(), execute, nextStepForResult });
+    await handle.confirmRun();
+    expect(handle.element.innerHTML).toContain('Reconnect Exa');
+    await handle.confirmRun();
+    expect(handle.element.innerHTML).toContain('exa-catalog returned 401 Unauthorized');
+    expect(handle.element.innerHTML).not.toContain('Reconnect Exa');
+    await handle.confirmRun();
+    expect(handle.element.innerHTML).toContain('Run completed');
+    expect(handle.element.innerHTML).not.toContain(RUN_MODAL_NEXT_STEP_ATTR);
+  });
+});
+
+/** D-346 follow-up (2026-11-08) — the owner's ruling: a "Turn it on" button. A next step may
+ *  carry a fix the dialog makes itself; it runs once, then says what it did in its place. */
+describe('D-346 follow-up — a next step the dialog fixes in one click', () => {
+  const flushAll = async (): Promise<void> => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
+  const stopped = executeResponse(false, {
+    errors: [{ code: 'NOT_AUTHORIZED', message: "'pub/rg.search' is switched off, so it did not run.", source: { step_id: 'find' } }],
+  } as Partial<ServerExecuteResponse>);
+  const press = (overlay: FakeEl): void => {
+    const actor = { getAttribute: (k: string) => (k === RUN_MODAL_ACTION_ATTR ? 'next-action' : null), focus: () => {} };
+    overlay.dispatch('click', { target: { closest: (sel: string) => (sel === `[${RUN_MODAL_ACTION_ATTR}]` ? actor : null) } } as never);
+  };
+  const stepWith = (run: () => Promise<void>) => () => ({
+    lead: 'Ripgrep runs a program on your server that is switched off for you, so the run stopped there.',
+    links: [],
+    action: { text: 'Turn it on', run, done: 'It is on now. Run it again.' },
+  });
+
+  it('shows the button, runs it once while it works, then says what it did in its place', async () => {
+    let release!: () => void;
+    const run = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => stopped), nextStepForResult: stepWith(run) });
+    await handle.confirmRun();
+    expect(handle.element.innerHTML).toContain(`${RUN_MODAL_ACTION_ATTR}="next-action">Turn it on</button>`);
+    const overlay = handle.element as unknown as FakeEl;
+    press(overlay);
+    press(overlay);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(handle.element.innerHTML).toContain(`${RUN_MODAL_ACTION_ATTR}="next-action" disabled>Turn it on</button>`);
+    release();
+    await flushAll();
+    expect(handle.element.innerHTML).toContain(`${RUN_MODAL_NEXT_ACTION_DONE_ATTR} role="status">It is on now. Run it again.</p>`);
+    expect(handle.element.innerHTML).not.toContain('>Turn it on</button>');
+    // …in place of the sentence saying it was off (live, 2026-11-08: both stood together).
+    expect(handle.element.innerHTML).not.toContain('switched off for you, so the run stopped there.');
+  });
+
+  it('says why when it fails, and keeps the button to try again', async () => {
+    const run = vi.fn(async () => { throw new Error('the server is locked'); });
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => stopped), nextStepForResult: stepWith(run) });
+    await handle.confirmRun();
+    press(handle.element as unknown as FakeEl);
+    await flushAll();
+    expect(handle.element.innerHTML).toContain('the server is locked');
+    expect(handle.element.innerHTML).toContain(`${RUN_MODAL_ACTION_ATTR}="next-action">Turn it on</button>`);
+  });
+
+  it('a later run that stops the same way offers the button again', async () => {
+    const run = vi.fn(async () => {});
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => stopped), nextStepForResult: stepWith(run) });
+    await handle.confirmRun();
+    press(handle.element as unknown as FakeEl);
+    await flushAll();
+    expect(handle.element.innerHTML).toContain('It is on now.');
+    await handle.confirmRun();
+    expect(handle.element.innerHTML).toContain('>Turn it on</button>');
+  });
+});
+
+/** D-321 C2 — what would stop a run, said above Run as the dialog opens. */
+describe('D-321 C2 — the dialog says before a run what would stop it', () => {
+  const flushAll = async (): Promise<void> => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
+  const step = { lead: 'rg is not installed on your server.', links: [{ text: 'Open Ripgrep Pack', href: '#packs/ripgrep' }] };
+
+  it('shows it above Run, with its link, and Run stays', async () => {
+    const handle = wire({ recipe: recipeEntry(), execute: vi.fn(async () => executeResponse()), beforeRun: async () => step });
+    await flushAll();
+    const html = handle.element.innerHTML;
+    expect(html).toContain(RUN_MODAL_BEFORE_RUN_ATTR);
+    expect(html).toContain('rg is not installed on your server.');
+    expect(html).toContain(`href="#packs/ripgrep" ${RUN_MODAL_NEXT_STEP_ATTR}>Open Ripgrep Pack</a>`);
+    expect(html.indexOf(RUN_MODAL_BEFORE_RUN_ATTR)).toBeLessThan(html.indexOf('confirm-run'));
+    expect(html).not.toMatch(/confirm-run"\s+disabled/);
+  });
+
+  it('says nothing when nothing would stop it, or the read fails', async () => {
+    const none = wire({ recipe: recipeEntry(), beforeRun: async () => null });
+    const failed = wire({ recipe: recipeEntry(), beforeRun: async () => { throw new Error('offline'); } });
+    await flushAll();
+    expect(none.element.innerHTML).not.toContain(RUN_MODAL_BEFORE_RUN_ATTR);
+    expect(failed.element.innerHTML).not.toContain(RUN_MODAL_BEFORE_RUN_ATTR);
   });
 });

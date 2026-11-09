@@ -174,13 +174,14 @@ describe('webhook outbox during a restart drain', () => {
     await runtime.stop();
   });
 
-  it('a dispatch the draining server refused is handed back, not failed, and the next boot delivers it at once', async () => {
+  // D-188 — a dispatch the paused server refused is kept the same way.
+  it.each(['draining', 'server_paused'])('a dispatch refused with %s is handed back, not failed, and the next pass delivers it at once', async (code) => {
     const h = await harness();
     await h.accept('1');
     await h.accept('2');
     const refusing = createWebhookOutboxRuntime(h.deliveryStore, {
       dispatch: async () => {
-        throw new RpcError('draining', 'The server is restarting; try again in a moment.', 503);
+        throw new RpcError(code, 'The server is restarting or paused.', 503);
       },
     }, { lease_ms: LEASE_MS });
 

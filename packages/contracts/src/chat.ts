@@ -113,6 +113,7 @@ export type Tier1ToolName =
   | 'calendar.create'
   | 'calendar.update'
   | 'work.update'
+  | 'episode.record'
   | 'file.search'
   | 'recipe.run'
   | 'recipe.stop'
@@ -148,6 +149,7 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'calendar.create',
   'calendar.update',
   'work.update',
+  'episode.record',
   'file.search',
   'recipe.run',
   'recipe.stop',
@@ -196,6 +198,7 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   'calendar.create': ['calendar', 'event', 'meeting', 'schedule', 'book', 'create'],
   'calendar.update': ['calendar', 'event', 'meeting', 'reschedule', 'move', 'cancel'],
   'work.update': [...WORK_ENTITY_KINDS, 'done', 'complete', 'reschedule', 'update'],
+  'episode.record': ['episode', 'day', 'did', 'done', 'skipped', 'evening', 'history'],
   'file.search': ['file', 'attachment', 'document', 'upload', 'lookup'],
   'recipe.run': ['recipe', 'invoke', 'action', 'workflow'],
   // D-259 § 7.4 — steering, not searching. Tagged beside `recipe.run` because
@@ -292,6 +295,9 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   // row they have already been reading, and "done" in particular is a claim
   // about the world that reactive consumers act on (`completed` events fire).
   'work.update': 'write',
+  // D-343 slice 2 — the owner's record of their day. A write, so it asks (D-329); one call
+  // carries the whole day's records, so closing a day is one ask (ruling 18).
+  'episode.record': 'write',
   // Returns file IDENTITY only (name / size / origin / scan status), never
   // bytes. Content egress stays on the Gateway-gated `data-file-read`, which
   // is a separate admission and writes its own `file_content_read` audit row.
@@ -376,6 +382,8 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   // updates to ONE entity in a turn address the same `id` and the last write
   // silently wins. The axis is shared identity.
   'work.update': false,
+  // Two calls for one day would write the same records.
+  'episode.record': false,
   'file.search': true,
   'recipe.run': false,
   // Never batched in parallel with anything: a stop and the call it would stop
@@ -691,6 +699,10 @@ export type ChatDispatchResult =
       install_offers?: ReadonlyArray<import('./install-offers.js').InstallOffer>;
       /** First-party readers' verified locators; separate from model-facing data. */
       source_citations?: ReadonlyArray<import('./chat-source-citation.js').ChatSourceCitation>;
+      /** D-346 follow-up — what this call could not do and how the owner fixes it, offered
+       *  under the owner's answer (`chat-fixes.ts`). The owner's own chat only; the model
+       *  never reads this. */
+      fixes?: ReadonlyArray<import('./chat-fixes.js').ChatFix>;
     }
   | {
       ok: false;
@@ -706,6 +718,9 @@ export type ChatDispatchResult =
        * `detail` only. Offered on the owner's chat, the refusal comes back as
        * an `ok: true` result instead (`install-offers/needed-packs.ts`). */
       missing_packs?: ReadonlyArray<string>;
+      /** D-346 follow-up — the owner's own switch that refused this call, offered under the
+       *  owner's answer ("Turn it on"). The model reads `detail` only. */
+      fixes?: ReadonlyArray<import('./chat-fixes.js').ChatFix>;
     };
 
 /** § A.1.1 — registry surface. Implementations live in
@@ -1696,6 +1711,10 @@ export interface ChatMessage {
    *  every one, at most three). Shown as links to their install pages; never
    *  installed by chat. Absent when the turn offered none. */
   install_offers?: import('./install-offers.js').InstallOffer[];
+  /** D-346 follow-up — what the turn's calls could not do and how the owner fixes it: a run's
+   *  need, or one of their switches (`chat-fixes.ts`). Server-stamped from the turn's tool
+   *  results; shown under the answer with a link or "Turn it on". Absent when there were none. */
+  fixes?: import('./chat-fixes.js').ChatFix[];
   /** Host-kept read provenance. Targets never come from model-authored URLs. */
   source_citations?: import('./chat-source-citation.js').ChatSourceCitation[];
   /** Durable grounding for a user-requested Data explanation or safe check.
@@ -1880,6 +1899,9 @@ export type ChatRpcMethod =
   | 'chat.execution.forget'
   | 'chat.execution.draft_recipe'
   | 'chat.execution.authored'
+  // D-335 slice W4 — a kept browser flow's forget, and its recipe.
+  | 'chat.execution.browser_flow.forget'
+  | 'chat.execution.browser_flow.recipe'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   // D-167 chat provider-threading — per-session model-pref override
@@ -2005,6 +2027,8 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.execution.forget',
   'chat.execution.draft_recipe',
   'chat.execution.authored',
+  'chat.execution.browser_flow.forget',
+  'chat.execution.browser_flow.recipe',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   'chat.session.clear_model_pref',
@@ -2349,6 +2373,7 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'work.search': 'work',
   'work.read': 'work',
   'situation.query': 'situation',
+  'episode.record': 'situation',
   'work.type': 'work',
   'work.create': 'work',
   'calendar.create': 'calendar',
@@ -2882,7 +2907,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.type': {
     name: 'work.type',
     description:
-      "What a type of thing the user owns keeps (a passport, a car): its `dates`, whether it needs its holder, the reminders those dates send, and its default `search_keywords`. Call it before `work.create` of an asset. With no `type`, lists the types.",
+      "What a type of thing the user owns or works toward keeps (a passport, a car, a pursuit): its `dates`, the `attributes` it names, whether it needs its holder, the reminders those dates send, and its default `search_keywords`. Call it before `work.create` of an asset. With no `type`, lists the types.",
     arg_schema: {
       type: 'object',
       required: ['kind'],
@@ -2898,7 +2923,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.create': {
     name: 'work.create',
     description:
-      "Create something the user has to ACT ON or KEEP — a `task`, `note`, `commitment`, `project`, or an `asset` they own (call `work.type` first) — in their own local work graph. It needs no account and no connection, never leaves this machine, and shows up in Today and the matching list, where the user can edit or delete it. \u26a0 It is proposed to them first and runs once they approve it, unless they have let it run without asking: say what you are about to add, do not promise it is done. Reach for it when they ask you to add, capture, note down, or track something: \"add a task to call the dentist\", \"note that down\", \"start a project for the Dublin move\". \u26d4 This is for things to DO or KEEP; `memory.write` is for knowledge to RECALL later. The user's wording usually settles it: \"remember TO send the invoice\" is a task, \"remember THAT Acme moved to net-60\" is a memory. When both fit, prefer this one — a row the user can see and work through beats a fact they have to search for. \u26a0 Creating is not idempotent: each call makes a new row, so do not re-create something you already created in this turn. This governs what you CREATE, nothing else — reading and reporting work items is unchanged.",
+      "Create something the user has to ACT ON or KEEP — a `task`, `note`, `commitment`, `project`, or an `asset` they own (call `work.type` first) — in their own local work graph. It needs no account and no connection, never leaves this machine, and shows up in Today and the matching list, where the user can edit or delete it. \u26a0 It is proposed to them first and runs once they approve it, unless they have let it run without asking: say what you are about to add, do not promise it is done. Reach for it when they ask you to add, capture, note down, or track something: \"add a task to call the dentist\", \"note that down\", \"start a project for the Dublin move\". When they tell you something they want to achieve or keep up (\"I want to run a marathon next year\"), propose keeping it as a pursuit (kind `asset`, type `pursuit`), not a memory, with any time in it as the date it means (\"2027\", not \"next year\"). Never one they did not state. \u26d4 This is for things to DO or KEEP; `memory.write` is for knowledge to RECALL later. The user's wording usually settles it: \"remember TO send the invoice\" is a task, \"remember THAT Acme moved to net-60\" is a memory. When both fit, prefer this one — a row the user can see and work through beats a fact they have to search for. \u26a0 Creating is not idempotent: each call makes a new row, so do not re-create something you already created in this turn. This governs what you CREATE, nothing else — reading and reporting work items is unchanged.",
     arg_schema: {
       type: 'object',
       required: ['kind'],
@@ -2907,7 +2932,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           type: 'string',
           enum: ['task', 'note', 'commitment', 'project', 'asset'],
           description:
-            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person — say who promised with `direction`. `project` = a container other tasks hang under. `asset` = a thing they own, such as a passport or a bike; a type is optional.',
+            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person — say who promised with `direction`. `project` = a container other tasks hang under. `asset` = a thing they own, such as a passport or a bike, or a pursuit they work toward (type `pursuit`); a type is optional.',
         },
         title: {
           type: 'string',
@@ -3005,25 +3030,31 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.update': {
     name: 'work.update',
     description:
-      "Change something already in the user's work graph: mark a task done, move a task's deadline, a project's target date or a promise's date, retitle it, edit a note's text, or record what the user says about a thing they own. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
+      "Change something already in the user's work graph: mark a task done or a commitment kept or cancelled, record how a booking went or move it, rename an occasion, move its date or stop its reminders, close a bill, reservation or parcel read from their mail, move a task's deadline, a project's target date or a promise's date, retitle it, edit a note's text, or record what the user says about a thing they own. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
     arg_schema: {
       type: 'object',
       required: ['kind', 'id'],
       properties: {
-        kind: { type: 'string', enum: ['task', 'note', 'commitment', 'project', 'asset'], description: 'REQUIRED — the kind of the row being changed, as `work.search` reported it.' },
-        id: { type: 'string', description: 'REQUIRED — the id of the row to change, exactly as `work.search` returned it.' },
-        done: { type: 'boolean', description: 'Tasks only. `true` marks the task complete, `false` reopens it. Send it ALONE — not alongside title/body/due_at.' },
+        kind: { type: 'string', enum: ['task', 'note', 'commitment', 'project', 'asset', 'booking', 'occasion', 'mail_fact'], description: 'REQUIRED — the kind of the row being changed, as `work.search` reported it.' },
+        id: { type: 'string', description: 'REQUIRED — the id of the row to change, exactly as `work.search` returned it (an occasion\'s or a mail fact\'s, as `situation.query` did).' },
+        done: { type: 'boolean', description: 'Tasks, commitments and mail facts. `true` marks a task complete, a commitment kept (a bill to pay, or a reminder from a thing\'s clock, is one) or a mail fact over; `false` reopens a task. Send it ALONE — not alongside title/body/due_at.' },
+        done_on: { type: 'string', format: 'date', description: 'Commitments and mail facts. With `done`, the day it was done, YYYY-MM-DD, when not today.' },
         title: { type: 'string', description: 'Optional new one-line subject. For a commitment, what was promised; for an asset, its name.' },
         body: { type: 'string', description: "Optional new detail: a note's text, a task's detail, a project's description, a note about an asset. A commitment has none." },
         due_at: { type: 'number', description: 'Tasks only. Optional new deadline, Unix ms. Set only when the user gave one.' },
         clear_due_at: { type: 'boolean', description: 'Tasks only. `true` removes the deadline — only when the user asked for that. Never with `due_at`.' },
         target_completion_at: { type: 'string', format: 'date', description: "Projects only. The project's new target date, YYYY-MM-DD — a day, not a time. Set only when the user gave one." },
         clear_target_completion_at: { type: 'boolean', description: 'Projects only. `true` removes the target date — only when the user asked for that. Never with `target_completion_at`.' },
-        state: { type: 'string', description: "Tasks and projects only. A task's free-form pipeline state (e.g. 'blocked'); a project's is one of active / paused / completed / archived. It does NOT mark anything done — use `done` for that." },
+        state: { type: 'string', description: "Tasks, projects, commitments, bookings and mail facts. A task's free-form pipeline state (e.g. 'blocked'); a project's is one of active / paused / completed / archived; a commitment's is `cancelled` when it is no longer needed; a booking's is `completed`, `no_show`, `cancelled` or `confirmed`; a mail fact's is `cancelled`, or a reservation's `no_show`. Apart from a booking's, it does NOT mark anything done — use `done` for that." },
+        starts_at: { type: 'string', description: "Bookings only. Its new start, as ISO 8601 with its offset. Alone, the booking keeps its length." },
+        ends_at: { type: 'string', description: "Bookings only. Its new end, with `starts_at`." },
+        on: { type: 'string', format: 'date', description: 'Occasions only. Its new date, YYYY-MM-DD; a yearly one keeps that month and day every year.' },
+        muted: { type: 'boolean', description: 'Occasions only. `true` stops its reminders, `false` starts them again.' },
         promised_for_at: { type: 'string', description: 'Commitments only. When it is promised for: a day as YYYY-MM-DD, or an exact time as ISO 8601 with its offset. Set only when the user gave one.' },
         clear_promised_for_at: { type: 'boolean', description: 'Commitments only. `true` removes the promised date — only when the user asked for that. Never with `promised_for_at`.' },
         readings: { type: 'object', description: 'Assets only — a new reading, as in `work.create`, under a name the asset has and in its unit.' },
         dates: { type: 'object', description: 'Assets only — YYYY-MM-DD under names the asset has.' },
+        conditions: { type: 'object', description: 'Assets only — a condition it keeps, `clear` once over or `present` again: {"battery_low": "clear"}. A clear one closes the reminder it raised.' },
         attributes: { type: 'object', description: 'Assets only — details to add or change: {"colour": "blue"}; `null` removes one. Both user and AI may edit search keywords with {"search_terms": ["family visit", "London"]}, including user-entered keywords. Other user-entered facts remain protected.',
           properties: { [ASSET_SEARCH_TERMS]: ASSET_KEYWORD_ARG_SCHEMA } },
         place: { type: 'string', description: 'Assets only — where it is kept now.' },
@@ -3033,6 +3064,43 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     classification: TIER1_CLASSIFICATIONS['work.update'],
     topic_tags: TIER1_TOPIC_TAGS['work.update'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['work.update'],
+  },
+  // D-343 slice 2 (§4, ruling 18) — the owner's closing records: one call per day, each record
+  // their words for something they did or skipped, an agenda item's or none. ⚠ Model-facing —
+  // `chat-prompt-optimization-log.md`.
+  'episode.record': {
+    name: 'episode.record',
+    description:
+      "Record the user's day in their words: each thing they did or skipped, all in one call for that day (\"ran 5 km, did the 3pm call, skipped Spanish\"). It is their history and marks nothing done: use work.update for that. Proposed to them first; it runs once they confirm.",
+    arg_schema: {
+      type: 'object',
+      required: ['day', 'records'],
+      properties: {
+        day: { type: 'string', format: 'date', description: 'The day the records are for, YYYY-MM-DD, not after today.' },
+        records: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: 'object',
+            required: ['title', 'outcome'],
+            properties: {
+              title: { type: 'string', description: 'What they did, in their words.' },
+              outcome: { type: 'string', enum: ['done', 'skipped'] },
+              item: {
+                type: 'object',
+                required: ['collection', 'id'],
+                description: 'The agenda item it is about: its `ref` from situation.query. Leave it out for something not planned.',
+                properties: { collection: { type: 'string' }, id: { type: 'string' }, field: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['episode.record'],
+    topic_tags: TIER1_TOPIC_TAGS['episode.record'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['episode.record'],
   },
   'file.search': {
     name: 'file.search',
@@ -3849,8 +3917,13 @@ export interface ChatPlanProposal {
    *  on any channel runs the call, with no re-issue, and the result is posted to the session.
    *  The ask is found by `run_id` when it is answered, so a boot re-raise keeps the link.
    *  `lapsed_at` — the hold expired unanswered (`preflight.stale_after_days`), so the proposal
-   *  was cancelled with nothing run: no one said no, no one answered in time. */
-  hold?: { run_id: string; lapsed_at?: number };
+   *  was cancelled with nothing run: no one said no, no one answered in time.
+   *  `always_allow` — D-341: the hold's ask also offers its trigger's standing pre-approval, by
+   *  that option's label ("Always allow for this scheduled prompt"), so the card offers it too
+   *  (`chat.plan.approve`'s `always_allow`). The answer is checked against the real ask.
+   *  `always_allow_note` — what that answer lets happen, as the ask says it before its question
+   *  (`describeTriggerPreapprovalOffer`): the card says it under its buttons. */
+  hold?: { run_id: string; lapsed_at?: number; always_allow?: string; always_allow_note?: string };
   /** D-329 — how the owner knows the records `args` names, by their names as they were when
    *  it was proposed (an approval's `value_labels`). Display only: `args` is what runs. */
   value_labels?: ApprovalValueLabels;

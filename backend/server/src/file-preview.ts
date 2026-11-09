@@ -42,7 +42,7 @@ export const previewFile = async (
     ...(selected.download_unavailable_reason ? { download_unavailable_reason: selected.download_unavailable_reason } : {}) };
   if (selected.download_unavailable_reason) return { ...initial, unavailable_reason: selected.download_unavailable_reason };
   if (request.metadata_only) return initial;
-  if (!filePreviewKind(mime)) return { ...initial, unavailable_reason: 'This file format has no preview yet. You can download it.' };
+  if (!filePreviewKind(mime, initial.filename)) return { ...initial, unavailable_reason: 'This file format has no preview yet. You can download it.' };
   if (!selected.export_as && selected.size !== undefined && selected.size > FILE_PREVIEW_MAX_BYTES) {
     return { ...initial, unavailable_reason: 'Files larger than 25 MiB can be downloaded, but cannot be previewed here.' };
   }
@@ -55,7 +55,7 @@ export const previewFile = async (
     return { ...initial, unavailable_reason: 'This file exceeds the preview download limit. You can try downloading it to open it.' };
   }
   if (select(request.record_id).selection_revision !== selected.selection_revision) throw changed();
-  const kind = filePreviewKind(file.mime_type);
+  const kind = filePreviewKind(file.mime_type, file.filename);
   const result = { ...initial, filename: file.filename, mime_type: file.mime_type, size_bytes: file.size_bytes,
     ...(file.content_hash ? { content_hash: file.content_hash } : {}) };
   return kind ? { ...result, content: { kind, bytes_b64: file.bytes_b64 } }

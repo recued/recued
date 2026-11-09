@@ -41,6 +41,7 @@ import { createExecutionSpanAnchorStore } from '../storage/execution-span-anchor
 import { createExecutionSpanDissectionStore } from '../storage/execution-span-dissection-store.js';
 import { createExecutionCaseVerificationStore } from '../storage/execution-case-verification-store.js';
 import type { D214KeyProvider } from '../storage/d214-sealed-json.js';
+import { createBrowserFlowRecorder, type BrowserFlowRecorder, type BrowserFlowStep } from '../bridges/browser-flow-record.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -132,6 +133,8 @@ const addActivity = (
 
 interface FakeAsk {
   ask_id: string;
+  /** D-335 slice W3 — what the owner reads. */
+  text: string;
   handler_kind: string;
   handler_payload: Record<string, unknown>;
   options: ReadonlyArray<{ id: string; label: string }>;
@@ -150,11 +153,12 @@ const fakeNotifier = () => {
   >();
   let seq = 0;
   const notifier: ExecutionCaseOfferNotifier = {
-    ask: async (_message, options, handler) => {
+    ask: async (message, options, handler) => {
       seq += 1;
       const ask_id = `ask-${seq}`;
       asks.set(ask_id, {
         ask_id,
+        text: message.text,
         handler_kind: handler.kind,
         handler_payload: handler.payload,
         options: options.map((option) => ({ ...option })),
@@ -199,7 +203,7 @@ const caseKeyOf = (observation: CaseSourceObservation): string =>
     policy_fingerprint: observation.policy_fingerprint,
   });
 
-const fixture = (options: { withOfferSwitch?: boolean } = {}) => {
+const fixture = (options: { withOfferSwitch?: boolean; browser?: BrowserFlowRecorder } = {}) => {
   const db = new Database(':memory:');
   cleanups.push(() => db.close());
   schema(db);
@@ -233,6 +237,8 @@ const fixture = (options: { withOfferSwitch?: boolean } = {}) => {
   // WIRED switch returning true — a different claim, and the one the production
   // fail-toward rule does not rest on.
   let offerEnabled = true;
+  // D-335 slice W3 — the flows "That was right" keeps.
+  const kept: Array<{ session_id: string; root_request_id: string; kept_at: number; steps: BrowserFlowStep[] }> = [];
   const offers = createExecutionCaseOfferLifecycle({
     notifier: notifications.notifier,
     compiler,
@@ -242,11 +248,14 @@ const fixture = (options: { withOfferSwitch?: boolean } = {}) => {
     ...(options.withOfferSwitch
       ? { isOfferEnabled: () => offerEnabled }
       : {}),
+    ...(options.browser
+      ? { browserFlows: options.browser, keepBrowserFlow: async (flow) => { kept.push(flow); } }
+      : {}),
   });
   offers.registerAnswerHandler();
   return {
     db, anchorStore, caseStore, compiler, lifecycle, feedbackRecorder,
-    notifications, offers,
+    notifications, offers, kept,
     /** No-op unless the fixture was built `{ withOfferSwitch: true }`. */
     setOfferEnabled: (value: boolean) => {
       offerEnabled = value;
@@ -679,5 +688,63 @@ describe('D-219 slice 9c — the middleware that runs it', () => {
     await expect(middleware.update?.(turnCtx('s1', 't1') as never))
       .resolves.toBeUndefined();
     expect(finalized).toBe(1);
+  });
+});
+
+// D-335 slice W3 — a turn that worked in the owner's browser: the ask says how many steps, and "That
+// was right" keeps them as a flow to make a recipe of.
+describe('D-335 slice W3 — the browser steps of a request, kept by the owner\'s answer', () => {
+  const step = (label: string, value?: string): Omit<BrowserFlowStep, 'at'> => ({ do: value === undefined ? 'click' : 'type',
+    url: 'https://github.com/new', title: 'New repository', element: { role: value === undefined ? 'button' : 'text box', label,
+      selector: `#${label.toLowerCase().replace(/\s+/g, '-')}` }, ...(value !== undefined ? { value } : {}) });
+  const browsed = async () => {
+    const recorder = createBrowserFlowRecorder({ now: () => 1_000 });
+    const f = fixture({ browser: recorder });
+    // The request's turn ran two browser steps; another request's turn in the session ran one.
+    recorder.bindRun('run-1', { session_id: 's1', turn_id: 't1' });
+    recorder.record('run-1', step('Repository name', 'recued-notes'));
+    recorder.record('run-1', step('Create repository'));
+    await runTurn(f, { root: 'r0', turn: 't0', prompt: 'file the monthly invoice for acme' });
+    recorder.bindRun('run-0', { session_id: 's1', turn_id: 't0' });
+    recorder.record('run-0', step('Search'));
+    await runTurn(f, { root: 'r1', turn: 't1' });
+    await f.offers.offerForTurn({ session_id: 's1', turn_id: 't1' });
+    const ask = f.notifications.open().find((open) => open.handler_payload.root_request_id === 'r1')!;
+    return { recorder, f, ask };
+  };
+
+  it('the ask names how many steps the request did, never where or what was typed', async () => {
+    const { ask } = await browsed();
+    expect(ask.text).toBe('Recued worked through 3 steps to answer that. Telling it how the result turned out lets it go straight '
+      + 'there next time. It also did 2 steps in your browser: saying it was right keeps them in Settings → Learning, to make a '
+      + 'recipe of.');
+    expect(ask.handler_payload).toMatchObject({ root_request_id: 'r1', browser_steps: 2 });
+    expect(JSON.stringify(ask.handler_payload)).not.toContain('recued-notes');
+  });
+
+  it('"That was right" keeps the request\'s steps as a flow, and they leave memory', async () => {
+    const { recorder, f, ask } = await browsed();
+    await f.notifications.answer(ask.ask_id, 'accepted');
+    expect(f.kept).toEqual([{ session_id: 's1', root_request_id: 'r1', kept_at: 5_000, steps: [
+      { ...step('Repository name', 'recued-notes'), at: 1_000 }, { ...step('Create repository'), at: 1_000 }] }]);
+    expect(recorder.stepsFor('s1', (turn) => turn === 't1')).toEqual([]);
+    // The other request's step is not this request's to keep or drop.
+    expect(recorder.stepsFor('s1', (turn) => turn === 't0')).toHaveLength(1);
+  });
+
+  it('any other answer keeps nothing, and the steps leave memory too', async () => {
+    const { recorder, f, ask } = await browsed();
+    await f.notifications.answer(ask.ask_id, 'rejected');
+    expect(f.kept).toEqual([]);
+    expect(recorder.stepsFor('s1', (turn) => turn === 't1')).toEqual([]);
+  });
+
+  it('a request that did nothing in the browser asks as before', async () => {
+    const f = fixture({ browser: createBrowserFlowRecorder() });
+    await runTurn(f, { root: 'r1', turn: 't1' });
+    await f.offers.offerForTurn({ session_id: 's1', turn_id: 't1' });
+    const [ask] = f.notifications.open();
+    expect(ask!.text).not.toContain('browser');
+    expect(ask!.handler_payload).not.toHaveProperty('browser_steps');
   });
 });

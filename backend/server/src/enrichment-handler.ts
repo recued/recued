@@ -16,6 +16,7 @@
  *  directly. */
 
 import {
+  contractUnavailableSentence,
   ENRICHMENT_UPSERT_MODES,
   ENRICHMENT_VOTE_KINDS,
   ENRICHMENT_VOTE_SOURCES,
@@ -210,7 +211,7 @@ export const handleEnrichmentList = async (
   if (readChecker && !readChecker.isTopicReadGranted(args.topic as EnrichmentTopic)) {
     throw new RpcError(
       'bad_request',
-      `enrichment.list: topic '${args.topic}' is not read-granted to this contract (read rejected)`,
+      `enrichment.list: ${contractUnavailableSentence(`topic '${args.topic}'`)}`,
     );
   }
   const entries = deps.store.list({

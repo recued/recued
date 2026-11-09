@@ -36,6 +36,7 @@
 import {
   BATCH_ARGS_PREVIEW_MAX_BYTES,
   MAX_DISPATCH_DEPTH,
+  browserActCallUploads,
   canonicalArgHash,
   captureResourceReview,
   extractScopedDestinationEmails,
@@ -43,7 +44,9 @@ import {
   isTempFileRef,
   projectResolvedArgs,
   resolveQualityGateDecision,
+  reviewedEachTime,
   standingClosureAdmits,
+  stripCorePrefix,
 } from '@recued/contracts';
 import type {
   AdmissionDecision,
@@ -59,6 +62,7 @@ import type {
   RecipeErrorCode,
   SessionGrantMatchContext,
   SessionGrantMintContext,
+  TriggerPreapprovalHooks,
   StepMeta,
   StepOptions,
 } from '@recued/contracts';
@@ -270,6 +274,20 @@ export interface BrowserPassHooks {
     readonly input: Record<string, unknown>;
   }) => Promise<boolean>;
 }
+
+/** D-341 slice B1 — a trigger's standing pre-approval for a held write: the run a schedule, an
+ *  event trigger or a webhook started may make the writes the owner named, for one recipe
+ *  version. Consulted in the ask-branch only, after no D-177 grant and no browser pass stood in,
+ *  for a write below destructive whose ask the owner's policy could waive (as a grant: `never`, or
+ *  `ask` before the lift), so an op held at `approval: 'always'` is never covered. The host
+ *  completes the key from the run, never from the call: the trigger from the run's source, the
+ *  recipe version from the run, the op from the recipe's own step (`step_id`), which must be the
+ *  call's. It counts the use against the cap per run and the use cap when it admits, and audits
+ *  it, and returns the pre-approval's id, which the write's commit carries
+ *  (`Commit.trigger_preapproval`). `null` or a throw leaves the ask standing (fail closed). Absent
+ *  dep ⇒ these writes ask, as before B1. The catalog gate asks the same host for a catalog op
+ *  (`ExecutionContext.triggerPreapprovals`). */
+export type { TriggerPreapprovalHooks };
 
 /** 2026-11-04 — a held browser write whose page or element has gone is not asked. Just
  *  before the ask is raised for a browser write (`isBrowserActionSlug`), the host reads the
@@ -605,6 +623,9 @@ export interface CommitGatewayDeps {
   /** D-335 slice F — passes for Browser Toolkit writes ({@link BrowserPassHooks}). Absent ⇒
    *  every browser write asks. */
   browserPasses?: BrowserPassHooks;
+  /** D-341 slice B1 — triggers' standing pre-approvals ({@link TriggerPreapprovalHooks}).
+   *  Absent ⇒ a held write a trigger started asks. */
+  triggerPreapprovals?: TriggerPreapprovalHooks;
   /** 2026-11-04 — a held browser write whose page or element has gone fails instead of
    *  being asked ({@link BrowserTargetHooks}). Absent ⇒ it asks. */
   browserTargets?: BrowserTargetHooks;
@@ -642,9 +663,13 @@ export class PreflightDeniedError extends Error {
   /** The tool slug that was denied. */
   readonly slug: string;
   constructor(slug: string, admission_code: string, detail: string) {
+    // A grant refusal's own words already say what was refused and who turns it on
+    // where (`grant-refusal-copy.ts`); the probe's framing only buried them.
     super(
-      `Gateway refused dispatch — preflight admission probe denied `
-        + `tool '${slug}' (${admission_code}: ${detail})`,
+      admission_code === 'op_not_granted'
+        ? detail
+        : `Gateway refused dispatch — preflight admission probe denied `
+          + `tool '${slug}' (${admission_code}: ${detail})`,
     );
     this.name = 'PreflightDeniedError';
     this.slug = slug;
@@ -1098,6 +1123,8 @@ export const wrapWithCommitGateway = (
     // 'ask' variant so the fallback raise provably throws. P5b: the FIRE's
     // recomputed open-projection hash rides along so an `'open'`-mode
     // consumption is hash-verified at the store (defense in depth).
+    // D-341 slice B1 — the trigger pre-approval that admitted this write, by id, for its commit.
+    let triggerPreapprovalAdmitted: string | undefined;
     let sessionGrantAdmit:
       | {
           contract_id: string;
@@ -1242,9 +1269,8 @@ export const wrapWithCommitGateway = (
           // grant must pin what was approved, never what drifted.
           if (
             resumeApproved
-            && decision.authorization_provenance.lift_reason !== 'review_quote_signoff'
-            && decision.authorization_provenance.lift_reason !== 'review_approval_workflow'
-            && decision.authorization_provenance.lift_reason !== 'review_customer_payment'
+            // A review the owner gives each time mints no grant (a proposal, a quote, a workflow, a payment).
+            && !reviewedEachTime(decision.authorization_provenance.lift_reason)
             && stepMeta?.preflight_session_grant !== undefined
             && stepMeta.preflight_session_grant.risk_tier === decision.risk_tier
             && deps.sessionGrants?.mint !== undefined
@@ -1354,9 +1380,8 @@ export const wrapWithCommitGateway = (
             // with the per-session sender candidate index (5.d).
             const fireDestinations = scopedDestinationsOnce();
             if (
-              decision.authorization_provenance.lift_reason !== 'review_quote_signoff'
-              && decision.authorization_provenance.lift_reason !== 'review_approval_workflow'
-              && decision.authorization_provenance.lift_reason !== 'review_customer_payment'
+              // Nor does any grant stand in for one.
+              !reviewedEachTime(decision.authorization_provenance.lift_reason)
               && deps.sessionGrants !== undefined
               && identity !== undefined
               && argHashes !== undefined
@@ -1424,7 +1449,38 @@ export const wrapWithCommitGateway = (
                 browserPassAdmitted = false; // fail closed — the ask stands
               }
             }
-            if (grantId === null && !browserPassAdmitted) {
+            // D-341 slice B1 — a write the run's trigger was pre-approved for goes ahead without
+            // asking: the host names the trigger, the recipe version and the op from the run and
+            // the recipe's own step, and spends a use. Never destructive, never past the owner's
+            // `always`, never in place of a review lift.
+            if (
+              grantId === null
+              && !browserPassAdmitted
+              && deps.triggerPreapprovals !== undefined
+              && identity !== undefined
+              && decision.risk_tier !== 'destructive'
+              // Only the hold the run's own ceiling makes: a review an op always gets (a send, a
+              // proposal, a quote, a payment, a quality check) is never waived ahead.
+              && decision.authorization_provenance.lift_reason === undefined
+              // D-335 slice AQ — nor a batch putting one of the owner's files into a page, which is
+              // always asked about: a standing approval stands in for it no more than a pass does.
+              && !(stripCorePrefix(slug) === 'dom-act' && browserActCallUploads(resolvedArgsForScoped ?? input))
+              && (
+                decision.authorization_provenance.pre_lift_approval === 'never'
+                || decision.authorization_provenance.pre_lift_approval === 'ask'
+              )
+            ) {
+              try {
+                triggerPreapprovalAdmitted = deps.triggerPreapprovals.admit({
+                  slug,
+                  ...(stepMeta?.step_id !== undefined ? { step_id: stepMeta.step_id } : {}),
+                  risk_tier: decision.risk_tier,
+                }) ?? undefined;
+              } catch {
+                triggerPreapprovalAdmitted = undefined; // fail closed — the ask stands
+              }
+            }
+            if (grantId === null && !browserPassAdmitted && triggerPreapprovalAdmitted === undefined) {
               // D-202 task 4a — the second gate axis. No authorization session
               // grant matched, so today this holds for approval. Before raising,
               // consult a QUALITY delegation: the owner can, per `(recipe, op)`,
@@ -1636,6 +1692,9 @@ export const wrapWithCommitGateway = (
       request_id: identity.request_id,
       ...(identity.predecessor_commit_id !== undefined
         ? { predecessor_commit_id: identity.predecessor_commit_id }
+        : {}),
+      ...(triggerPreapprovalAdmitted !== undefined
+        ? { trigger_preapproval: { id: triggerPreapprovalAdmitted } }
         : {}),
     };
 

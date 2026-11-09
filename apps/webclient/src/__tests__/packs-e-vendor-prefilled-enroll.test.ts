@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ConnectionView } from '@recued/contracts';
+import type { ConnectionView, PackListEntry } from '@recued/contracts';
 import {
   buildConnectionEditDialogPatch,
   projectConnectionPayload,
@@ -11,6 +11,7 @@ import {
 import {
   bootstrapConnectionsRoute,
 } from '../connections/bootstrap-connections-route.js';
+import { serializeShellRoute } from '../shell/route.js';
 import {
   makeFakeDocument,
   flush,
@@ -323,5 +324,78 @@ describe('packs item E — vendor-prefilled connection enroll deep link', () => 
     expect(payload.name).toBe('my-stripe');
     expect(payload.config.vendor).toBe('stripe');
     expect(payload.config.vendor).not.toBe('my-stripe');
+  });
+});
+
+describe('D-321 P8 — a connection set up from a pack offers the way back to it', () => {
+  /** A pack's Set up link opens this form for its sign-in. Saving it used to end
+   *  on Connections, with the pack a click away in another part of the app. */
+  const billingPack = (): PackListEntry => ({
+    ...installedPackWith([], []),
+    slug: 'billing-pack',
+    name: 'Billing',
+    connection_requirements: [{ vendor: 'stripe', api_base: 'https://api.stripe.com', auth: { type: 'bearer' } }],
+  }) as unknown as PackListEntry;
+
+  const saveStripe = async (opts: { initialPack?: { slug: string; slot?: string } } = {}) => {
+    const mounted = mountPanel({
+      initialVendor: 'stripe',
+      ...(opts.initialPack !== undefined ? { initialPack: opts.initialPack } : {}),
+      runPacksList: async () => ({ packs: [billingPack()] }),
+    });
+    await mounted.panel.whenLoaded();
+    await flush();
+    expect(mounted.panel.getState().dialog.error).toBeNull();
+    if (!mounted.panel.getState().dialog.values['config.base_url']) {
+      field(mounted.host, 'config.base_url', 'https://api.stripe.com');
+    }
+    field(mounted.host, 'display_name', 'Stripe');
+    field(mounted.host, 'auth.token', 'sk_test');
+    clickAction(mounted.host, { action: 'connections-submit-form' });
+    await flush();
+    expect(mounted.panel.getState().dialog.error).toBeNull();
+    expect(mounted.calls.runEnroll).toHaveBeenCalledTimes(1);
+    return mounted;
+  };
+
+  it("names the pack, by its name, and links to the pack's page", async () => {
+    const { host, panel } = await saveStripe({ initialPack: { slug: 'billing-pack', slot: 'stripe' } });
+    const href = serializeShellRoute('packs', 'billing-pack');
+    expect(panel.getState().dialog.recentProbe).toMatchObject({
+      name: 'stripe',
+      return_to: { href, label: 'Billing' },
+    });
+    expect(host.innerHTML).toContain(`href="${href}" data-connections-return-to>Back to Billing →</a>`);
+    panel.dispose();
+  });
+
+  it('a connection set up from Connections itself offers no way back', async () => {
+    const { host, panel } = await saveStripe();
+    expect(panel.getState().dialog.recentProbe).toMatchObject({ name: 'stripe' });
+    expect(panel.getState().dialog.recentProbe).not.toHaveProperty('return_to');
+    expect(host.innerHTML).not.toContain('data-connections-return-to');
+    panel.dispose();
+  });
+
+  it('a pack whose name is not known yet is named by its slug', async () => {
+    const mounted = mountPanel({
+      initialVendor: 'stripe',
+      initialPack: { slug: 'unlisted-pack' },
+      runPacksList: async () => ({ packs: [] }),
+    });
+    await mounted.panel.whenLoaded();
+    await flush();
+    // A pack it cannot find leaves the service to the owner, with OAuth chosen.
+    field(mounted.host, 'auth.type', 'bearer');
+    field(mounted.host, 'display_name', 'Stripe');
+    field(mounted.host, 'config.base_url', 'https://api.stripe.com');
+    field(mounted.host, 'auth.token', 'sk_test');
+    clickAction(mounted.host, { action: 'connections-submit-form' });
+    await flush();
+    expect(mounted.panel.getState().dialog.error).toBeNull();
+    expect(mounted.panel.getState().dialog.recentProbe).toMatchObject({
+      return_to: { href: serializeShellRoute('packs', 'unlisted-pack'), label: 'unlisted-pack' },
+    });
+    mounted.panel.dispose();
   });
 });

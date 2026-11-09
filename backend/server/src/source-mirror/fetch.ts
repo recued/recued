@@ -46,6 +46,7 @@ import { getTransform } from '@recued/transforms';
 import type { ServerExecutorConfig } from '../server-executor.js';
 import { createBoundExecutor, createNamespaceStores } from '../server-executor.js';
 import type { ConnectionOperationProfileStore } from '../connection-operation-profile.js';
+import { SERVER_PAUSED_DETAIL } from '../pause-approval.js';
 
 /** The source-family-agnostic dependency set — `CanonicalPollDeps`
  *  minus the CRM vendor-registry seam (which belongs to the CRM
@@ -301,6 +302,11 @@ export const runGatedCatalogOperation: RunGatedCatalogOperationFn = async (
   request,
 ) => {
   const { connection_name, manifest, catalogSlug, operationKey } = request;
+  // D-188 — nothing is sent while the owner's pause holds: this runner reaches the vendor
+  // without a recipe run, so the run's entry and the gate's per-call admission never see it.
+  if (deps.executorConfig.isServerPaused?.() === true) {
+    return { ok: false, kind: 'policy', reason: `${SERVER_PAUSED_DETAIL}; '${catalogSlug}' was not called` };
+  }
   // Caller-triggered invocations carry their real dispatch identity;
   // background cycles keep the `system` posture.
   const source = request.execution_source;

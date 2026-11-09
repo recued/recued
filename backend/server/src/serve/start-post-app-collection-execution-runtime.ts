@@ -129,6 +129,14 @@ export const startPostAppCollectionExecutionRuntime = async (
   const postExecution = await startPostExecutionBootstrapMaintenanceRuntime({
     ...options.postExecution,
     publishScheduleDeps: options.execution.lateBound.publishScheduleDeps,
+    // D-188 — the mail and calendar poll loops move with the owner's pause, and Resume
+    // re-delivers the asks the pause held, as the end of quiet hours does.
+    applyServerPause: async () => {
+      await collection.applyServerPause();
+      if (execution.executeDeps.isServerPaused?.() !== true) {
+        void execution.notificationBlock?.recoverPendingAsks().catch(() => { /* best-effort */ });
+      }
+    },
     bootstrapCascade: {
       ...options.postExecution.bootstrapCascade,
       collection,

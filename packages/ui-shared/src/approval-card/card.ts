@@ -120,6 +120,20 @@ export interface AskCardModel {
    *  Absent ⇒ no age element (a caller that does not carry the field renders
    *  exactly as before). */
   created_at?: number;
+  /** D-335 slice Z — an ask for a secret a browser step types: the card takes it in a field of its
+   *  own (`AskCardHandlers.onSecret`). Mirrors `ServerPendingAsk.secret_prompt` structurally. */
+  secret_prompt?: {
+    kind: 'password' | 'PIN' | 'sign-in code';
+    site: string;
+    field: string;
+    remember: boolean;
+    expires_at: number;
+  };
+  /** D-188 — the owner paused the server and this approval's held action is one the pause
+   *  stops, so it waits for Resume: the card says so above its buttons and offers only
+   *  `allowed_options` (declining); the others stay visible but unavailable. The server
+   *  refuses them while paused whatever the card does. Mirrors `ServerPendingAsk.paused`. */
+  paused?: { message: string; allowed_options: ReadonlyArray<string> };
 }
 
 export interface AskCardHandlers {
@@ -132,6 +146,9 @@ export interface AskCardHandlers {
    *  paired) the card clears the guard + shows a brief inline error so the
    *  user can retry — the busy state is in-flight-only, never sticky. */
   onAnswer: (optionId: string, note?: string) => void | Promise<void>;
+  /** D-335 slice Z — gives the secret an ask asks for (`notification.giveSecret`): resolves true
+   *  when the waiting step took it. Absent ⇒ the card says where to give it instead. */
+  onSecret?: (value: string, remember: boolean) => Promise<boolean>;
 }
 
 /** Optional host-owned async state. A composed queue can rebuild the card
@@ -188,9 +205,113 @@ export const ASK_CARD_SUMMARY_ATTR = 'data-recued-ask-summary';
 export const ASK_CARD_DETAILS_ATTR = 'data-recued-ask-details';
 /** Deliberate second-step prompt for an externally mutating answer. */
 export const ASK_CARD_CONFIRM_ATTR = 'data-recued-ask-confirm';
+/** D-188 — on a card the owner's pause holds back: why its approve waits (value: ask id). */
+export const ASK_CARD_PAUSED_ATTR = 'data-recued-ask-paused';
+/** …and on each option that waits for Resume. */
+export const ASK_CARD_PAUSED_OPTION_ATTR = 'data-recued-ask-paused-option';
 /** What "Allow this session" lets happen (`showSessionGrantTerms`); the value
  *  is the `ask_id`. */
 export const ASK_CARD_GRANT_ATTR = 'data-recued-ask-grant';
+/** D-335 slice Z — stable hook on a secret ask's form; the value is the `ask_id`. */
+export const ASK_CARD_SECRET_ATTR = 'data-recued-ask-secret';
+
+/** D-335 slice Z — an ask for a secret a browser step types takes the value in a field of its own,
+ *  given with its own button: never as an option's answer or a note, both of which are kept. The
+ *  field is cleared once the value is sent, and nothing else holds it. A host that cannot give one
+ *  (no `onSecret`, as the Bridge's side panel) says where to give it.
+ *
+ *  ⚠ A repaint of the list builds the card anew, and a value typed but not yet sent goes with the
+ *  old one: unlike a note, a secret is not kept as a draft. */
+const renderAskSecret = (
+  doc: Document,
+  model: AskCardModel,
+  onSecret: AskCardHandlers['onSecret'],
+): HTMLElement => {
+  const prompt = model.secret_prompt!;
+  const form = doc.createElement('form');
+  form.className = 'rx-ask-card-secret';
+  form.setAttribute(ASK_CARD_SECRET_ATTR, model.ask_id);
+  form.noValidate = true;
+  if (onSecret === undefined) {
+    const where = doc.createElement('p');
+    where.textContent = 'Give it on the Approvals page of the Recued app.';
+    form.appendChild(where);
+    return form;
+  }
+  const id = `rx-ask-secret-${model.ask_id}`;
+  const label = doc.createElement('label');
+  label.className = 'rx-ask-card-secret-label';
+  label.setAttribute('for', id);
+  label.textContent = prompt.kind === 'sign-in code'
+    ? `The sign-in code for ${prompt.site}`
+    : `Your ${prompt.kind} for ${prompt.site}, for the field “${prompt.field}”`;
+  const input = doc.createElement('input');
+  input.id = id;
+  input.type = 'password';
+  input.className = 'rx-ask-card-secret-input';
+  // ⚠ MIRRORS THE SERVER'S `BROWSER_SECRET_MAX_CHARS`, which gives nothing longer.
+  input.maxLength = 1_000;
+  // A sign-in code may come from the phone's own suggestion; nothing is offered to be saved here.
+  input.autocomplete = prompt.kind === 'sign-in code' ? 'one-time-code' : 'off';
+  input.spellcheck = false;
+  input.setAttribute('autocapitalize', 'off');
+  input.setAttribute('autocorrect', 'off');
+  form.appendChild(label);
+  form.appendChild(input);
+  let remember: HTMLInputElement | undefined;
+  if (prompt.remember) {
+    const row = doc.createElement('label');
+    row.className = 'rx-ask-card-secret-remember';
+    remember = doc.createElement('input');
+    remember.type = 'checkbox';
+    row.appendChild(remember);
+    row.appendChild(doc.createTextNode(` Remember it for this field on ${prompt.site}`));
+    form.appendChild(row);
+  }
+  const give = doc.createElement('button');
+  give.type = 'submit';
+  give.className = 'rx-ask-card-btn rx-ask-card-btn--approve';
+  give.textContent = 'Use it';
+  const status = doc.createElement('div');
+  status.className = 'rx-ask-card-secret-status';
+  status.setAttribute('role', 'alert');
+  status.hidden = true;
+  form.appendChild(give);
+  form.appendChild(status);
+  const say = (text: string): void => {
+    status.textContent = text;
+    status.hidden = false;
+  };
+  let sending = false;
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (sending) return;
+    if (input.value === '') {
+      say('Type it first.');
+      input.focus({ preventScroll: true });
+      return;
+    }
+    sending = true;
+    give.setAttribute('aria-busy', 'true');
+    give.setAttribute('aria-disabled', 'true');
+    status.hidden = true;
+    const value = input.value;
+    void (async () => {
+      try {
+        const given = await onSecret(value, remember?.checked === true);
+        input.value = '';
+        if (!given) say('The step was no longer waiting for it, so it was not given.');
+      } catch {
+        say('Recued could not give it. Try again.');
+      } finally {
+        sending = false;
+        give.removeAttribute('aria-busy');
+        give.removeAttribute('aria-disabled');
+      }
+    })();
+  });
+  return form;
+};
 
 /** The terms of "Allow this session" as the composer wrote them
  *  (`renderOpenGrantBlock`, `@recued/gateway`): its opening sentence, one item
@@ -780,6 +901,10 @@ export const renderAskCard = (
   confirmation.hidden = true;
 
   const buttonOptions: Array<{ button: HTMLButtonElement; option: AskCardOption }> = [];
+  // D-188 — an option the owner's pause holds back: shown, never sent, never re-enabled.
+  const pausedAllowed = model.paused !== undefined ? new Set(model.paused.allowed_options) : undefined;
+  const heldByPause = (option: AskCardOption): boolean =>
+    pausedAllowed !== undefined && !pausedAllowed.has(option.id);
   let pending = options.busy === true;
   let armedOptionId: string | null = null;
   const setOptionLabel = (
@@ -814,7 +939,7 @@ export const renderAskCard = (
   };
   const clearBusy = (): void => {
     for (const row of buttonOptions) {
-      row.button.removeAttribute('aria-disabled');
+      if (!heldByPause(row.option)) row.button.removeAttribute('aria-disabled');
       row.button.removeAttribute('aria-busy');
     }
   };
@@ -835,10 +960,14 @@ export const renderAskCard = (
     btn.setAttribute('data-intent', intent);
     btn.setAttribute('aria-pressed', 'false');
     setOptionLabel(btn, option.label);
+    if (heldByPause(option)) {
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute(ASK_CARD_PAUSED_OPTION_ATTR, '');
+    }
     btn.addEventListener('click', () => {
       // `aria-disabled` deliberately keeps the active option in the tab order,
       // so every activation path needs this explicit single-flight guard.
-      if (pending) return;
+      if (pending || heldByPause(option)) return;
       if (risk !== null && intent === 'approve' && armedOptionId !== option.id) {
         armedOptionId = option.id;
         resetOptionButtons();
@@ -944,6 +1073,17 @@ export const renderAskCard = (
       grant.appendChild(closing);
     }
     card.appendChild(grant);
+  }
+  // D-335 slice Z — the secret's own field and button, above the one option (to stop the task).
+  if (model.secret_prompt !== undefined) card.appendChild(renderAskSecret(doc, model, handlers.onSecret));
+  // D-188 — why approving waits, right above the buttons it explains.
+  if (model.paused !== undefined) {
+    const paused = doc.createElement('p');
+    paused.className = 'rx-ask-card-paused';
+    paused.setAttribute(ASK_CARD_PAUSED_ATTR, model.ask_id);
+    paused.setAttribute('role', 'status');
+    paused.textContent = model.paused.message;
+    card.appendChild(paused);
   }
   card.appendChild(actions);
   card.appendChild(errorEl);
@@ -1703,6 +1843,18 @@ export const ASK_CARD_STYLES = `
   overflow-wrap: anywhere;
 }
 .rx-ask-card-confirm[hidden] { display: none; }
+/* D-188 — why approving waits while the server is paused: a deliberate state, not a fault. */
+.rx-ask-card-paused {
+  min-width: 0;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--border);
+  background: var(--surface-sunk);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .rx-ask-card-actions {
   min-width: 0;
   display: flex;
@@ -1793,6 +1945,35 @@ export const ASK_CARD_STYLES = `
   color: var(--fg);
 }
 .rx-ask-card-note-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+.rx-ask-card-secret {
+  min-width: 0;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.rx-ask-card-secret-label,
+.rx-ask-card-secret-remember {
+  font-size: 12px;
+  color: var(--muted);
+}
+.rx-ask-card-secret-input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+}
+.rx-ask-card-secret-status {
   font-size: 12px;
   color: var(--danger);
 }

@@ -14,6 +14,10 @@ import type {
 } from '@recued/contracts';
 
 import { RunModal } from '@recued/ui-shared';
+import { RpcError } from '@recued/contracts';
+
+import { connectionsEnrollAddress, connectionsReviewAccessAddress } from '../connections/connections-navigation.js';
+import { setRunModalToolStatus } from '../shell/run-modal.js';
 
 import {
   RECIPES_ROUTE_BACK_ATTR,
@@ -2473,6 +2477,132 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(shellHtml(rig.root)).toContain(receipt);
     expect(shellHtml(rig.root)).not.toContain(' · 7 ms · 1 step');
     rig.route.dispose();
+  });
+
+  // D-321 P2 — a run refused before it started offers what to do, on the
+  // recipe's page and in the run dialog opened from it (which opens through
+  // `shell/run-modal.ts`, so this is the dialog the page really gets).
+  it.each([
+    [
+      'a pack it needs is missing',
+      new RpcError('pack_not_installed', 'pack not installed: recued-core.docling', 400, undefined,
+        { missing_packs: ['recued-core.docling'] }),
+      'href="#packs/docling"',
+      'Get docling',
+      'pack not installed',
+    ],
+    [
+      'its connection is not set up',
+      new RpcError('connection_not_set_up',
+        "Recipe 'daily-brief' needs a connection for 'exa', and its pack's connection 'exa' is not set up.",
+        400, undefined, { slot: 'exa', pack_slug: 'exa', vendor: 'exa', label: 'Exa' }),
+      `href="${connectionsEnrollAddress('exa', { slug: 'exa', slot: 'exa' }).hash}"`,
+      'Set up Exa',
+      'needs a connection for',
+    ],
+    [
+      // D-346 A — refused before it started: a program a step launches is gone.
+      'a program it runs is gone',
+      new RpcError('program_not_installed',
+        'rg is not installed on your server, or your server cannot find it, so ‘Find in files’ did not start. '
+        + 'Ripgrep’s page in Packs says what to do.', 400, undefined,
+        { missing_programs: [{ kind: 'program', step_id: 'find', problem: 'not_found', tool: 'rg', pack_slug: 'ripgrep', label: 'Ripgrep' }] }),
+      'href="#packs/ripgrep"',
+      'Open Ripgrep',
+      'did not start',
+    ],
+  ])('D-321 P2 — a run refused because %s links to the fix', async (_label, refusal, href, text, gone) => {
+    const rig = mountRoute({
+      initialRecipeId: 'primitive-defaults',
+      recipeExecuteCaller: vi.fn<RecipeExecuteCaller>(async () => { throw refusal; }),
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('primitive-defaults', {
+          recipe: recipeDefinition('primitive-defaults', { variables: { limit: 25 } }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    clickRecipeAction(rig.root, 'run-defaults', 'primitive-defaults');
+    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain(href));
+    expect(shellHtml(rig.root)).toContain(text);
+    // The sentence it replaces, ids and all, is not shown beside it.
+    expect(shellHtml(rig.root)).not.toContain(gone);
+
+    rig.route.openRunModal('primitive-defaults');
+    await rig.route.confirmRun();
+    expect(runModalHtml(rig.root)).toContain(href);
+    expect(runModalHtml(rig.root)).toContain(`${RunModal.RUN_MODAL_NEXT_STEP_ATTR}>${text}</a>`);
+    expect(runModalHtml(rig.root)).not.toContain(gone);
+    rig.route.dispose();
+  });
+
+  // D-321 P2 / C2 — a run that stopped on a step offers what the step needed,
+  // under the reason, on the page and in the run dialog opened from it.
+  it('D-321 — a run whose sign-in was turned down offers to reconnect it, beside the reason', async () => {
+    const turnedDown = executeResponse({
+      success: false,
+      errors: [{
+        code: 'OAUTH_EXPIRED',
+        message: 'exa-catalog returned 401 Unauthorized',
+        source: { recipe_id: 'primitive-defaults', step_id: 'search', ingredient_slug: null },
+      }],
+      run_needs: [{
+        kind: 'connection', step_id: 'search', problem: 'reconnect', slot: 'exa',
+        connection_name: 'exa-key', pack_slug: 'exa', vendor: 'exa', label: 'Exa',
+      }],
+    } as Partial<ServerExecuteResponse>);
+    const href = `href="${connectionsReviewAccessAddress('exa-key').hash}"`;
+    const rig = mountRoute({
+      initialRecipeId: 'primitive-defaults',
+      recipeExecuteCaller: vi.fn<RecipeExecuteCaller>(async () => turnedDown),
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('primitive-defaults', {
+          recipe: recipeDefinition('primitive-defaults', { variables: { limit: 25 } }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    clickRecipeAction(rig.root, 'run-defaults', 'primitive-defaults');
+    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain(href));
+    expect(shellHtml(rig.root)).toContain('Exa did not accept this run’s sign-in.');
+    expect(shellHtml(rig.root)).toContain(RECIPES_ROUTE_RESULT_REASON_ATTR);
+    expect(shellHtml(rig.root)).toContain('exa-catalog returned 401 Unauthorized (step search)');
+
+    rig.route.openRunModal('primitive-defaults');
+    await rig.route.confirmRun();
+    expect(runModalHtml(rig.root)).toContain('exa-catalog returned 401 Unauthorized (step search)');
+    expect(runModalHtml(rig.root)).toContain(`${href} ${RunModal.RUN_MODAL_NEXT_STEP_ATTR}>Reconnect Exa</a>`);
+    rig.route.dispose();
+  });
+
+  // D-321 C2 — the dialog says before a run that a program its pack runs would
+  // stop it, through the reader the webclient's composition registers.
+  it('D-321 C2 — the run dialog says before a run that its program is missing', async () => {
+    setRunModalToolStatus(async () => ({
+      system: 'darwin',
+      packs: [{ slug: 'ripgrep', tools: [{ catalog: 'rg-catalog', binary: 'rg', state: 'missing', install: [], docs: [] }] }],
+    }) as never);
+    try {
+      const rig = mountRoute({
+        initialRecipeId: 'primitive-defaults',
+        recipeExecuteCaller: vi.fn<RecipeExecuteCaller>(async () => executeResponse()),
+        recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+          recipes: [recipeEntry('primitive-defaults', {
+            recipe: { ...recipeDefinition('primitive-defaults', { variables: { limit: 25 } }), depends_on: ['recued-core.ripgrep'] },
+          })],
+        })),
+      });
+      await rig.route.whenLoaded();
+      rig.route.openRunModal('primitive-defaults');
+      await vi.waitFor(() => expect(runModalHtml(rig.root)).toContain(RunModal.RUN_MODAL_BEFORE_RUN_ATTR));
+      expect(runModalHtml(rig.root)).toContain('rg is not installed on your server');
+      expect(runModalHtml(rig.root)).toContain('href="#packs/ripgrep"');
+      rig.route.dispose();
+    } finally {
+      setRunModalToolStatus(null);
+    }
   });
 
   it('⛔ a run that returned errors says why, in the modal and the persistent result (D-312)', async () => {

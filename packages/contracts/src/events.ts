@@ -742,6 +742,12 @@ export type ServerEvent =
       /** D-336 slice G — notes already in memory a held save meets
        *  (`ChatPlanProposal.memory_conflicts`). An older client ignores it. */
       memory_conflicts?: readonly import('./memory-relations.js').MemorySaveConflict[];
+      /** D-341 — the standing pre-approval its ask offers, by the option's label
+       *  (`ChatPlanProposal.hold.always_allow`): the card offers it beside "Say yes, once".
+       *  An older client ignores it and approves once. */
+      always_allow?: string;
+      /** D-341 — what that answer lets happen, in the ask's words (`hold.always_allow_note`). */
+      always_allow_note?: string;
       cursor: number;
     }
   | {

@@ -1893,7 +1893,11 @@ const buildWsBinding = (
     // Phase D — collection rpc slice (collection.list / search /
     // get / runRetention / listEndpoints). Ingredients lookup
     // `data.{mail,file,webhook}.*` through these.
-    makeCollectionHandlers(collectionDeps),
+    makeCollectionHandlers(collectionDeps && bootstrapDeps
+      // D-188 — the flag the dispatcher's pause gate reads (below), for the two reads that show
+      // the stored copy while paused instead of being refused.
+      ? { ...collectionDeps, isServerPaused: () => bootstrapDeps.state.isPaused() }
+      : collectionDeps),
     // D-120 Phase 7 — unified memory export rpc pair (estimate + page).
     // Needs the SQLite handle for the `links` + `recipe_insights`
     // joins. D-157 P0 deleted the legacy `audit.*` read-rpc family;
@@ -2348,6 +2352,8 @@ const buildWsBinding = (
     touchActivity: authDeps ? () => authDeps.keys.touch() : undefined,
     knownMethods: SERVER_RPC_METHOD_SET,
     lifecycleState,
+    // D-188 — the owner's direct actions that reach outside wait for Resume (`pause-rpc-gate.ts`).
+    ...(bootstrapDeps ? { serverPaused: () => bootstrapDeps.state.isPaused() } : {}),
   });
 
   const WsServer = ws.WebSocketServer as new (opts: {

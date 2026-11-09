@@ -6,7 +6,7 @@
  *  Every decision is audited reserve-class (`browser_pass_minted` / `_dismissed` /
  *  `_revoked`), best-effort: the decision is the store's, the audit row its record. */
 
-import { RpcError, type BrowserPassRow, type BrowserPassSuggestionRow } from '@recued/contracts';
+import { RpcError, type BrowserPassRow, type BrowserPassSuggestionRow, type BrowserRequestPass } from '@recued/contracts';
 import type { ActivityAction, AuditLogStore } from '@recued/storage';
 
 import { BrowserPassError, type BrowserPassStore } from './storage/browser-pass-store.js';
@@ -52,6 +52,30 @@ export const createBrowserPassRpcHandlers = (deps: BrowserPassRpcDeps) => {
   };
 
   return {
+    // D-341 slice A — the switch beside Send: whether this conversation's browser actions run
+    // without asking, and turning that on (for eight hours at most) or off. The owner's chat only:
+    // the conversation is named by its chat session, as a chat run's identity names it.
+    'collection.contract.getRequestPass': async (args: unknown): Promise<{ pass?: BrowserRequestPass }> => {
+      const method = 'collection.contract.getRequestPass';
+      const pass = store(method).requestPass(`chat:${text(method, 'session_id', args)}`, now());
+      return pass !== undefined ? { pass } : {};
+    },
+
+    'collection.contract.setRequestPass': async (args: unknown): Promise<{ pass?: BrowserRequestPass }> => {
+      const method = 'collection.contract.setRequestPass';
+      const key = `chat:${text(method, 'session_id', args)}`;
+      const allow = (args as { allow?: unknown }).allow;
+      if (typeof allow !== 'boolean') throw new RpcError('bad_request', `${method}: allow is true or false`);
+      const at = now();
+      if (allow) {
+        const pass = store(method).startRequestPass(key, at);
+        if (pass.started_at === at) audit('browser_request_pass_started', key, { expires_at: pass.expires_at }, at);
+        return { pass };
+      }
+      if (store(method).endRequestPass(key, at)) audit('browser_request_pass_ended', key, {}, at);
+      return {};
+    },
+
     'collection.contract.listBrowserPasses': async (): Promise<{ passes: BrowserPassRow[] }> =>
       ({ passes: store('collection.contract.listBrowserPasses').listPasses(now()) }),
 

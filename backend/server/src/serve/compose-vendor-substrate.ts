@@ -21,6 +21,8 @@ export type VendorSubstrateAppContext = Pick<
 >;
 
 export interface ComposeVendorSubstrateContextOptions {
+  /** D-188 — the master pause, for a vendor's live stream. */
+  readonly isPaused?: () => boolean;
   /** D-269 step 1 — the owner's declared server zone for D-139 § A.3.7's
    *  engagement timezone fallback. */
   prefsTimezone?: () => string | null | undefined;
@@ -53,6 +55,7 @@ export const composeVendorSubstrateContext = async (
 
   const vendorBundle = await composeWireVendorSubstrate({
     connectionStore: app.connectionStoreRef,
+    ...(options.isPaused ? { isPaused: options.isPaused } : {}),
     keys: app.keys,
     engagementStore: app.engagementStoreRef,
     // D-269 — D-139 § A.3.7's third fallback step, finally supplied.

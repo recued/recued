@@ -192,9 +192,14 @@ describe('D-249 — kernel op scope classification', () => {
       'core.kitchen.draft.list',
       'core.kitchen.draft.get',
       'core.kitchen.draft.update',
+      // D-345 — the server's own fetch of a public address reads nothing stored.
+      'core.http.get',
+      'core.http.read',
     ]) {
       expect(byOp.get(op), op).toBeNull();
     }
+    // D-345 — a download keeps a new file among the owner's files: the Files fence, as keeping one is.
+    expect(byOp.get('core.http.download')).toBe('data.file');
   });
 
   /** ⛔ The CSV ops read FILE CONTENT — a named instance by `{slug, path}`, or a

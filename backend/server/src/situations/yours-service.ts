@@ -2,7 +2,7 @@ import { createTripDetailsStore, tripFromSource } from '../storage/trip-details-
 import { createHash } from 'node:crypto';
 import { canonicalRecipeDefinition, canonicalJsonString } from '@recued/recipes';
 import type Database from 'better-sqlite3';
-import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, normalizeAssetDocumentDetails, isAssetDate, assetDateAt, calendarDayMs, kernelOpForBackingSlug, occasionNextDate, PROACTIVE_PROPOSAL_KINDS, shiftAssetDate, zonedWallClockToEpochMs, type Asset, type AssetCreateInput, type AssetPatch, type AssetRule, type ExecutionSource,
+import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, assetConditionHolds, normalizeAssetDocumentDetails, isAssetDate, assetDateAt, calendarDayMs, kernelOpForBackingSlug, occasionNextDate, PROACTIVE_PROPOSAL_KINDS, PURSUIT_CLASS_ID, shiftAssetDate, zonedWallClockToEpochMs, type Asset, type AssetCreateInput, type AssetPatch, type AssetRule, type ExecutionSource,
   type ProactiveProposal, type SituationRef, type YoursAssetSummary, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
 import type { ConnectionRow } from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
@@ -80,6 +80,9 @@ export interface YoursServiceDeps {
   isVaultUnlocked?(): boolean;
   now?(): number;
   timeZone?(): string;
+  /** D-343 slice 4 (ruling 20) — opens a conversation in the app holding a notice (`chat-notices.ts`
+   *  `openNoticeConversation`), for Today's "Close the day". Absent ⇒ Today offers no button. */
+  openNoticeConversation?(notice: { title: string; text: string }): Promise<{ session_id: string; message_id: string }>;
 }
 /** Where the owner forwards proof: the address with `+done` of each mailbox whose
  * mail can propose (`mail:<slug>` on). An address already carrying a tag cannot
@@ -110,6 +113,11 @@ export const createYoursService = (deps: YoursServiceDeps) => {
   let recipes: import('../recipe-store.js').RecipeStore | undefined;
   let writers: AssetWriterSetup | undefined;
   let scheduled: import('./scheduled-situations.js').ScheduledSituations | undefined;
+  /** D-340 slice 2 — once the streams take over, the Agenda's and Coming up's own settings and Send
+   *  now no longer send anything: a client that still offers them is told where they went. */
+  const streamsTookOver = (): void => {
+    if (scheduled?.streamsActive()) throw new Error('Your Agenda and Coming up are part of your daily and weekly streams now. Set them on Today: open Daily stream.');
+  };
   let subscribers: { store: import('../triggers/store.js').EventTriggersStore; contracts: import('../storage/contract-definition-store.js').ContractDefinitionStore; changed(): void } | undefined;
   deps.db.exec(`CREATE TABLE IF NOT EXISTS asset_identity_links (
     left_id TEXT NOT NULL, right_id TEXT NOT NULL, merged INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL,
@@ -207,7 +215,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       for (const current of candidates) {
         const bindings = prefetched?.get(current.id) ?? deps.work.listAssetObservationBindings(current.id);
         for (const [field, observation] of Object.entries(current.observations)) {
-          if (!observation?.active || current.field_sources[`observations.${field}`]?.kind !== 'observation') continue;
+          if (!observation || !assetConditionHolds(observation, now()) || current.field_sources[`observations.${field}`]?.kind !== 'observation') continue;
           const binding = bindings.find(row => row.enabled && row.source_ref === observation.source && row.fields.includes(`observations.${field}`) && row.recipe_hash?.length === 64);
           if (!binding) continue;
           for (const evidence of observation.evidence) {
@@ -826,10 +834,11 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         const known = history.place(input.name);
         return { id: history.savePlace({ ...input, ...(!input.key && !known.key.startsWith('label:') ? { key: known.key, name: known.name } : {}) }).key, message: 'Place names now refer to the same place.' };
       }
-      case 'delivery.update': if (!scheduled) throw new Error('The overview service is unavailable'); scheduled.setSettings(input.settings); return { message: 'Overview schedule saved.' };
-      case 'delivery.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); await scheduled.sendNow(); return { message: 'Overview checked. It sends only when something changed.' };
+      case 'delivery.update': if (!scheduled) throw new Error('The overview service is unavailable'); streamsTookOver(); scheduled.setSettings(input.settings); return { message: 'Overview schedule saved.' };
+      case 'delivery.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); streamsTookOver(); await scheduled.sendNow(); return { message: 'Overview checked. It sends only when something changed.' };
       case 'agenda.update': {
         if (!scheduled) throw new Error('The overview service is unavailable');
+        streamsTookOver();
         scheduled.setAgenda(input.settings);
         // D-338 slice 3 — the AI suggestions' schedule follows the save; the settings stay saved
         // whether or not it could be set up, and the next save tries again.
@@ -837,7 +846,36 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         catch (error) { throw new Error(`Agenda saved, but its AI suggestions could not be set up: ${error instanceof Error ? error.message : String(error)}`); }
         return { message: 'Agenda saved.' };
       }
-      case 'agenda.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); await scheduled.sendAgendaNow(); return { message: 'Agenda checked. It is sent only when something is on.' };
+      case 'agenda.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); streamsTookOver(); await scheduled.sendAgendaNow(); return { message: 'Agenda checked. It is sent only when something is on.' };
+      // D-340 slice 2 — a stream's settings, its Send now and the preview of its next message (§3.7).
+      // A save keeps its AI suggestions in step, as the Agenda's did.
+      case 'stream.update': {
+        if (!scheduled) throw new Error('The overview service is unavailable');
+        scheduled.setStream(input.stream, input.settings);
+        const name = input.stream === 'weekly' ? 'Weekly stream' : 'Daily stream';
+        try { await scheduled.syncStreamSuggestions(input.stream); }
+        catch (error) { throw new Error(`${name} saved, but its AI suggestions could not be set up: ${error instanceof Error ? error.message : String(error)}`); }
+        return { message: `${name} saved.` };
+      }
+      case 'stream.send_now': {
+        if (!scheduled || !scheduled.streamsActive()) throw new Error('This server has no streams yet');
+        await scheduled.sendStreamNow(input.stream);
+        return { message: `${input.stream === 'weekly' ? 'Your week' : 'Your day'} checked. It is sent only when something is on.` };
+      }
+      case 'stream.preview': {
+        if (!scheduled || !scheduled.streamsActive()) throw new Error('This server has no streams yet');
+        return { message: '', preview: await scheduled.streamPreview(input.stream) };
+      }
+      // D-343 slice 4 — Close the day: its settings, Send now, and Today's "Close the day", which opens a
+      // conversation holding today's evening notice for the app's reply to quote (ruling 20).
+      case 'close_day.update': if (!scheduled) throw new Error('The overview service is unavailable'); scheduled.setCloseDay(input.settings); return { message: 'Close the day saved.' };
+      case 'close_day.send_now': if (!scheduled) throw new Error('The overview service is unavailable'); await scheduled.sendCloseDayNow(); return { message: 'Sent. Reply to it with what you did.' };
+      case 'close_day.open': {
+        if (!scheduled || !deps.openNoticeConversation) throw new Error('Close the day is unavailable on this server');
+        const notice = await scheduled.closeDayNoticeToday();
+        const opened = await deps.openNoticeConversation(notice);
+        return { message: 'Your day is ready to close.', conversation: { ...opened, title: notice.title, text: notice.text } };
+      }
       case 'subscriber.reconciled': {
         const receipt = deps.situations.subscriberRun(input.subscriber_id, input.revision);
         if (!receipt || receipt.run_id !== input.run_id || receipt.state === 'completed') throw new Error('This subscriber receipt changed. Refresh before reconciling it.');
@@ -854,7 +892,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         return { message: 'Subscriber contract saved. Its reads and event values use that contract; changing it invalidates an earlier execution review.' };
       }
       case 'settings.update':
-        if (input.digest !== undefined) { if (!['daily', 'weekly', 'off'].includes(input.digest)) throw new Error('Invalid delivery schedule'); deps.situations.writeSetting('digest.frequency', input.digest); }
+        if (input.digest !== undefined) { if (!['daily', 'weekly', 'off'].includes(input.digest)) throw new Error('Invalid delivery schedule'); streamsTookOver(); deps.situations.writeSetting('digest.frequency', input.digest); }
         if (input.last_time !== undefined) { if (!['on', 'off'].includes(input.last_time)) throw new Error('Invalid last-time choice');
           deps.situations.writeSetting('last_time.choice', input.last_time); await deps.episodeRuntime?.settleChoice(); }
         if (input.measures !== undefined) { if (typeof input.measures !== 'boolean') throw new Error('Invalid measures choice');
@@ -919,8 +957,12 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid Yours page');
     if (input.asset_filter !== undefined && !['missing_facts', 'overdue'].includes(input.asset_filter)) throw new Error('Unknown asset filter');
     if (input.asset_sphere !== undefined && !['personal', 'professional', 'unsorted'].includes(input.asset_sphere)) throw new Error('Unknown asset sphere');
-    if (input.asset_id && (input.asset_filter || input.asset_sphere)) throw new Error('Asset filters apply to the asset list');
-    const searchQuery = input.search ? { search: input.search } : {};
+    if (input.pursuits !== undefined && input.pursuits !== 'only' && input.pursuits !== 'exclude') throw new Error('Unknown pursuits filter');
+    if (input.asset_id && (input.asset_filter || input.asset_sphere || input.pursuits)) throw new Error('Asset filters apply to the asset list');
+    // D-342 §7 — the Pursuits tab reads pursuits alone, and the Assets tab every asset but them.
+    // Every read path below takes this query, so the page, its count and its filters agree.
+    const searchQuery = { ...(input.search ? { search: input.search } : {}),
+      ...(input.pursuits ? { asset_class: { id: PURSUIT_CLASS_ID, match: input.pursuits === 'only' ? 'only' as const : 'except' as const } } : {}) };
     const summaryAt = now(); const summaryZone = deps.timeZone?.() ?? 'UTC';
     let assets: Asset[]; let total_assets: number; let unavailable = 0;
     const asset_summaries: YoursAssetSummary[] | undefined = input.include_asset_summaries === true ? [] : undefined;
@@ -1148,9 +1190,27 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     const linked = input.asset_id ? (deps.db.prepare('SELECT left_id,right_id FROM asset_identity_links WHERE left_id=? OR right_id=?').all(input.asset_id, input.asset_id) as { left_id: string; right_id: string }[])
       .flatMap(row => { const linked = deps.work.readAssetEffective(row.left_id === input.asset_id ? row.right_id : row.left_id); return linked ? [linked] : []; }) : [];
     // P44 — an occasion's page lists its own history, and no list shows an episode the
-    // owner hid; at its own address it still opens.
+    // owner hid; at its own address it still opens. D-343 slice 5 — an asset's page lists the
+    // episodes that cite it: a pursuit's history.
     let episodes = input.episode_id ? [history.episode(input.episode_id)].filter((value): value is NonNullable<typeof value> => !!value)
-      : history.listedEpisodes({ ...(input.contact_id ? { person: input.contact_id } : {}), ...(input.occasion_id ? { occasion: input.occasion_id } : {}) }, limit, offset);
+      : history.listedEpisodes({ ...(input.contact_id ? { person: input.contact_id } : {}), ...(input.occasion_id ? { occasion: input.occasion_id } : {}),
+        ...(input.asset_id ? { subject: { collection: 'asset', id: input.asset_id } } : {}) }, limit, offset);
+    // D-343 slice 5 (D-342 §7) — a pursuit's activity, from the owner's closing records: the day they
+    // last did it, and on how many of the last 30 days, on the server's clock. For the Pursuits tab
+    // and a pursuit's own page.
+    const pursuitIds = input.pursuits === 'only' ? assets.map(row => row.id)
+      : input.asset_id && assets[0]?.class_id === PURSUIT_CLASS_ID ? [assets[0].id] : undefined;
+    let pursuit_activity: YoursSnapshot['pursuit_activity'];
+    if (pursuitIds) {
+      const zone = deps.timeZone?.() ?? 'UTC'; const first = shiftAssetDate(assetDateAt(now(), zone), { amount: 29, unit: 'days' }, -1);
+      const days = new Map<string, Set<string>>();
+      for (const row of history.doneFor('asset', pursuitIds)) {
+        const seen = days.get(row.id) ?? new Set<string>(); seen.add(assetDateAt(row.from, zone)); days.set(row.id, seen);
+      }
+      pursuit_activity = Object.fromEntries([...days].map(([id, seen]) => {
+        const sorted = [...seen].sort(); return [id, { last_on: sorted.at(-1)!, days_30: sorted.filter(day => day >= first).length }];
+      }));
+    }
     let derived: import('@recued/contracts').EpisodeInput[] | undefined;
     if (input.include_derived && deps.episodeRuntime) {
       const computed = await deps.episodeRuntime.ownerEpisodes(); const kept = new Map<string, import('@recued/contracts').Episode>();
@@ -1218,7 +1278,8 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       ...(input.asset_id && assets[0]?.holder_contact ? { holder: holderOf(assets[0].holder_contact) } : {}),
       related_assets: [...new Map([...(parent ? [parent] : []), ...descendants, ...linked].map(asset => [asset.id, asset])).values()], total_assets,
       ...(input.asset_filter ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}), classes: classes.list(), proposals: shown,
-      ...(input.asset_sphere ? { asset_sphere: input.asset_sphere } : {}),
+      ...(input.asset_sphere ? { asset_sphere: input.asset_sphere } : {}), ...(input.pursuits ? { pursuits: input.pursuits } : {}),
+      ...(pursuit_activity ? { pursuit_activity } : {}),
       ...(asset_summaries ? { asset_summaries } : {}), total_proposals: proposals.count(), matching_proposals: proposals.count(input.proposal_kind), occurrences,
       household: { telegram: household.telegram(), ...(deps.homeAssistant ? { home_assistant: deps.homeAssistant.read() } : {}),
         ...(sharedAssets ? { shared_assets: sharedAssets } : {}),
@@ -1301,7 +1362,13 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       const destinations = await notifier?.getReminderDestinations();
       return { proposal_count: proposals.count(), newest_proposal: newest ? { id: newest.id, title: newest.title } : null,
         phone_ready: reachesPhone(destinations?.destinations),
-        unmatched_replies: (await notifier?.listUnmatchedAskReplies() ?? []).map(({ id, text, reason, created_at }) => ({ id, text, reason, created_at })) };
+        unmatched_replies: (await notifier?.listUnmatchedAskReplies() ?? []).map(({ id, text, reason, created_at }) => ({ id, text, reason, created_at })),
+        // D-343 slice 4 — Today offers "Close the day" only where it can open the conversation.
+        ...(deps.openNoticeConversation ? { close_day: true as const } : {}),
+        // D-340 slice 2 — and "Daily stream" once the streams took over.
+        ...(scheduled?.streamsActive() ? { stream: true as const } : {}),
+        // D-340 slice 4 — and today's AI suggestions, at the top of Today.
+        ...await (async () => { const suggestions = await scheduled?.todaySuggestions(); return suggestions ? { suggestions } : {}; })() };
     },
     bind(block: NotificationBlock) { notifier = block; },
     async tick() { if (deps.isVaultUnlocked?.() === false) return; await intake.scan(); deps.learning?.refreshPending(); refreshQuestions(); refreshClassUpdates(); refreshTrips(); await refreshEvidence(); mailProof.scan(); publishProposalEvents(proposals, deps.situations, spheres); },

@@ -28,6 +28,7 @@ import { runningAsPackagedBinary } from './packaged-binary.js';
 // come to disagree about one machine; importing the update profile's copy
 // would instead breach the per-profile module graph `bin-router` ratchets.
 import { liveServerHolding } from './lifecycle/instance-lock.js';
+import { pidWasReused, processStartIdentity } from './lifecycle/process-identity.js';
 import { SUPERVISE_STOP_FILE, SUPERVISOR_COPY_NAME } from './launcher/outer-supervisor.js';
 import { compareVersions } from '@recued/release';
 import { SERVER_VERSION } from './server-version.js';
@@ -50,13 +51,26 @@ const resolvePaths = (dbPath: string) => {
   };
 };
 
-/** Read PID from the pidfile. Returns null if missing or unparseable. */
-const readPid = (pidFile: string): number | null => {
+/** What the pidfile says: the PID on its first line and, on its second, when
+ *  that process started (`processStartIdentity`). A pidfile from before the
+ *  second line was written, or from a platform that cannot say, has only the
+ *  PID. Returns null if missing or unparseable. */
+interface PidRecord { pid: number; start?: string }
+const readPid = (pidFile: string): PidRecord | null => {
   if (!existsSync(pidFile)) return null;
-  const raw = readFileSync(pidFile, 'utf-8').trim();
-  const pid = parseInt(raw, 10);
-  return isNaN(pid) ? null : pid;
+  const [first = '', second = ''] = readFileSync(pidFile, 'utf-8').trim().split('\n');
+  const pid = parseInt(first, 10);
+  if (isNaN(pid)) return null;
+  const start = second.trim();
+  return start.length > 0 ? { pid, start } : { pid };
 };
+
+/** ⛔ THE SERVER NEVER REMOVES ITS PIDFILE, so after any reboot it names a
+ *  number that may now belong to another process. Alive is not enough: it
+ *  must still be the process `recued start` launched, or `recued stop` kills
+ *  whatever inherited the number (measured on 26.11.3, 2026-11-06). */
+const pidfileProcessAlive = (record: PidRecord): boolean =>
+  isAlive(record.pid) && !pidWasReused(record.pid, record.start);
 
 /** Check if a process with the given PID is alive. */
 const isAlive = (pid: number): boolean => {
@@ -201,15 +215,15 @@ export const daemonStart = async (opts: DaemonOptions): Promise<void> => {
   const { pidFile, logFile } = resolvePaths(opts.dbPath);
 
   // Check for already running
-  const existingPid = readPid(pidFile);
-  if (existingPid && isAlive(existingPid)) {
+  const existing = readPid(pidFile);
+  if (existing && pidfileProcessAlive(existing)) {
     const healthy = await pingHealth(opts.port);
-    console.log(`Server already running (pid ${existingPid})${healthy ? '' : ' — not responding to health check'}`);
+    console.log(`Server already running (pid ${existing.pid})${healthy ? '' : ' — not responding to health check'}`);
     return;
   }
 
   // Clean up stale pidfile
-  if (existingPid) {
+  if (existing) {
     try { unlinkSync(pidFile); } catch {}
   }
 
@@ -243,7 +257,8 @@ export const daemonStart = async (opts: DaemonOptions): Promise<void> => {
     process.exit(1);
   }
 
-  writeFileSync(pidFile, String(child.pid));
+  const childStart = processStartIdentity(child.pid);
+  writeFileSync(pidFile, childStart === null ? String(child.pid) : `${child.pid}\n${childStart}\n`);
 
   // Wait briefly and verify the process is alive
   await new Promise(r => setTimeout(r, 500));
@@ -296,9 +311,10 @@ export const daemonStop = async (
   // would count a boot failure and start the server again
   // (`launcher/outer-supervisor.ts`).
   if (platform === 'win32') writeFileSync(join(dirname(pidFile), SUPERVISE_STOP_FILE), '');
-  const pid = readPid(pidFile);
+  const record = readPid(pidFile);
+  const pid = record?.pid ?? null;
 
-  if (!pid) {
+  if (!record || !pid) {
     // ⛔⛔ SAYING "I CANNOT KNOW" WAS HONEST AND STILL A DEAD END. The previous
     // message correctly stopped claiming the server was not running — a pidfile
     // records only what `recued start` launched — but it left the owner with
@@ -331,8 +347,10 @@ export const daemonStop = async (
     return;
   }
 
-  if (!isAlive(pid)) {
-    console.log(`Stale pidfile (pid ${pid} is not running). Cleaning up.`);
+  if (!pidfileProcessAlive(record)) {
+    console.log(isAlive(pid)
+      ? `Stale pidfile (pid ${pid} now belongs to another process, not the server \`recued start\` launched). Cleaning up.`
+      : `Stale pidfile (pid ${pid} is not running). Cleaning up.`);
     try { unlinkSync(pidFile); } catch {}
   } else {
     await terminate(pid, `pid ${pid}`);
@@ -345,6 +363,16 @@ export const daemonStop = async (
   if (holder && holder.pid !== pid) await terminate(holder.pid, `pid ${holder.pid}, port ${holder.bind_port}`);
 };
 
+/** How long `recued stop` waits for the server's own drain before SIGKILL.
+ *
+ *  ⛔ IT WAS 5 s, AND THE DRAIN MAY TAKE 30: `lifecycle.drain_timeout_s`, with
+ *  every step capped at 5 s, so about 40 at most. A server still draining was
+ *  killed part-way, losing its audit flush, its database close and its lock
+ *  release. Under the start-at-login units `recued-supervise` read that SIGKILL
+ *  as a crash and started the server again, so `stop` restarted it. 45 s waits
+ *  out the whole drain. */
+const STOP_SIGKILL_AFTER_MS = 45_000;
+
 /** SIGTERM, wait, then SIGKILL — the one stop behaviour both routes share, so a
  *  `serve`-started server is not stopped more abruptly than a `start`-ed one. */
 const terminate = async (pid: number, label: string): Promise<void> => {
@@ -354,14 +382,20 @@ const terminate = async (pid: number, label: string): Promise<void> => {
     console.log(`Server (${label}) exited before it could be signalled.`);
     return;
   }
-  for (let i = 0; i < 20; i += 1) {
+  const started = performance.now();
+  let told = false;
+  while (performance.now() - started < STOP_SIGKILL_AFTER_MS) {
     await new Promise((r) => setTimeout(r, 250));
     if (!isAlive(pid)) {
       console.log(`Server stopped (${label}).`);
       return;
     }
+    if (!told && performance.now() - started >= 5_000) {
+      told = true;
+      console.log(`Waiting for the server (${label}) to finish shutting down…`);
+    }
   }
-  console.error(`Server (${label}) did not stop after 5s. Sending SIGKILL.`);
+  console.error(`Server (${label}) did not stop after ${STOP_SIGKILL_AFTER_MS / 1000}s. Sending SIGKILL.`);
   try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
   console.log('Killed.');
 };
@@ -451,7 +485,8 @@ export const daemonStatus = async (
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> => {
   const { pidFile, logFile } = resolvePaths(opts.dbPath);
-  const pidFromFile = readPid(pidFile);
+  const pidRecord = readPid(pidFile);
+  const pidFromFile = pidRecord?.pid ?? null;
   // ⛔ A STALE PIDFILE IS NOT A STOPPED SERVER. Its process is gone, which says
   // nothing about the realm or the port: an autostart unit may be serving right
   // now. This branch used to print `Status: stopped (stale pidfile …)` and
@@ -459,7 +494,7 @@ export const daemonStatus = async (
   // "running" on the very next run, because this call had removed the file
   // (reported 2026-09-28). Clear it, then answer the way the no-pidfile path
   // does — from the realm lock, then the port.
-  const stalePid = pidFromFile && !isAlive(pidFromFile) ? pidFromFile : null;
+  const stalePid = pidRecord && !pidfileProcessAlive(pidRecord) ? pidRecord.pid : null;
   if (stalePid !== null) {
     try { unlinkSync(pidFile); } catch {}
   }
@@ -566,8 +601,50 @@ export const daemonStatus = async (
   if (autoDisabledBlock) console.log(autoDisabledBlock);
 };
 
-/** Restart: stop then start. */
-export const daemonRestart = async (opts: DaemonOptions): Promise<void> => {
-  await daemonStop(opts);
-  await daemonStart(opts);
+/** Supervisor modes whose supervisor relaunches the server when it exits with
+ *  its restart code: the generated autostart units (both run `recued-supervise`,
+ *  and a bare unit restarts on any non-zero exit) and the docker-thin launcher. */
+const RELAUNCHED_MODES: ReadonlySet<string> = new Set(['systemd', 'launchd', 'docker-thin']);
+
+/** Restart.
+ *
+ *  ⛔ A SUPERVISED SERVER IS ASKED TO RESTART ITSELF. Stop-then-start stopped the
+ *  start-at-login server cleanly — so its unit did not bring it back — and then
+ *  started a fresh one as a plain child of this CLI: unsupervised, without the
+ *  unit's environment (`RECUED_CHANNEL`), and in `dev` mode, which hides
+ *  restart and refuses updates. SIGUSR2 makes the server drain and exit with
+ *  its restart code, which its supervisor relaunches on — no unit name, no
+ *  sudo. The lock names the holder's supervisor; a server that names none (an
+ *  older one) or names one nothing relaunches is stopped and started as before.
+ *  Windows has no SIGUSR2, and its `recued start` launches the supervisor. */
+export const daemonRestart = async (
+  opts: DaemonOptions,
+  platform: NodeJS.Platform = process.platform,
+  run: { stop: typeof daemonStop; start: typeof daemonStart; waitMs?: number } = {
+    stop: daemonStop, start: daemonStart,
+  },
+): Promise<void> => {
+  const holder = platform === 'win32' ? null : liveServerHolding(opts.dbPath);
+  if (holder?.supervisor !== undefined && RELAUNCHED_MODES.has(holder.supervisor)) {
+    try {
+      process.kill(holder.pid, 'SIGUSR2');
+    } catch {
+      console.log(`Server (pid ${holder.pid}) exited before it could be asked to restart.`);
+      return;
+    }
+    console.log(`Asked the server (pid ${holder.pid}) to restart under its ${holder.supervisor} supervisor…`);
+    const deadline = Date.now() + (run.waitMs ?? 90_000);
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250));
+      const next = liveServerHolding(opts.dbPath);
+      if (next !== null && next.pid !== holder.pid) {
+        console.log(`Server restarted (pid ${holder.pid} → ${next.pid}, port ${next.bind_port}).`);
+        return;
+      }
+    }
+    console.log('It has not come back yet: it may still be draining or starting. `recued status` shows when it is up.');
+    return;
+  }
+  await run.stop(opts, platform);
+  await run.start(opts);
 };

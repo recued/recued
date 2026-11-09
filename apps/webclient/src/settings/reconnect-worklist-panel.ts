@@ -1,7 +1,7 @@
 import { isPackReconnectWorklist, type PackReconnectGroup, type PackReconnectRequest,
   type PackReconnectResponse } from '@recued/contracts';
 import { isAuthenticationRepairWorklist, CONNECTION_NAME_REGEX, type AuthenticationRepairCaller, type AuthenticationRepairWorklist, type AuthenticationRepairGroup, type AuthenticationRepairTarget } from '@recued/contracts';
-import { connectionsAccountAddress, connectionsReviewAccessAddress, connectionsOAuthAppsAddress, connectionsVerifyAccessAddress } from '../connections/connections-navigation.js';
+import { connectionsAccountAddress, connectionsEnrollAddress, connectionsReviewAccessAddress, connectionsOAuthAppsAddress, connectionsVerifyAccessAddress } from '../connections/connections-navigation.js';
 import { cloudFileSourceSlug } from '../data/cloud-file-explorer.js';
 import { authenticationIncidentHistoryHref } from '@recued/ui-shared';
 import type { ReconnectWorklistReturn } from './reconnect-worklist-continuity.js';
@@ -19,6 +19,10 @@ export const createReconnectWorklistPanel = (deps: {
   verify?: ManagedOAuthCaller;
   onReconnect?(group: PackReconnectGroup): void;
   returned?: ReconnectWorklistReturn;
+  /** D-321 S8 — what its count line is called. The Packs page has its own
+   *  per-pack "Needs attention", so this one is named for what it holds there.
+   *  Default: "Needs attention". */
+  attentionLabel?: string;
 }) => {
   const doc = deps.document;
   let host: HTMLElement | null = null;
@@ -67,7 +71,7 @@ export const createReconnectWorklistPanel = (deps: {
     const count = (repairs?.groups.filter(group => group.issues.length).length ?? 0)
       + (data?.groups.filter(group => !group.reviewed).length ?? 0) + (data?.unresolved_packs.length ?? 0);
     const unavailable = !!error || !!repairError || !!repairs?.unavailable.length;
-    const summary = node('summary', loading ? 'Reading authentication status…' : unavailable ? 'Authentication status needs a refresh' : !data && !repairs ? 'Authentication status not yet read' : count ? `Needs attention (${count})` : 'Authentication status · No recorded problems');
+    const summary = node('summary', loading ? 'Reading authentication status…' : unavailable ? 'Authentication status needs a refresh' : !data && !repairs ? 'Authentication status not yet read' : count ? `${deps.attentionLabel ?? 'Needs attention'} (${count})` : 'Authentication status · No recorded problems');
     summary.setAttribute('data-authentication-repairs-summary', ''); disclosure.appendChild(summary);
     disclosure.setAttribute('data-worklist-state', loading ? 'loading' : count ? 'attention' : unavailable ? 'unavailable' : !data && !repairs ? 'unread' : 'clear');
     const section = node('section'); section.className = 'reconnect-worklist';
@@ -125,8 +129,27 @@ export const createReconnectWorklistPanel = (deps: {
           li.appendChild(node('span', ' · ' + item.slot)); list.appendChild(li);
         }
         article.appendChild(list);
-        const details = node('details'); details.appendChild(node('summary', 'Required permissions'));
-        details.appendChild(node('p', group.required_scopes.join(', '))); article.appendChild(details);
+        // D-321 P5 — no set-up connection behind it: say so, and offer the vendor's
+        // form for each pack's sign-in. An API-key pack has no permissions to list.
+        const needed = group.items.filter(item => item.connection_needed === true);
+        if (group.required_scopes.length > 0) {
+          const details = node('details'); details.appendChild(node('summary', 'Required permissions'));
+          details.appendChild(node('p', group.required_scopes.join(', '))); article.appendChild(details);
+        }
+        if (needed.length > 0) {
+          article.appendChild(node('p', 'No connection is set up for this yet, so its actions cannot run.'));
+          const setUp = row('reconnect-worklist-actions');
+          for (const item of needed) {
+            const target = connectionsEnrollAddress(item.vendor ?? item.slot, { slug: item.pack_slug, slot: item.slot }).hash;
+            const fix = link(needed.length === 1 ? 'Set up →' : 'Set up for ' + item.pack_name + ' →', target,
+              'reconnect-worklist-link reconnect-worklist-button-link');
+            fix.setAttribute('data-reconnect-worklist-set-up', item.pack_slug);
+            setUp.appendChild(fix);
+          }
+          article.appendChild(setUp);
+          parent.appendChild(article);
+          return;
+        }
         if (group.reviewed) article.appendChild(node('p', 'Marked reviewed. Vendor permission evidence is unchanged.'));
         else if (group.items.some(i => i.coverage === 'missing')) article.appendChild(node('p', 'Recorded grants are missing: '
           + [...new Set(group.items.flatMap(i => i.missing_scopes))].join(', ') + '. Reconnect to request them.'));

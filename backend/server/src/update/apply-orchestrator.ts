@@ -138,6 +138,12 @@ export interface ApplyOrchestratorPorts {
   persistStagedLibSig?: (sig: string) => void;
   /** Take the pre-migration SQLite snapshot (mechanism c). */
   takeSnapshot: () => Promise<void>;
+  /** Can the binary a rollback returns to run on the schema the staged one creates?
+   *  Each boots on an empty realm (`schema-compat.ts`). Asked only when the manifest
+   *  says `migration: false`. `null`: there is no binary to return to, so nothing to
+   *  compare. Throws when it cannot tell. Absent (harnesses, compositions that do not
+   *  wire it) → the manifest's `migration` decides alone, as it always did. */
+  compareSchemas?: (input: { stagedAddon: boolean }) => Promise<{ breaking: string[] } | null>;
   /** Realm-scoped snapshot identity persisted on `apply_started`, so a sibling
    *  database sharing the ledger directory cannot mistake this apply for its own. */
   snapshotRef?: string;
@@ -303,7 +309,7 @@ export type RollbackResult =
 
 export type BootDecision =
   | { action: 'commit'; releaseIdentity: string }
-  | { action: 'auto-revert'; releaseIdentity: string; reason: string }
+  | { action: 'auto-revert'; releaseIdentity: string; reason: string; failedBoots?: number }
   | { action: 'revert-complete'; releaseIdentity: string }
   | { action: 'staging-aborted'; releaseIdentity: string }
   | { action: 'webclient-recovery-failed'; releaseIdentity: string; reason: string }
@@ -316,7 +322,8 @@ const TERMINAL_KINDS: ReadonlySet<UpdateLedgerKind> = new Set<UpdateLedgerKind>(
 ]);
 
 export interface InFlightApply {
-  /** The `apply_started` entry of the unterminated apply. */
+  /** The `apply_started` entry of the unterminated apply, with `migration` true once a
+   *  later entry of it says so (see `deriveInFlight`). */
   entry: UpdateLedgerEntry;
   /** Whether it reached `apply_staged` (the binary was actually swapped in). */
   staged: boolean;
@@ -332,9 +339,15 @@ const deriveInFlight = (ledger: UpdateLedger): InFlightApply | null => {
   for (const e of ledger.readAll()) {
     if (e.kind === 'apply_started') {
       pending.push({ entry: e, staged: false });
-    } else if (e.kind === 'apply_staged') {
+    } else if (e.kind === 'apply_staged' || e.kind === 'snapshot_taken') {
       const m = pending.find((p) => p.entry.release_identity === e.release_identity);
-      if (m) m.staged = true;
+      if (m && e.kind === 'apply_staged') m.staged = true;
+      // ⛔ `apply_started` SAYS WHAT THE MANIFEST SAID. The server's own schema
+      // comparison can take the snapshot anyway (`runApply`), and only the entries
+      // written from then on say so: what a revert restores is what was taken.
+      if (m && e.migration === true && m.entry.migration !== true) {
+        m.entry = { ...m.entry, migration: true };
+      }
     } else if (TERMINAL_KINDS.has(e.kind)) {
       const idx = pending.findIndex((p) => p.entry.release_identity === e.release_identity);
       if (idx >= 0) pending.splice(idx, 1);
@@ -967,6 +980,55 @@ const runApplyLeased = async (
     }
   }
 
+  // ⛔⛔ THE MANIFEST'S `migration` IS TYPED BY HAND, AND IT DECIDES WHETHER A ROLLBACK
+  // HAS A SNAPSHOT TO RESTORE. `false` takes none, so a rollback runs this binary on
+  // whatever schema the new one left. The release checks the flag against the live
+  // release and the oldest one `min_supported` supports; a server older than that is
+  // not covered. So before a `false` this server asks for itself: the binary a rollback
+  // returns to and the staged one each boot on an empty realm, and a change the first
+  // cannot run on takes the snapshot anyway (`schema-compat.ts`, the release's own
+  // rules). It only ever adds a snapshot; a `true` is not second-guessed.
+  //
+  // ⚠ A COMPARISON THAT CANNOT TELL TAKES THE SNAPSHOT TOO. A staged binary that cannot
+  // boot an empty realm is the one most likely to fail its first real boot, which is
+  // exactly when an auto-revert needs the database back.
+  //
+  // Here, after both artifacts are verified and before anything is promoted, so a
+  // snapshot the volume cannot hold refuses the update while there is nothing to undo.
+  // Measured after the download, so the headroom it asks for is slack, not the artifact.
+  let migration = ctx.migration;
+  let snapshotReason: string | undefined;
+  if (!ctx.migration && ports.compareSchemas) {
+    try {
+      const compared = await ports.compareSchemas({ stagedAddon: swapSidecar });
+      if (compared !== null && compared.breaking.length > 0) {
+        migration = true;
+        snapshotReason = `${ctx.fromVersion} cannot run on ${compared.breaking.length} change(s) `
+          + `${ctx.toVersion} makes to the database: ${compared.breaking.slice(0, 3).join('; ')}`
+          + (compared.breaking.length > 3 ? '; …' : '');
+      }
+    } catch (err) {
+      migration = true;
+      snapshotReason = `the schema comparison could not tell whether ${ctx.fromVersion} can run on `
+        + `${ctx.toVersion}'s database (${err instanceof Error ? err.message.split('\n')[0] : String(err)})`;
+    }
+    if (migration) {
+      const storage = checkStorageHeadroom(ports, true);
+      if (!storage.ok) {
+        ports.discardStaged();
+        appendEntry(ports, 'apply_reverted', ctx, {
+          trigger: ctx.trigger,
+          detail: `storage: a snapshot is needed because ${snapshotReason}, and the ${storage.detail}`,
+          revert_reason: 'other',
+        });
+        return { status: 'insufficient-storage', detail: storage.detail };
+      }
+    }
+  }
+  /** What the rest of this apply records and does: the manifest's context, with
+   *  `migration` as the comparison left it. */
+  const applied: ApplyContext = migration === ctx.migration ? ctx : { ...ctx, migration };
+
   // D-152 § A.16 — best-effort: sync the version-matched webclient bundle to
   // RECUED_WEBCLIENT_DIR so the self-updated server serves a matched
   // `/webclient/*`. A webclient failure leaves the live bundle in place (the
@@ -1050,7 +1112,7 @@ const runApplyLeased = async (
     if (!drainOk) {
       ports.discardStaged();
       const webclientRecovered = unpromoteWebclient();
-      appendEntry(ports, 'apply_reverted', ctx, {
+      appendEntry(ports, 'apply_reverted', applied, {
         trigger: ctx.trigger,
         detail: 'stage: the realm was not quiesced at commit time, so the database may still be '
           + 'open — nothing was swapped'
@@ -1065,21 +1127,26 @@ const runApplyLeased = async (
     // goes BEFORE the swap so a later rollback can restore it (mechanism c), and
     // so a failed snapshot leaves the binary untouched.
     try {
-      if (ctx.migration) {
+      if (applied.migration) {
         await ports.takeSnapshot();
-        appendEntry(ports, 'snapshot_taken', ctx, { trigger: ctx.trigger });
+        // Why, when the manifest did not ask for it: the record a later reader of the
+        // ledger has, since `apply_started` still says what the manifest said.
+        appendEntry(ports, 'snapshot_taken', applied, {
+          trigger: ctx.trigger,
+          ...(snapshotReason === undefined ? {} : { detail: `snapshot: ${snapshotReason}` }),
+        });
       }
       ports.recordGenerationTransition?.({
         fromVersion: ctx.fromVersion,
         toVersion: ctx.toVersion,
-        migration: ctx.migration,
+        migration: applied.migration,
       });
       ports.preserveAndSwap(swapSidecar);
     } catch (err) {
       ports.discardStaged();
       const webclientRecovered = unpromoteWebclient();
       const detail = err instanceof Error ? err.message : 'stage error';
-      appendEntry(ports, 'apply_reverted', ctx, {
+      appendEntry(ports, 'apply_reverted', applied, {
         trigger: ctx.trigger,
         detail: `stage: ${detail}`
           + (webclientRecovered ? '' : '; webclient recovery remains pending before the next serve'),
@@ -1090,7 +1157,7 @@ const runApplyLeased = async (
       });
       return;
     }
-    appendEntry(ports, 'apply_staged', ctx, { trigger: ctx.trigger });
+    appendEntry(ports, 'apply_staged', applied, { trigger: ctx.trigger });
    } catch (err) {
     // ⛔ NEVER REJECT INTO THE DRAIN. `compose-lifecycle` awaits this callback
     // and routes a rejection to `exit(1)` rather than the restart handoff — so
@@ -1432,7 +1499,7 @@ export const evaluatePendingApplyOnBoot = (
   // auto-revert at the threshold (signatures prove authenticity, not health).
   const count = ports.bootFailureCounter.increment(release);
   if (shouldAutoRevert(count)) {
-    return { action: 'auto-revert', releaseIdentity: release, reason: `boot health failed ${count} times` };
+    return { action: 'auto-revert', releaseIdentity: release, reason: `boot health failed ${count} times`, failedBoots: count };
   }
   return { action: 'continue' };
 };

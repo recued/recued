@@ -81,8 +81,13 @@ export interface ProductionPathListenerCoordinatorOptions {
   /** LAN listener port. Defaults to standard port 80 per spec § A.6.
    *  Tests / dev override to 0 (OS-picked). */
   lan_port?: number;
-  /** Public listener port. Defaults to standard port 443 per spec § A.6. */
+  /** Public listener port. Defaults to standard port 443 per spec § A.6. A port an `apply()` asks
+   *  for replaces it from then on (see `requestedPorts`). */
   public_port?: number;
+  /** Called after every `apply()` with each listener's status, whoever asked for it: how the server
+   *  learns the port a listener actually bound when an exposure flip, not a port change, bound it
+   *  (a port asked for while its listener was off). An observer: a throw is swallowed. */
+  on_applied?: (statuses: PathListenerStatus[]) => void;
   /** Optional structured logger forwarded to the listener set. */
   log?: (
     level: 'info' | 'warn' | 'error',
@@ -115,6 +120,7 @@ export const createProductionPathListenerCoordinator = (
     tls_domain_lookup,
     lan_port,
     public_port,
+    on_applied,
     log,
   } = opts;
 
@@ -142,6 +148,17 @@ export const createProductionPathListenerCoordinator = (
   // ⇒ State that looks like it tracks something, and does not, is worse than no
   // state: the next reader budgets for a port-change decision that was never
   // being made here.
+  //
+  // ⛔⛔ `requestedPorts` IS NOT THAT, AND IT IS READ ON EVERY APPLY. It holds the ports an apply
+  // ASKED for (a live `public_port` change), not the ones bound. Without it, an apply that names
+  // no port (every exposure flip) fell back to the port the set was BUILT with: a moved public
+  // listener went back to its boot port, 443, at the next flip, while the server kept advertising
+  // the moved one. Found by D-341's live drive, 2026-11-08.
+  // - A port asked for while its listener is off is bound when a path makes it bind.
+  // - A port that failed to bind is still the one asked for: the listener stays down with its
+  //   failure rather than silently serving the old port (`compose-listeners.ts`), and the next
+  //   apply tries it again.
+  let requestedPorts: { lan?: number; public?: number } = {};
   // Serialize rebinds — a concurrent `apply()` while a previous one is
   // still draining listeners would race the active reference + bind two
   // sets on the same port. The state machine's own concurrency guard
@@ -154,6 +171,8 @@ export const createProductionPathListenerCoordinator = (
     resolution: Parameters<PathListenerCoordinator['apply']>[0]['resolution'],
     bind_addresses: Parameters<PathListenerCoordinator['apply']>[0]['bind_addresses'],
   ): Promise<PathListenerStatus[]> => {
+    const lanPort = requestedPorts.lan ?? lan_port;
+    const publicPort = requestedPorts.public ?? public_port;
     const set = createPathListenerSet({
       resolution,
       handlers,
@@ -164,9 +183,9 @@ export const createProductionPathListenerCoordinator = (
       cert_chain,
       ...(hostname_binding_lookup ? { hostname_binding_lookup } : {}),
       ...(tls_domain_lookup ? { tls_domain_lookup } : {}),
-      ...(lan_port !== undefined ? { lan_port } : {}),
+      ...(lanPort !== undefined ? { lan_port: lanPort } : {}),
       lan_bind_address: bind_addresses.lan,
-      ...(public_port !== undefined ? { public_port } : {}),
+      ...(publicPort !== undefined ? { public_port: publicPort } : {}),
       public_bind_address: bind_addresses.public,
       ...(log ? { log } : {}),
     });
@@ -240,14 +259,23 @@ export const createProductionPathListenerCoordinator = (
         // `applyResolution`, which stops and rebinds ONLY the listener whose
         // port moved and leaves the other serving — so changing `public_port`
         // never touches the LAN socket the owner may be connected through.
-        const effectivePorts = {
+        // Every apply passes the ports asked for so far, not only this call's.
+        requestedPorts = {
+          ...requestedPorts,
           ...(ports?.lan !== undefined ? { lan: ports.lan } : {}),
           ...(ports?.public !== undefined ? { public: ports.public } : {}),
         };
         const statuses = active
-          ? await active.applyResolution(resolution, effectivePorts)
+          ? await active.applyResolution(resolution, requestedPorts)
           : await buildAndStart(resolution, bind_addresses);
         lastStatuses = statuses;
+        try {
+          on_applied?.(statuses);
+        } catch (err) {
+          log?.('warn', 'listener status observer failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         const lan = statuses.find((s) => s.listener === 'lan');
         const pub = statuses.find((s) => s.listener === 'public');
         // Both slots always populate — `start()` returns one row per

@@ -84,6 +84,12 @@ export const decideExecutionCaseOffer = (
   return { ask: true, verdicts };
 };
 
+/** D-335 slice W3 — how many steps the turn did in the owner's browser, when it did any: the ask
+ *  says so, and "That was right" keeps them as a flow to make a recipe of. */
+export interface ExecutionCaseOfferBrowser {
+  steps: number;
+}
+
 /** Raise the offer for a decided turn. Returns null when the decision said no,
  *  so a caller can hand every closed turn here without pre-filtering.
  *
@@ -97,8 +103,15 @@ export const offerExecutionCase = async (
   observation: CaseSourceObservation,
   decision: ExecutionCaseOfferDecision,
   turn_id: string,
+  browser?: ExecutionCaseOfferBrowser,
 ): Promise<{ ask_id: string } | null> => {
   if (!decision.ask) return null;
+  // ⛔ Not the sites either: the steps are named by their count alone, for the same reason the
+  // request is not quoted. Only "That was right" keeps them, so the line names that answer.
+  const kept = browser !== undefined && browser.steps > 0 && decision.verdicts.includes('accepted')
+    ? ` It also did ${browser.steps} ${browser.steps === 1 ? 'step' : 'steps'} in your browser: saying it was right`
+      + ' keeps them in Settings → Learning, to make a recipe of.'
+    : '';
   return raiseAsk(
     {
       title: 'Worth remembering?',
@@ -109,7 +122,7 @@ export const offerExecutionCase = async (
       text:
         `Recued worked through ${observation.flow_pattern.tool_sequence.length}`
         + ' steps to answer that. Telling it how the result turned out lets it'
-        + ' go straight there next time.',
+        + ` go straight there next time.${kept}`,
     },
     decision.verdicts.map((verdict) => ({
       id: verdict,
@@ -124,6 +137,8 @@ export const offerExecutionCase = async (
         turn_id,
         observation_id: observation.observation_id,
         root_request_id: observation.root_request_id,
+        // D-335 slice W3 — a count, never the steps: they stay in memory until the answer.
+        ...(kept !== '' ? { browser_steps: browser!.steps } : {}),
       },
     },
   );

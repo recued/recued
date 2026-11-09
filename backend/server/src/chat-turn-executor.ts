@@ -61,7 +61,7 @@ import { createMailWorkEvidence, parseMailWorkEvidence } from './mail-work-evide
 
 import { resolveContextSlice, type ContextSliceRequest } from './chat-context-slice.js';
 import { utcOffsetLabel } from './chat-clock.js';
-import { chatToolCallFailureResult, isNonTerminalToolResult, savedChatToolCallId } from './chat-tool-call-context.js';
+import { chatToolCallFailureResult, isNonTerminalToolResult, markChatToolCallSaved, savedChatToolCallId } from './chat-tool-call-context.js';
 import {
   CONTEXT_OMISSION_NOTICE,
   buildEvictionBriefing,
@@ -71,6 +71,7 @@ import {
   FORCE_WAIVABLE_OUTCOMES,
   stripAliasBearing,
   type BriefOutcome,
+  briefAfterWait,
   briefAsPriorToolCall,
   withSourceReadBriefGuidance,
   clearSessionBrief,
@@ -85,7 +86,9 @@ import {
   buildBriefPrompt,
   appendUnfoldedUserMessage,
   peekUnfoldedUserMessages,
-  hasStalePendingStatement,
+  pendingStatementsFull,
+  restoreUnfoldedUserMessages,
+  statementsRestoreNeeded,
   clearIngestedUserMessages,
   clearUnfoldedUserMessages,
   getSessionBrief,
@@ -100,6 +103,7 @@ import {
   ungroundedArgumentsDetail,
 } from './tool-argument-grounding.js';
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
+import { BOUNDED_RUN_LAST_ROUND } from './chat-turn-budget.js';
 import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
@@ -143,6 +147,8 @@ import {
   formatLlmRetryTime,
 } from '@recued/contracts';
 import { dispatchToolCalls } from '@recued/middleware';
+import { keptTabPdfs, withTabPdfReadNote } from './chat-tab-pdf-read.js';
+import { carriedResults, carryRefusal, closingFoldLimit, estimatedTokens, nextPacketTokens } from './chat-turn-carry.js';
 import { estimateConservativeMessagesTokens, isContextOverflowRejection, LLMError } from '@recued/llm';
 import type { LLMMessageRole } from '@recued/llm';
 import type {
@@ -163,7 +169,7 @@ import type {
   ExecutionCaseProposalCritique,
 } from './execution-case-critic.js';
 import { noteBrowserImagesForChat } from './mcp-browser-images.js';
-import { approvalChannelWords } from './run-result-agent-projection.js';
+import { approvalChannelWords, withoutRenderAlias } from './run-result-agent-projection.js';
 
 /** D-164 P6.3 — per-channel default tier baseline for the chat surface.
  *  The chat channel pins `'fast'` directly; SI / session preference /
@@ -395,6 +401,20 @@ const CONTEXT_TRIM_LIVELOCK_MESSAGE =
   + 'Settings → AI / Models. Repeating this request unchanged will hit the same limit.';
 const OUTPUT_LENGTH_EXHAUSTED_MESSAGE =
   'The model reached its output limit before it could finish a valid response.';
+/** D-188 — the chat's model call refuses while the owner's pause holds (the emergency stop: no
+ *  model call leaves this server until Resume; `executeChatAiCall` throws it). A turn already
+ *  running when the owner paused ends at its next model call, on {@link SERVER_PAUSED_TURN_RESPONSE}. */
+export class ChatServerPausedError extends Error {
+  readonly code = 'server_paused';
+  constructor() {
+    super('The server is paused: no model call runs until it is resumed.');
+    this.name = 'ChatServerPausedError';
+  }
+}
+/** What a turn the pause stopped answers. It stays in the conversation, so the next turn's model
+ *  reads that this answer ended there (internal design notes, 2026-11-09). */
+export const SERVER_PAUSED_TURN_RESPONSE =
+  'The server was paused, so this answer stopped. Resume the server, then ask again.';
 // Re-exported from `chat-eviction-briefing` so the notice and the briefing that
 // replaces it cannot drift apart.
 const LLM_GATEWAY_CONTEXT_OMISSION_NOTICE = CONTEXT_OMISSION_NOTICE;
@@ -479,6 +499,19 @@ const llmFailureReason = (error: unknown): TransparencyDecoderUnavailableReason 
   return error instanceof Error && /^(?:no llm source matches|no llm config|AI_LLM_UNAVAILABLE\b)/i.test(error.message)
     ? 'no_source' : 'provider_failure';
 };
+/** D-347 follow-up (2026-11-08) — how long after a model call failed before any answer it is tried again,
+ *  and how fast it must have failed to be: a connection that hung before failing is not waited out twice. */
+export const NETWORK_RETRY_DELAY_MS = 1_000;
+export const NETWORK_RETRY_FAST_MS = 30_000;
+/** Whether a main-turn model call failed before any answer came back, and fast: the provider layer's
+ *  network failure ("LLM call failed: …", no HTTP status). Such a failure starts no cooldown and no
+ *  source cascade tries it again, so the turn ended on it: a head-to-head run answered "The AI provider
+ *  failed before answering." 7 s in. A failure with an answer (a 5xx, a 429, an auth error) is the
+ *  cascade's, which pauses that source, so a second try here would only meet the pause; a timeout is
+ *  not tried again, having taken its whole time. */
+export const isFastNetworkFailure = (error: unknown, elapsedMs: number): boolean =>
+  error instanceof LLMError && error.code === 'AI_LLM_UNAVAILABLE' && error.details?.status === undefined
+  && error.message.startsWith('LLM call failed: ') && elapsedMs <= NETWORK_RETRY_FAST_MS;
 /** PB7 — classify a failed main-turn call for the dedicated
  *  `engine.decoder_unavailable` transparency event (the variant the
  *  in-code "renderer can paint 'AI decoder unavailable'" note deferred).
@@ -494,6 +527,18 @@ interface ReplyFailure {
 }
 const decoderUnavailableReason = (failure: ReplyFailure): TransparencyDecoderUnavailableReason =>
   failure.decoder_reason ?? (failure.validation_issues !== undefined ? 'invalid_output' : 'provider_failure');
+/** A failed model call's error as the server's log and the turn's audit row keep it: one line, at
+ *  most 300 characters, an address without its query or fragment (where a key can ride, as Google's
+ *  `?key=` does), and no bearer token or `sk-`, `gsk_` or `AIza` key a provider's error might echo.
+ *  The answer saved for the owner never carries it. */
+export const failureDetailForRecord = (detail: string): string =>
+  detail
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s/?#]+[^\s?#]*)[?#]\S*/gi, '$1')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\b(sk-|gsk_|AIza)[A-Za-z0-9_-]{8,}/g, '$1[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
 /** The run address a held dispatch carries, which is the PAIR KEY.
  *
  *  ⚠ `undefined` means only that the halves CANNOT BE JOINED — not that the
@@ -1452,8 +1497,7 @@ interface ChatMainTurnPromptPacket {
    *  list has a floor.
    *
    *  🔑 `pending_*` MATCHES WHAT THE CODE ALREADY CALLS THESE — `PendingStatement`,
-   *  `MAX_PENDING_STATEMENT_TURNS`, `oldestPendingStatementAge`,
-   *  `hasStalePendingStatement`. The model-facing name now says the same thing
+   *  `oldestPendingStatementAge`, `pendingStatementsFull`. The model-facing name now says the same thing
    *  the implementation does: these are AWAITING capture, not a record of the
    *  conversation. */
   readonly pending_user_statements?: readonly string[];
@@ -1834,7 +1878,10 @@ export const composeChatMainTurnPromptParts = (
     ...(packet.prior_tool_pointers
       ? { prior_tool_pointers: packet.prior_tool_pointers }
       : {}),
-    ...(prior.length > 0 ? { prior_tool_calls: prior } : {}),
+    // D-335 slice Q — each result's output once: the engine's `sidebar` copy of `render` doubled
+    // every recipe result the model read (`withoutRenderAlias`). The calls themselves keep it.
+    ...(prior.length > 0 ? { prior_tool_calls: prior.map((call) => call.result === undefined ? call
+      : { ...call, result: withoutRenderAlias(call.result) }) } : {}),
     ...(packet.output_feedback ? { output_feedback: packet.output_feedback } : {}),
     ...(packet.draft_for_review ? { draft_for_review: packet.draft_for_review } : {}),
   });
@@ -1979,9 +2026,18 @@ export interface RunChatTurnInputs {
   readonly session_id: string;
   readonly turn_id: string;
   readonly mail_work?: import('@recued/contracts').MailWorkReadRequest;
+  /** D-340 slice 4 — host-only: a managed run's own tool rounds, below the chat's cap (the Agenda's and
+   *  the streams' AI suggestions, ruling 9). Its last round is told to answer with what it has. */
+  readonly tool_round_cap?: number;
   /** D-337 — host-only: the calls this conversation was waiting on, now answered, each with its
    *  outcome. The turn opens holding them, as if they had returned in the turn that made them. */
   readonly held_results?: ReadonlyArray<ChatPriorToolCall>;
+  /** D-337 — host-only: the turn's message is Recued's note that an approval was answered (a
+   *  continuation's), not the owner's. A turn that carries calls on an owner's message has none. */
+  readonly host_message?: true;
+  /** D-335 slice AK — host-only: the pages the request names, each read with this recipe tool before
+   *  the first round, as calls of the turn's own. The orchestrator chose them: none asks the owner. */
+  readonly named_pages?: ReadonlyArray<{ readonly tool_name: string; readonly page: string }>;
   /** Correlation-only origin for an owner-sent verify-before-retry turn. */
   readonly retry_of_plan_id?: string;
   readonly picker_target: ChatPickerTarget;
@@ -2194,6 +2250,21 @@ export interface RunChatTurnDeps {
     write(session_id: string, brief: RollingBrief): Promise<void>;
     clear(session_id: string): void;
   };
+  /** D-347 — the results a turn kept raw for the next turns (`chat-turn-carry.ts`), beside the brief.
+   *  Absent, every turn that did tool work closes with a fold, as before. */
+  readonly carryStore?: {
+    read(session_id: string): Promise<readonly ChatPriorToolCall[]>;
+    write(session_id: string, calls: readonly ChatPriorToolCall[]): Promise<void>;
+    clear(session_id: string): void;
+  };
+  /** D-347 follow-up 3 — what a restarted server rebuilds the owner's waiting statements from: when a
+   *  fold last took them, and the conversation's saved user messages (no copy of them is kept).
+   *  Absent, a restarted session's list starts empty, as before. */
+  readonly statementStore?: {
+    foldedAt(session_id: string): number | null;
+    recordFold(session_id: string): void;
+    savedUserMessages(session_id: string): Promise<ReadonlyArray<{ text: string; ts: number; turn_id?: string }>>;
+  };
   /** Owner Chat only, encrypted and bound to the current session. */
   readonly mailWorkEvidenceStore?: {
     read(session_id: string): Promise<string | null>;
@@ -2301,11 +2372,15 @@ export interface RunChatTurnResult {
   };
   /** Why the turn's last failed model call failed, as its
    *  `engine.decoder_unavailable` said. The gateway answers a turn that
-   *  produced no answer with this cause (D-337 follow-up 33). */
+   *  produced no answer with this cause (D-337 follow-up 33), and the turn's
+   *  audit row keeps it. */
   readonly decoder_failure?: {
     readonly reason: TransparencyDecoderUnavailableReason;
     readonly site: 'initial' | 'tool_loop';
     readonly retry_at?: number;
+    /** The call's error, as {@link failureDetailForRecord} keeps it: the cause
+     *  the classified `reason` cannot carry (D-347 follow-up, 2026-11-08). */
+    readonly detail?: string;
   };
   /** The final `AIOutput` — present iff the initial main turn
    *  succeeded (the conflict-halt + no-executor + provider-failure
@@ -3343,6 +3418,10 @@ export const runChatTurn = async (
       // catalog carries no contact PII) and the aliased body still starts with
       // it; other providers ignore it and send `body` byte-identically.
       'llm.cache_prefix': promptParts.cacheable_prefix,
+      // D-347 slice C follow-up — and the array a turn's rounds append to: the next round reads the
+      // calls through this round's last from the cache (Anthropic only; the split happens on the
+      // final, aliased body, so it holds through the PII egress).
+      'llm.cache_rolling_field': 'prior_tool_calls',
       'llm.output_format': 'json',
       ...(sourceFacts?.active ? { 'llm.output_schema': sourceFactOutputSchema(sourceFacts) } : {}),
       ...(mailEvidence ? { 'llm.output_schema': mailWorkChatOutputSchema(mailEvidence.planSnapshot(), inputs.mail_work !== undefined,
@@ -3356,7 +3435,18 @@ export const runChatTurn = async (
     // aliases every outbound packet — aliasing is the sole PII protection.
     try {
       mainCallCount += 1;
-      const result = await executeAiCall(manifest, aiInput);
+      const started = Date.now();
+      // D-347 follow-up (2026-11-08) — a call that failed fast before any answer is tried once more
+      // ({@link isFastNetworkFailure}); the line says so, so a record shows it even when the retry answers.
+      const result = await executeAiCall(manifest, aiInput).catch(async (error: unknown) => {
+        if (!isFastNetworkFailure(error, Date.now() - started)) throw error;
+        console.warn(`[chat] model call failed before any answer, trying once more — turn ${turn_id}: `
+          + failureDetailForRecord((error as Error).message));
+        await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_DELAY_MS));
+        deps.assertActive?.();
+        mainCallCount += 1;
+        return executeAiCall(manifest, aiInput);
+      });
       // Executor return is wire-level untrusted. Coerce a real model's
       // envelope deviations (dropped empty `events`/`tool_calls`, omitted
       // `response`, a bare `{tool, args}` tool call) into a well-formed
@@ -3422,6 +3512,11 @@ export const runChatTurn = async (
         ...(result.usage !== undefined ? { usage: result.usage } : {}),
       };
     } catch (e) {
+      // D-188 — the owner paused while this turn ran. It ends here, in plain words rather than as
+      // a provider failure, and calls the model no more: no tool calls, so the loop ends.
+      if (e instanceof ChatServerPausedError) {
+        return { kind: 'ok', output: { response: SERVER_PAUSED_TURN_RESPONSE, events: [], tool_calls: [] } };
+      }
       const contextOverflow = isContextOverflowRejection(e);
       if (
         inputs.propagate_typed_errors === true
@@ -3513,15 +3608,50 @@ export const runChatTurn = async (
    *  ⚠ It is threaded through `tryMainTurn`'s `prior_tool_calls` parameter
    *  rather than mutated into a shared array, because the retry paths below
    *  each call `tryMainTurn` again and must see the same opening state. */
-  const carriedBrief = briefEnabled
+  const storedBrief = briefEnabled
     ? await readCarriedBrief()
     : null;
+  // D-337 slice Z — a turn that opens holding calls the conversation waited on: they have settled,
+  //   so what the brief wrote around the wait goes (`briefAfterWait`), and is saved: "Wait for
+  //   approval … do not call work.create again", "… is awaiting owner approval". A run's settlement
+  //   clears `pending`, a held write's clears nothing, and either can land while the turn that made
+  //   the call is still writing its closing brief. A continuation that answers without calling a tool
+  //   writes no brief of its own, so the next turns read the wait as still on: a scheduled prompt's
+  //   second run took its own request for the one waiting, and added nothing (2026-11-09).
+  const carriedBrief = storedBrief !== null && (inputs.held_results?.length ?? 0) > 0
+    ? briefAfterWait(storedBrief)
+    : storedBrief;
+  if (carriedBrief !== null && carriedBrief !== storedBrief) {
+    try { await saveCarriedBrief(carriedBrief); } catch { /* this turn reads it cleared; a later fold rebuilds it */ }
+  }
+  // D-347 — the results earlier turns kept raw, under the closing brief's threshold: they open this
+  //   turn after the brief, unfolded, so the brief within the turn folds them with its own.
+  const carriedRaw: readonly ChatPriorToolCall[] = briefEnabled && deps.carryStore !== undefined && inputs.mail_work === undefined
+    ? await deps.carryStore.read(session_id).catch(() => [])
+    : [];
   // ⛔⛔ RECORD THE USER'S MESSAGE BEFORE ANYTHING CAN DECIDE NOT TO FOLD.
   //   A turn that does no tool work runs no closing fold (27% of measured
   //   turns) and writes no trail line, so this is the only point at which the
   //   statement is guaranteed to be seen. Cleared once a fold has actually
   //   stored a brief that ingested it.
-  if (briefEnabled) {
+  // D-347 follow-up 3 — a session this process has not held (a restart, or one its bound let go)
+  //   rebuilds its waiting statements from the conversation's saved messages first, this turn's own
+  //   message left out (it joins just below), so a statement no fold has taken outlives the process.
+  if (briefEnabled && deps.statementStore !== undefined && statementsRestoreNeeded(session_id)) {
+    try {
+      const saved = (await deps.statementStore.savedUserMessages(session_id)).filter((m) => m.turn_id !== turn_id);
+      restoreUnfoldedUserMessages(session_id, saved, deps.statementStore.foldedAt(session_id), carriedBrief);
+    } catch { /* the list starts empty, as before */ }
+  }
+  /** Records that a fold has just taken the waiting statements: a rebuild reads only what came after. */
+  const recordStatementsFold = (): void => {
+    try { deps.statementStore?.recordFold(session_id); } catch { /* the next fold records it */ }
+  };
+  // D-337 slice Z — a continuation's message is Recued's note that an approval was answered. It is
+  //   saved as a system row, so a rebuild after a restart never takes it for the owner's, and neither
+  //   does this list: riding into later turns ("Carry on with the work in progress … The owner sent no
+  //   new message."), it made a scheduled prompt's next run take its request for the one approved.
+  if (briefEnabled && inputs.host_message !== true) {
     appendUnfoldedUserMessage(session_id, inputs.content.user_message);
   }
   /** The backlog MINUS this turn's own message.
@@ -3577,6 +3707,46 @@ export const runChatTurn = async (
     (assistantToolResults ??= []).push(receipt);
     recordPreparedRead?.(observed, receipt, provenance);
     return result;
+  };
+  // D-335 slice AT (2026-11-07) — the owner: "go ahead with #1, then #2". A PDF a call's answer kept from
+  // a tab (slice AS) is read in that call's round, as the model would read it next: `document.read`, the
+  // same tool under the turn's own caller, a call of its own after the one that kept it, as the mail a
+  // search found is read in the search's round. Only where the model could make that call itself, and
+  // each PDF once a turn. A read held for the owner's approval waits as any held call does.
+  const tabPdfsRead = new Set<string>();
+  const readKeptTabPdfs = async (result: ChatDispatchResult, round_index: number): Promise<{
+    answer: ChatDispatchResult;
+    reads: Array<{ tc: ToolCall; result: ChatDispatchResult; started_at: number; completed_at: number }>;
+  } | undefined> => {
+    if (picker_target !== 'self' || !nativeRead('document.read')) return undefined;
+    const kept = keptTabPdfs(result).filter((pdf) => !tabPdfsRead.has(pdf.file_ref));
+    if (kept.length === 0) return undefined;
+    let answer = result;
+    const reads: Array<{ tc: ToolCall; result: ChatDispatchResult; started_at: number; completed_at: number }> = [];
+    for (const pdf of kept) {
+      tabPdfsRead.add(pdf.file_ref);
+      const tc: ToolCall = { tool: 'document.read', args: { file_ref: pdf.file_ref } };
+      const started_at = now();
+      let read: ChatDispatchResult;
+      try {
+        read = await dispatchTool({ session_id, turn_id, tool_name: tc.tool, arg_values: tc.args, picker_target,
+          read_only: true, round_index,
+          ...(inputs.execution_source !== undefined ? { execution_source: inputs.execution_source } : {}),
+          ...(inputs.contract_snapshot !== undefined ? { contract_snapshot: inputs.contract_snapshot } : {}),
+          ...(inputs.dispatch_depth !== undefined ? { dispatch_depth: inputs.dispatch_depth } : {}),
+        });
+      } catch (error) {
+        // A stopped turn stops here; any other failure is the read's, never the call's that kept the PDF.
+        deps.assertActive?.();
+        read = chatToolCallFailureResult(error) ?? { ok: false, reason: 'execution_error' };
+      }
+      reads.push({ tc, result: read, started_at, completed_at: now() });
+      answer = withTabPdfReadNote(answer, pdf);
+    }
+    // The answer is a new object and still the row its dispatch saved: unmarked, the turn keeps it again.
+    const saved = savedChatToolCallId(result);
+    if (saved !== undefined) markChatToolCallSaved(answer, saved);
+    return { answer, reads };
   };
   let sourceReadFailure: string | undefined;
   if (assetQuestion) {
@@ -3639,18 +3809,54 @@ export const runChatTurn = async (
     }
   }
   const presentAnswer = (text: string): string => readingNotice && text.trim() ? `${readingNotice}\n\n${text}` : text;
+  // D-335 slice AK — the pages the request names, read side by side before the first round and
+  // recorded as `read` records a prepared read: the first round sees them as calls already made.
+  if (inputs.named_pages !== undefined && inputs.named_pages.length > 0) {
+    const pages = await Promise.all(inputs.named_pages.map(async ({ tool_name, page }) => {
+      const tc: ToolCall = { tool: tool_name, args: { page } };
+      const started_at = now();
+      const result = await dispatchTool({
+        session_id, turn_id, tool_name, arg_values: tc.args as Record<string, unknown>, picker_target,
+        ...(inputs.execution_source ? { execution_source: inputs.execution_source } : {}),
+        ...(inputs.dispatch_depth !== undefined ? { dispatch_depth: inputs.dispatch_depth } : {}),
+      });
+      return { tc, result, started_at, completed_at: now() };
+    }));
+    deps.assertActive?.();
+    for (const { tc, result, started_at, completed_at } of pages) {
+      collectProvenance(tc.tool, result);
+      const observed = observeToolCall(tc, result, started_at, completed_at);
+      freshCalls.push(observed);
+      const provenance = toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id);
+      (assistantToolCalls ??= []).push(provenance);
+      const held = isNonTerminalToolResult(result);
+      const heldRunId = held ? runIdOf(result) : undefined;
+      (assistantToolResults ??= []).push({ tool_name: tc.tool, args: tc.args, ts: completed_at,
+        message_id: savedChatToolCallId(result), ...(held ? {} : { result }),
+        ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}) });
+    }
+  }
   const heldResults = inputs.held_results ?? [];
   const openingPriorToolCalls = (): ReadonlyArray<ChatPriorToolCall> | undefined =>
-    carriedBrief === null && freshCalls.length === 0 && mailEvidence === null && heldResults.length === 0
+    carriedBrief === null && carriedRaw.length === 0 && freshCalls.length === 0 && mailEvidence === null
+      && heldResults.length === 0
       ? undefined
-      : [...(carriedBrief === null ? [] : [briefAsPriorToolCall(carriedBrief)]),
+      : [...(carriedBrief === null ? [] : [briefAsPriorToolCall(carriedBrief)]), ...carriedRaw,
         ...heldResults, ...(sourceCarry ? [sourceCarry] : []), ...freshCalls];
   // A failed current read gets a fixed availability response, while the normal
   // closing fold still captures this turn's owner statements for restart.
   let decoderFailure: RunChatTurnResult['decoder_failure'];
-  const emitDecoderFailure = (failure: ReplyFailure, site: 'initial' | 'tool_loop'): void => {
+  const emitDecoderFailure = (failure: ReplyFailure, site: 'initial' | 'tool_loop', round?: number): void => {
+    // ⛔ THE CAUSE, AT EVERY SITE. The classified `reason` defaults to `provider_failure` (see the
+    //   tool loop's reinvoke), so only the error says why. That reinvoke alone logged it: a turn whose
+    //   first call failed kept nothing but "The AI provider failed before answering." (D-347
+    //   follow-up, 2026-11-08: one run of 24 in a head to head, its cause unknowable).
+    const detail = failureDetailForRecord(failure.detail);
+    console.warn(`[chat] model call failed — turn ${turn_id}, ${site}`
+      + `${round === undefined ? '' : ` round ${String(round)}`}, reason ${decoderUnavailableReason(failure)}: ${detail}`);
     decoderFailure = { reason: decoderUnavailableReason(failure), site,
-      ...(failure.retry_at !== undefined ? { retry_at: failure.retry_at } : {}) };
+      ...(failure.retry_at !== undefined ? { retry_at: failure.retry_at } : {}),
+      ...(detail.length > 0 ? { detail } : {}) };
     // The dedicated cause follows accounting so the live notice shows the
     // failure reason. Count actual main calls, including bounded repairs.
     deps.emit({ kind: 'chat.transparency', session_id, turn_id,
@@ -3779,13 +3985,19 @@ export const runChatTurn = async (
       }
     }
 
+    // D-346 follow-up (2026-11-08) — "without looking" presumes a tool that could have looked.
+    // A turn offered none (the AI door, for an app whose contract allows no recipe) can only say
+    // what it cannot do, and the guard read that as an unchecked absence: "I don't have the
+    // ability to save memories" became "I could not verify the model's reply", 3 of 3 live. The
+    // pattern is the measured scanner's (`ABSENCE_CLAIM_RE`) and stays as it is.
+    const couldLook = inputs.available_tools.length > 0;
     const adoptInitialCorrection = (result: Awaited<ReturnType<typeof tryMainTurn>>): void => {
       if (result.kind === 'failed') {
         initialStopMessage = failedReplyMessage(result);
         emitDecoderFailure(result, 'initial');
       } else if (isEmptyChatAiOutput(result.output)) {
         initialStopMessage = EMPTY_CORRECTION_MESSAGE;
-      } else if (inventedValueInReply(result.output, lastPacketBody) || assertedAbsenceWithoutLooking(result.output)) {
+      } else if (inventedValueInReply(result.output, lastPacketBody) || (couldLook && assertedAbsenceWithoutLooking(result.output))) {
         initialStopMessage = UNVERIFIED_CORRECTION_MESSAGE;
       } else {
         currentAiOutput = result.output;
@@ -3828,6 +4040,7 @@ export const runChatTurn = async (
       !sourceReadFailure
       && !initialReplyStopped
       && !isEmptyChatAiOutput(currentAiOutput)
+      && couldLook
       && assertedAbsenceWithoutLooking(currentAiOutput)
     ) {
 
@@ -3925,6 +4138,8 @@ export const runChatTurn = async (
         priorToolCalls.push(briefAsPriorToolCall(carriedBrief));
         briefedCallCount = priorToolCalls.length;
       }
+      // D-347 — the results earlier turns kept raw, after the brief and before this turn's own.
+      priorToolCalls.push(...carriedRaw);
       // D-337 — what the conversation was waiting on, answered: the work goes on from it.
       priorToolCalls.push(...heldResults);
       if (sourceCarry) priorToolCalls.push(sourceCarry);
@@ -3960,6 +4175,9 @@ export const runChatTurn = async (
       // `nonCoreRoundDepth`.
       let chargedRounds = 0;
       let discoveryRounds = 0;
+      // D-340 slice 4 — a managed run's own budget, never above the chat's.
+      const roundCap = inputs.tool_round_cap !== undefined && Number.isSafeInteger(inputs.tool_round_cap) && inputs.tool_round_cap >= 1
+        ? Math.min(inputs.tool_round_cap, CHAT_MAIN_TURN_TOOL_LOOP_CAP) : CHAT_MAIN_TURN_TOOL_LOOP_CAP;
       // Loop-final empty recovery state — the deferred second site of the
       // args-only recovery. Own per-turn budget, separate from the initial
       // site's (distinct failure points; worst case 2 recovery calls per
@@ -4091,7 +4309,7 @@ export const runChatTurn = async (
           event: {
             kind: 'recued.multi_turn.round_started',
             round_index: roundIndex,
-            expected_max_rounds: CHAT_MAIN_TURN_TOOL_LOOP_CAP,
+            expected_max_rounds: roundCap,
             tier: CHAT_CHANNEL_DEFAULT_TIER,
           },
         });
@@ -4113,6 +4331,10 @@ export const runChatTurn = async (
           readonly started_at: number;
           readonly completed_at: number;
           readonly reused?: true;
+          /** D-335 slice AT — the PDFs this call's answer kept from a tab, read in its round. */
+          readonly pdf_reads?: ReadonlyArray<{
+            readonly tc: ToolCall; readonly result: ChatDispatchResult; readonly started_at: number; readonly completed_at: number;
+          }>;
         }
         const resolveConcurrencySafe = (toolName: string): boolean => {
           // Seller rollup admission is read-then-record. Keep gateway top-level
@@ -4273,7 +4495,10 @@ export const runChatTurn = async (
               refusedCallCounts.set(identity, (refusedCallCounts.get(identity) ?? 0) + 1);
             }
             if (sourceReadBatch && tc.tool === 'work.read') assetReadReuse?.remember(tc.args, result);
-            return { result, started_at, completed_at };
+            // D-335 slice AT — a PDF this answer kept from a tab, read now: its own call, after this one.
+            const pdfRead = await readKeptTabPdfs(result, roundIndex);
+            return pdfRead === undefined ? { result, started_at, completed_at }
+              : { result: pdfRead.answer, started_at, completed_at, pdf_reads: pdfRead.reads };
           },
         });
         // ⚗ Where THIS round's results begin. Retention below must never cut
@@ -4403,6 +4628,24 @@ export const runChatTurn = async (
           priorToolCalls.push(observed);
           mailEvidence?.record(observed);
           toolCallsExecuted += 1;
+          // D-335 slice AT — the PDF that answer kept, read in its round: a call of its own, recorded as one.
+          for (const pdfRead of execution.pdf_reads ?? []) {
+            collectProvenance(pdfRead.tc.tool, pdfRead.result);
+            toolCallsAccum.push(toolCallProvenanceEntry(pdfRead.tc, pdfRead.result, deps.registry,
+              pdfRead.started_at, pdfRead.completed_at, session_id, turn_id));
+            const readHeld = isNonTerminalToolResult(pdfRead.result);
+            const readRunId = readHeld ? runIdOf(pdfRead.result) : undefined;
+            toolResultsAccum.push({
+              message_id: savedChatToolCallId(pdfRead.result), tool_name: pdfRead.tc.tool, args: pdfRead.tc.args,
+              ...(readHeld ? {} : { result: pdfRead.result }),
+              ...(readRunId !== undefined ? { pair_id: readRunId } : {}),
+              ts: pdfRead.completed_at,
+            });
+            const observedRead = observeToolCall(pdfRead.tc, pdfRead.result, pdfRead.started_at, pdfRead.completed_at);
+            priorToolCalls.push(observedRead);
+            mailEvidence?.record(observedRead);
+            toolCallsExecuted += 1;
+          }
         }
         // Search and body reading share a model round. These are ordinary
         // read-only dispatches with grants, cancellation, PII, activity and
@@ -4462,6 +4705,7 @@ export const runChatTurn = async (
             //   the next fold rather than discarded on the strength of "a brief
             //   was produced" — see `clearIngestedUserMessages`.
             const swept = clearIngestedUserMessages(session_id, folded);
+            recordStatementsFold();
             if (swept.retained.length > 0) {
               briefTrail.push(
                 `statements_retained:${String(swept.retained.length)} `
@@ -4512,9 +4756,16 @@ export const runChatTurn = async (
         // into the earlier round's wire input.
         if (!sourceReadBatch) projectionReadBarrier = toolResultsAccum.length;
         outputFileGuidanceActive ||= outputFilesFromResults(toolResultsAccum).length > 0;
+        // D-340 slice 4 — a bounded run's last charged round: its results come with the word to answer
+        // now. Classified as the cap check below classifies the round.
+        const lastBoundedRound = roundCap < CHAT_MAIN_TURN_TOOL_LOOP_CAP && chargedRounds + 1 >= roundCap
+          && !(nextToolCalls.length > 0 && nextToolCalls.every((call) => call.tool === TOOLS_SEARCH_TOOL_NAME)
+            && discoveryRounds < CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP);
+        const reinvokeFeedback = [reusedAssetRead ? ASSET_READ_REUSE_FEEDBACK : undefined,
+          lastBoundedRound ? BOUNDED_RUN_LAST_ROUND : undefined].filter(Boolean).join('\n\n');
         const reinvokeResult = await tryMainTurn(
           retainForReinvoke(priorToolCalls, roundStart),
-          reusedAssetRead ? ASSET_READ_REUSE_FEEDBACK : undefined,
+          reinvokeFeedback || undefined,
         );
         totalUsage = aggregateTokenUsageReports(totalUsage, reinvokeResult.usage);
 
@@ -4556,14 +4807,9 @@ export const runChatTurn = async (
           //   succeeded. The detail was held in `toolLoopFailure`, which is
           //   returned in the turn result and appears in NO event, so the one
           //   string that identifies the cause was unreachable from a report.
-          console.warn(
-            '[chat] tool-loop reinvoke FAILED — round '
-            + `${String(roundIndex)}, reason `
-            + `${decoderUnavailableReason(effectiveReinvoke)}: `
-            + effectiveReinvoke.detail.slice(0, 300),
-          );
+          //   `emitDecoderFailure` logs it, at every site, and this one passes its round (2026-11-08).
           completeRound('aborted');
-          emitDecoderFailure(effectiveReinvoke, 'tool_loop');
+          emitDecoderFailure(effectiveReinvoke, 'tool_loop', roundIndex);
           terminationReason = 'aborted';
           // The failed reply never replaces the last valid output. Preserve
           // its partial text and save why the turn stopped; whitespace-only
@@ -4682,7 +4928,7 @@ export const runChatTurn = async (
           // is spent — the second arm is what stops a model searching forever.
           chargedRounds += 1;
         }
-        const atCap = chargedRounds >= CHAT_MAIN_TURN_TOOL_LOOP_CAP;
+        const atCap = chargedRounds >= roundCap;
         completeRound(
           loopReplyStopped ? 'aborted' : moreTools ? 'continue' : 'completed',
         );
@@ -4860,6 +5106,7 @@ export const runChatTurn = async (
         && !(deps.hasRegisteredRecall?.() ?? false);
       if (exactCarryCoversTurn) {
         clearUnfoldedUserMessages(session_id);
+        recordStatementsFold();
         briefTrail.push('exact_mail_work_carry:source observations and owner statements saved; no closing model call');
       }
       if (briefEnabled && !exactCarryCoversTurn) {
@@ -4900,32 +5147,75 @@ export const runChatTurn = async (
         //   rides along whenever one runs for either reason above; forcing one
         //   would put a model call on every tool-free turn, which is the exact
         //   cost `appendUnfoldedUserMessage` exists to avoid.
-        // ⛔⛔ A STATEMENT ABOUT TO AGE OUT UNCLASSIFIED IS WORTH A FOLD. The
-        //   backlog is a HOLDING PEN, and without a deadline it asserts
-        //   relevance it has not earned — a session resumed a month later would
-        //   still carry an unclassified line, which is STRICTLY WORSE than
-        //   `chat_tail`, since the tail would have let it go.
-        //
-        //   🔑 THIS IS WHERE THE FOLD EARNS ITS PLACE, and the only place it
-        //   clearly does on cost grounds. The content is USER-STATED and so
-        //   unrecoverable by any tool (363: brief OFF 0/2 correct, ON 2/2), and
-        //   one call converts "held indefinitely" into "durable or dropped".
-        //   Far rarer than folding every tool-free turn, which is the spend the
-        //   backlog exists to avoid.
-        const staleStatement = hasStalePendingStatement(session_id);
-        if (retainableUnfolded === 0 && recallUnfolded === 0 && !staleStatement) {
+        // ⛔⛔ A FULL LIST OF THE OWNER'S STATEMENTS IS WORTH A FOLD: the next one would drop off
+        //   its end. It was a statement about to wait a third turn (`MAX_PENDING_STATEMENT_TURNS`),
+        //   so that none rode unclassified long, and that ran the brief on every fourth turn that
+        //   used tools. D-347 follow-up 3 (the owner, 2026-11-08: "Rebuild, fold when full") lifted
+        //   it: a statement rides until the list fills or the context nears its limit, and the list
+        //   survives a restart, rebuilt from the saved conversation. The content is USER-STATED and
+        //   so unrecoverable by any tool (363: brief OFF 0/2 correct, ON 2/2): what the fold turns
+        //   into "durable or dropped" now waits for the list's limits rather than a count of turns.
+        const statementsFull = pendingStatementsFull(session_id);
+        // D-347 (2026-11-07) — the owner: "closing brief only trigger at context window tail say such
+        //   as 80%". Below that the turn's results ride raw to the next turn (`chat-turn-carry.ts`): no
+        //   closing model call, so the next message does not wait for one. The closing brief still runs
+        //   when the next packet would reach the threshold, for a statement about to wait a third
+        //   turn, and for results that may not ride raw (a recall-bearing turn's, an alias-bearing one).
+        //   Slice C: the trail says why a turn folded instead (`carry_refused:<reason>`, `carry_due:<estimated
+        //   tokens>`); a measured fold could not be told from a threshold without it.
+        let carriedForward = false;
+        if (deps.carryStore !== undefined && inputs.mail_work === undefined) {
+          const refused = statementsFull ? 'statements_full'
+            : (deps.hasRegisteredRecall?.() ?? false) ? 'recall'
+              : carryRefusal(unfolded, (text) => piiEgress.hasPotentialPiiAliasLiteral(text),
+                (name) => deps.registry.getByName(name)?.classification === 'write');
+          const carry = carriedResults(unfolded);
+          const next = nextPacketTokens({
+            catalogTokens: estimatedTokens(JSON.stringify(inputs.available_tools).length),
+            overheadTokens: estimatedTokens(mainSystemPrompt.length),
+            // The next turn's tail holds this turn's request and answer, and the statements still waiting.
+            tailTokens: estimatedTokens(JSON.stringify(inputs.content.chat_tail).length
+              + inputs.content.user_message.length + assistantContent.length
+              + JSON.stringify(peekUnfoldedUserMessages(session_id)).length),
+            briefTokens: rollingBrief === null ? 0 : estimatedTokens(JSON.stringify(rollingBrief).length),
+            carried: carry,
+          });
+          const limit = Math.round(closingFoldLimit(activeInputTokenBudget));
+          if (refused !== null) {
+            briefTrail.push(`carry_refused:${refused}`);
+          } else if (next >= limit) {
+            briefTrail.push(`carry_due:${String(next)} estimated tokens next, the closing limit ${String(limit)}`);
+          } else {
+            try {
+              if (carry.length > 0) await deps.carryStore.write(session_id, carry);
+              else deps.carryStore.clear(session_id);
+              carriedForward = true;
+              briefTrail.push(`carried_raw:${String(carry.length)} result(s) ride to the next turn, under the closing threshold`);
+            } catch {
+              briefTrail.push('carry_failed:the closing brief folds them instead');
+            }
+          }
+        }
+        if (carriedForward) {
+          // Nothing to close: the results ride to the next turn.
+        } else if (retainableUnfolded === 0 && recallUnfolded === 0 && !statementsFull) {
           if (unfolded.length > 0) {
             briefTrail.push(
               `nothing_to_close:${String(unfolded.length)} unfolded call(s), `
               + 'none retainable — no gap, nothing was lost',
             );
           }
+          // D-347 — what rode in was folded within the turn: the store holds it no longer.
+          if (carriedRaw.length > 0) deps.carryStore?.clear(session_id);
         } else {
           const closing = await runRollingBrief(unfolded, rollingBrief, briefTrail,
             { force: true });
           if (closing !== null) {
             await saveCarriedBrief(closing);
             const sweptClosing = clearIngestedUserMessages(session_id, closing);
+            recordStatementsFold();
+            // D-347 — folded: what rode raw is in the brief now.
+            try { deps.carryStore?.clear(session_id); } catch { /* the next turn folds it again; nothing is lost */ }
             if (sweptClosing.retained.length > 0) {
               briefTrail.push(
                 `statements_retained:${String(sweptClosing.retained.length)} `

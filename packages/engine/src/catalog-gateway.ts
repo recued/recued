@@ -73,7 +73,9 @@ import {
   isRealtimeApiBindingKind,
   mergeRoleResults,
   CLI_REACHABILITY_OWNER_PRINCIPAL,
+  type ProgramSwitchDetail,
   cliPrincipalFromExecutionSource,
+  contractUnavailableSentence,
   projectResolvedArgs,
   projectToResolution,
   readOwnerOperationOverride,
@@ -365,6 +367,18 @@ interface CliRefusal {
   principal: string | null;
 }
 
+/** Why an action was refused `operation_not_granted`, so the sentence can name
+ *  where to change it. `principal`: the owner's own runs and schedules
+ *  (`user_self`), a contract, or `null` when the run names no principal. `rule`:
+ *  the decision allowed it until a rule under "Rules for every contract"
+ *  (`contract.override`, a "Never allow it") denied it. `connection`: a
+ *  connection action, whose grant the pack's Access tab holds. */
+interface GrantRefusal {
+  principal: string | null;
+  rule: boolean;
+  connection: boolean;
+}
+
 /** One plain sentence per deny reason: what an owner reads in a run's output
  *  and an agent reads in a tool result. A `foreach` keeps only an item's
  *  message, so in a recipe's rows this sentence is all the owner sees.
@@ -379,17 +393,20 @@ interface CliRefusal {
  *  `CatalogDenyReason`, so a new reason does not compile without a sentence. */
 const REFUSAL_SENTENCES: Record<
   CatalogDenyReason,
-  (op: string, connection: string | undefined, cli: CliRefusal | undefined) => string
+  (
+    op: string,
+    connection: string | undefined,
+    cli: CliRefusal | undefined,
+    grant: GrantRefusal | undefined,
+  ) => string
 > = {
   cli_reachability_disabled: (op, _connection, cli) => {
     if (cli?.principal === CLI_REACHABILITY_OWNER_PRINCIPAL) {
       return `${op} is switched off, so it did not run. To use it, open its pack in Packs `
         + 'and turn it on under Self (you) on the Access tab.';
     }
-    if (typeof cli?.principal === 'string') {
-      return `${op} is switched off for the contract this run is under, so it did not run. `
-        + 'The owner can turn it on for that contract on its pack’s Access tab, in Packs.';
-    }
+    // D-346 follow-up — any contract but the owner's reads only that it is not available.
+    if (typeof cli?.principal === 'string') return contractUnavailableSentence(op);
     return `${op} runs a program on your server, which only your own runs, your schedules `
       + 'and contracts you allow can do, so it did not run.';
   },
@@ -398,10 +415,38 @@ const REFUSAL_SENTENCES: Record<
     connection !== undefined
       ? `There is no connection ${connection} set up for ${op}, so it did not run.`
       : `${op} needs a connection and this run named none, so it did not run.`,
-  operation_not_granted: (op, connection) =>
-    connection !== undefined
+  // D-346 follow-up (2026-11-08) — the refusal names where it is changed, as a
+  // switched-off program does. With the operation-group gate off (2026-08-07),
+  // this reaches a connection action through a rule under "Rules for every
+  // contract" that says "Never allow it"; a missing grant reaches it only if that
+  // gate comes back. A Records action and a recipe calling another are granted
+  // elsewhere, and keep the plain sentence unless a rule denied them.
+  operation_not_granted: (op, connection, _cli, grant) => {
+    const RULES = 'Rules for every contract, on the Contracts page';
+    if (grant?.rule === true) {
+      if (grant.principal === CLI_REACHABILITY_OWNER_PRINCIPAL) {
+        return `${op} is not allowed for you, so it did not run: a rule says never to allow it. `
+          + `To use it, remove that rule under ${RULES}.`;
+      }
+      return typeof grant.principal === 'string'
+        ? contractUnavailableSentence(op)
+        : `${op} is not allowed, so it did not run: a rule says never to allow it. `
+          + `The owner can remove that rule under ${RULES}.`;
+    }
+    if (grant?.connection === true && grant.principal === CLI_REACHABILITY_OWNER_PRINCIPAL) {
+      return `${op} is not allowed${connection !== undefined ? ` on connection ${connection}` : ''} for you, so it did not run. `
+        + 'To use it, open its pack in Packs and turn it on under Self (you) on the Access tab.';
+    }
+    // Any contract but the owner's reads only that it is not available (the owner's ruling).
+    // ⛔ Not the owner's own: `user_self` is a principal string too, and a Records action or a
+    // recipe calling another that the owner may not run keeps the plain sentence below.
+    if (typeof grant?.principal === 'string' && grant.principal !== CLI_REACHABILITY_OWNER_PRINCIPAL) {
+      return contractUnavailableSentence(op);
+    }
+    return connection !== undefined
       ? `${op} is not allowed on connection ${connection} for this run, so it did not run.`
-      : `${op} is not allowed for this run, so it did not run.`,
+      : `${op} is not allowed for this run, so it did not run.`;
+  },
   catalog_mismatch: (op, connection) =>
     `${connection !== undefined ? `Connection ${connection}` : 'The connection this run named'} `
       + `belongs to another service, so ${op} did not run.`,
@@ -415,6 +460,7 @@ const denyError = (
   call: CatalogCall,
   resolution: CatalogOperationResolution,
   cli: CliRefusal | undefined,
+  grant?: GrantRefusal,
 ): Error => {
   const op = `'${resolution.operation_id}'`;
   const connection = cli === undefined && call.connection_name
@@ -424,7 +470,7 @@ const denyError = (
   return codedError(
     reason === undefined
       ? `${op} was refused, so it did not run.`
-      : `${REFUSAL_SENTENCES[reason](op, connection, cli)} (${reason})`,
+      : `${REFUSAL_SENTENCES[reason](op, connection, cli, grant)} (${reason})`,
     'NOT_AUTHORIZED',
   );
 };
@@ -2630,10 +2676,9 @@ const runCatalogOperationInner = async (
   // Slice 4d.4. The tighten layer only ever restricts. An absent scan seam
   // leaves both layers unapplied; an absent actor skips only the legacy
   // actor-scoped tightening while the global owner row still resolves.
-  const resolveWithOwnerOverride = (
+  const resolveBase = (
     candidate: OwnerOverridePolicy | undefined,
-  ): CatalogOperationResolution => applyCatalogOverrideTightening(
-    ctx,
+  ): CatalogOperationResolution => (
     isCliOp
       ? resolveCliReachabilityPolicy({
           operations: manifest.operations ?? {},
@@ -2657,10 +2702,14 @@ const runCatalogOperationInner = async (
           ceiling: dispatchCeiling,
           ...(manifest.default_policy ? { default_policy: manifest.default_policy } : {}),
           ...(candidate !== undefined ? { owner_override: candidate } : {}),
-        }),
-    slug,
+        })
   );
-  const resolution = resolveWithOwnerOverride(ownerOverride);
+  const resolveWithOwnerOverride = (
+    candidate: OwnerOverridePolicy | undefined,
+  ): CatalogOperationResolution => applyCatalogOverrideTightening(ctx, resolveBase(candidate), slug);
+  // Kept apart so a refusal can say whether a rule on the Contracts page made it.
+  const baseResolution = resolveBase(ownerOverride);
+  const resolution = applyCatalogOverrideTightening(ctx, baseResolution, slug);
 
   // D-211 Slice 2 — offer a standing ruling only when simulating that exact
   // write proves the label truthful after provider deny, trust relaxation, and
@@ -2713,7 +2762,30 @@ const runCatalogOperationInner = async (
       outcome: 'failed',
       ...(resolution.deny_reason ? { failure_mode: resolution.deny_reason } : {}),
     });
-    throw denyError(call, resolution, isCliOp ? { principal: cliPrincipal } : undefined);
+    // An `operation_not_granted` names where it is changed: a rule under "Rules
+    // for every contract" when the decision allowed it until a rule denied it,
+    // else a connection action's grant on its pack's Access tab.
+    const grant: GrantRefusal | undefined = resolution.deny_reason === 'operation_not_granted'
+      ? {
+          principal: cliPrincipalFromExecutionSource(
+            ctx.execution_source ?? {
+              actor: ctx.actor ?? '',
+              ...(ctx.contract_id !== undefined ? { contract_id: ctx.contract_id } : {}),
+            },
+          ),
+          rule: baseResolution.verdict !== 'deny',
+          connection: !isCliOp && !isRecordsOp && !isLocalRecipeOp,
+        }
+      : undefined;
+    const refused = denyError(call, resolution, isCliOp ? { principal: cliPrincipal } : undefined, grant);
+    // D-346 follow-up (2026-11-08) — a program switched off for the owner carries its switch,
+    // so the run dialog can turn it on in one click (the step runner keeps it in the step
+    // error's `details`, the server names it a run need). Never for a contract's run.
+    if (resolution.deny_reason === 'cli_reachability_disabled' && cliPrincipal === CLI_REACHABILITY_OWNER_PRINCIPAL) {
+      const program_switch: ProgramSwitchDetail = { ingredient_id: slug, operation_id: call.operation_id };
+      throw Object.assign(refused, { program_switch });
+    }
+    throw refused;
   }
 
   // D-336 (spec §53) — the host's look at a change to one record, before it is asked about,
@@ -2879,6 +2951,26 @@ const runCatalogOperationInner = async (
         + `${CONNECTION_NOT_ADMITTED_DETAIL} (connection_not_in_scope).`,
       'NOT_AUTHORIZED',
     );
+  }
+
+  // ── the caller's grant ── (D-346 follow-up, 2026-11-08) the per-call admission's
+  // grant check, made here too, before the `ask`: that admission refuses an action
+  // switched off for its caller only as it dispatches, so the owner was first asked to
+  // approve a write that was then refused. The refusal is the admission's own, its code
+  // (`RECIPE_POLICY_DENIED`, the commit gateway's) and its words (the owner reads where to
+  // turn it on; any other contract, that it is not available), only earlier: a door whose
+  // contract changed mid-run (`webhook-door-replaced-mid-run`) reads the same either way.
+  // A paused server (D-188) is refused here too, the owner's ruling of the same day:
+  // nothing new is asked during a pause, so a caller the pause stops is not held for an
+  // approval that could only end in the admission's `server_paused`.
+  const refusal = ctx.operationRefusal?.(slug, call.operation_id);
+  if (refusal !== undefined) {
+    emitGatewayAudit(ctx, {
+      ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+      outcome: 'failed',
+      failure_mode: refusal.code === 'server_paused' ? 'server_paused' : 'operation_not_granted',
+    });
+    throw codedError(refusal.message, 'RECIPE_POLICY_DENIED');
   }
 
   // ── ask ── pause for preflight approval (D-157 Flow 2), unless the
@@ -3230,7 +3322,32 @@ const runCatalogOperationInner = async (
         grantId = null;
       }
     }
-    if (grantId === null) raiseCatalogAsk();
+    // D-341 slice B1 — a catalog op the run's trigger was pre-approved for goes ahead without
+    // asking: the host names the trigger, the recipe version and the step's own op from the run,
+    // checks the op is this call's, and spends a use. As at the commit gateway: never destructive,
+    // never past the owner's `always`, and only for the hold the run's own ceiling makes: a review
+    // an op always gets (a send, a proposal, a quote, a payment, a quality check) is never waived.
+    let triggerPreapprovalId: string | null = null;
+    const provenance = resolution.authorization_provenance;
+    if (
+      grantId === null
+      && ctx.triggerPreapprovals !== undefined
+      && resolution.effective_risk_tier !== 'destructive'
+      && provenance.lift_reason === undefined
+      && (provenance.pre_lift_approval === 'never' || provenance.pre_lift_approval === 'ask')
+    ) {
+      try {
+        triggerPreapprovalId = ctx.triggerPreapprovals.admit({
+          slug,
+          operation_id: resolution.operation_id,
+          ...(stepMeta?.step_id ? { step_id: stepMeta.step_id } : {}),
+          risk_tier: resolution.effective_risk_tier as RiskTier,
+        });
+      } catch {
+        triggerPreapprovalId = null; // fail closed — the ask stands
+      }
+    }
+    if (grantId === null && triggerPreapprovalId === null) raiseCatalogAsk();
     // `raiseCatalogAsk` threw on null; the `?? undefined` only satisfies the
     // type-narrowing (grantId is a non-null string past the guard).
     grantAdmitContractId = grantId ?? undefined;

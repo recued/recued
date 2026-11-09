@@ -58,6 +58,7 @@ import {
   isCliFailureDetail,
   parseTimelineEntityId,
   runYieldIsTotalRefusal,
+  TRIGGER_PREAPPROVAL_TRIGGER_WORDS,
 } from '@recued/contracts';
 import { activeWorkGroups, historyOutcome, validRunYield } from './run-management.js';
 import { programDisplayName } from '../settings/pack-programs-controls.js';
@@ -1862,11 +1863,8 @@ const failedOutcome = (detail: RunDetail): RunOutcomeCore => {
   if (category !== undefined) return FAILED_CATEGORY_OUTCOMES[category];
 
   const errors = detailErrors(detail);
-  const permissionDenied =
-    detail.approvals.outcome === 'deny'
-    || detail.gateway.policy_result === 'denied'
-    || errors.some((error) => error.code === 'RECIPE_POLICY_DENIED');
-  if (permissionDenied) {
+  // Someone said no to the step's approval.
+  if (detail.approvals.outcome === 'deny') {
     return {
       tone: 'danger',
       title: 'Permission was denied',
@@ -1874,6 +1872,39 @@ const failedOutcome = (detail: RunDetail): RunOutcomeCore => {
         'The step you said no to was not sent. Earlier steps may already have changed things.',
       nextStep:
         'Read the error and the permission details below before you try again.',
+    };
+  }
+  // D-188 — refused because the owner paused the server (the admission's `server_paused`).
+  // No switch or contract decided it, so "Not allowed … change that contract" would send the
+  // owner to the wrong page; Resume is the fix. A deliberate state, not a fault: neutral, as
+  // a cancelled run is.
+  if (errors.some((error) => /\bserver_paused\b/u.test(error.message))) {
+    return {
+      tone: 'neutral',
+      title: 'The server was paused',
+      detail: 'The server was paused, so a step it took was not sent. Earlier steps may already have changed things.',
+      nextStep: 'Resume the server from its menu in the top bar, then run it again.',
+    };
+  }
+  // D-346 follow-up (2026-11-08) — refused by a switch or a contract, which no one said no to:
+  // it read "The step you said no to was not sent" here too. An app's run is refused by its
+  // contract, which the owner can change; the owner's own, by a switch the error names.
+  const refused =
+    detail.gateway.policy_result === 'denied'
+    || errors.some((error) => error.code === 'RECIPE_POLICY_DENIED'
+      || (error.code === 'NOT_AUTHORIZED'
+        && /\((?:operation_not_granted|cli_reachability_disabled)\)\s*$/u.test(error.message)));
+  if (refused) {
+    const anApp = detail.audit.origin.actor === 'contracted_user';
+    return {
+      tone: 'danger',
+      title: 'Not allowed',
+      detail: anApp
+        ? 'Its contract does not allow a step it took, so that step was not sent. Earlier steps may already have changed things.'
+        : 'A step it took is switched off or not allowed, so that step was not sent. Earlier steps may already have changed things.',
+      nextStep: anApp
+        ? 'Read the error below. To allow it, change that contract on the Contracts page.'
+        : 'Read the error below: it says what to turn on and where.',
     };
   }
 
@@ -2209,6 +2240,17 @@ const renderCliFailureChip = (reason: CliFailureReason): string => `
   </span>
 `;
 
+// D-321 — a tool installed outside the server's PATH: where it is, and the
+// command that gives the server a terminal's PATH when the server offers one.
+// Stored run data, so both are checked again and escaped.
+const renderCliOutsidePath = (cli: CliFailureDetail): string => {
+  if (typeof cli.found_at !== 'string' || cli.found_at.length === 0) return '';
+  const repair = typeof cli.repair === 'string' && cli.repair.length > 0
+    ? `<span>Fix it from a terminal:</span><code>${e(cli.repair)}</code>`
+    : '';
+  return `<div class="logs-cli-install"><span>Installed at ${e(cli.found_at)}, outside the server's PATH.</span>${repair}</div>`;
+};
+
 // D-182 — the detail-pane cli failure block: the reason + which tool + exit code,
 // plus the tool's own stderr tail (the executor already content-isolation-gated
 // it — absent for an input_materialize op). Renders ONLY the structured
@@ -2236,6 +2278,7 @@ const renderCliFailureDetail = (cli: CliFailureDetail): string => {
     <div class="logs-detail-meta logs-cli-failure">${meta.join('')}</div>
     ${stderrBlock}
     ${installBlock}
+    ${renderCliOutsidePath(cli)}
   `;
 };
 
@@ -3101,8 +3144,32 @@ const renderGatewayTraceRow = (trace: RunGatewayCallTraceEntry): string => `
       ${trace.cached === true ? '<span>cached</span>' : ''}
     </div>
     ${trace.local_receipt ? `<div data-local-mutation-receipt="${e(trace.local_receipt.receipt_id)}">${trace.local_receipt.kind === 'records' ? 'Records' : 'Calendar'} change confirmed</div>` : ''}
+    ${trace.trigger_preapproval ? `<div data-trigger-preapproval="${e(trace.trigger_preapproval.id)}">Pre-approved: ran without asking</div>` : ''}
   </li>
 `;
+
+// The kinds' own words, so a kind added there is named here too (B4's form was missing from a copy).
+const PREAPPROVED_TRIGGER_WORDS: Readonly<Record<string, string>> = TRIGGER_PREAPPROVAL_TRIGGER_WORDS;
+
+/** D-341 slice B1 — what the run made without asking, under its trigger's standing pre-approval:
+ *  each op and how many times. A Records write has no gateway row, so this is its only line.
+ *  Ruling 10 — it has no end date, so where it shows acting, it says where to end it. */
+const renderPreapproved = (detail: RunDetail): string => {
+  const writes = detail.preapproved ?? [];
+  if (writes.length === 0) return '';
+  const trigger = PREAPPROVED_TRIGGER_WORDS[writes[0]!.trigger_kind];
+  return `
+    <div data-trigger-preapproved>
+      <p class="logs-detail-row">Ran without asking, as you allowed ${trigger !== undefined ? `for ${trigger}` : 'ahead'}:</p>
+      <ul class="logs-detail-list" role="list">
+        ${writes.map((write) => `<li class="logs-detail-row" data-trigger-preapproved-write="${e(write.preapproval_id)}">${e(write.op)} · ${
+          write.writes === 1 ? 'once' : `${String(write.writes)} times`}</li>`).join('')}
+      </ul>
+      <p class="logs-detail-row">It stays on until you end it:
+        <a class="logs-inline-link" data-trigger-preapproved-end href="${e(serializeShellRoute('contracts'))}">End it under Contracts</a></p>
+    </div>
+  `;
+};
 
 const renderGateway = (detail: RunDetail): string => {
   const trace = detail.gateway.per_call_trace;
@@ -3319,6 +3386,7 @@ const renderDetail = (
             <h3 id="logs-decisions-title">Approvals and decisions</h3>
             <p class="logs-detail-row">Permission decision: ${renderPolicy(detail.gateway.policy_result)}</p>
             ${renderApprovals(detail)}
+            ${renderPreapproved(detail)}
             ${renderRunLinks({
               run_id: audit.run_id,
               recipe_id: audit.recipe_id,

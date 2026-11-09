@@ -57,6 +57,7 @@ import type { StorageContext } from './compose-storage-context.js';
 import type { CollectionRegistry } from '../collections/registry.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { forgetUnusedRetirements } from '../retired-settings.js';
+import { buildPackOpResolution } from '../pack-inventory.js';
 
 export interface ComposeRpcContextOptions {
   collectionRegistry?: CollectionRegistry;
@@ -74,6 +75,7 @@ export interface ComposeRpcContextOptions {
     | 'commitStore'
     | 'gatedActionStore'
     | 'settledRunResults'
+    | 'triggerPreapprovalStore'
     | 'mcpBodyVisibilityStore'
   >;
   app: Pick<
@@ -403,6 +405,19 @@ export const composeRpcContext = (
     // D-320 audit — an update's Connect starts at the connection the pack's runs
     // use, so a deleted connection's dormant binding must not count.
     ...(app.connectionStoreRef ? { isConnectionSetUp: isConnectionSetUpIn(app.connectionStoreRef) } : {}),
+    // D-321 W2 / S8 — the packs a run resolves through: the SAME
+    // `buildPackOpResolution` the run path lowers with and the runnability
+    // read discloses from, so a row's missing packs are the ones a run refuses.
+    ...(app.contractStoreRef !== undefined && execution.executeDeps.executorConfig !== undefined
+      ? {
+          installedPackRefs: () => new Set(
+            buildPackOpResolution(
+              () => app.contractStoreRef!.scan('installed_pack', []),
+              (slug: string) => execution.executeDeps.executorConfig.manifests.get(slug) ?? null,
+            ).keys(),
+          ),
+        }
+      : {}),
   });
 
   // D-145 PA10 follow-on Slice B — `packs.uninstall` rpc. Reverses the
@@ -457,6 +472,7 @@ export const composeRpcContext = (
     commitStore: storage.commitStore,
     gatedActionStore: storage.gatedActionStore,
     settledRunResults: storage.settledRunResults,
+    triggerPreapprovals: storage.triggerPreapprovalStore,
     serverInstanceId: storage.serverInstanceId,
     pairing: storage.pairing,
     circuitStore,

@@ -8,9 +8,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BROWSER_FLOW_DRAFT_PREFIX,
   clearExecutionCaseDraft,
   createExecutionCaseDraftKey,
   EXECUTION_CASE_DRAFT_SLOT,
+  isBrowserFlowDraft,
   readExecutionCaseDraft,
   stashExecutionCaseDraft,
   type ExecutionCaseDraftStorage,
@@ -100,5 +102,27 @@ describe('D-219 — the draft survives the trip, and only the right one', () => 
       Array.from({ length: 50 }, () => createExecutionCaseDraftKey()),
     );
     expect(keys.size).toBe(50);
+  });
+});
+
+// D-335 slice W4 — a draft built from a kept browser flow travels the same way, with what to look at
+// first, and is told apart from an AI's by its id.
+describe('D-335 slice W4 — a browser flow\'s draft', () => {
+  it('carries its notes, and is known for a flow\'s by its id', () => {
+    const storage = memory();
+    const flowDraft = { case_id: `${BROWSER_FLOW_DRAFT_PREFIX}f1`, recipe: { recipe_id: 'browser-flow-github-com-f1' },
+      request_aliased: true, notes: ['Step 3 has no selector that finds it alone.'] };
+    const key = stashExecutionCaseDraft(storage, flowDraft)!;
+    const read = readExecutionCaseDraft(storage, key)!;
+    expect(read).toEqual({ ...flowDraft, draft_key: key });
+    expect(isBrowserFlowDraft(read)).toBe(true);
+    expect(isBrowserFlowDraft(readExecutionCaseDraft(storage, stashExecutionCaseDraft(storage, draft)!)!)).toBe(false);
+  });
+
+  it('notes that are not a list of texts are left out, never shown as something else', () => {
+    const storage = memory();
+    const key = stashExecutionCaseDraft(storage, draft)!;
+    storage.setItem(EXECUTION_CASE_DRAFT_SLOT, JSON.stringify({ ...draft, draft_key: key, notes: [1, 'x'] }));
+    expect(readExecutionCaseDraft(storage, key)).not.toHaveProperty('notes');
   });
 });

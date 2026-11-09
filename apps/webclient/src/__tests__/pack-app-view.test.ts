@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RpcError } from '@recued/contracts';
 import { PACK_INSTALL_OFFER_ATTR } from '../shell/pack-install-offer.js';
+import { RUN_NEEDS_OFFER_ATTR } from '../shell/run-needs-offer.js';
+import { CONNECTION_SETUP_OFFER_ATTR } from '../shell/connection-setup-offer.js';
+import { connectionsEnrollAddress } from '../connections/connections-navigation.js';
 import type {
+  Dish,
   PackListEntry,
   ServerExecuteResponse,
   ServerRecipeListEntry,
@@ -16,7 +20,11 @@ import {
   PACK_APP_RESULT_ATTR,
   PACK_APP_VIEW_PANEL_ATTR,
   PACK_APP_VIEW_TAB_ATTR,
+  PACK_APP_AUTOMATION_STATE_ATTR,
+  PACK_APP_SWITCH_ON_ALL_ATTR,
+  PACK_APP_SWITCH_ON_OUTCOME_ATTR,
   mountPackAppView,
+  type PackAppAutomationDishes,
   type PackAppExecuteCaller,
   type MountPackAppViewOptions,
 } from '../packs/pack-app-view.js';
@@ -288,6 +296,8 @@ const mount = (
     | 'openRunModal'
     | 'initialViewId'
     | 'onSelectView'
+    | 'automationDishes'
+    | 'packNameOf'
   >> = {},
 ) => {
   const host = fakeElement();
@@ -315,6 +325,8 @@ const mount = (
     ...(options.onSelectView !== undefined
       ? { onSelectView: options.onSelectView }
       : {}),
+    ...(options.automationDishes !== undefined ? { automationDishes: options.automationDishes } : {}),
+    ...(options.packNameOf !== undefined ? { packNameOf: options.packNameOf } : {}),
   });
   return { host, root: host.children[0]!, view, clipboardWrite };
 };
@@ -1154,7 +1166,8 @@ describe('pack app reactive defaults', () => {
     });
 
     expect(rig.root.innerHTML).toContain('Look after the Recipes this Pack starts on its own, below.');
-    expect(rig.root.innerHTML).toContain('These recipes start on their own once you switch them on');
+    expect(rig.root.innerHTML).toContain('Runs on its own');
+    expect(rig.root.innerHTML).toContain('These start on their own once switched on');
     expect(rig.root.innerHTML).toContain(
       `${PACK_APP_AUTOMATION_ATTR}="sync-provider-events"`,
     );
@@ -1257,6 +1270,23 @@ describe('pack app view — missing pack offer', () => {
     expect(rig.root.innerHTML).not.toContain('pack-app-error');
   });
 
+  it("D-346 A — a run refused for a program that is gone links to its pack, not the server's sentence", async () => {
+    const execute = vi.fn<PackAppExecuteCaller>(async () => {
+      throw new RpcError('program_not_installed',
+        'rg is not installed on your server, or your server cannot find it, so ‘Find in files’ did not start. '
+        + 'Ripgrep’s page in Packs says what to do.', 400, undefined,
+        { missing_programs: [{ kind: 'program', step_id: 'find', problem: 'not_found', tool: 'rg', pack_slug: 'ripgrep', label: 'Ripgrep' }] });
+    });
+    const rig = mount(execute);
+    await settle();
+
+    expect(rig.root.innerHTML).toContain(RUN_NEEDS_OFFER_ATTR);
+    expect(rig.root.innerHTML).toContain('href="#packs/ripgrep"');
+    expect(rig.root.innerHTML).toContain('Open Ripgrep');
+    expect(rig.root.innerHTML).not.toContain('did not start');
+    expect(rig.root.innerHTML).not.toContain('pack-app-error');
+  });
+
   it('keeps the plain message for every other failure', async () => {
     // The offer must not swallow errors it cannot act on.
     const execute = vi.fn<PackAppExecuteCaller>(async () => {
@@ -1268,5 +1298,159 @@ describe('pack app view — missing pack offer', () => {
     expect(rig.root.innerHTML).not.toContain(PACK_INSTALL_OFFER_ATTR);
     expect(rig.root.innerHTML).toContain('pack-app-error');
     expect(rig.root.innerHTML).toContain('something else went wrong');
+  });
+
+  it("D-321 P2 — a connection not set up links to its form, not the server's sentence", async () => {
+    const execute = vi.fn<PackAppExecuteCaller>(async () => {
+      throw new RpcError('connection_not_set_up',
+        "Recipe 'search-web-exa' needs a connection for 'exa', and its pack's connection 'exa' is not set up.",
+        400, undefined, { slot: 'exa', pack_slug: 'exa', vendor: 'exa', label: 'Exa' });
+    });
+    const rig = mount(execute);
+    await settle();
+
+    expect(rig.root.innerHTML).toContain(CONNECTION_SETUP_OFFER_ATTR);
+    expect(rig.root.innerHTML).toContain(
+      `href="${connectionsEnrollAddress('exa', { slug: 'exa', slot: 'exa' }).hash}"`);
+    expect(rig.root.innerHTML).toContain('Set up Exa');
+    expect(rig.root.innerHTML).not.toContain('pack-app-error');
+    expect(rig.root.innerHTML).not.toContain('needs a connection for');
+  });
+});
+
+describe('D-321 W1 — Runs on its own', () => {
+  /** Since D-319 nothing runs on its own until switched on, and a pack's
+   *  internal watchers were nowhere on its page: the only word of them was a
+   *  one-time notice. Use now lists each one with its state, and switches on
+   *  the ones never switched on, from what the install chose. */
+  const automation = (recipe_id: string, name: string, starts: Record<string, unknown>): ServerRecipeListEntry => ({
+    ...taskEntry,
+    recipe_id,
+    recipe: {
+      ...taskEntry.recipe,
+      recipe_id,
+      ...starts,
+      metadata: { ...taskEntry.recipe.metadata, name, description: '' },
+    },
+  }) as unknown as ServerRecipeListEntry;
+  const watcher = automation('closure-watch', 'Closure watcher', { event_triggers: [{ event: 'thing.changed' }] });
+  const timeout = automation('closure-timeout', 'Closure timeout', { auto_run: { interval_ms: 60_000 } });
+  const digest = automation('weekly-digest', 'Weekly digest', { auto_run: { interval_ms: 60_000 } });
+  const runsOnItsOwn: PackAppSurface = {
+    views: [],
+    lookups: [],
+    operations: [],
+    missing: [],
+    automations: [
+      { recipe_id: 'closure-watch', name: 'Closure watcher', description: '', entry: watcher },
+      { recipe_id: 'closure-timeout', name: 'Closure timeout', description: '', entry: timeout },
+      { recipe_id: 'weekly-digest', name: 'Weekly digest', description: '', entry: digest, from_pack: 'digests' },
+    ],
+  };
+  const dish = (recipe_id: string, enabled: boolean): Dish => ({
+    dish_id: `dsh_${recipe_id}`, recipe_id, publisher_id: 'recued-core', name: '',
+    is_default: true, config_overlay: {}, enabled, created_at: 1,
+  });
+  /** The card of one automation, so its state is read off its own card. */
+  const card = (html: string, recipe_id: string): string =>
+    html.split('<article').find((chunk) => chunk.includes(`${PACK_APP_AUTOMATION_ATTR}="${recipe_id}"`)) ?? '';
+  const stateOn = (html: string, recipe_id: string): string | undefined =>
+    new RegExp(`${PACK_APP_AUTOMATION_STATE_ATTR}="([a-z_]+)"`).exec(card(html, recipe_id))?.[1];
+  const server = (refuse: Record<string, string> = {}) => {
+    let dishes: Dish[] = [dish('closure-timeout', false)];
+    const callers: PackAppAutomationDishes = {
+      list: vi.fn(async () => ({ dishes })),
+      defaults: vi.fn(async ({ recipe_id }: { recipe_id: string }) => ({ config_overlay: { template: `${recipe_id}-template` } })),
+      create: vi.fn(async ({ recipe_id }: { recipe_id: string }) => {
+        if (refuse[recipe_id] !== undefined) throw new Error(refuse[recipe_id]);
+        dishes = [...dishes, dish(recipe_id, true)];
+        return { dish: dish(recipe_id, true) };
+      }),
+    };
+    return callers;
+  };
+
+  it("shows each one's state, and a used pack's by that pack's name", async () => {
+    const rig = mount(vi.fn<PackAppExecuteCaller>(), {
+      surface: runsOnItsOwn,
+      installedRecipes: [watcher, timeout, digest],
+      automationDishes: server(),
+      packNameOf: (slug) => (slug === 'digests' ? 'Digests' : undefined),
+    });
+    await settle();
+    const html = rig.root.innerHTML;
+    expect(html).toContain('Runs on its own');
+    expect(stateOn(html, 'closure-watch')).toBe('not_switched_on');
+    expect(stateOn(html, 'closure-timeout')).toBe('off');
+    expect(stateOn(html, 'weekly-digest')).toBe('not_switched_on');
+    expect(card(html, 'closure-watch')).toContain('>Not switched on<');
+    expect(card(html, 'weekly-digest')).toContain('From Digests');
+    expect(card(html, 'closure-watch')).not.toContain('From ');
+    expect(html).toContain('2 of them are not switched on, so they do nothing yet.');
+    expect(html).toContain(`${PACK_APP_SWITCH_ON_ALL_ATTR}=""`);
+    expect(html).toContain('>Switch on all 2</button>');
+    rig.view.dispose();
+  });
+
+  it('switches on only the ones never switched on, each from what the install chose', async () => {
+    const callers = server();
+    const rig = mount(vi.fn<PackAppExecuteCaller>(), {
+      surface: runsOnItsOwn, installedRecipes: [watcher, timeout, digest], automationDishes: callers,
+    });
+    await settle();
+    emitPackControl(rig.root, PACK_APP_SWITCH_ON_ALL_ATTR);
+    await settle();
+    await settle();
+    // The one the owner switched off stays off: Switch on all never resumes it.
+    expect((callers.create as ReturnType<typeof vi.fn>).mock.calls.map(([args]) => args)).toEqual([
+      { recipe_id: 'closure-watch', config_overlay: { template: 'closure-watch-template' } },
+      { recipe_id: 'weekly-digest', config_overlay: { template: 'weekly-digest-template' } },
+    ]);
+    const html = rig.root.innerHTML;
+    expect(stateOn(html, 'closure-watch')).toBe('on');
+    expect(stateOn(html, 'weekly-digest')).toBe('on');
+    expect(stateOn(html, 'closure-timeout')).toBe('off');
+    expect(html).toContain(`${PACK_APP_SWITCH_ON_OUTCOME_ATTR}=""`);
+    expect(html).toContain('Switched on 2.');
+    expect(html).not.toContain(`${PACK_APP_SWITCH_ON_ALL_ATTR}=""`);
+    rig.view.dispose();
+  });
+
+  it("says which the server refused, and why, with the way to Automation's form", async () => {
+    const rig = mount(vi.fn<PackAppExecuteCaller>(), {
+      surface: runsOnItsOwn,
+      installedRecipes: [watcher, timeout, digest],
+      automationDishes: server({ 'weekly-digest': 'Weekly digest needs a mailbox to read.' }),
+    });
+    await settle();
+    emitPackControl(rig.root, PACK_APP_SWITCH_ON_ALL_ATTR);
+    await settle();
+    await settle();
+    const html = rig.root.innerHTML;
+    expect(html).toContain('Switched on 1 of 2. This one was not:');
+    expect(html).toContain('<strong>Weekly digest</strong>: Weekly digest needs a mailbox to read.');
+    expect(html).toContain('href="#automation/weekly-digest">Switch it on in Automation</a>');
+    expect(stateOn(html, 'weekly-digest')).toBe('not_switched_on');
+    expect(html).toContain('>Switch it on</button>');
+    rig.view.dispose();
+  });
+
+  it('without the dishes, lists them with Manage only; a failed read says so', async () => {
+    const plain = mount(vi.fn<PackAppExecuteCaller>(), { surface: runsOnItsOwn, installedRecipes: [watcher, timeout, digest] });
+    await settle();
+    expect(plain.root.innerHTML).toContain('Runs on its own');
+    expect(plain.root.innerHTML).not.toContain(PACK_APP_AUTOMATION_STATE_ATTR);
+    expect(plain.root.innerHTML).not.toContain(PACK_APP_SWITCH_ON_ALL_ATTR);
+    plain.view.dispose();
+
+    const failing = mount(vi.fn<PackAppExecuteCaller>(), {
+      surface: runsOnItsOwn,
+      installedRecipes: [watcher, timeout, digest],
+      automationDishes: { ...server(), list: async () => { throw new Error('server unreachable'); } },
+    });
+    await settle();
+    expect(failing.root.innerHTML).toContain('Recued could not read which of these are switched on: server unreachable');
+    expect(failing.root.innerHTML).not.toContain(PACK_APP_SWITCH_ON_ALL_ATTR);
+    failing.view.dispose();
   });
 });

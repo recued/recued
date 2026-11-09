@@ -323,7 +323,7 @@ describe('memory.write — a claim beside the summary', () => {
     const fenced = fixture({ contactsReadable: false });
     fenced.contacts.upsertManual({ email: 'dana@example.test', name: 'Dana Whitfield' });
     expect(refusal(await fenced.call('memory.write', savedClaim('A fact', { ...DAUGHTER, object: { contact: 'dana@example.test' } }), door)))
-      .toMatch(/cannot read contacts, so the claim cannot link one/);
+      .toMatch(/Reading contacts is not available for this contract\. So the claim cannot link one/);
     expect(await f.store.list()).toEqual([]);
     expect(await fenced.store.list()).toEqual([]);
   });
@@ -701,7 +701,7 @@ describe('slice C — recall by a claim: `about` finds notes by their claim, eit
     const fenced = fixture({ contactsReadable: false });
     const why = await recall(fenced, { about: [{ contact: 'dana@example.test' }] }, door);
     expect(why.memories).toEqual([]);
-    expect(why.hint).toMatch(/cannot read contacts/);
+    expect(why.hint).toMatch(/Reading contacts is not available for this contract/);
   });
 
   it('answers a malformed `about` with a guided empty, never an error', async () => {

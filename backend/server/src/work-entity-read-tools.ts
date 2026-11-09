@@ -81,6 +81,7 @@ import type {
 } from '@recued/contracts';
 import { mergeSpellingChecks, type FtsSpellingCorrection } from '@recued/fts';
 import {
+  isOwnersOwnCall,
   isWorkEntitySourceDeclarableKind,
   WORK_ENTITY_LIST_HYDRATION_MAX_ROWS_PER_CYCLE,
   parseQualifiedWorkEntityId,
@@ -119,6 +120,7 @@ import {
 } from './escalation-admission.js';
 import {
   collectionReadFencedHint,
+  ownerSwitchFix,
   workEntityReadVerbOpFencedHint,
 } from './read-grant-checker.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
@@ -131,6 +133,7 @@ import {
   type ProjectedWorkEntityUpsert,
 } from './work-entity-source-projector.js';
 import type { KernelWorkEntitySourceDeclaration } from './work-entity-source-boot.js';
+import { SERVER_PAUSED_DETAIL } from './pause-approval.js';
 import {
   WorkEntityResolverError,
   type WorkEntityResolver,
@@ -437,8 +440,7 @@ const ESCALATION_CONNECTION_NOT_IN_SCOPE =
  *  admission detail so the model reads pause as pause (never a grant or
  *  network problem). Leads with the transient truth + the resume cue. */
 const SERVER_PAUSED_ESCALATION =
-  'server is paused — contracted and AI operations are halted until the owner '
-  + 'resumes, so the vendor read was not attempted (not a grant problem; do '
+  `${SERVER_PAUSED_DETAIL}, so the vendor read was not attempted (not a grant problem; do `
   + 'not retry until resumed). The local mirror row is served; see '
   + 'source_freshness.';
 
@@ -1566,7 +1568,8 @@ export const runWorkEntitySearchTool = async (
   if (!deps.isVerbOpGranted(ctx)) {
     return {
       ok: true,
-      result: { entities: [], total: 0, hint: workEntityReadVerbOpFencedHint() },
+      result: { entities: [], total: 0, hint: workEntityReadVerbOpFencedHint(isOwnersOwnCall(ctx.execution_source)) },
+      ...ownerSwitchFix('core.work-entity.read', ctx.execution_source),
     };
   }
   // D-205 #3 — the `data.<kind>` read fence, BEFORE the resolver is touched. The GUIDED
@@ -1576,7 +1579,8 @@ export const runWorkEntitySearchTool = async (
   if (!deps.isCollectionReadGranted(kind, ctx)) {
     return {
       ok: true,
-      result: { entities: [], total: 0, hint: collectionReadFencedHint(kind) },
+      result: { entities: [], total: 0, hint: collectionReadFencedHint(kind, isOwnersOwnCall(ctx.execution_source)) },
+      ...ownerSwitchFix(`data.${kind}`, ctx.execution_source),
     };
   }
   const query = typeof args.query === 'string' && args.query.length > 0
@@ -2002,13 +2006,15 @@ export const runWorkEntityReadTool = async (
   if (!deps.isVerbOpGranted(ctx)) {
     return {
       ok: true,
-      result: { entity: null, found: false, hint: workEntityReadVerbOpFencedHint() },
+      result: { entity: null, found: false, hint: workEntityReadVerbOpFencedHint(isOwnersOwnCall(ctx.execution_source)) },
+      ...ownerSwitchFix('core.work-entity.read', ctx.execution_source),
     };
   }
   if (!deps.isCollectionReadGranted(kind, ctx)) {
     return {
       ok: true,
-      result: { entity: null, found: false, hint: collectionReadFencedHint(kind) },
+      result: { entity: null, found: false, hint: collectionReadFencedHint(kind, isOwnersOwnCall(ctx.execution_source)) },
+      ...ownerSwitchFix(`data.${kind}`, ctx.execution_source),
     };
   }
   const id = typeof args.id === 'string' && args.id.length > 0 ? args.id : undefined;

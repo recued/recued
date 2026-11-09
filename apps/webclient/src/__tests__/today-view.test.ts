@@ -51,6 +51,68 @@ const clusterRows = (html: string, id: string) => {
 };
 const day = (at: number): string => new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 afterEach(() => vi.restoreAllMocks());
+describe('D-340 states at the top of Today', () => {
+  const dim = <T>(value: T | null, verdict: 'match' | 'unknown') => ({ value, verdict, basis: 'declared' as const, evidence: [] });
+  const state: SituationCluster['items'][number] = { ref: { collection: 'asset', id: 'body', field: 'rules.short_sleep' }, kind: 'asset_state',
+    what: dim('Short night · Body', 'match'), when: dim({ from: now - 5 * hour, to: tomorrow }, 'match'), where: dim(null, 'unknown'), who: dim(null, 'unknown'),
+    reasons: ['holds'], basis: 'declared', evidence: [], consequence: 'routine', updated_at: now };
+  const lasting = { ...state, ref: { collection: 'asset', id: 'ring', field: 'rules.worn' }, what: dim('Ring worn · Ring', 'match'),
+    when: dim({ from: now - hour, to: 8.64e15 }, 'match') };
+  const visit: SituationCluster['items'][number] = { ref: { collection: 'calendar', id: 'work:visit' }, kind: 'calendar', what: dim('Physio', 'match'),
+    when: dim({ from: tomorrow + hour, to: tomorrow + 2 * hour }, 'match'), where: dim(null, 'unknown'), who: dim(null, 'unknown'),
+    reasons: ['due'], basis: 'declared', evidence: [], consequence: 'routine', updated_at: now };
+  const load = (clusters: SituationCluster[]) => loadToday({ ...readers([], [event('visit', tomorrow + hour, tomorrow + 2 * hour)]),
+    proactiveTodayCaller: async () => ({ situations: { clusters, omitted: 0, ambiguous: [] }, occurrences: [], proposal_count: 0, newest_proposal: null,
+      unmatched_replies: [], phone_ready: true }) }, now);
+
+  it('lifts a state out of its cluster to the top band, with its until, and keeps the rest of the cluster', async () => {
+    const snapshot = await load([
+      { id: 'body', subjects: [], span: { from: now - 5 * hour, to: tomorrow }, omitted: 0, items: [state] },
+      { id: 'week', subjects: [], span: { from: now - hour, to: tomorrow + 2 * hour }, omitted: 0, items: [lasting, visit] },
+    ]);
+    const held = snapshot.items.filter(item => item.group === 'holds');
+    expect(held).toMatchObject([{ title: 'Short night · Body', until: tomorrow, href: '#yours/asset/body' }, { title: 'Ring worn · Ring' }]);
+    // A state that holds until cleared has no until to show.
+    expect(held[1]).not.toHaveProperty('until');
+    const rest = snapshot.items.find(item => item.cluster?.id === 'week');
+    expect(rest?.cluster?.items.map(item => item.kind)).toEqual(['calendar']);
+    const html = renderToday(snapshot, false, 'data-action');
+    expect(html.indexOf('data-today-states')).toBeGreaterThan(-1);
+    expect(html.indexOf('data-today-states')).toBeLessThan(html.indexOf('data-today-group="overdue"'));
+    expect(html).toContain(`until <time datetime="${new Date(tomorrow).toISOString()}">`);
+    // No state appears again inside a group.
+    expect(html.slice(html.indexOf('data-today-group="overdue"'))).not.toContain('Short night');
+  });
+  it('draws no band when nothing holds', async () => {
+    const snapshot = await load([{ id: 'week', subjects: [], span: { from: tomorrow + hour, to: tomorrow + 2 * hour }, omitted: 0, items: [visit] }]);
+    expect(renderToday(snapshot, false, 'data-action')).not.toContain('data-today-states');
+  });
+});
+describe('D-340 slice 4 — the day\'s AI suggestions at the top of Today', () => {
+  const state: SituationCluster['items'][number] = { ref: { collection: 'asset', id: 'body', field: 'rules.short_sleep' }, kind: 'asset_state',
+    what: { value: 'Short night · Body', verdict: 'match', basis: 'declared', evidence: [] }, when: { value: { from: now - hour, to: tomorrow }, verdict: 'match', basis: 'declared', evidence: [] },
+    where: { value: null, verdict: 'unknown', basis: 'declared', evidence: [] }, who: { value: null, verdict: 'unknown', basis: 'declared', evidence: [] },
+    reasons: ['holds'], basis: 'declared', evidence: [], consequence: 'routine', updated_at: now };
+  const load = (suggestions?: ProactiveToday['suggestions']) => loadToday({ ...readers([task('t1', now + hour)]),
+    proactiveTodayCaller: async () => ({ situations: { clusters: [{ id: 'body', subjects: [], span: { from: now - hour, to: tomorrow }, omitted: 0, items: [state] }],
+      omitted: 0, ambiguous: [] }, occurrences: [], proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true,
+      ...(suggestions ? { suggestions } : {}) }) }, now);
+
+  it('draws them above what holds, as written, with "Talk it over" opening their conversation', async () => {
+    const html = renderToday(await load({ text: 'Leave at 06:40 <early>.\nBring the gym bag.', session_id: 'agenda suggestions/1', day: '2026-09-08' }), false, 'data-action');
+    const block = html.slice(html.indexOf('data-today-suggestions'), html.indexOf('</section>', html.indexOf('data-today-suggestions')));
+    expect(block).toContain('<h3 id="today-suggestions-title">Suggestions</h3>');
+    expect(block).toContain('Leave at 06:40 &lt;early&gt;.\nBring the gym bag.');
+    expect(block).toContain('<a href="#chat/session/agenda%20suggestions%2F1" data-today-suggestions-talk>Talk it over</a>');
+    expect(html.indexOf('data-today-suggestions')).toBeLessThan(html.indexOf('data-today-states'));
+  });
+
+  it('draws nothing before they finish, or from a server before them', async () => {
+    const html = renderToday(await load(), false, 'data-action');
+    expect(html).not.toContain('data-today-suggestions');
+    expect(html).toContain('data-today-states');
+  });
+});
 describe('Today projection', () => {
   it('moves reminded canonical occurrences into Coming up, omits questions, and names the asset without copying its lifecycle', async () => {
     const due = commitment('renew', before + 30 * 86_400_000);

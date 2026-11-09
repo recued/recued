@@ -1,8 +1,11 @@
 /** D-325 (2026-10-25) — `work.update` of an `asset`, and the ranks an AI's asset writes
- *  land at. The owner's ruling, "readings mine, rest AI's": a reading the owner approves
- *  is their own sample, at their rank, so it replaces one they typed. A name, a date, a
- *  detail or a place keeps the AI's rank: an AI fills an empty field or replaces what an
- *  AI wrote, and where the owner set the value it is refused before they are asked.
+ *  land at. D-343 ruling 16 (2026-11-06) replaced the owner's first ruling, "readings mine,
+ *  rest AI's": a write the owner approves (an ask they answered, or a standing rule they
+ *  accepted) is theirs, at their rank, for every field it changes, so it may change what they
+ *  set, and a value it re-sends unchanged keeps its source. A write they do not approve (a
+ *  household member's chat, a session they restricted, an AI app's write its contract runs
+ *  without asking) keeps the AI's rank: it fills an empty field or replaces what an AI wrote,
+ *  and where the owner set the value it is refused before anyone is asked.
  *
  *  ⛔ DRIVEN ON THE REAL STORE AND DISPATCHERS. Which source holds a field is the store's
  *  decision (`writeAsset`), so a double at the dispatcher would test the handler's guess
@@ -35,6 +38,10 @@ const inChat = { channel: 'internal_function_call', session_id: 'sess-1', execut
 /** What the server sets once the owner approved the call (an ask, or a standing rule). */
 const approved = { channel: 'internal_function_call', session_id: 'sess-1', execution_source: owner, owner_approved: true } as never;
 const overMcp = { channel: 'mcp_wire', mcp_token_id: 'tok-1', execution_source: door, owner_approved: true } as never;
+/** An AI app's write its contract runs without asking the owner. */
+const mcpUnasked = { channel: 'mcp_wire', mcp_token_id: 'tok-1', execution_source: door } as never;
+/** A session the owner restricted under a contract: its cards are its own approval, not the owner's. */
+const restricted = { channel: 'internal_function_call', session_id: 'sess-3', execution_source: { ...owner, contract_id: 'k-self' } } as never;
 
 type Ok = { ok: true; result: Record<string, unknown> };
 type Refused = { ok: false; reason: string; detail: string };
@@ -84,7 +91,7 @@ describe('work.update — a thing the user owns', () => {
     expect(await f.update(change, approved)).toMatchObject({ ok: true, result: { fields: ['attributes'] } });
     const updated = f.store.readAsset(paper.id)!;
     expect(updated.attributes).toEqual({ [ASSET_SEARCH_TERMS]: ['family visit', 'london'], colour: 'blue' });
-    expect(updated.field_sources[`attributes.${ASSET_SEARCH_TERMS}`]).toMatchObject({ kind: 'extracted', ref: 'chat:sess-1' });
+    expect(updated.field_sources[`attributes.${ASSET_SEARCH_TERMS}`]).toMatchObject({ kind: 'owner', ref: 'chat:sess-1' });
     expect(updated.dates).toEqual(paper.dates);
     expect(updated.rules).toEqual(paper.rules);
     expect(updated.field_sources['attributes.colour']).toEqual(paper.field_sources['attributes.colour']);
@@ -122,15 +129,15 @@ describe('work.update — a thing the user owns', () => {
     expect(f.store.readAsset(id)!.attributes.search_terms).toEqual(['reunion']);
     expect(await f.update({ kind: 'asset', id, attributes: { search_terms: [] } }, overMcp)).toMatchObject({ ok: true });
     expect(f.store.searchIdsByText('asset', 'reunion', 10)).toEqual([]);
-    expect(f.store.readAsset(id)!.field_sources['attributes.search_terms']).toMatchObject({ kind: 'extracted', ref: 'mcp:tok-1' });
+    expect(f.store.readAsset(id)!.field_sources['attributes.search_terms']).toMatchObject({ kind: 'owner', ref: 'mcp:tok-1' });
   });
 
   it('keeps keyword edits atomic with held facts and rejects malformed or oversized hints', async () => {
     const f = harness();
     const paper = f.ownersAsset({ name: 'Family paper', attributes: { search_terms: ['reunion'], colour: 'blue' } });
     const mixed = { kind: 'asset', id: paper.id, attributes: { search_terms: ['london'], colour: 'red' } };
-    expect(await checkWorkUpdate(f.deps, mixed, inChat)).toMatchObject({ ok: false, detail: expect.stringContaining('`colour`') });
-    expect(await f.update(mixed, approved)).toMatchObject({ ok: false });
+    expect(await checkWorkUpdate(f.deps, mixed, restricted)).toMatchObject({ ok: false, detail: expect.stringContaining('`colour`') });
+    expect(await f.update(mixed, inChat)).toMatchObject({ ok: false });
     for (const bad of [true, 4, { word: 'trip' }, ['x'.repeat(81)], Array(33).fill('trip'), 'x'.repeat(2049)]) {
       expect(await f.update({ kind: 'asset', id: paper.id, attributes: { search_terms: bad } }, approved)).toMatchObject({ ok: false, reason: 'invalid_args' });
     }
@@ -165,19 +172,52 @@ describe('work.update — a thing the user owns', () => {
     }
   });
 
-  it('adds to what the owner entered, and refuses to change it, before they are asked and when it runs', async () => {
+  it('changes what the owner entered once they approve it, at their rank, and refuses a write they did not', async () => {
     const f = harness();
     const bike = f.ownersAsset({ name: 'Road bike', attributes: { brand: 'Trek' }, anchors: [{ kind: 'place', name: 'the garage' }] });
     const change = { kind: 'asset', id: bike.id, title: 'Trek Domane', attributes: { brand: 'Specialized', colour: 'blue' }, place: 'the shed' };
+    // D-343 ruling 16 — the owner will approve it, so it is theirs and nothing is refused first.
+    expect(await checkWorkUpdate(f.deps, change, inChat)).toBeNull();
+    // A write nobody approved, or a session's own approval, keeps the AI's rank, which never
+    // replaces the owner's: refused, before anyone is asked and when it runs, and nothing written.
     const says = 'work.update: the user set its name, where it is kept and `brand` themselves, so an AI may not change them. '
       + 'Tell the user why, and that they can change them in Yours. Leave them out to change the rest';
-    expect(await checkWorkUpdate(f.deps, change, inChat)).toEqual({ ok: false, reason: 'invalid_args', detail: says });
-    expect(await f.update(change, approved)).toEqual({ ok: false, reason: 'invalid_args', detail: says });
+    expect(await checkWorkUpdate(f.deps, change, restricted)).toEqual({ ok: false, reason: 'invalid_args', detail: says });
+    expect(await f.update(change, inChat)).toEqual({ ok: false, reason: 'invalid_args', detail: says });
     expect(f.store.readAsset(bike.id)).toEqual(bike);
-    // A new detail is the AI's to add; the owner's own stay as they are.
-    expect(await f.update({ kind: 'asset', id: bike.id, attributes: { colour: 'blue', brand: 'Trek' } }, approved)).toMatchObject({ ok: true });
-    expect(f.store.readAsset(bike.id)).toMatchObject({ name: 'Road bike', attributes: { brand: 'Trek', colour: 'blue' } });
-    expect(f.store.readAsset(bike.id)!.field_sources['attributes.brand']).toMatchObject({ kind: 'owner' });
+    // Approved, each changes, at the owner's rank under the chat it came from.
+    expect(await f.update(change, approved)).toMatchObject({ ok: true, result: { fields: ['title', 'attributes', 'place'] } });
+    const after = f.store.readAsset(bike.id)!;
+    expect(after).toMatchObject({ name: 'Trek Domane', attributes: { brand: 'Specialized', colour: 'blue' },
+      anchors: [{ kind: 'place', name: 'the shed' }] });
+    for (const path of ['name', 'attributes.brand', 'attributes.colour', 'anchors']) {
+      expect(after.field_sources[path], path).toMatchObject({ kind: 'owner', ref: 'chat:sess-1' });
+    }
+  });
+
+  it('keeps the source of what an approved write re-sends unchanged, so a document\'s date stays the document\'s', async () => {
+    const f = harness();
+    const car = f.ownersAsset({ name: 'Family car', class_id: 'vehicle', dates: { legal_check_on: null, last_serviced_on: null } });
+    f.store.writeAsset({ id: car.id, source_id: car.source_id, source: { kind: 'confirmed_document', ref: 'file:mot-1' },
+      dates: { legal_check_on: '2027-01-31' } }, NOW);
+    expect(await f.update({ kind: 'asset', id: car.id, title: 'Our car', dates: { legal_check_on: '2027-01-31', last_serviced_on: '2026-10-01' } },
+      approved)).toMatchObject({ ok: true });
+    const after = f.store.readAsset(car.id)!;
+    // At the owner's rank it would lock out the next document; unchanged, it stays the MOT's.
+    expect(after.field_sources['dates.legal_check_on']).toMatchObject({ kind: 'confirmed_document', ref: 'file:mot-1' });
+    expect(after.field_sources['dates.last_serviced_on']).toMatchObject({ kind: 'owner', ref: 'chat:sess-1' });
+    expect(after.field_sources.name).toMatchObject({ kind: 'owner', ref: 'chat:sess-1' });
+  });
+
+  it('leaves the rest of a thing to the owner, even in a write they approved: its rules, who sees it, its status', async () => {
+    const f = harness();
+    const car = f.ownersAsset({ name: 'Family car' });
+    for (const [field, value] of [['rules', []], ['sphere', 'work'], ['audience', 'household'], ['status', 'sold'], ['settings', {}],
+      ['exact_address', '1 Main St']] as const) {
+      await expect(f.dispatchers.assetUpdate({ id: car.id, source: { kind: 'extracted', ref: 'chat:sess-1' }, [field]: value } as never,
+        { owner_approved: true }), field).rejects.toThrow(`\`${field}\` is the owner's to change`);
+    }
+    expect(f.store.readAsset(car.id)).toEqual(car);
   });
 
   it('names each source that holds a field it cannot change', async () => {
@@ -186,7 +226,7 @@ describe('work.update — a thing the user owns', () => {
       readings: { odometer: null } });
     f.store.writeAsset({ id: car.id, source_id: car.source_id, source: { kind: 'confirmed_document', ref: 'file:mot-1' },
       dates: { legal_check_on: '2027-01-31' } }, NOW);
-    const res = await checkWorkUpdate(f.deps, { kind: 'asset', id: car.id, title: 'Our car', dates: { legal_check_on: '2027-02-28' } }, inChat);
+    const res = await checkWorkUpdate(f.deps, { kind: 'asset', id: car.id, title: 'Our car', dates: { legal_check_on: '2027-02-28' } }, restricted);
     expect(res).toMatchObject({ detail: 'work.update: the user set its name themselves and `legal_check_on` comes from a document '
       + 'the user confirmed, so an AI may not change them. Tell the user why, and that they can change them in Yours. '
       + 'Leave them out to change the rest' });
@@ -220,15 +260,21 @@ describe('work.update — a thing the user owns', () => {
         + 'Tell the user why, and that the owner can change it in Yours. Leave it out to change the rest' });
   });
 
-  it('tells an AI app that the owner set a value, since its user may not be the owner', async () => {
+  it('tells an AI app that the owner set a value, since its user may not be the owner, when the owner did not approve its write', async () => {
     const f = harness();
     const car = f.ownersAsset({ name: 'Family car', class_id: 'vehicle', anchors: [{ kind: 'place', name: 'the driveway' }] });
     f.store.writeAsset({ id: car.id, source_id: car.source_id, source: { kind: 'confirmed_document', ref: 'file:mot-1' },
       dates: { legal_check_on: '2027-01-31' } }, NOW);
-    expect(await f.update({ kind: 'asset', id: car.id, place: 'the street', dates: { legal_check_on: '2027-02-28' } }, overMcp))
+    const change = { kind: 'asset', id: car.id, place: 'the street', dates: { legal_check_on: '2027-02-28' } };
+    expect(await f.update(change, mcpUnasked))
       .toMatchObject({ detail: 'work.update: the owner set where it is kept themselves and `legal_check_on` comes from a '
         + 'document the owner confirmed, so an AI may not change them. Tell the user why, and that the owner can change them '
         + 'in Yours. Leave them out to change the rest' });
+    // Once the owner approved it, the AI app's write is theirs, under its own token (D-343 ruling 16).
+    expect(await f.update(change, overMcp)).toMatchObject({ ok: true });
+    const after = f.store.readAsset(car.id)!;
+    expect(after).toMatchObject({ anchors: [{ kind: 'place', name: 'the street' }], dates: { legal_check_on: '2027-02-28' } });
+    expect(after.field_sources['dates.legal_check_on']).toMatchObject({ kind: 'owner', ref: 'mcp:tok-1' });
   });
 
   it('records an AI app\'s approved reading under its own token', async () => {
@@ -268,7 +314,7 @@ describe('work.update — a thing the user owns', () => {
       .toMatchObject({ detail: 'work.update: `dates.legal_check_on` must be a date as YYYY-MM-DD' });
     expect(await f.update({ kind: 'asset', id: car.id, dates: { legal_check_on: '2027-01-31' } }, approved)).toMatchObject({ ok: true });
     expect(f.store.readAsset(car.id)!.dates.legal_check_on).toBe('2027-01-31');
-    expect(f.store.readAsset(car.id)!.field_sources['dates.legal_check_on']).toMatchObject({ kind: 'extracted' });
+    expect(f.store.readAsset(car.id)!.field_sources['dates.legal_check_on']).toMatchObject({ kind: 'owner', ref: 'chat:sess-1' });
   });
 
   it('answers a check before asking: what the write would refuse, a change that changes nothing, or that it would run', async () => {
@@ -289,16 +335,17 @@ describe('work.update — a thing the user owns', () => {
     const f = harness();
     const bike = f.ownersAsset({ name: 'Road bike' });
     const check = buildChatToolRegistryInputs(f.deps).tier1Checks['work.update']!;
-    expect(await check({ kind: 'asset', id: bike.id, title: 'Trek' }, inChat))
+    expect(await check({ kind: 'asset', id: bike.id, title: 'Trek' }, restricted))
       .toMatchObject({ ok: false, detail: expect.stringContaining('the user set its name themselves') });
-    expect(await check({ kind: 'asset', id: bike.id, attributes: { colour: 'blue' } }, inChat)).toBeNull();
+    expect(await check({ kind: 'asset', id: bike.id, title: 'Trek' }, inChat)).toBeNull();
+    expect(await check({ kind: 'asset', id: bike.id, attributes: { colour: 'blue' } }, restricted)).toBeNull();
   });
 
   it('refuses what an asset has no place for, a change of nothing, and the asset arguments on another kind', async () => {
     const f = harness();
     const bike = await f.aisAsset({ title: 'Road bike' });
     for (const [args, says] of [
-      [{ done: true }, 'an asset takes `title`, `body`, `dates`, `readings`, `attributes`, `place` and `belongs_to`, not `done`'],
+      [{ done: true }, 'an asset takes `title`, `body`, `dates`, `readings`, `conditions`, `attributes`, `place` and `belongs_to`, not `done`'],
       [{}, 'send at least one change to the asset'],
       [{ attributes: { colour: null } }, '`Road bike` has no attribute `colour` to remove'],
       [{ title: ' ' }, '`title` is the asset\'s new name'],
@@ -350,15 +397,18 @@ describe('what a thing belongs to', () => {
     expect(f.store.readAsset(bike.id)).toEqual(before);
   });
 
-  it('a tie the owner made is theirs to change', async () => {
+  it('a tie the owner made changes only with their approval', async () => {
     const f = harness();
     const laptop = f.ownersAsset({ name: 'Laptop' });
     const desk = f.ownersAsset({ name: 'Desk' });
     const charger = f.ownersAsset({ name: 'Charger', belongs_to: laptop.id });
-    expect(await f.update({ kind: 'asset', id: charger.id, belongs_to: desk.id }, approved)).toMatchObject({
+    expect(await f.update({ kind: 'asset', id: charger.id, belongs_to: desk.id }, restricted)).toMatchObject({
       detail: 'work.update: the user set what it belongs to themselves, so an AI may not change it. '
         + 'Tell the user why, and that they can change it in Yours. Leave it out to change the rest' });
     expect(f.store.readAsset(charger.id)).toEqual(charger);
+    expect(await f.update({ kind: 'asset', id: charger.id, belongs_to: desk.id }, approved)).toMatchObject({ ok: true });
+    expect(f.store.readAsset(charger.id)).toMatchObject({ belongs_to: desk.id,
+      field_sources: { belongs_to: { kind: 'owner', ref: 'chat:sess-1' } } });
   });
 
   it('is an asset\'s alone, as are its other arguments', async () => {

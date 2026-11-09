@@ -108,6 +108,7 @@ export const RPC_REFUSAL_RECIPE_CODES: Readonly<Record<string, RecipeErrorCode>>
   not_unlocked: 'SERVER_LOCKED', // 409
   pack_not_installed: 'NOT_CONFIGURED', // 400: "needs a pack that is not installed"
   payload_too_large: 'VALUE_TOO_LARGE', // 413, shared storage and annotations
+  program_not_installed: 'CLI_TOOL_NOT_FOUND', // 400, D-346 A: a program a step launches is not on the server
   recipe_not_found: 'RECIPE_NOT_FOUND', // 404
   remote_fetch_failed: 'API_SERVER_ERROR', // 502/504: Google, S3, Notion or a URL answered badly
   server_not_reachable: 'COLLECTION_SOURCE_UNREACHABLE', // 503: "…_ADAPTER_UNREACHABLE: instance is not running"

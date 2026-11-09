@@ -36,6 +36,7 @@ import {
   defaultRedactionForKind,
   renderTransparencyTemplate,
   validateTransparencyEvent,
+  type ChatDispatchReason,
   type ChatMessage,
   type ChatToolCall,
   type ChatToolCallRecord,
@@ -81,19 +82,49 @@ const compactDetail = (detail: string): string => {
   return line.length > ACTIVITY_DETAIL_MAX ? `${line.slice(0, ACTIVITY_DETAIL_MAX - 1)}…` : line;
 };
 
+/** D-346 follow-up (2026-11-08) — each closed-list reason in the owner's words. The row
+ *  used to show the slug itself ("couldn't run mail.search: classification blocked"). */
+const REASON_WORDS: Readonly<Record<ChatDispatchReason, string>> = {
+  not_implemented: 'it is not available yet',
+  unknown_tool: 'there is no such tool',
+  invalid_args: 'it was asked in a way it could not use',
+  channel_denied: 'it is not allowed here',
+  kind_gated: 'it is not allowed here',
+  classification_blocked: 'it is switched off',
+  connection_unavailable: 'its connection is not available',
+  capacity_gap: 'a limit was reached',
+  execution_error: 'it failed',
+  awaiting_approval: 'it is waiting for your yes',
+  plan_cancelled: 'you cancelled it',
+  run_cancelled: 'it was cancelled',
+  not_asked_yet: 'it was left until you answer the approval before it',
+};
+
+/** The first sentence of a refusal, without its full stop: a switched-off call's own words
+ *  say what is off ("'mail.search' is turned off for you, so it did not run"). */
+const firstSentence = (detail: string): string => {
+  const line = (detail.split('\n')[0] ?? '').trim();
+  const end = line.indexOf('. ');
+  return (end === -1 ? line.replace(/\.$/, '') : line.slice(0, end)).trim();
+};
+
 /** Lower-case stylistic per the inline-stream tone (§ B.8.5); the
- *  closed-list dispatch reason slug reads as words. */
+ *  closed-list dispatch reason reads as words. */
 const toolCallText = (call: ToolCallLike): string => {
   if (call.status === 'started') return `running ${call.tool_name}...`;
   if (call.status === 'ok') return `used ${call.tool_name} ✓`;
+  // A switched-off call says what is off in its own refusal (D-346), which names the tool.
+  if (call.reason === 'classification_blocked' && call.detail !== undefined && call.detail.trim().length > 0) {
+    return compactDetail(firstSentence(call.detail));
+  }
   // D-182 — for a run/tool FAILURE prefer the concise underlying error line (the
-  // cli `not found` message) over the bare reason slug; other reasons
-  // (awaiting_approval / run_cancelled) keep their slug — their detail is a plan
-  // id / long posture message with its own UX, not an activity-row diagnostic.
+  // cli `not found` message) over the reason; other reasons (awaiting_approval /
+  // run_cancelled) say their reason in words — their detail is a plan id / long
+  // posture message with its own UX, not an activity-row diagnostic.
   const detail = call.reason === 'execution_error' ? call.detail?.trim() : undefined;
   const why = detail !== undefined && detail.length > 0
     ? compactDetail(detail)
-    : (call.reason ?? 'execution_error').replace(/_/g, ' ');
+    : REASON_WORDS[call.reason ?? 'execution_error'] ?? (call.reason ?? 'execution_error').replace(/_/g, ' ');
   return `couldn't run ${call.tool_name}: ${why}`;
 };
 

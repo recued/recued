@@ -19,6 +19,7 @@
 import {
   describeTestedRange,
   type CliVersionOutside,
+  type OwnerToolPathView,
   type OwnerToolVersionView,
   type PackListEntry,
   type PackToolStatus,
@@ -34,6 +35,10 @@ export interface PackProgramsCallers {
   status: (args: PacksToolStatusRequest) => Promise<PacksToolStatusResult>;
   setOutside?: (args: { ingredient_id: string; outside: CliVersionOutside }) => Promise<OwnerToolVersionView>;
   clearOutside?: (args: { ingredient_id: string }) => Promise<{ deleted: boolean }>;
+  /** D-321 — where the owner sets a program (`collection.operation.upsertOwnerToolPath`).
+   *  Absent: no location can be set here. */
+  setPath?: (args: { ingredient_id: string; path: string }) => Promise<OwnerToolPathView>;
+  clearPath?: (args: { ingredient_id: string }) => Promise<{ deleted: boolean }>;
 }
 
 export const PACK_PROGRAMS_ATTR = 'data-recued-pack-programs';
@@ -47,6 +52,18 @@ export const PACK_PROGRAMS_OUTSIDE_ATTR = 'data-recued-pack-program-outside';
 export const PACK_PROGRAMS_ACTION_ATTR = 'data-recued-pack-programs-action';
 /** On each install command. */
 export const PACK_PROGRAMS_INSTALL_ATTR = 'data-recued-pack-program-install';
+/** D-321 — on the block for a program installed outside the server's PATH: the
+ *  file found. */
+export const PACK_PROGRAMS_FOUND_AT_ATTR = 'data-recued-pack-program-found-at';
+/** On the command that gives the server a terminal's PATH. */
+export const PACK_PROGRAMS_REPAIR_ATTR = 'data-recued-pack-program-repair';
+/** D-321 — on the line naming the location the owner set: that path. */
+export const PACK_PROGRAMS_LOCATION_ATTR = 'data-recued-pack-program-location';
+/** D-346 — on that line when the location was set on the pack a Kitchen copy
+ *  copies: that pack's catalog. */
+export const PACK_PROGRAMS_LOCATION_FROM_ATTR = 'data-recued-pack-program-location-from';
+/** On the field where a location is typed: the program's catalog. */
+export const PACK_PROGRAMS_LOCATION_INPUT_ATTR = 'data-recued-pack-program-location-input';
 export const PACK_PROGRAMS_ERROR_ATTR = 'data-recued-pack-programs-error';
 
 /** A program's name as the owner knows it: the last part of the path the pack
@@ -123,6 +140,7 @@ const OUTSIDE_LABEL: Record<CliVersionOutside, string> = { refuse: 'Refuse', war
 const COPY = {
   heading: 'Programs',
   intro: 'The programs this pack runs on your server. Recued does not install them for you.',
+  intro_before_install: 'The programs this pack runs, checked on your server before you install it. Recued does not install them for you.',
   loading: 'Checking the programs…',
   load_failed: (message: string) => `Could not check this pack's programs: ${message}`,
   retry: 'Try again',
@@ -133,6 +151,7 @@ const COPY = {
     ready_tested: (version: string) => `${version} · tested`,
     ready: 'Installed',
     missing: 'Not installed',
+    outside_path: "Not on the server's PATH",
     broken: 'Installed, but does not start',
     untested: (version: string) => `${version} · not tested`,
     unreadable: 'Version unknown',
@@ -141,6 +160,11 @@ const COPY = {
   refused: 'Its actions are refused until you install a tested version or choose Warn.',
   warned: 'Its actions still run.',
   missing_note: 'Its actions fail until you install it.',
+  outside_note: 'Its actions fail until the server can find it.',
+  found_at: (path: string, folder: string) => `Installed at ${path}, but the server doesn't look in ${folder}.`,
+  repair_label: "Recued starts by itself, so it doesn't have your terminal's PATH. To give it yours, run this in a terminal where the program works:",
+  no_repair: (folder: string) =>
+    `Start Recued from a terminal where the program works, or add ${folder} to the PATH it starts with.`,
   broken_note: 'Its actions are refused until it starts.',
   setting_label: 'When the installed version is not tested:',
   pack_default: (outside: CliVersionOutside) => `The pack's default is ${OUTSIDE_LABEL[outside]}.`,
@@ -153,6 +177,16 @@ const COPY = {
   copied: 'Copied',
   copy_failed: (message: string) => `Could not copy: ${message}`,
   docs: 'Install instructions',
+  // D-321 — where the program is.
+  use_found: (path: string) => `Use ${path}`,
+  use_found_label: (path: string) => `Run this program from ${path}`,
+  located: (path: string) => `Runs ${path}, the location you set.`,
+  /** D-346 — a Kitchen copy running the location set for its original. */
+  located_from_original: (path: string) => `Runs ${path}, the location you set for the pack this copies. Set one here to change it for this copy.`,
+  use_path: "Use the server's PATH",
+  set_location: 'Set where it is',
+  location_label: (name: string) => `Where ${name} is, as a full path`,
+  save_location: 'Use this file',
 } as const;
 
 /** A program's state in a few words: "1.18.35 · tested", "Not installed". The
@@ -163,7 +197,7 @@ export const programStateText = (tool: PackToolStatus): string => {
       return tool.version !== undefined && tool.tested !== undefined
         ? COPY.state.ready_tested(tool.version)
         : COPY.state.ready;
-    case 'missing': return COPY.state.missing;
+    case 'missing': return tool.found_at !== undefined ? COPY.state.outside_path : COPY.state.missing;
     case 'broken': return COPY.state.broken;
     case 'untested': return COPY.state.untested(tool.version ?? '?');
     case 'unreadable': return COPY.state.unreadable;
@@ -179,12 +213,28 @@ export const programStopsRuns = (tool: PackToolStatus): boolean =>
 
 /** What the state means for a run, in one sentence; null when it runs. */
 export const programConsequence = (tool: PackToolStatus): string | null => {
-  if (tool.state === 'missing') return COPY.missing_note;
+  if (tool.state === 'missing') return tool.found_at !== undefined ? COPY.outside_note : COPY.missing_note;
   if (tool.state === 'broken') return COPY.broken_note;
   if (tool.state === 'untested' || tool.state === 'unreadable') {
     return tool.outside === 'warn' ? COPY.warned : COPY.refused;
   }
   return null;
+};
+
+/** The folder a found program sits in. Only POSIX servers report one. */
+const folderOf = (path: string): string => path.slice(0, Math.max(path.lastIndexOf('/'), 1));
+
+/** D-321 — where a program the server cannot find is installed, in one
+ *  sentence; null when it was not found anywhere. The grant dialog shows the
+ *  same words. */
+export const programFoundAtText = (tool: PackToolStatus): string | null =>
+  tool.found_at === undefined ? null : COPY.found_at(tool.found_at, folderOf(tool.found_at));
+
+/** What gives the server that folder: the repair command's lead-in when the
+ *  server offers one, else what the owner does themselves. */
+export const programRepairText = (tool: PackToolStatus): string | null => {
+  if (tool.found_at === undefined) return null;
+  return tool.repair !== undefined ? COPY.repair_label : COPY.no_repair(folderOf(tool.found_at));
 };
 
 export interface PackProgramsControllerOptions {
@@ -204,6 +254,9 @@ export interface PackProgramsController {
   /** The block for one pack: null while disabled, on a server without the call,
    *  or once loaded when the pack runs no program. */
   renderForPack(pack: PackListEntry): HTMLElement | null;
+  /** D-321 C1 — the pack's programs as last read (the install panel lists them),
+   *  or null before a read answers. */
+  toolsFor(packSlug: string): readonly PackToolStatus[] | null;
   /** Test seam: resolves once nothing is loading or writing. */
   whenSettled(): Promise<void>;
   dispose(): void;
@@ -213,7 +266,9 @@ type PackState =
   | { status: 'loading' }
   | { status: 'error'; message: string }
   | { status: 'unsupported' }
-  | { status: 'ready'; tools: PackToolStatus[] };
+  /** `installed: false` — D-321 C1: the pack is not installed, and these are the
+   *  programs it would run, checked before install. Nothing is stored for them. */
+  | { status: 'ready'; tools: PackToolStatus[]; installed: boolean };
 
 const defaultCopy = async (text: string): Promise<void> => {
   const clipboard = (globalThis as { navigator?: { clipboard?: { writeText?: (t: string) => Promise<void> } } })
@@ -238,6 +293,10 @@ export const createPackProgramsController = (
   let copied: string | null = null;
   /** Why the last copy failed, until the next copy. */
   let copyError: string | null = null;
+  /** D-321 — a location being typed, per program, and which fields are open:
+   *  every action re-renders the block, which must not lose either. */
+  const drafts = new Map<string, string>();
+  const openLocate = new Set<string>();
   /** The newest status read per pack: an older one that lands later is dropped,
    *  so it can neither put back an earlier answer nor end another's busy. */
   let reads = 0;
@@ -253,8 +312,10 @@ export const createPackProgramsController = (
   const changed = (): void => {
     if (!disposed) opts.onChange();
   };
-  const toolsOf = (result: PacksToolStatusResult, packSlug: string): PackToolStatus[] =>
-    result.packs.find((entry) => entry.slug === packSlug)?.tools ?? [];
+  const readyOf = (result: PacksToolStatusResult, packSlug: string): PackState => {
+    const entry = result.packs.find((candidate) => candidate.slug === packSlug);
+    return { status: 'ready', tools: entry?.tools ?? [], installed: entry?.installed !== false };
+  };
 
   /** Read the pack's programs: `first` shows "Checking…" until the answer; a
    *  `reload` (after a write) and a `recheck` ("Check again") keep what is shown,
@@ -269,7 +330,7 @@ export const createPackProgramsController = (
       (result) => {
         if (newestRead.get(packSlug) !== mine) return;
         busy.delete(packSlug);
-        states.set(packSlug, { status: 'ready', tools: toolsOf(result, packSlug) });
+        states.set(packSlug, readyOf(result, packSlug));
         changed();
       },
       (error: unknown) => {
@@ -374,39 +435,133 @@ export const createPackProgramsController = (
     }
   };
 
-  const renderInstall = (parent: HTMLElement, packSlug: string, tool: PackToolStatus): void => {
-    if (tool.state === 'ready' || (tool.install.length === 0 && tool.docs.length === 0)) return;
+  /** One command to copy: shown, never run (D-170). `attr` marks the code
+   *  element: an install command or the PATH repair. */
+  const commandRow = (list: HTMLElement, packSlug: string, tool: PackToolStatus, command: string, attr: string): void => {
+    const row = el(list, 'li', 'pp-install-row');
+    const code = el(row, 'code', 'pp-command', command);
+    code.setAttribute(attr, command);
+    const copy = button(row, copied === command ? COPY.copied : COPY.copy, false, false, () => {
+      void copyText(command).then(
+        () => {
+          copied = command;
+          copyError = null;
+          changed();
+        },
+        (error: unknown) => {
+          copied = null;
+          copyError = error instanceof Error ? error.message : String(error);
+          changed();
+        },
+      );
+    });
+    copy.setAttribute(PACK_PROGRAMS_ACTION_ATTR, 'copy');
+    copy.setAttribute('aria-label', COPY.copy_label(command));
+    markFor(copy, packSlug, tool.catalog, command);
+  };
+
+  const copyErrorLine = (block: HTMLElement): void => {
+    if (copyError === null) return;
+    const failed = el(block, 'p', 'pp-error', COPY.copy_failed(copyError));
+    failed.setAttribute(PACK_PROGRAMS_ERROR_ATTR, '');
+    failed.setAttribute('role', 'alert');
+  };
+
+  /** D-321 — installed, but outside the server's PATH: where it is and how the
+   *  owner gives the server that folder, instead of install commands for a
+   *  program that is already there. */
+  const renderOutsidePath = (parent: HTMLElement, packSlug: string, tool: PackToolStatus, readOnly = false): void => {
+    const block = el(parent, 'div', 'pp-install');
+    block.setAttribute(PACK_PROGRAMS_FOUND_AT_ATTR, tool.found_at ?? '');
+    el(block, 'p', 'pp-note', programFoundAtText(tool) ?? '');
+    const found = tool.found_at;
+    const setPath = readOnly ? undefined : callers?.setPath;
+    if (found !== undefined && setPath !== undefined) {
+      // One click: this program runs from the file the server found.
+      const use = button(block, COPY.use_found(found), true, busy.has(packSlug), () => {
+        write(packSlug, () => setPath({ ingredient_id: tool.catalog, path: found }));
+      });
+      use.className += ' pp-use-found';
+      use.setAttribute(PACK_PROGRAMS_ACTION_ATTR, 'use-found');
+      use.setAttribute('aria-label', COPY.use_found_label(found));
+      markFor(use, packSlug, tool.catalog);
+    }
+    el(block, 'p', 'pp-install-label', programRepairText(tool) ?? '');
+    if (tool.repair === undefined) return;
+    const list = el(block, 'ul', 'pp-install-list');
+    commandRow(list, packSlug, tool, tool.repair, PACK_PROGRAMS_REPAIR_ATTR);
+    copyErrorLine(block);
+  };
+
+  /** D-321 — the location the owner set, while it applies, and the way back. */
+  const renderLocation = (parent: HTMLElement, packSlug: string, tool: PackToolStatus): void => {
+    const path = tool.owner_path;
+    if (path === undefined) return;
+    const line = el(parent, 'div', 'pp-location');
+    line.setAttribute(PACK_PROGRAMS_LOCATION_ATTR, path);
+    // D-346 — a copy running its original's location: clearing a row the copy
+    // does not have would change nothing, so the way back is not offered here.
+    const fromOriginal = tool.owner_path_from !== undefined;
+    el(line, 'span', 'pp-note', fromOriginal ? COPY.located_from_original(path) : COPY.located(path));
+    if (fromOriginal) line.setAttribute(PACK_PROGRAMS_LOCATION_FROM_ATTR, tool.owner_path_from!);
+    const clearPath = callers?.clearPath;
+    if (clearPath === undefined || fromOriginal) return;
+    const back = button(line, COPY.use_path, false, busy.has(packSlug), () => {
+      write(packSlug, () => clearPath({ ingredient_id: tool.catalog }));
+    });
+    back.setAttribute(PACK_PROGRAMS_ACTION_ATTR, 'use-path');
+    markFor(back, packSlug, tool.catalog);
+  };
+
+  /** D-321 — typing where a program is: one the server did not find, or a
+   *  location to change. The server checks the file before it keeps it, and
+   *  says why when it does not. What is typed survives the re-renders. */
+  const renderSetLocation = (parent: HTMLElement, packSlug: string, tool: PackToolStatus): void => {
+    const setPath = callers?.setPath;
+    if (setPath === undefined || (tool.state === 'ready' && tool.owner_path === undefined)) return;
+    const details = el(parent, 'details', 'pp-locate');
+    if (openLocate.has(tool.catalog)) details.setAttribute('open', '');
+    details.addEventListener('toggle', () => {
+      if ((details as HTMLDetailsElement).open) openLocate.add(tool.catalog);
+      else openLocate.delete(tool.catalog);
+    });
+    el(details, 'summary', 'pp-locate-summary', COPY.set_location);
+    const form = el(details, 'div', 'pp-locate-row');
+    const input = el(form, 'input', 'pp-locate-input');
+    input.type = 'text';
+    input.setAttribute(PACK_PROGRAMS_LOCATION_INPUT_ATTR, tool.catalog);
+    input.setAttribute('aria-label', COPY.location_label(programDisplayName(tool.binary)));
+    input.setAttribute('spellcheck', 'false');
+    input.setAttribute('autocomplete', 'off');
+    input.placeholder = `/full/path/to/${programDisplayName(tool.binary)}`;
+    input.value = drafts.get(tool.catalog) ?? tool.owner_path ?? '';
+    input.addEventListener('input', () => { drafts.set(tool.catalog, input.value); });
+    const save = button(form, COPY.save_location, false, busy.has(packSlug), () => {
+      const path = (drafts.get(tool.catalog) ?? input.value).trim();
+      if (path.length === 0) return;
+      write(packSlug, async () => {
+        await setPath({ ingredient_id: tool.catalog, path });
+        drafts.delete(tool.catalog);
+        openLocate.delete(tool.catalog);
+      });
+    });
+    save.setAttribute(PACK_PROGRAMS_ACTION_ATTR, 'save-location');
+    markFor(save, packSlug, tool.catalog);
+  };
+
+  const renderInstall = (parent: HTMLElement, packSlug: string, tool: PackToolStatus, readOnly = false): void => {
+    if (tool.state === 'ready') return;
+    if (tool.found_at !== undefined) {
+      renderOutsidePath(parent, packSlug, tool, readOnly);
+      return;
+    }
+    if (tool.install.length === 0 && tool.docs.length === 0) return;
     const block = el(parent, 'div', 'pp-install');
     if (tool.install.length > 0) {
       el(block, 'p', 'pp-install-label', COPY.install_label);
       const list = el(block, 'ul', 'pp-install-list');
-      for (const command of tool.install) {
-        const row = el(list, 'li', 'pp-install-row');
-        const code = el(row, 'code', 'pp-command', command);
-        code.setAttribute(PACK_PROGRAMS_INSTALL_ATTR, command);
-        const copy = button(row, copied === command ? COPY.copied : COPY.copy, false, false, () => {
-          void copyText(command).then(
-            () => {
-              copied = command;
-              copyError = null;
-              changed();
-            },
-            (error: unknown) => {
-              copied = null;
-              copyError = error instanceof Error ? error.message : String(error);
-              changed();
-            },
-          );
-        });
-        copy.setAttribute(PACK_PROGRAMS_ACTION_ATTR, 'copy');
-        copy.setAttribute('aria-label', COPY.copy_label(command));
-        markFor(copy, packSlug, tool.catalog, command);
-      }
-      if (copyError !== null) {
-        const failed = el(block, 'p', 'pp-error', COPY.copy_failed(copyError));
-        failed.setAttribute(PACK_PROGRAMS_ERROR_ATTR, '');
-        failed.setAttribute('role', 'alert');
-      }
+      for (const command of tool.install) commandRow(list, packSlug, tool, command, PACK_PROGRAMS_INSTALL_ATTR);
+      copyErrorLine(block);
     }
     for (const docs of tool.docs) {
       const link = el(block, 'a', 'rx-link pp-docs', COPY.docs);
@@ -416,7 +571,10 @@ export const createPackProgramsController = (
     }
   };
 
-  const renderTool = (parent: HTMLElement, packSlug: string, tool: PackToolStatus): void => {
+  /** `readOnly` — D-321 C1: a pack not installed yet. Its state and how to install
+   *  the program are said; a location and Refuse / Warn are stored per installed
+   *  catalog, so they wait for the install. */
+  const renderTool = (parent: HTMLElement, packSlug: string, tool: PackToolStatus, readOnly = false): void => {
     const row = el(parent, 'li', 'pp-row');
     row.setAttribute(PACK_PROGRAMS_ROW_ATTR, tool.catalog);
     row.setAttribute(PACK_PROGRAMS_STATE_ATTR, tool.state);
@@ -429,8 +587,14 @@ export const createPackProgramsController = (
     if (tool.tested !== undefined) el(row, 'p', 'pp-note', COPY.tested(describeTestedRange(tool.tested)));
     const note = programConsequence(tool);
     if (note !== null) el(row, 'p', 'pp-consequence', note);
+    if (readOnly) {
+      renderInstall(row, packSlug, tool, true);
+      return;
+    }
+    renderLocation(row, packSlug, tool);
     renderSetting(row, packSlug, tool);
     renderInstall(row, packSlug, tool);
+    renderSetLocation(row, packSlug, tool);
   };
 
   const renderForPack = (pack: PackListEntry): HTMLElement | null => {
@@ -457,14 +621,14 @@ export const createPackProgramsController = (
       markFor(retry, pack.slug);
       return section;
     }
-    el(section, 'p', 'pp-note', COPY.intro);
+    el(section, 'p', 'pp-note', current.installed ? COPY.intro : COPY.intro_before_install);
     const writeError = writeErrors.get(pack.slug);
     if (writeError !== undefined) {
       const error = el(section, 'p', 'pp-error', COPY.action_failed(writeError));
       error.setAttribute(PACK_PROGRAMS_ERROR_ATTR, '');
     }
     const list = el(section, 'ul', 'pp-list');
-    for (const tool of current.tools) renderTool(list, pack.slug, tool);
+    for (const tool of current.tools) renderTool(list, pack.slug, tool, !current.installed);
     const isBusy = busy.has(pack.slug);
     const again = button(section, isBusy ? COPY.checking : COPY.check_again, false, isBusy, () => {
       writeErrors.delete(pack.slug);
@@ -486,8 +650,14 @@ export const createPackProgramsController = (
       newestRead.clear();
       copied = null;
       copyError = null;
+      drafts.clear();
+      openLocate.clear();
     },
     renderForPack,
+    toolsFor: (packSlug) => {
+      const state = states.get(packSlug);
+      return state?.status === 'ready' ? state.tools : null;
+    },
     whenSettled: async () => {
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
     },
@@ -612,6 +782,43 @@ export const PACK_PROGRAMS_STYLES = `
 }
 [${PACK_PROGRAMS_ATTR}] .pp-check {
   align-self: flex-start;
+}
+[${PACK_PROGRAMS_ATTR}] .pp-location {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[${PACK_PROGRAMS_ATTR}] .pp-use-found {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+[${PACK_PROGRAMS_ATTR}] .pp-locate {
+  font-size: 12px;
+  min-width: 0;
+}
+[${PACK_PROGRAMS_ATTR}] .pp-locate-summary {
+  cursor: pointer;
+  color: var(--fg-muted, var(--muted, #666));
+}
+[${PACK_PROGRAMS_ATTR}] .pp-locate-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  min-width: 0;
+}
+[${PACK_PROGRAMS_ATTR}] .pp-locate-input {
+  flex: 1 1 16rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
 }
 [${PACK_PROGRAMS_ATTR}] .pp-error {
   margin: 0;

@@ -23,6 +23,7 @@ import {
   reconcileAbandonedUpdateReservations,
   type ApplyOrchestratorPorts,
 } from './apply-orchestrator.js';
+import { BOOT_FAILURE_THRESHOLD, decideRollback } from './apply-state-machine.js';
 import { releaseIdentityOf } from './release-check.js';
 import { unreplayedEntries, type UpdateLedger, type UpdateLedgerEntry } from './update-ledger.js';
 import type { UpdateOwnerAlertSink } from './owner-alert.js';
@@ -61,6 +62,7 @@ export interface BootReconcilePorts {
 export type BootReconcileOutcome =
   | { action: 'commit'; releaseIdentity: string }
   | { action: 'auto-revert'; releaseIdentity: string; reason: string }
+  | { action: 'auto-revert-refused'; releaseIdentity: string; reason: string }
   | { action: 'revert-complete'; releaseIdentity: string }
   | { action: 'staging-aborted'; releaseIdentity: string }
   | { action: 'webclient-recovery-failed'; releaseIdentity: string; reason: string }
@@ -288,6 +290,19 @@ const performAutoRevert = (
 
   /** The disk work itself, with the lease held for all of it. */
   const performRevertUnderLease = (): void => {
+    // ⛔ ASKED AGAIN AT THE ACT SITE: the snapshot the caller saw may be gone by
+    // the time the drain hands the disk over. Without it, the swap would put the
+    // old binary on a migrated database it refuses to open. Abandoned like a
+    // failed drain: nothing changed, nothing recorded, still in flight.
+    const atAct = decideRollback({
+      appliedMigration: staged.migration ?? false,
+      hasPreviousBinary: ports.hasPreviousBinary(),
+      hasSnapshot: ports.hasSnapshot(),
+    });
+    if (atAct.action === 'refuse') {
+      console.error(`[update] auto-revert ABANDONED at the swap: ${atAct.reason}. Nothing was changed.`);
+      return;
+    }
     // Restore first, swap last — a failed copy must leave the binary untouched.
     if (restoreSnapshot) ports.restoreSnapshot();
     ports.rollbackSwap();
@@ -444,6 +459,39 @@ export const runUpdateBootReconcile = async (deps: BootReconcilePorts): Promise<
     }
     case 'auto-revert': {
       const staged = deriveInFlightEntry(ports.ledger);
+      // ⛔⛔ ASK THE SHARED RULE BEFORE STARTING. This revert used to swap
+      // `recued.old` back whatever the disk held: for a release that migrated the
+      // database with no pre-migration snapshot left, the old binary then met a
+      // schema it refuses to open, and a server that was failing its health check
+      // became one that could not start at all. `decideRollback` refuses exactly
+      // that, and so does every other revert path. Refused, nothing changes: the
+      // server stays on the new release, and the owner is told once — on the boot
+      // where the failures first reach the threshold, not on every boot after.
+      const rollback = staged
+        ? decideRollback({
+          appliedMigration: staged.migration ?? false,
+          hasPreviousBinary: ports.hasPreviousBinary(),
+          hasSnapshot: ports.hasSnapshot(),
+        })
+        : null;
+      if (staged && rollback?.action === 'refuse') {
+        console.error(
+          `[update] auto-revert REFUSED: ${rollback.reason}. Nothing was changed; the server stays on `
+          + `${staged.to_version}.`,
+        );
+        if ((decision.failedBoots ?? BOOT_FAILURE_THRESHOLD) <= BOOT_FAILURE_THRESHOLD) {
+          signalOwnerAlert(deps.ownerAlert, {
+            kind: 'auto-revert-refused',
+            release_identity: staged.release_identity,
+            from_version: staged.from_version,
+            to_version: staged.to_version,
+            reason: decision.reason,
+            refusal: rollback.reason,
+          });
+        }
+        outcome = { action: 'auto-revert-refused', releaseIdentity: decision.releaseIdentity, reason: rollback.reason };
+        break;
+      }
       if (staged) {
         // ⛔ BEFORE requestRestart. Its drain closes SQLite before invoking the
         // disk callback, and the notification block reads settings from that

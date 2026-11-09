@@ -60,7 +60,8 @@ import {
   mountPacksSurface,
   type PacksSurfaceMount,
 } from './packs-surface.js';
-import { mountPackDiscovery } from '../discover/pack-discovery.js';
+import { mountPackDiscovery, type PackNeed } from '../discover/pack-discovery.js';
+import { serializeShellRoute } from '../shell/route.js';
 import { DISCOVER_PANEL_STYLES } from '../discover/discover-panel.js';
 // The Use tab's surface styles — inert until a recipe-owning pack's detail
 // renders one.
@@ -147,6 +148,9 @@ import type { ReconnectWorklistReturn } from '../settings/reconnect-worklist-con
 export const PACKS_ROUTE_STYLES_MARKER = 'data-recued-packs-route-styles';
 export const PACKS_ROUTE_HOST_ATTR = 'data-recued-packs-route';
 export const PACKS_ROUTE_HEADING_ATTR = 'data-recued-packs-route-heading';
+/** D-321 C4 / S8 — the per-pack "Needs attention", and each pack in it. */
+export const PACKS_ROUTE_NEEDS_ATTR = 'data-recued-packs-needs';
+export const PACKS_ROUTE_NEEDS_PACK_ATTR = 'data-recued-packs-needs-pack';
 export const PACKS_ROUTE_PACKS_SECTION_ATTR =
   'data-recued-packs-route-packs';
 export const PACKS_ROUTE_UNAVAILABLE_ATTR =
@@ -215,6 +219,12 @@ const PACKS_ROUTE_CHROME_STYLES = `
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+/* D-321 C4 / S8 — the per-pack "Needs attention". */
+[${PACKS_ROUTE_NEEDS_ATTR}] .packs-needs-list {
+  display: grid; gap: 6px; margin: 0; padding: 10px 14px 12px 34px; font-size: 13px;
+}
+[${PACKS_ROUTE_NEEDS_ATTR}] .packs-needs-list li { overflow-wrap: anywhere; }
+[${PACKS_ROUTE_NEEDS_ATTR}] .packs-needs-state { color: var(--fg-muted); }
 @media (max-width: 720px) {
   [${PACKS_ROUTE_HOST_ATTR}] {
     padding: 18px 14px 28px;
@@ -335,6 +345,9 @@ export interface BootstrapPacksRouteOptions {
   }>;
   /** `execute` — runs a view. Same caller the recipes route uses. */
   recipeExecuteCaller?: PackAppExecuteCaller;
+  /** D-321 W1 — the dishes Use's "Runs on its own" reads and makes: the same
+   *  `dishes.*` rpcs Automation calls. */
+  automationDishesCallers?: import('./pack-app-view.js').PackAppAutomationDishes;
   /** `data.file.read` — authenticated owner file read for the Use tab's file
    *  cards. The SAME caller the recipes route uses, so a file opens on
    *  identical terms wherever it is rendered. */
@@ -558,7 +571,52 @@ export const bootstrapPacksRoute = (
 
   let packs: PacksPanelMount | null = null;
   let packsSurface: PacksSurfaceMount | null = null;
+  // D-321 C4 / S8 — each installed pack that needs the owner, one line each, as
+  // its list badges say it: needs update, a program that stops its actions, a
+  // connection missing or turned down. First on the page, over the sign-in
+  // worklist, which is named for what it holds here.
+  const needsHost = doc.createElement('div');
+  needsHost.setAttribute(PACKS_ROUTE_NEEDS_ATTR, '');
+  packsSection.appendChild(needsHost);
+  let needsOpen = false;
+  /** D-321 W2 — the latest needs, for a pack page's "Packs it uses". */
+  let latestNeeds: readonly PackNeed[] = [];
+  const renderPackNeeds = (needs: readonly PackNeed[]): void => {
+    latestNeeds = needs;
+    packs?.packNeedsChanged();
+    const shown = needsHost.querySelector?.('details');
+    if (shown !== null && shown !== undefined) needsOpen = (shown as HTMLDetailsElement).open;
+    while (needsHost.firstChild) needsHost.removeChild(needsHost.firstChild);
+    if (needs.length === 0) return;
+    const details = doc.createElement('details');
+    // The sign-in worklist's look, in its "attention" state: one kind of summary.
+    details.className = 'packs-needs reconnect-worklist-disclosure';
+    details.setAttribute('data-worklist-state', 'attention');
+    details.open = needsOpen;
+    const summary = doc.createElement('summary');
+    summary.textContent = `Needs attention (${needs.length})`;
+    details.appendChild(summary);
+    const list = doc.createElement('ul');
+    list.className = 'packs-needs-list';
+    for (const need of needs) {
+      const item = doc.createElement('li');
+      item.setAttribute(PACKS_ROUTE_NEEDS_PACK_ATTR, need.slug);
+      const link = doc.createElement('a');
+      link.className = 'rx-link';
+      link.setAttribute('href', serializeShellRoute('packs', need.slug));
+      link.textContent = need.name;
+      item.appendChild(link);
+      const state = doc.createElement('span');
+      state.className = 'packs-needs-state';
+      state.textContent = ` — ${need.labels.join(' · ')}`;
+      item.appendChild(state);
+      list.appendChild(item);
+    }
+    details.appendChild(list);
+    needsHost.appendChild(details);
+  };
   const worklist = opts.reconnectWorklistCaller || opts.authenticationRepairsCaller ? createReconnectWorklistPanel({ document: doc,
+    attentionLabel: 'Sign-ins and permissions',
     ...(opts.reconnectWorklistCaller ? { call: opts.reconnectWorklistCaller } : {}),
     ...(opts.authenticationRepairsCaller ? { repairs: opts.authenticationRepairsCaller } : {}),
     ...(opts.authenticationAccessCaller ? { verify: opts.authenticationAccessCaller } : {}),
@@ -635,7 +693,17 @@ export const bootstrapPacksRoute = (
           ...(opts.packProgramsCallers !== undefined
             ? { listToolStatus: () => opts.packProgramsCallers!.status({}) }
             : {}),
+          // D-321 — a connection pack's badge, from the connection list the
+          // readiness block reads too.
+          ...(opts.connectionsListCaller !== undefined
+            ? { listConnections: opts.connectionsListCaller }
+            : {}),
+          // D-321 P4 — each pack's own list, for the badges.
+          ...(opts.packConnectionsCallers?.signins !== undefined
+            ? { listSignIns: opts.packConnectionsCallers.signins }
+            : {}),
           ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+          onNeedsChange: renderPackNeeds,
         }),
       mountDetail: (host, onSelectSlug) => {
         packs = mountPacksPanel({
@@ -643,6 +711,11 @@ export const bootstrapPacksRoute = (
           document: doc,
           scrollRoot: opts.root,
           runList: packsListCaller,
+          // D-321 S7 — a pack that needs an update says so on its own page too.
+          ...(opts.packsUnrunnableCaller !== undefined ? { runUnrunnable: opts.packsUnrunnableCaller } : {}),
+          // D-321 W2 — each used pack's state, in the list's words.
+          packNeedsOf: (slug: string) => latestNeeds.find((need) => need.slug === slug)?.labels,
+          packMissingOf: (slug: string) => latestNeeds.find((need) => need.slug === slug)?.missing,
           ...(opts.onPermissionRepair ? { onPermissionRepair: opts.onPermissionRepair } : {}),
           ...(opts.initialPermissionRepairReturn ? { initialPermissionRepairReturn: opts.initialPermissionRepairReturn } : {}),
           onSelectSlug,
@@ -704,6 +777,9 @@ export const bootstrapPacksRoute = (
             : {}),
           ...(opts.recipeExecuteCaller !== undefined
             ? { runRecipeExecute: opts.recipeExecuteCaller }
+            : {}),
+          ...(opts.automationDishesCallers !== undefined
+            ? { runAutomationDishes: opts.automationDishesCallers }
             : {}),
           ...(opts.fileReadCaller !== undefined
             ? { runFileRead: opts.fileReadCaller }

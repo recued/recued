@@ -1,6 +1,6 @@
 // Types
 export type {
-  LLMProvider, AdapterKey, LLMMessage, LLMMessageRole,
+  LLMProvider, AdapterKey, LLMMessage, LLMMessageRole, ThinkingSetting,
   LlmGatewayCallerSystemPolicy,
   LLMCompletionOptions, LLMSlot, LLMConfig,
   LlmGatewayDefaultRoute,
@@ -51,7 +51,9 @@ export type {
 } from './adapters/index.js';
 
 // Router
-export { resolveSlot, computeMaxTokens, shouldEnableThinking } from './router.js';
+export { resolveSlot, computeMaxTokens, shouldEnableThinking, resolveThinking, thinkingSettingOf } from './router.js';
+// D-344 — a model's thinking switch, by provider and host.
+export { openAiThinkingSwitch } from './thinking-switch.js';
 export type { ResolvedSlot } from './router.js';
 
 // Prompts
@@ -79,7 +81,7 @@ export type { LlmProviderEntry, ChatAdapterBuildDeps } from './providers/registr
 export { buildAvailability, describeLLMAvailability } from './availability.js';
 export type { BuildAvailabilityDeps } from './availability.js';
 export { matchLLM, SPEED_RANK, candidateSlotsForLayer } from './match.js';
-export type { MatchRequest, MatchDeps, MatchFailureDetails, ForceLayer, PinnedSlot } from './match.js';
+export type { MatchRequest, MatchDeps, MatchFailureDetails, ForceLayer, PinnedSlot, PreferredSource } from './match.js';
 export { preflightMatch } from './preflight.js';
 export type { PreflightResult, PreflightStepMeta, PreflightIssue, PreflightDeps } from './preflight.js';
 
@@ -99,7 +101,10 @@ export {
   endpointFingerprint,
   isJsonModeRejection,
   isSystemRoleRejection,
+  isThinkingSwitchRejection,
   jsonModeUnsupported,
+  noteThinkingSwitchUnsupported,
+  thinkingSwitchUnsupported,
   forgetEndpoint,
   hydrateEndpointCapabilities,
   onEndpointCapabilityLearned,

@@ -17,6 +17,10 @@ describe('file preview formats and plain text', () => {
     expect(filePreviewKind('APPLICATION/CSV; header="absent"')).toBe('text');
     expect(filePreviewKind('application/pdf')).toBe('pdf');
     expect(filePreviewKind('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe('docx');
+    expect(filePreviewKind('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')).toBe('xlsx');
+    expect(filePreviewKind('application/octet-stream', 'Statement.XLSX')).toBe('xlsx');
+    expect(filePreviewKind('text/html', 'Statement.xlsx')).toBe('text');
+    expect(filePreviewKind('application/zip', 'Statement.xlsx')).toBeUndefined();
     for (const mime of ['image/tiff', 'application/zip', 'video/mp4', 'application/octet-stream']) expect(filePreviewKind(mime)).toBeUndefined();
   });
   it('decodes UTF-8 and BOM-marked UTF-16, rejecting binary and unsupported encodings', () => {

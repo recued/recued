@@ -43,6 +43,8 @@ export const planProposedEventOf = (plan: ChatPlanProposal): BroadcastChatEvent 
   ...(plan.value_labels !== undefined ? { value_labels: plan.value_labels } : {}),
   ...(plan.hold !== undefined && plan.editable_args !== undefined ? { editable_args: plan.editable_args } : {}),
   ...(plan.memory_conflicts !== undefined ? { memory_conflicts: plan.memory_conflicts } : {}),
+  ...(plan.hold?.always_allow !== undefined ? { always_allow: plan.hold.always_allow } : {}),
+  ...(plan.hold?.always_allow_note !== undefined ? { always_allow_note: plan.hold.always_allow_note } : {}),
 } as BroadcastChatEvent);
 
 export const createWaitingSaveMarker = (deps: WaitingSaveMarkerDeps) =>

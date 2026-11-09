@@ -179,9 +179,13 @@ export const composeEventTriggers = (
       // every trigger on its first transient network blip. The code is the
       // whole difference between "wait, it may pass" and "waiting buys
       // nothing".
-      const error = new Error(first?.message ?? 'execution failed') as Error & { code?: string; run_id?: string };
+      const error = new Error(first?.message ?? 'execution failed') as Error & {
+        code?: string; run_id?: string; run_needs?: ExecuteResponse['run_needs'];
+      };
       if (typeof first?.code === 'string') error.code = first.code;
       if (run_id !== undefined) error.run_id = run_id;
+      // D-346 follow-up — what the run needed, so the failure notice says how to fix it.
+      if (result.run_needs !== undefined && result.run_needs.length > 0) error.run_needs = result.run_needs;
       throw error;
     }
     // D-268 — the success-shaped failure: a `foreach` is continue-on-error,
@@ -202,6 +206,9 @@ export const composeEventTriggers = (
     getPreapprovalDriver: () => executeDeps.preapprovalDriver,
     // Read per event: the restart drain sets it after this composes.
     isDraining: () => executeDeps.isDraining?.() === true,
+    // D-188 — read per rebuild, late-bound the same way: a rebuild during the owner's pause
+    // leaves the triggers stopped.
+    isPaused: () => executeDeps.isServerPaused?.() === true,
     ...(input.situations ? { situations: input.situations } : {}),
     ...(input.readContextForSubscriber ? { readContextForSubscriber: input.readContextForSubscriber } : {}),
     readGrantsForSubscriber: (trigger) => executeDeps.contractOverlay?.resolveReadGrantChecker?.({
@@ -248,6 +255,8 @@ export const composeEventTriggers = (
             actor: 'system',
             event_kind,
             source_recipe: recipe_id,
+            // D-341 slice B1 — which trigger fired, for that trigger's own pre-approval.
+            trigger_id,
             ...(store.get(trigger_id)?.read_contract_id ? { contract_id: store.get(trigger_id)!.read_contract_id! } : {}),
             // D-215 slice 1a — background automation is contract-free.
             // The `(reactive, system)` channel already resolves to the `read`

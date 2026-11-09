@@ -3,6 +3,7 @@ import { FILE_PREVIEW_MAX_BYTES, FILE_PREVIEW_TEXT_CHARACTERS, filePreviewKind,
   type FilePreviewRequest, type FilePreviewResult, type FilePreviewConversionRequest, type FilePreviewConversionResult } from '@recued/contracts';
 import { renderPdfPreview } from './file-preview-pdf.js';
 import { renderDocxPreview } from './file-preview-docx.js';
+import { renderXlsxPreview } from './file-preview-xlsx.js';
 import { renderActionIcon } from '@recued/ui-shared';
 import { isCsvPreview, mountCsvPreview } from './csv-preview.js';
 import { mountPreviewConversion } from './file-preview-conversion.js';
@@ -203,6 +204,10 @@ export const renderFilePreviewBody = async (
     if (host.isCurrent()) host.status(truncated
       ? 'Document text · Showing the first 100,000 characters. Download the file to read the rest.'
       : 'Document text · Simplified preview. Download for the complete document.');
+  } else if (file.content.kind === 'xlsx') {
+    host.status('Reading workbook…');
+    await renderXlsxPreview(doc, body, bytes, host.signal);
+    if (host.isCurrent()) host.status('');
   } else throw new Error('This file format has no preview yet. You can download it.');
   return meta;
 };
@@ -346,9 +351,9 @@ export const openFilePreview = (
   const setMetadata = (knownMeta: FilePreviewBodyResult) => {
     known = knownMeta;
     title.textContent = title.title = knownMeta.filename;
-    const kind = filePreviewKind(knownMeta.mime_type);
+    const kind = filePreviewKind(knownMeta.mime_type, knownMeta.filename);
     const format = isCsvPreview(knownMeta.filename, knownMeta.mime_type) ? 'CSV'
-      : kind === 'docx' ? 'Word document' : kind === 'pdf' ? 'PDF document'
+      : kind === 'xlsx' ? 'Excel workbook' : kind === 'docx' ? 'Word document' : kind === 'pdf' ? 'PDF document'
         : kind === 'image' ? 'Image' : kind === 'text' ? 'Text document' : 'File';
     const size = knownMeta.size_bytes;
     const readableSize = typeof size !== 'number' ? '' : size < 1024 ? `${size.toLocaleString()} bytes`

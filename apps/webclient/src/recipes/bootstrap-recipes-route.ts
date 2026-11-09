@@ -22,6 +22,7 @@
 import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import type {
   AutoRunStatusEntry,
+  ConnectionNotSetUpDetails,
   ConnectionView,
   EventTrigger,
   PackListEntry,
@@ -34,6 +35,7 @@ import type {
   Dish,
   DishLastRun,
   RecipeDefinition,
+  RunProgramNeed,
   ServerExecuteResponse,
   ServerRecipeFullEntry,
   ServerRecipeListEntry,
@@ -138,6 +140,7 @@ import {
   type RecipeCardTriggerKind,
   type OutputFilterState,
 } from '@recued/ui-shared';
+import { wireRunModal } from '../shell/run-modal.js';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type { HeldRunFollower } from '../held-run-follow.js';
@@ -278,6 +281,11 @@ import {
   missingPacksFromError,
   renderPackInstallOffer,
 } from '../shell/pack-install-offer.js';
+import {
+  connectionSetupFromError,
+  renderConnectionSetupOffer,
+} from '../shell/connection-setup-offer.js';
+import { programNeedsFromError, renderRunNeedList } from '../shell/run-needs-offer.js';
 import {
   LIST_PREVIEW_STYLES,
   mountListPreview,
@@ -2456,6 +2464,22 @@ const renderRelatedRecipesSection = (
  *  and that stopped being true when the step bodies came off the list rows
  *  (f95faec10): the Definition showed a recipe with no steps, so an owner checking
  *  what a recipe does saw nothing it does (2026-09-24 audit). */
+/** What a refused default run offers in place of its message. */
+type DefaultRunOffer =
+  | { readonly kind: 'packs'; readonly packs: readonly string[] }
+  | { readonly kind: 'programs'; readonly needs: readonly RunProgramNeed[] }
+  | { readonly kind: 'connection'; readonly connection: ConnectionNotSetUpDetails };
+
+const defaultRunOfferFor = (error: unknown): DefaultRunOffer | null => {
+  const packs = missingPacksFromError(error);
+  if (packs !== null) return { kind: 'packs', packs };
+  // D-346 A — refused before it started: a program a step launches is gone.
+  const programs = programNeedsFromError(error);
+  if (programs !== null) return { kind: 'programs', needs: programs };
+  const connection = connectionSetupFromError(error);
+  return connection === null ? null : { kind: 'connection', connection };
+};
+
 const renderRecipeDetail = (
   entry: ServerRecipeListEntry,
   catalog: ReadonlyArray<ToolCatalogEntryView>,
@@ -2481,9 +2505,12 @@ const renderRecipeDetail = (
   resultFilterStates: ReadonlyMap<string, RecipesResultFilterState>,
   defaultRunBusy: boolean,
   defaultRunError: string | null,
-  /** Packs a `pack_not_installed` run failure named — rendered as the shared
-   *  offer instead of the bare message. Null for every other failure. */
-  defaultRunMissingPacks: readonly string[] | null,
+  /** What a refused run needs, rendered as the shared offer instead of the bare
+   *  message: the packs a `pack_not_installed` run named, or (D-321 P2) the
+   *  connection a `connection_not_set_up` run needs set up. Null for every other
+   *  failure. A union in the old position, so a caller passing the old array is
+   *  a type error rather than a shifted argument. */
+  defaultRunOffer: DefaultRunOffer | null,
   resultGridStates: ReadonlyMap<string, OutputTableEditState> = new Map(),
   recordRefPickers = false,
   canPreapprove = false,
@@ -2544,7 +2571,7 @@ const renderRecipeDetail = (
     && targetRunnability?.status !== 'blocked';
   const readiness = [
     renderRunnabilityLine(targetRunnability),
-    defaultRunMissingPacks === null ? renderPackInstallOffer(missingPacks) : '',
+    defaultRunOffer?.kind === 'packs' ? '' : renderPackInstallOffer(missingPacks),
     renderPiiLine(pii?.get(entry.recipe_id)),
   ].join('').trim();
   return `
@@ -2585,8 +2612,12 @@ const renderRecipeDetail = (
                 href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
                 ${RECIPES_ROUTE_EDIT_LINK_ATTR}>Edit in Kitchen</a>
             </div>
-            ${isManual && defaultRunMissingPacks !== null
-              ? renderPackInstallOffer(defaultRunMissingPacks)
+            ${isManual && defaultRunOffer !== null
+              ? defaultRunOffer.kind === 'packs'
+                ? renderPackInstallOffer(defaultRunOffer.packs)
+                : defaultRunOffer.kind === 'programs'
+                  ? renderRunNeedList(defaultRunOffer.needs)
+                  : renderConnectionSetupOffer(defaultRunOffer.connection)
               : isManual && defaultRunError !== null
                 ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
                 : ''}
@@ -2860,7 +2891,7 @@ export const bootstrapRecipesRoute = (
   let resultFilterStates = new Map<string, RecipesResultFilterState>();
   let defaultRunBusy = false;
   let defaultRunError: string | null = null;
-  let defaultRunMissingPacks: readonly string[] | null = null;
+  let defaultRunOffer: DefaultRunOffer | null = null;
   let resultActions = new Map<string, RecipeOutputAction>();
   let resultFiles = new Map<string, RegisteredResultFile>();
   let resultFileBusy = new Set<string>();
@@ -3142,7 +3173,7 @@ export const bootstrapRecipesRoute = (
         resultFilterStates,
         defaultRunBusy,
         defaultRunError,
-        defaultRunMissingPacks,
+        defaultRunOffer,
         resultGridStates,
         resultRecordSearch !== undefined,
         opts.preapprovalPrepareCaller !== undefined && opts.onPreapprovalPrepared !== undefined,
@@ -3901,7 +3932,7 @@ export const bootstrapRecipesRoute = (
       resultSelectStates = new Map();
       defaultRunBusy = false;
       defaultRunError = null;
-      defaultRunMissingPacks = null;
+      defaultRunOffer = null;
       resultFileBusy = new Set();
       resultFileErrors = new Map();
       resultFileVerified = new Set();
@@ -3957,7 +3988,7 @@ export const bootstrapRecipesRoute = (
     resultSelectStates = new Map();
     defaultRunBusy = false;
     defaultRunError = null;
-    defaultRunMissingPacks = null;
+    defaultRunOffer = null;
     resultFileBusy = new Set();
     resultFileErrors = new Map();
     resultFileVerified = new Set();
@@ -3995,7 +4026,7 @@ export const bootstrapRecipesRoute = (
     const panelAtDispatch = resultPanel;
     defaultRunBusy = true;
     defaultRunError = null;
-    defaultRunMissingPacks = null;
+    defaultRunOffer = null;
     render();
     try {
       const runAs = dish_id ?? mainDishOf(recipeId)?.dish_id;
@@ -4024,7 +4055,7 @@ export const bootstrapRecipesRoute = (
       if (stillOwnsVisit()) {
         // A missing pack has an action attached, so it renders as the shared
         // offer rather than as text. Every other failure keeps the plain message.
-        defaultRunMissingPacks = missingPacksFromError(error);
+        defaultRunOffer = defaultRunOfferFor(error);
         defaultRunError = errMessage(error);
       }
     } finally {
@@ -4168,7 +4199,7 @@ export const bootstrapRecipesRoute = (
       return;
     }
     runModalRecipeId = recipe_id;
-    childRunModal = RunModal.wireRunModal({
+    childRunModal = wireRunModal({
       ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
       recipe: entry,
       document: doc,

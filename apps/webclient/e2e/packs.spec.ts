@@ -435,49 +435,68 @@ test('Packs contains long installed identity throughout its narrow detail', asyn
     .toBeGreaterThanOrEqual(36);
 });
 
-test('Packs contains long Manage readiness throughout its narrow detail', async ({ page }) => {
-  const slug = `pack-${'identity'.repeat(7)}`;
-  await page.setViewportSize({ width: 280, height: 844 });
-  await page.goto(
-    `${HARNESS_URL}?packs=installed&connection_text=long#packs/${slug}`,
-  );
-  await page.waitForFunction(() => window.__app?.ready === true);
+/** What a pack needs sits above its tabs, on Use as well as under Manage
+ *  (D-321, e5ea0b425). Installed, its Connections block is the pack's own list
+ *  (fca6b1580): the default, and what a set-up connection is missing for this
+ *  pack, with the fix. Before install there is no list, and the readiness rows
+ *  say whether a connection the install could use is set up. Each carries the
+ *  long connection and its Re-authorize link inside a 280px detail. */
+for (const stage of [
+  {
+    name: 'an installed pack\'s own list',
+    query: '',
+    block: '[data-recued-pack-connections]',
+    parts: '[data-recued-pack-connection], .pc-slot, .pc-list, .pc-name, .pc-problem, .pc-actions',
+  },
+  {
+    name: 'the readiness before install',
+    query: '&packs_installed=0',
+    block: '[data-recued-connections-readiness]',
+    parts: '.packs-connection-row, .packs-connection-status',
+  },
+]) {
+  test(`Packs contains a long connection in ${stage.name} throughout its narrow detail`, async ({ page }) => {
+    const slug = `pack-${'identity'.repeat(7)}`;
+    await page.setViewportSize({ width: 280, height: 844 });
+    await page.goto(
+      `${HARNESS_URL}?packs=installed${stage.query}&connection_text=long#packs/${slug}`,
+    );
+    await page.waitForFunction(() => window.__app?.ready === true);
 
-  const route = page.locator('[data-recued-packs-route]');
-  const surface = route.locator('[data-recued-packs-surface]');
-  const panel = surface.locator('[data-recued-packs-panel]');
-  await panel.locator(
-    '[data-recued-packs-detail-tab-group="primary"]'
-    + '[data-recued-packs-detail-tab="detail"]',
-  ).click();
-  const readiness = panel.locator('[data-recued-connections-readiness]');
-  await expect(readiness).toContainText('crm.objects.deals.write');
-  const owners = panel.locator(
-    ':scope, [data-recued-packs-detail-tab-panel], .packs-detail-section, '
-    + '[data-recued-connections-readiness], .packs-connection-row, '
-    + '.packs-connection-status',
-  );
-  expect(await owners.evaluateAll((elements) => elements.every(
-    (element) => element.scrollWidth <= element.clientWidth + 1,
-  ))).toBe(true);
-  for (const owner of [surface, route]) {
-    expect(await owner.evaluate(
-      (element) => element.scrollWidth <= element.clientWidth + 1,
+    const route = page.locator('[data-recued-packs-route]');
+    const surface = route.locator('[data-recued-packs-surface]');
+    const panel = surface.locator('[data-recued-packs-panel]');
+    const block = panel.locator(`[data-recued-packs-detail-section="needs"] ${stage.block}`);
+    await expect(block).toContainText('crm.objects.deals.write');
+    // Every box that holds the long text, named when it overflows: a list that
+    // matched nothing would pass, so the block's own parts must be there first.
+    const owners = panel.locator(
+      `:scope, [data-recued-packs-detail-tab-panel], .packs-detail-section, ${stage.block}, ${stage.parts}`,
+    );
+    expect(await block.locator(stage.parts).count()).toBeGreaterThan(0);
+    expect(await owners.evaluateAll((elements) => elements
+      .filter((element) => element.scrollWidth > element.clientWidth + 1)
+      .map((element) => `${element.tagName.toLowerCase()}.${element.className}: `
+        + `${element.scrollWidth} > ${element.clientWidth}`))).toEqual([]);
+    for (const owner of [surface, route]) {
+      expect(await owner.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth + 1,
+      )).toBe(true);
+    }
+    expect(await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
     )).toBe(true);
-  }
-  expect(await page.evaluate(
-    () => document.documentElement.scrollWidth <= window.innerWidth,
-  )).toBe(true);
-  const recovery = readiness.getByRole('link', { name: 'Re-authorize →' });
-  expect((await recovery.boundingBox())?.height).toBeGreaterThanOrEqual(36);
-  const recoveryBounds = await recovery.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    const owner = element.closest('[data-recued-packs-panel]')
-      ?.getBoundingClientRect();
-    return { right: rect.right, ownerRight: owner?.right ?? 0 };
+    const recovery = block.getByRole('link', { name: 'Re-authorize →' });
+    expect((await recovery.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+    const recoveryBounds = await recovery.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const owner = element.closest('[data-recued-packs-panel]')
+        ?.getBoundingClientRect();
+      return { right: rect.right, ownerRight: owner?.right ?? 0 };
+    });
+    expect(recoveryBounds.right).toBeLessThanOrEqual(recoveryBounds.ownerRight + 1);
   });
-  expect(recoveryBounds.right).toBeLessThanOrEqual(recoveryBounds.ownerRight + 1);
-});
+}
 
 test('Pack app views form one keyboard stop and retain focus through load', async ({ page }) => {
   await page.goto(

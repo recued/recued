@@ -189,6 +189,8 @@ const expectedBundleKeys = [
   // apart from chat, so they reach it late-bound (`AppContext.tier1HeldRef`), as they
   // reach `internalRegistry`.
   'onTier1Held',
+  // D-343 slice 4 — opens a conversation holding a notice, for Today's "Close the day".
+  'openNoticeConversation',
   // D-219 — the capture-only argument buffer, surfaced ONLY so the retention
   // pruner can bound it. ⛔ No read path consumes it.
   'executionCaseArgumentStore',
@@ -227,6 +229,8 @@ const expectedChatDepsKeys = [
   'dropSessionPiiLedger',
   // D-214 — source/privacy deletion cascades through derived case rows.
   'deleteSessionExecutionCases',
+  // D-335 slice W4 — the browser flows the owner kept, beside the cases in Learning.
+  'executionBrowserFlows',
   'executionCaseFeedbackRecorder',
   'executionCaseDiagnostics',
   'executionCaseLifecycle',

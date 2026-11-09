@@ -4,7 +4,8 @@ import {
   assetDateAt, planAssetReminderPoints, shiftAssetDate,
   zonedWallClockToEpochMs, type Asset, type AssetRule,
 } from '@recued/contracts';
-import { mintAskId, type Answer, type AskDeliveryDestination, type AskDeliveryInput, type AskOption, type NotificationBlock } from '@recued/notification';
+import { mintAskId, type Answer, type AskDeliveryDestination, type AskDeliveryInput, type AskDeliveryLead, type AskOption, type NotificationBlock } from '@recued/notification';
+import type { NotificationDeliveryChannel } from '@recued/contracts';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore, type AssetOccurrence } from '../storage/asset-occurrence-store.js';
 import { createOccurrenceReminderStore, type OccurrenceReminderAnswer, type OccurrenceReminderPlan } from '../storage/occurrence-reminder-store.js';
@@ -47,9 +48,28 @@ export interface AssetReminderServiceDeps {
   additionalSubjects?: AdditionalClockSubjects;
   measure?(name: string, value: number, dimensions: Record<string, string>, at: number, receipt: string): void;
   ownerResponse?(refs: import('@recued/contracts').SituationRef[], at: number): void;
+  /** D-340 slice 3 — whether the daily stream will carry the owner's reminders still to go today, with
+   *  their buttons. While it will, an owner's reminder waits for it, unless it is urgent (consequence
+   *  floor); the household's go as before. */
+  heldForStream?(): boolean;
   now?(): number;
   log?(error: unknown): void;
 }
+/** D-340 slice 3 — one of the day's reminders, made ready for the daily stream to carry. */
+export interface StreamReminder {
+  occurrence_id: string;
+  point_key: string;
+  skipped_keys: string[];
+  ask: AskDeliveryInput['asks'][number];
+}
+/** What the stream's delivery reached: the channels its message went to with the reminders' buttons
+ *  (`lead_channels`, the delivered ones in `delivered`), and the channels the stream sends its
+ *  message to itself (`other_channels`: the app's card, and any channel set up that takes no
+ *  reminder). `stale`: a reminder changed after the stream read it, so it builds its message again. */
+export type StreamReminderDelivery =
+  | { stale: true }
+  | { stale?: false; group_id: string; lead_channels: NotificationDeliveryChannel[]; delivered: NotificationDeliveryChannel[];
+      other_channels: NotificationDeliveryChannel[] };
 export interface AssetReminderService {
   bind(notifier: NotificationBlock, options?: { publicBaseUrl(): string | null }): void;
   /** Source reconciliation holds its own lock. Queue locally and return;
@@ -59,6 +79,14 @@ export interface AssetReminderService {
   tick(): Promise<void>;
   stop(): Promise<void>;
   setLater(occurrence_id: string, until: number): Promise<void>;
+  /** D-340 slice 3 — the owner's reminders due to go now that the daily stream carries: not the
+   *  household's, nor an urgent one, which went at once. Nothing is reserved. */
+  streamReminders(options?: { namesPrivate?: boolean; day?: string }): StreamReminder[];
+  /** D-340 slice 3 — sends them inside the stream: one ask delivery whose messenger and email copies
+   *  are the stream's message (`lead`), each reminder with its buttons, to the channels it goes to;
+   *  the app's cards and a Browser Bridge as before. Null when nothing can carry them. */
+  sendWithStream(input: { reminders: readonly StreamReminder[]; lead: AskDeliveryLead;
+    channels: readonly NotificationDeliveryChannel[] | null }): Promise<StreamReminderDelivery | null>;
 }
 
 export const createAssetReminderService = (deps: AssetReminderServiceDeps): AssetReminderService => {
@@ -168,9 +196,10 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       { id: 'not_needed', label: item.asset.settings.travel_document === true || ['passport', 'id_card', 'visa', 'driving_licence'].includes(item.asset.class_id ?? '') ? 'Not renewing' : 'Not needed' },
       { id: 'stop_requested', label: 'Stop reminding' }];
   };
-  const ask = (item: Context, ask_id: string, mode: Mode): AskDeliveryInput['asks'][number] => {
+  const ask = (item: Context, ask_id: string, mode: Mode, namesPrivate = false): AskDeliveryInput['asks'][number] => {
     const route = item.route ?? `#yours/asset/${encodeURIComponent(item.asset.id)}`;
-    const sensitive = item.asset.settings.sensitive === true;
+    // D-340 slice 5 — a stream that includes private items names them, its reminders too.
+    const sensitive = item.asset.settings.sensitive === true && !namesPrivate;
     // D-338 — named by the menu that holds it, as the Agenda and the digest name a private item.
     const title = sensitive ? 'Reminder in Yours' : item.asset.name;
     const clock = item.rule.when;
@@ -327,6 +356,90 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       } catch (error) { log(error); }
     }
   };
+  /** The reminders due to go now: a clock whose reminder point has come, a question, or a Later that
+   *  has run out; none already planned, sent today, or asleep under Later. `day`, for the daily
+   *  stream's preview of a later day: those that day's points would send. */
+  const due = (day = today()): { item: Context; key: string; skipped: string[] }[] => {
+    const found: { item: Context; key: string; skipped: string[] }[] = [];
+    const asleepUntil = day === today() ? now() : zonedWallClockToEpochMs(`${day}T00:00`, deps.timeZone()) ?? now();
+    for (const row of rows.all()) {
+      const item = context(row.id); if (!item) continue;
+      if (points.pending().some(plan => plan.plan.points.some(point => point.occurrence_id === row.id))) continue;
+      const control = points.control(row.id);
+      if (control.later_until !== null && control.later_until > asleepUntil) continue;
+      let key: string; let skipped: string[] = [];
+      if (control.later_until !== null) {
+        key = `later:${control.later_until}`;
+        // P47 — Later moves only the next reminder: it stands in for every point it
+        // slept through, or the latest of them is sent again the day after.
+        if (item.due) skipped = planAssetReminderPoints(item.due, item.rule, day).past_keys;
+      } else if (row.question) key = 'last_done_question';
+      else if (item.due) {
+        const plan = planAssetReminderPoints(item.due, item.rule, day);
+        if (!plan.due) continue;
+        key = plan.due.key; skipped = plan.past_keys.filter(key => key !== plan.due!.key);
+      } else key = 'active';
+      if (points.point(row.id, key) || control.last_notified_on === day) continue;
+      // §5.1 re-dating — a clock whose date was corrected today was already reminded
+      // today under its old date, so it waits for its next day rather than ask twice.
+      if (control.last_notified_on === null && rows.byAsset(row.asset_id).some(other => other.id !== row.id
+        && other.rule_id === row.rule_id && (other.subject_kind ?? 'asset') === (row.subject_kind ?? 'asset')
+        && points.control(other.id).last_notified_on === day)) continue;
+      found.push({ item, key, skipped });
+    }
+    return found;
+  };
+  /** D-340 slice 3 (§3.1, §3.2) — what the daily stream carries: the owner's reminders. An urgent one
+   *  (consequence floor) never waits, and the household's keep going to the household, as before. */
+  const streamCarries = (item: Context): boolean => (item.asset.audience ?? 'owner') !== 'household' && item.rule.consequence !== 'floor';
+  const modeOf = (item: Context): Mode => item.row.question ? 'question' : item.row.commitment_id ? 'action' : 'notice';
+  const streamReminders = (options: { namesPrivate?: boolean; day?: string } = {}): StreamReminder[] => due(options.day).filter(candidate => streamCarries(candidate.item))
+    .slice(0, 20).map(({ item, key, skipped }) => ({ occurrence_id: item.row.id, point_key: key, skipped_keys: skipped,
+      ask: ask(item, mintAskId(), modeOf(item), options.namesPrivate === true) }));
+  const sendWithStream: AssetReminderService['sendWithStream'] = async input => {
+    if (!notifier || stopped || deps.isVaultUnlocked?.() === false || !input.reminders.length) return null;
+    // Read again: a reminder answered, moved or ended since the stream read it changes what its
+    // message lists, and its numbers have to match the buttons.
+    const still = due().filter(candidate => streamCarries(candidate.item));
+    if (input.reminders.some(reminder => !still.some(candidate => candidate.item.row.id === reminder.occurrence_id && candidate.key === reminder.point_key)))
+      return { stale: true };
+    const owner = await notifier.getReminderDestinations();
+    const channelOf = (destination: AskDeliveryDestination): string => destination.channel === 'ui' ? 'in_app' : destination.channel;
+    const wanted = (destination: AskDeliveryDestination): boolean => input.channels === null || input.channels.includes(channelOf(destination) as NotificationDeliveryChannel);
+    // The stream's own channels, with its text; the app's cards where the stream goes to the app; and a
+    // Browser Bridge, which shows each reminder on the desktop as it always has.
+    const destinations = owner.destinations.filter(destination => destination.channel === 'bridge' || wanted(destination));
+    if (!destinations.length) return null;
+    const lead_channels = [...new Set(destinations.filter(destination => destination.channel !== 'ui' && destination.channel !== 'bridge')
+      .map(channelOf))] as NotificationDeliveryChannel[];
+    const setUp = new Set<string>(['in_app', ...owner.destinations.filter(destination => destination.channel !== 'ui' && destination.channel !== 'bridge').map(channelOf),
+      ...owner.issues.map(issue => issue.channel)]);
+    const other_channels = ((input.channels ?? [...setUp]) as readonly string[]).filter(channel => !(lead_channels as readonly string[]).includes(channel)) as NotificationDeliveryChannel[];
+    const group_id = randomUUID();
+    const plan: OccurrenceReminderPlan = { delivery: { group_id, asks: input.reminders.map(reminder => reminder.ask), destinations, lead: input.lead },
+      points: input.reminders.map(reminder => ({ occurrence_id: reminder.occurrence_id, point_key: reminder.point_key, on: today(),
+        ask_id: reminder.ask.ask_id, skipped_keys: reminder.skipped_keys })) };
+    deps.db.transaction(() => {
+      points.reserve(plan, now());
+      for (const reminder of input.reminders) {
+        const item = context(reminder.occurrence_id)!;
+        if (!item.row.commitment_id && !item.row.question) reminders.ensureClock({ text: reminder.ask.message.text, at: now(), time_zone: deps.timeZone(),
+          origin: {}, clock: { occurrence_id: reminder.occurrence_id, point_key: reminder.point_key, ask_id: reminder.ask.ask_id } }, now());
+        const later = points.control(reminder.occurrence_id).later_until;
+        if (later !== null && later <= now()) points.clearLater(reminder.occurrence_id, later);
+      }
+    })();
+    // Released at once: the stream goes at its time, and quiet hours already held it.
+    points.activate(group_id, now());
+    await notifier.prepareAskBundle(plan.delivery);
+    points.ready(group_id, today(), now());
+    await notifier.releaseAskBundle(group_id);
+    points.released(group_id, now());
+    const group = await notifier.getAskDelivery(group_id);
+    const delivered = lead_channels.filter(channel => group?.attempts.some(attempt => attempt.result?.outcome === 'delivered'
+      && destinations.some(destination => destination.id === attempt.destination_id && channelOf(destination) === channel)));
+    return { group_id, lead_channels, delivered, other_channels };
+  };
   /** ⛔ A STOP ENDS A PASS AT ITS NEXT STEP (`stop`), never inside one. Every
    *  step is one the next pass repeats or finishes: a plan reserved but not
    *  released is released by the next pass's `releasePending`, and a clock not
@@ -348,31 +461,12 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
     if (stopped) return;
     await offerPhoneChannel(owner.destinations);
     const candidates = new Map<string, { item: Context; key: string; skipped: string[] }[]>();
-    for (const row of rows.all()) {
-      const item = context(row.id); if (!item) continue;
-      if (points.pending().some(plan => plan.plan.points.some(point => point.occurrence_id === row.id))) continue;
-      const control = points.control(row.id);
-      if (control.later_until !== null && control.later_until > now()) continue;
-      let key: string; let skipped: string[] = [];
-      if (control.later_until !== null) {
-        key = `later:${control.later_until}`;
-        // P47 — Later moves only the next reminder: it stands in for every point it
-        // slept through, or the latest of them is sent again the day after.
-        if (item.due) skipped = planAssetReminderPoints(item.due, item.rule, today()).past_keys;
-      } else if (row.question) key = 'last_done_question';
-      else if (item.due) {
-        const plan = planAssetReminderPoints(item.due, item.rule, today());
-        if (!plan.due) continue;
-        key = plan.due.key; skipped = plan.past_keys.filter(key => key !== plan.due!.key);
-      } else key = 'active';
-      if (points.point(row.id, key) || control.last_notified_on === today()) continue;
-      // §5.1 re-dating — a clock whose date was corrected today was already reminded
-      // today under its old date, so it waits for its next day rather than ask twice.
-      if (control.last_notified_on === null && rows.byAsset(row.asset_id).some(other => other.id !== row.id
-        && other.rule_id === row.rule_id && (other.subject_kind ?? 'asset') === (row.subject_kind ?? 'asset')
-        && points.control(other.id).last_notified_on === today())) continue;
-      const audience = item.asset.audience ?? 'owner';
-      const batch = candidates.get(audience) ?? []; batch.push({ item, key, skipped }); candidates.set(audience, batch);
+    // D-340 slice 3 — the owner's reminders wait for the daily stream that carries them.
+    const held = deps.heldForStream?.() === true;
+    for (const candidate of due()) {
+      if (held && streamCarries(candidate.item)) continue;
+      const audience = candidate.item.asset.audience ?? 'owner';
+      const batch = candidates.get(audience) ?? []; batch.push(candidate); candidates.set(audience, batch);
     }
     for (const [audience, batch] of candidates) {
       if (stopped) return;
@@ -425,7 +519,7 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       block.registerAskHandler('asset-clock-phone-enrollment', async () => {});
       block.registerReminderReconciler({ beforeRecovery: reconcileClosedAsks, beforeAnswer, householdWithheld });
     },
-    withdraw, reconcileClosedAsks, tick,
+    withdraw, reconcileClosedAsks, tick, streamReminders, sendWithStream,
     /** ⛔ BOUNDED: a drain step awaits this, with 5 s, and a pass sends through
      *  every channel (a messenger 30 s, an email longer) while the process
      *  exits right after the drain anyway. What a stop cuts short the next pass

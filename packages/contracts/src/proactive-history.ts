@@ -19,6 +19,10 @@ export interface Episode {
   sphere?: Sphere;
   sensitive: Array<'health' | 'pregnancy' | 'money_under_stress' | 'relationships'>;
   storage_reason: 'owner_record' | 'owner_correction' | 'owner_annotation' | 'proposal_citation' | 'recurrence';
+  /** D-343 slice 2 — set on the owner's closing record (`episode.record`): what they reported
+   *  for the day. A skipped record says what did not happen, so a reader that means "what
+   *  you did" leaves it out, and the owner's own lists mark it. Absent on every other episode. */
+  outcome?: 'done' | 'skipped';
   created_at: number;
   updated_at: number;
 }

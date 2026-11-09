@@ -253,6 +253,29 @@ describe('supervised boot failure', () => {
     expect(String(terminal.detail)).toContain('snapshot restored');
   });
 
+  // ⛔ THE SERVER'S OWN SCHEMA COMPARISON CAN TAKE A SNAPSHOT THE MANIFEST DID NOT ASK
+  // FOR (`runApply`). `apply_started` still says `false` then; the entries written from
+  // the snapshot on say `true`, and this revert has to restore what was taken.
+  it("restores the snapshot the schema comparison took, though apply_started says the manifest's false", () => {
+    withPrevious();
+    withSnapshot();
+    const line = (over: Record<string, unknown>): string => JSON.stringify({
+      at: 1_000, from_version: '26.9.1', to_version: '26.9.2', channel: 'stable', trigger: 'manual',
+      release_identity: 'stable:26.9.2', ...over,
+    });
+    writeFileSync(ledger(), [
+      line({ id: 'a1', kind: 'apply_started', migration: false }),
+      line({ id: 'a2', kind: 'snapshot_taken', migration: true }),
+      line({ id: 'a3', kind: 'apply_staged', migration: true }),
+    ].map((row) => `${row}\n`).join(''), 'utf8');
+    fail(); fail();
+    expect(fail(1)).toEqual({ action: 'reverted', count: 3, restoredSnapshot: true });
+    expect(readFileSync(db(), 'utf8')).toBe('PRE-MIGRATION DB');
+    const terminal = JSON.parse(readFileSync(ledger(), 'utf8').trim().split('\n').at(-1)!);
+    expect(terminal.kind).toBe('apply_reverted');
+    expect(terminal.migration).toBe(true);
+  });
+
   // ⛔⛔ FAIL CLOSED. Reverting the binary here manufactures the exact state the
   // snapshot exists to prevent — and it is WORSE than doing nothing, because the
   // swap consumes `recued.old` (so `decideRollback` then refuses for want of a
@@ -391,13 +414,23 @@ describe('revertStagedRelease', () => {
   // attached — so reading only the IN-FLIGHT entry answers "did not migrate" and
   // swaps an old binary onto a migrated database. The release being downgraded is
   // the last COMMITTED one, which is the same derivation `runRollback` uses.
-  it('restores the snapshot of the COMMITTED release when nothing is in flight', () => {
+  //
+  // ⛔⛔ AND ITS SNAPSHOT IS NOT RESTORED. This used to restore it — and the
+  // docker-thin launcher also asks for this revert after three crashes of ANY
+  // cause (a bad env var, a port clash), where restoring a committed release's
+  // pre-migration snapshot silently erased every write since the update. Now it
+  // refuses, and the launcher halts for an operator: nothing is lost, and a
+  // missing or corrupt binary wants the release reinstalled, not the data rolled
+  // back.
+  it('⛔ refuses to restore the snapshot of a COMMITTED release when nothing is in flight', () => {
     withCommittedMigratingRelease();
     writeFileSync(snapshot(), 'PRE-MIGRATION DB', 'utf8');
+    const liveDb = readFileSync(db(), 'utf8');
 
-    expect(revert()).toEqual({ status: 'reverted', restoredSnapshot: true });
-    expect(readFileSync(live(), 'utf8')).toBe('KNOWN-GOOD PAYLOAD');
-    expect(readFileSync(db(), 'utf8')).toBe('PRE-MIGRATION DB');
+    expect(revert()).toMatchObject({ status: 'refused' });
+    expect(readFileSync(live(), 'utf8')).toBe('TAMPERED PAYLOAD');
+    expect(readFileSync(db(), 'utf8')).toBe(liveDb);
+    expect(readFileSync(snapshot(), 'utf8')).toBe('PRE-MIGRATION DB');
   });
 
   it('refuses that same case when the snapshot is gone', () => {

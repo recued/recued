@@ -53,8 +53,9 @@ export interface S3AdapterConfig {
    *  → server webhook. Caps.watch reads this; otherwise defaults to
    *  `poll`. */
   notifications_enabled?: boolean;
-  /** Poll interval (ms) when `watch: 'poll'`. Ignored when
-   *  `notifications_enabled: true`. Default 60s. */
+  /** Poll interval (ms) when `watch: 'poll'`. With `notifications_enabled: true` it only sets
+   *  how soon after Resume a bucket that started during a pause is first listed (D-188).
+   *  Default 60s. */
   poll_interval_ms?: number;
 }
 
@@ -171,6 +172,9 @@ export const createS3AdapterFactory = (
 
     let pollStop: ProviderPollStop | undefined;
     let seenKeys = new Set<string>();
+    /** D-188 — a start while the owner's pause holds lists nothing; the bucket's first listing
+     *  (the baseline: a `present` event per key) waits for the first look after Resume. */
+    let baselinePending = false;
     /** Aborted by `stop()`: the first listing and its events stop on it, and
      *  each poll on its loop's own signal. One instance serves one start. */
     const lifecycle = new AbortController();
@@ -178,7 +182,30 @@ export const createS3AdapterFactory = (
     /** A poll compares the bucket with what the last one saw. Stopped, it ends
      *  by throwing before `seenKeys` moves, and the next start lists the
      *  bucket whole; the events it did fire are idempotent. */
+    /** The first listing: each key as `present`, and what later polls compare with. */
+    const listBaseline = async (signal: AbortSignal): Promise<void> => {
+      const { keys } = await client.listObjects(undefined, { signal });
+      seenKeys = new Set(keys);
+      for (const key of keys) {
+        throwIfStopped(signal);
+        await ctx.onEvent({ type: 'present', path: key });
+      }
+    };
+
     const runPollTick = async (signal: AbortSignal): Promise<void> => {
+      // D-188 — no listing while the owner's pause holds; the first tick after Resume catches up.
+      if (ctx.isPaused?.() === true) return;
+      if (baselinePending) {
+        try {
+          await listBaseline(signal);
+          baselinePending = false;
+        } catch (err) {
+          if (!signal.aborted) ctx.log?.('warn', `s3 first listing failed for ${parsed.bucket}`, { err });
+        }
+        return;
+      }
+      // A bucket with notifications runs this loop only for a first listing the pause held.
+      if (parsed.notifications_enabled) return;
       try {
         const { keys } = await client.listObjects(undefined, { signal });
         const fresh = new Set(keys);
@@ -204,21 +231,23 @@ export const createS3AdapterFactory = (
     return {
       async start() {
         const signal = lifecycle.signal;
-        // Initial scan → `present` events for each key.
-        try {
-          const { keys } = await client.listObjects(undefined, { signal });
-          seenKeys = new Set(keys);
-          for (const key of keys) {
-            throwIfStopped(signal);
-            await ctx.onEvent({ type: 'present', path: key });
+        if (ctx.isPaused?.() === true) {
+          // D-188 — the emergency stop: nothing reaches the bucket, at a boot or a restart either.
+          // Its first listing waits for the first look after Resume.
+          baselinePending = true;
+          ctx.log?.('info', `s3 first listing of ${parsed.bucket} waits until the server is resumed`);
+        } else {
+          // Initial scan → `present` events for each key.
+          try {
+            await listBaseline(signal);
+          } catch (err) {
+            if (!signal.aborted) ctx.log?.('error', 's3 initial scan failed', { err });
           }
-        } catch (err) {
-          if (!signal.aborted) ctx.log?.('error', 's3 initial scan failed', { err });
         }
         // Stopped during the listing: a start that did not finish says so, and
         // starts no poll loop that nothing would stop.
         if (signal.aborted) throw new CollectionStoppedError('the s3 adapter was stopped while it listed the bucket');
-        if (!parsed.notifications_enabled) {
+        if (!parsed.notifications_enabled || baselinePending) {
           pollStop = startDrainingInterval({
             tick: runPollTick,
             intervalMs: parsed.poll_interval_ms ?? 60_000,

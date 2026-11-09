@@ -252,6 +252,8 @@ interface ByokSlotDraft {
   apiKey: string;
   budget: string;
   contextWindow: string;
+  /** D-344 — the model's thinking: '' (the provider's default), 'off' or 'on'. */
+  thinking: string;
 }
 
 interface FreePoolAddDraft {
@@ -261,6 +263,8 @@ interface FreePoolAddDraft {
   apiKey: string;
   baseUrl: string;
   contextWindow: string;
+  /** D-344 — as on a slot's draft. */
+  thinking: string;
 }
 
 interface EmbeddingsSlotDraft {
@@ -598,6 +602,8 @@ export interface AiModelsPageMount {
     /** Provider/model context-window capacity. Persisted only when supplied as
      *  a positive safe integer; omission preserves the current slot value. */
     context_window_tokens?: number;
+    /** D-344 — the model's thinking: on or off, `null` for the provider's default; absent keeps it. */
+    thinking?: 'on' | 'off' | null;
   }): Promise<void>;
   clearByokSlot(slotKey: LlmSlotKey): Promise<void>;
   /** D-174 R28 Slice C — save the dedicated embeddings slot (provider /
@@ -643,6 +649,8 @@ export interface AiModelsPageMount {
     /** Provider/model context-window capacity. Omitted unless supplied as a
      *  positive safe integer; there is no guessed provider default. */
     context_window_tokens?: number;
+    /** D-344 — the model's thinking; absent is the provider's default. */
+    thinking?: 'on' | 'off';
   }): Promise<void>;
   /** Replace one free-pool entry's protocol, model, address, key and size,
    *  keeping everything else it has (enabled, speed, caps). A blank or absent
@@ -654,6 +662,8 @@ export interface AiModelsPageMount {
     api_key?: string;
     base_url?: string;
     context_window_tokens?: number;
+    /** D-344 — the model's thinking: on or off, `null` for the provider's default; absent keeps it. */
+    thinking?: 'on' | 'off' | null;
   }): Promise<void>;
   setFreePoolEntryEnabled(id: string, enabled: boolean): Promise<void>;
   /** D-174 R28 — remove a free-pool entry by id (the prior gap: pool was
@@ -1103,6 +1113,17 @@ const appendProtocolSelect = (
   );
 };
 
+/** D-344 — a model's Thinking choice, sent as its provider's switch on every call through it: the
+ *  provider's default (none set), off or on. */
+const THINKING_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'Provider default' },
+  { value: 'off', label: 'Off' },
+  { value: 'on', label: 'On' },
+];
+const thinkingOf = (record: LlmSlotRecord | null | undefined): string =>
+  record?.thinking === 'on' || record?.thinking === 'off' ? record.thinking : '';
+const thinkingChosen = (value: string): 'on' | 'off' | null => (value === 'on' || value === 'off' ? value : null);
+
 /** What stops a BYOK slot's or a free-pool entry's draft from working, in the
  *  words the form shows, or null. Checked before Save and before Test so the
  *  answer lands under the button that asked, without a round trip. The server
@@ -1281,6 +1302,7 @@ export const mountAiModelsPage = (
     apiKey: '',
     baseUrl: '',
     contextWindow: '',
+    thinking: '',
   };
   const resetFreePoolAddDraft = (): void => {
     Object.assign(freePoolAddDraft, {
@@ -1290,6 +1312,7 @@ export const mountAiModelsPage = (
       apiKey: '',
       baseUrl: '',
       contextWindow: '',
+      thinking: '',
     });
   };
   const poolTogglePendingTargets = new Map<string, boolean>();
@@ -2001,6 +2024,7 @@ export const mountAiModelsPage = (
         typeof budgetRaw === 'number' && budgetRaw > 0 ? String(budgetRaw) : '',
       contextWindow:
         asPositiveSafeInteger(slot?.context_window_tokens)?.toString() ?? '',
+      thinking: thinkingOf(slot),
     };
     const fieldId = (field: string): string => `${slotKey}:${field}`;
     const title = MODEL_SOURCE_DISPLAY_NAME[slotKey];
@@ -2089,6 +2113,11 @@ export const mountAiModelsPage = (
       ],
     );
     contextWindow.type = 'number';
+    // D-344 — the model's thinking, sent as its provider's switch on every call through it.
+    const thinking = appendSelect(doc, fieldGrid, 'Thinking', draft.thinking, THINKING_OPTIONS, [
+      [AI_MODELS_SLOT_FIELD_ATTR, fieldId('thinking')],
+      ['aria-label', `${title} thinking`],
+    ]);
     const syncDraft = (): void => {
       const previous = byokSlotDrafts.get(slotKey) ?? draft;
       const next = {
@@ -2099,6 +2128,7 @@ export const mountAiModelsPage = (
         apiKey: apiKey.value,
         budget: budget.value,
         contextWindow: contextWindow.value,
+        thinking: thinking.value,
       };
       // Display names, budgets, and context limits are not probe inputs.
       if (next.provider !== previous.provider || next.model !== previous.model
@@ -2120,6 +2150,8 @@ export const mountAiModelsPage = (
     }
     provider.addEventListener('change', syncDraft);
     if (savingThis || clearingThis) provider.disabled = true;
+    thinking.addEventListener('change', syncDraft);
+    if (savingThis || clearingThis) thinking.disabled = true;
     const draftProblem = (): string | null => sourceDraftProblem(slot, {
       protocol: provider.value,
       model: model.value,
@@ -2155,6 +2187,7 @@ export const mountAiModelsPage = (
           ...(contextWindowTokens !== undefined
             ? { context_window_tokens: contextWindowTokens }
             : {}),
+          thinking: thinkingChosen(thinking.value),
         });
       },
       [
@@ -3252,6 +3285,7 @@ export const mountAiModelsPage = (
         apiKey: '',
         baseUrl: asString(entry.base_url),
         contextWindow: asPositiveSafeInteger(entry.context_window_tokens)?.toString() ?? '',
+        thinking: thinkingOf(entry),
       },
     };
     clearSourceAnswers(POOL_FORM_KEY);
@@ -3461,6 +3495,11 @@ export const mountAiModelsPage = (
       ],
     );
     contextWindow.type = 'number';
+    // D-344 — the model's thinking, as on a slot.
+    const thinking = appendSelect(doc, fieldGrid, 'Thinking', draft.thinking, THINKING_OPTIONS, [
+      [AI_MODELS_POOL_ADD_FIELD_ATTR, 'thinking'],
+      ['aria-label', editing === null ? 'Thinking of the new free one' : `Thinking of free-pool entry ${editing.id}`],
+    ]);
     const syncDraft = (): void => {
       const next = {
         id: name?.value ?? draft.id,
@@ -3469,6 +3508,7 @@ export const mountAiModelsPage = (
         apiKey: key.value,
         baseUrl: baseUrl.value,
         contextWindow: contextWindow.value,
+        thinking: thinking.value,
       };
       // The name addresses a new entry; the context limit is not a probe
       // input. Keep the input connected while removing an obsolete answer.
@@ -3483,6 +3523,8 @@ export const mountAiModelsPage = (
     }
     provider.addEventListener('change', syncDraft);
     if (freePoolFormPending) provider.disabled = true;
+    thinking.addEventListener('change', syncDraft);
+    if (freePoolFormPending) thinking.disabled = true;
     // The id a new entry gets: the owner's, or one named from its address.
     const entryId = (): string => {
       if (editing !== null) return editing.id;
@@ -3530,10 +3572,11 @@ export const mountAiModelsPage = (
             ? { context_window_tokens: contextWindowTokens }
             : {}),
         };
+        const chosen = thinkingChosen(thinking.value);
         if (editing === null) {
-          void submitFreePoolAdd({ id: entryId(), ...fields });
+          void submitFreePoolAdd({ id: entryId(), ...fields, ...(chosen !== null ? { thinking: chosen } : {}) });
         } else {
-          void submitFreePoolEdit(editing.id, fields);
+          void submitFreePoolEdit(editing.id, { ...fields, thinking: chosen });
         }
       },
       editing === null
@@ -5162,6 +5205,11 @@ export const mountAiModelsPage = (
           delete nextSlot.context_window_tokens;
         }
       }
+      // D-344 — the model's thinking: a choice sets it, the provider's default clears it.
+      if (patch.thinking !== undefined) {
+        if (patch.thinking === null) delete nextSlot.thinking;
+        else nextSlot.thinking = patch.thinking;
+      }
       // Field-level write: only this slot crosses the wire, so a concurrent
       // edit to the OTHER slot can't clobber it (vs the old whole-blob save).
       await opts.runSetLLMSlot({ slot_key: slotKey, slot: nextSlot });
@@ -5390,6 +5438,7 @@ export const mountAiModelsPage = (
         ...(asPositiveSafeInteger(entry.context_window_tokens) !== undefined
           ? { context_window_tokens: entry.context_window_tokens }
           : {}),
+        ...(entry.thinking !== undefined ? { thinking: entry.thinking } : {}),
       };
       await opts.runUpsertFreePoolEntry({ entry: record });
       invalidatePoolEntryProbe(id);
@@ -5448,6 +5497,11 @@ export const mountAiModelsPage = (
         // As a slot's: a size belongs to the model and endpoint it was given
         // for, and is not carried onto another.
         delete record.context_window_tokens;
+      }
+      // D-344 — the model's thinking: a choice sets it, the provider's default clears it.
+      if (patch.thinking !== undefined) {
+        if (patch.thinking === null) delete record.thinking;
+        else record.thinking = patch.thinking;
       }
       await opts.runUpsertFreePoolEntry({ entry: record });
       invalidatePoolEntryProbe(id);

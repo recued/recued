@@ -48,16 +48,37 @@ export interface PackToolStatus {
   install: string[];
   /** Links to the tool's own install instructions. */
   docs: string[];
+  /** A `missing` program found where installers put programs, outside the PATH
+   *  the server started with: the file found (`/opt/homebrew/bin/rg`). It is
+   *  installed, so its install commands are the wrong advice. */
+  found_at?: string;
+  /** With `found_at`, when the installer's own LaunchAgent or systemd unit
+   *  started the server: the installer re-run that gives the server the PATH of
+   *  the terminal it runs in. Shown, never run. */
+  repair?: string;
+  /** D-321 — the location the owner set for this program, while it applies
+   *  (`owner-tool-path.ts`): the server runs this file, and `state` is its
+   *  state. Absent: the server looks on its PATH. */
+  owner_path?: string;
+  /** D-346 — the catalog `owner_path` was set on, when it is not this one: a
+   *  Kitchen copy (D-333) with no location of its own runs its original's. A
+   *  location set on the copy replaces it; clearing the copy's changes nothing. */
+  owner_path_from?: string;
 }
 
 export interface PackToolStatusEntry {
   /** The pack's owner-facing slug, as `#packs/<slug>` takes it. */
   slug: string;
   tools: PackToolStatus[];
+  /** D-321 C1 — `false`: the pack is not installed, and these are the programs
+   *  it would run, checked on this server before install. Absent: installed. */
+  installed?: false;
 }
 
 export interface PacksToolStatusRequest {
-  /** One pack (its page). Absent: every installed pack (the list). */
+  /** One pack (its page). Absent: every installed pack (the list). D-321 C1 — a
+   *  pack that is not installed answers too, from the manifest an install would
+   *  use, marked `installed: false`. */
   pack_slug?: string;
   /** "Check again": forget the cached version reads of the listed tools first,
    *  so each is probed now. */

@@ -1128,3 +1128,55 @@ describe('D-158 P0 NotificationBlock remaining invariants', () => {
     }).toThrow(/already registered/);
   });
 });
+
+// D-188 — the owner's ruling of 2026-11-08: while the server is paused, nothing the pause stops
+// can be approved. The server decides which answers (`refuseAnswer`); the block refuses them
+// BEFORE anything is recorded, so the ask stays open and is answered after Resume.
+describe('D-188 NotificationBlock refuseAnswer', () => {
+  const pausedBlock = async (refuse: (option: string) => boolean) => {
+    const store = createAskStore(createInMemoryCollection<PendingAsk>());
+    const ui = createRecordedChannel('ui');
+    const handler = vi.fn();
+    const seen: Array<{ kind: string; option: string }> = [];
+    const block = createNotificationBlock({
+      askStore: store,
+      channels: [ui],
+      settingsStore: await settingsWith(),
+      now: () => 2000,
+      mintAskId: () => 'ask-paused',
+      refuseAnswer: async (ask, option) => {
+        seen.push({ kind: ask.handler_kind, option });
+        return refuse(option) ? { code: 'server_paused', message: 'The server is paused.' } : undefined;
+      },
+    });
+    block.registerAskHandler(handlerRef.kind, handler);
+    await block.ask(message, options, handlerRef);
+    return { block, store, ui, handler, seen };
+  };
+
+  it('refuses a held answer before recording it: the ask stays open, nothing runs or closes', async () => {
+    const { block, store, ui, handler, seen } = await pausedBlock((option) => option === 'approve');
+    await expect(block.submitAnswer({ ask_id: 'ask-paused', option: 'approve', via: 'ui' }))
+      .rejects.toMatchObject({ code: 'server_paused', message: 'The server is paused.', status: 409 });
+    expect(seen).toEqual([{ kind: 'gateway.preflight', option: 'approve' }]);
+    expect(handler).not.toHaveBeenCalled();
+    expect(ui.closes).toEqual([]);
+    const after = await store.get('ask-paused');
+    expect(after?.status).toBe('open');
+    expect(after?.answer).toBeUndefined();
+  });
+
+  it('records an answer it does not refuse, as before', async () => {
+    const { block, store, handler } = await pausedBlock((option) => option === 'approve');
+    expect(await block.submitAnswer({ ask_id: 'ask-paused', option: 'reject', via: 'ui' })).toBe('answered');
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(await store.get('ask-paused')).toMatchObject({ status: 'handled', answer: { option: 'reject' } });
+  });
+
+  it('is asked only about a valid answer to an open ask', async () => {
+    const { block, seen } = await pausedBlock(() => true);
+    expect(await block.submitAnswer({ ask_id: 'ask-paused', option: 'never-offered', via: 'ui' })).toBe('ignored');
+    expect(await block.submitAnswer({ ask_id: 'ask-unknown', option: 'approve', via: 'ui' })).toBe('ignored');
+    expect(seen).toEqual([]);
+  });
+});

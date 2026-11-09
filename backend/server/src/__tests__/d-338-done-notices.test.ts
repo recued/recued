@@ -13,6 +13,7 @@ import { createQuietHoursStore } from '../storage/quiet-hours-store.js';
 import { withQueuedChatTurns } from '../chat-turn-queue.js';
 import { createPromptSchedules } from '../prompt-schedules.js';
 import { createPromptScheduleDoneRuntime, DONE_TEXT_MAX_CHARS, type PromptScheduleDoneGate } from '../prompt-schedule-done.js';
+import { TOOL_BUDGET_EXHAUSTED_MESSAGE } from '../chat-turn-budget.js';
 
 const NOW = Date.parse('2026-11-04T12:00:00Z');
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -126,6 +127,15 @@ describe('D-338 a scheduled prompt that notifies when it is done', () => {
     expect(text.startsWith('x'.repeat(DONE_TEXT_MAX_CHARS))).toBe(true);
     expect(text).not.toContain('END');
     expect(text.endsWith('…\n\nOpen the conversation for the rest.')).toBe(true);
+  });
+
+  it('D-340 slice 4 — sends a run that ran out of its tool budget, saying so, for a schedule the owner made', async () => {
+    const f = fixture(); const schedule = await f.create('budget', true);
+    f.answer(`I read the week.\n\n${TOOL_BUDGET_EXHAUSTED_MESSAGE}`);
+    await f.clockRun(schedule.session_id, NOW + 300_000);
+    const done = f.runtime(); await done.tick();
+    expect(f.notify).toHaveBeenCalledOnce();
+    expect(f.notify.mock.calls[0]![0].text).toContain(TOOL_BUDGET_EXHAUSTED_MESSAGE);
   });
 
   it('lets the schedule\'s owner hold a run\'s notice, or drop it for good', async () => {

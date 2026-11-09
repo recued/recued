@@ -46,6 +46,11 @@ export interface UpdateLeaseHolder {
   at: number;
   /** Per-acquisition ownership proof — see `release()`. */
   token: string;
+  /** When the holder process started, as the caller's `identify` reads it.
+   *  ⛔ A lease outlives an unclean exit, and its `pid` can then name an
+   *  unrelated live process. Absent in a lease from before it was recorded, or
+   *  where the platform cannot say: the PID alone decides then. */
+  proc_start?: string;
 }
 
 export interface UpdateLease {
@@ -90,7 +95,38 @@ export interface AcquireUpdateLeaseOptions {
    *  ESRCH means the lease is stale. Getting this backwards would let a second
    *  updater run under a live one. */
   isAlive?: (pid: number) => boolean;
+  /** When a PID's process started: pass `processStartIdentity`
+   *  (lifecycle/process-identity.ts).
+   *
+   *  ⛔ INJECTED, NOT IMPORTED, AND REQUIRED. This module must load under plain
+   *  `node` type-stripping (`update-lease-concurrency.test.ts` runs it in real
+   *  child processes), which cannot resolve a `.js` specifier to a sibling `.ts`.
+   *  Required, so no typed caller can leave it out; the plain-JS racer passes
+   *  none, and none means unknown. */
+  identify: (pid: number) => string | null;
 }
+
+/** Is the recorded holder still the process that wrote the lease? The rule of
+ *  `pidWasReused` (lifecycle/process-identity.ts), restated because this module
+ *  cannot import it: a live PID that started at another time is NOT the holder,
+ *  and unknown on either side keeps the PID's verdict.
+ *
+ *  ⛔ Measured on the realm lock on 26.11.3 (2026-11-06): a lock naming a reused
+ *  PID kept the server from booting. A lease left by an update that died uncleanly
+ *  does the same at boot (`compose-lifecycle` exits 4 on a live holder), and
+ *  refuses every update until a human deletes it. */
+const holderLive = (
+  holder: UpdateLeaseHolder,
+  isAlive: (pid: number) => boolean,
+  identify: (pid: number) => string | null,
+): boolean => {
+  if (!isAlive(holder.pid)) return false;
+  if (holder.proc_start === undefined) return true;
+  const current = identify(holder.pid);
+  return current === null || current === holder.proc_start;
+};
+
+const unknownStart = (): string | null => null;
 
 const defaultIsAlive = (pid: number): boolean => {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -130,6 +166,7 @@ const readHolder = (path: string): UpdateLeaseHolder | null => {
       operation: typeof raw.operation === 'string' ? raw.operation : 'unknown',
       at: typeof raw.at === 'number' ? raw.at : 0,
       token: typeof raw.token === 'string' ? raw.token : '',
+      ...(typeof raw.proc_start === 'string' && raw.proc_start.length > 0 ? { proc_start: raw.proc_start } : {}),
     };
   } catch {
     // Unreadable or truncated — a half-written lease from a killed process.
@@ -153,11 +190,12 @@ const readHolder = (path: string): UpdateLeaseHolder | null => {
  *  The claim path is what guarantees exclusion; this only reports. */
 export const inspectUpdateLease = (
   leasePath: string,
+  identify: (pid: number) => string | null,
   isAlive: (pid: number) => boolean = defaultIsAlive,
 ): UpdateLeaseHolder | null => {
   const holder = readHolder(leasePath);
   if (holder === null) return null;
-  return isAlive(holder.pid) ? holder : null;
+  return holderLive(holder, isAlive, identify ?? unknownStart) ? holder : null;
 };
 
 /** Take the lease, or throw `UpdateLeaseHeldError`.
@@ -179,6 +217,7 @@ export const acquireUpdateLease = (opts: AcquireUpdateLeaseOptions): UpdateLease
     currentPid = () => process.pid,
     isAlive = defaultIsAlive,
   } = opts;
+  const identify = opts.identify ?? unknownStart;
   const pid = currentPid();
   // Proves OWNERSHIP, which a pid cannot: after a stale reclaim two processes can
   // share a pid's worth of belief about the same path. `release()` unlinks only
@@ -190,9 +229,12 @@ export const acquireUpdateLease = (opts: AcquireUpdateLeaseOptions): UpdateLease
 
   const tryClaim = (): UpdateLease | null => {
     const staging = `${leasePath}.claim.${pid}.${token}`;
+    const procStart = identify(pid);
     writeFileSync(
       staging,
-      JSON.stringify({ pid, operation, at: now(), token } satisfies UpdateLeaseHolder),
+      JSON.stringify({
+        pid, operation, at: now(), token, ...(procStart !== null ? { proc_start: procStart } : {}),
+      } satisfies UpdateLeaseHolder),
     );
     try {
       // ⛔ ATOMIC, AND THE FILE IS ALREADY COMPLETE. This is the whole fix: no
@@ -240,7 +282,7 @@ export const acquireUpdateLease = (opts: AcquireUpdateLeaseOptions): UpdateLease
     });
   }
   if (holder.pid === pid) return noop;                    // re-entrant
-  if (isAlive(holder.pid)) throw new UpdateLeaseHeldError(holder);
+  if (holderLive(holder, isAlive, identify)) throw new UpdateLeaseHeldError(holder);
 
   // ⛔⛔⛔ RECLAIMING A DEAD HOLDER IS ITSELF A CRITICAL SECTION, AND MY FIRST
   // VERSION GOT THE REASONING WRONG. It said: "both finders may unlink, but only
@@ -287,7 +329,7 @@ export const acquireUpdateLease = (opts: AcquireUpdateLeaseOptions): UpdateLease
     // lease we judged. Anything else — a new holder, a vanished file, one that
     // came back to life — means this reclaim is no longer ours to make.
     const current = readHolder(leasePath);
-    if (current === null || current.token !== holder.token || isAlive(current.pid)) {
+    if (current === null || current.token !== holder.token || holderLive(current, isAlive, identify)) {
       throw new UpdateLeaseHeldError(current ?? holder);
     }
     rmSync(leasePath, { force: true });

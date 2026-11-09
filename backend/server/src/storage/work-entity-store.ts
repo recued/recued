@@ -1315,10 +1315,10 @@ export type AssetWriteInput = AssetPatch & WorkEntitySourceIdentityInput & {
   /** Host-only revision for a confirmed attribute copy. Public patch dispatchers
    * never forward it; retries recognize the canonical field receipt. */
   attribute_reading_revision?: { field: string; revision: string };
-  /** Host-only rank for this write's readings, when it differs from `source`: an
-   * AI's write the owner approved records its readings as their own samples. Public
-   * patch dispatchers never forward it from an op/RPC. */
-  readings_source?: AssetWriteSource;
+  /** Host-only: an AI's write the owner approved, written at their rank (D-343 ruling 16).
+   * A value it re-sends unchanged keeps the source it has, or the owner's rank would lock out
+   * the document or device that gave it. Public patch dispatchers never forward it. */
+  owner_approved_ai?: boolean;
 };
 export interface AssetWriteOptions {
   /** Refuse, rather than keep, a field a higher-ranked source set that this write
@@ -1370,6 +1370,9 @@ export interface WorkEntityListQuery {
   offset?: number;
   /** Task/booking search. Applied by SQL before pagination. */
   search?: string;
+  /** Asset-only class scope (D-342), applied before pagination and count: `only` keeps the
+   *  assets of this class, `except` every other one, an unclassified asset included. */
+  asset_class?: { id: string; match: 'only' | 'except' };
   task_filter?: TaskListFilter;
   commitment_filter?: CommitmentViewFilters;
   /** Server-internal, never from the wire: the zone a DATE-ONLY due's day is
@@ -1401,7 +1404,8 @@ export interface WorkEntityContactRelationshipSummary {
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 1000;
 
-type NormalizedListQuery = Omit<Required<WorkEntityListQuery>, 'task_filter' | 'commitment_filter' | 'time_zone'> & {
+// `asset_class` is read by `assetListWhere` alone, which validates it there.
+type NormalizedListQuery = Omit<Required<WorkEntityListQuery>, 'task_filter' | 'commitment_filter' | 'time_zone' | 'asset_class'> & {
   task_filter: TaskListFilter | null;
   commitment_filter: CommitmentViewFilters | null;
   time_zone: string | undefined;
@@ -1663,6 +1667,11 @@ const projectSourceRowIdentity = (
 export const assetListWhere = (query?: WorkEntityListQuery) => {
   const norm = normalizeListQuery(query); const where = buildListWhere({ ...norm, search: '' });
   if (norm.search) { where.sql += ' AND (instr(js_lower(name),?)>0 OR instr(js_lower(COALESCE(class_id,\'\')),?)>0)'; where.params.push(norm.search.toLowerCase(), norm.search.toLowerCase()); }
+  const scope = query?.asset_class;
+  if (scope !== undefined) {
+    if (!scope || typeof scope.id !== 'string' || !scope.id || (scope.match !== 'only' && scope.match !== 'except')) throw new WorkEntityValidationError('invalid asset class scope', 'asset_class');
+    where.sql += scope.match === 'only' ? ' AND class_id=?' : ' AND (class_id IS NULL OR class_id<>?)'; where.params.push(scope.id);
+  }
   return { norm, where };
 };
 
@@ -1679,7 +1688,7 @@ const assetSummaryHistoryFieldsJson = (asset: Asset & { _kind?: unknown }): stri
   } catch { return 'null'; }
 };
 
-export interface AssetSummaryHistoryQuery extends Pick<WorkEntityListQuery, 'search'> {
+export interface AssetSummaryHistoryQuery extends Pick<WorkEntityListQuery, 'search' | 'asset_class'> {
   /** Internal selector CTEs defining asset_summary_history_members(id).
    * Membership is resolved before joining any reading histories. */
   selection?: { ctes: string; params: readonly unknown[] };
@@ -2463,7 +2472,7 @@ export interface WorkEntityStore {
   /** Lazy raw attention candidates in ordinary list order, grouped by 200.
    * Consume synchronously and close before awaiting; false requests scan fallback.
    * Replacement listByKind implementations retain their existing scan. */
-  assetCandidates(query?: Pick<WorkEntityListQuery, 'search'>): Generator<{ assets: Asset[] }, boolean, void> | undefined;
+  assetCandidates(query?: Pick<WorkEntityListQuery, 'search' | 'asset_class'>): Generator<{ assets: Asset[] }, boolean, void> | undefined;
   listAssetChildren(id: string): Asset[];
   countAssets(query?: WorkEntityListQuery): number;
   /** D-325 §15.7 amendment — the assets whose reminders reach the household: those
@@ -3084,11 +3093,10 @@ export const createWorkEntityStore = (
       field_sources: {}, retirement: 'part', created_at: now, updated_at: now,
     };
     const source = { ...input.source, at: now };
-    const readingsSource = input.readings_source ? { ...input.readings_source, at: now } : source;
-    // User and AI may both edit retrieval keywords. Keep the actual writer's
-    // provenance; this exception gives no authority over dates, details or rules.
-    const accepts = (path: string, by: AssetFactSource): boolean => path === `attributes.${ASSET_SEARCH_TERMS}` || !draft.field_sources[path]
-      || ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] <= ASSET_SOURCE_RANKS[by.kind];
+    // User and AI may both edit retrieval keywords. Keep the actual writer's provenance;
+    // this exception gives no authority over dates, other details or rules.
+    const accepts = (path: string, by: AssetFactSource): boolean => path === `attributes.${ASSET_SEARCH_TERMS}`
+      || !draft.field_sources[path] || ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] <= ASSET_SOURCE_RANKS[by.kind];
     const same = (before: unknown, after: unknown): boolean => {
       if (before === after) return true;
       if (before === undefined || after === undefined) return false;
@@ -3102,7 +3110,8 @@ export const createWorkEntityStore = (
         return false;
       }
       const prior = draft.field_sources[path];
-      if (same(before, after) && prior?.kind === by.kind && prior.ref === by.ref) return false;
+      // D-343 ruling 16 — what an approved AI write re-sends unchanged keeps its source.
+      if (same(before, after) && (input.owner_approved_ai === true || prior?.kind === by.kind && prior.ref === by.ref)) return false;
       draft.field_sources[path] = by; return true;
     };
     for (const name of ['name', 'class_id', 'status', 'holder_contact', 'belongs_to', 'audience', 'sphere', 'sphere_override',
@@ -3125,12 +3134,11 @@ export const createWorkEntityStore = (
         if (['__proto__', 'prototype', 'constructor'].includes(field)) throw new AssetValidationError('Reserved field name', name);
         const path = `${name}.${field}`;
         const observed = name === 'readings' || name === 'observations';
-        const by = name === 'readings' ? readingsSource : source;
         // Applying a class carries its existing fact maps forward; it is not a
         // new manual sample and cannot reclaim a released or automated field.
         if (input.preset_application && observed && existing && Object.hasOwn(existing[name], field)
           && canonicalJSONStringify(raw) === canonicalJSONStringify(existing[name][field])) continue;
-        const manualSample = observed && by.kind === 'owner'
+        const manualSample = observed && source.kind === 'owner'
           && (raw !== null || draft[name][field] != null || draft.field_sources[path]?.kind === 'owner');
         if (manualSample && draft.automatic_updates?.[path] !== undefined) {
           delete draft.automatic_updates[path];
@@ -3143,11 +3151,11 @@ export const createWorkEntityStore = (
           (draft[name] as Record<string, unknown>)[field] = null; continue;
         }
         const value = name === 'observations' && raw !== null ? { ...raw as AssetCondition, source: source.ref } : raw;
-        if (stamp(path, draft[name][field], value, by) || manualSample) {
+        if (stamp(path, draft[name][field], value) || manualSample) {
           (draft[name] as Record<string, unknown>)[field] = structuredClone(value);
           // Every explicit manual sample, including an identical sample or
           // clear, invalidates stale handoffs even within one clock tick.
-          if (manualSample) draft.field_sources[path] = { ...by, revision: name === 'readings' && input.attribute_reading_revision?.field === field ? input.attribute_reading_revision.revision : newId() };
+          if (manualSample) draft.field_sources[path] = { ...source, revision: name === 'readings' && input.attribute_reading_revision?.field === field ? input.attribute_reading_revision.revision : newId() };
         }
       }
     }
@@ -3329,7 +3337,7 @@ export const createWorkEntityStore = (
       .all(...where.params, norm.limit, norm.offset) as AssetRow[]).map(rowToAsset);
   };
   function assetCandidates(this: Pick<WorkEntityStore, 'listByKind'>,
-    query?: Pick<WorkEntityListQuery, 'search'>): ReturnType<WorkEntityStore['assetCandidates']> {
+    query?: Pick<WorkEntityListQuery, 'search' | 'asset_class'>): ReturnType<WorkEntityStore['assetCandidates']> {
     if (this?.listByKind !== listByKind) return undefined;
     const { where } = assetListWhere(query); const fields = createAssetSummaryHistoryBatch(db);
     return (function* (): Generator<{ assets: Asset[] }, boolean, void> {
@@ -3526,7 +3534,8 @@ export const createWorkEntityStore = (
       const path = `${kind}.${field}`;
       if (!binding.fields.includes(path)) throw new AssetValidationError(`This source is not bound to ${path}`);
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new AssetValidationError(`Invalid observation at ${path}`);
-      const fields = kind === 'readings' ? ['value', 'unit', 'as_of', 'evidence'] : ['active', 'certainty', 'as_of', 'evidence'];
+      // D-340 §4 — a condition may say when it stops holding (`until`); validateAsset checks it.
+      const fields = kind === 'readings' ? ['value', 'unit', 'as_of', 'evidence'] : ['active', 'certainty', 'as_of', 'until', 'evidence'];
       if (Object.keys(raw).some(key => !fields.includes(key)) || raw.as_of > now) throw new AssetValidationError(`Unexpected field or future as-of at ${path}`);
       const value = kind === 'observations' ? { ...raw, source: binding.source_ref } : raw;
       const candidate = structuredClone(draft);

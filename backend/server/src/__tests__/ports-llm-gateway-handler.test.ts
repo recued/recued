@@ -35,6 +35,7 @@ import {
   type LlmGatewayCompletionInput,
   type LlmGatewayCompletionProvider,
   type LlmGatewayHandlerDeps,
+  LLM_GATEWAY_PAUSED_MESSAGE,
 } from '../ports/llm-gateway/handler.js';
 import { SERVER_LEGACY_PATH_ALIASES } from '../server.js';
 import type { LlmGatewayTurnInput } from '../chat-orchestrator.js';
@@ -497,6 +498,73 @@ describe('createLlmGatewayPortHandler', () => {
     expect(JSON.stringify(json(res))).toContain('server_stopping');
     expect(provider.complete).not.toHaveBeenCalled();
     expect(deps.inboundTokenStore.verifyBearer).not.toHaveBeenCalled();
+  });
+
+  // D-188 — the owner's pause is a lockdown (2026-11-08): no AI turn runs until Resume.
+  it("refuses a completion with 503 server_paused while the owner's pause holds, before any work", async () => {
+    const provider = makeProvider();
+    const deps = { ...makeDeps({ provider }), isPaused: () => true };
+    const handler = createLlmGatewayPortHandler(deps);
+    const res = new FakeRes();
+
+    await handler(buildReq({ body: makeBody() }), res as unknown as ServerResponse);
+
+    expect(res.statusCode).toBe(503);
+    expect(json(res)).toMatchObject({ error: { code: 'server_paused', message: LLM_GATEWAY_PAUSED_MESSAGE } });
+    // Only the owner's Resume ends it, so no retry is offered.
+    expect(res.headers['retry-after']).toBeUndefined();
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(deps.inboundTokenStore.verifyBearer).toHaveBeenCalled();
+  });
+
+  // D-188 — the gap the door's own check left: a request already running when the owner pauses.
+  // Every model call checks the live authority first, so it stops at its next one, answered as a
+  // request at the door is answered while paused.
+  it('stops a running completion at its next model call once the owner pauses', async () => {
+    let paused = false;
+    let reachedModel = false;
+    const provider = makeProvider(async (input) => {
+      paused = true; // the owner pauses while the request runs
+      await input.assert_live_authority?.();
+      reachedModel = true;
+      return { content: 'never sent' };
+    });
+    const deps = { ...makeDeps({ provider }), isPaused: () => paused };
+    const handler = createLlmGatewayPortHandler(deps);
+    const res = new FakeRes();
+
+    await handler(buildReq({ body: makeBody() }), res as unknown as ServerResponse);
+
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+    expect(reachedModel).toBe(false);
+    expect(res.statusCode).toBe(503);
+    expect(json(res)).toMatchObject({ error: { code: 'server_paused', message: LLM_GATEWAY_PAUSED_MESSAGE } });
+  });
+
+  it('…tells a caller without a valid key nothing about the pause', async () => {
+    const provider = makeProvider();
+    const deps = {
+      ...makeDeps({ provider }),
+      inboundTokenStore: { verifyBearer: vi.fn(() => null) },
+      isPaused: () => true,
+    };
+    const handler = createLlmGatewayPortHandler(deps as unknown as LlmGatewayHandlerDeps);
+    const res = new FakeRes();
+
+    await handler(buildReq({ body: makeBody() }), res as unknown as ServerResponse);
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.stringify(json(res))).not.toContain('paused');
+  });
+
+  it('…and still lists its model while paused', async () => {
+    const provider = makeProvider();
+    const handler = createLlmGatewayPortHandler({ ...makeDeps({ provider }), isPaused: () => true });
+    const res = new FakeRes();
+
+    await handler(buildReq({ url: '/v1/models', method: 'GET' }), res as unknown as ServerResponse);
+
+    expect(res.statusCode).toBe(200);
   });
 
   it('keeps model discovery available while completion context metadata needs setup', async () => {

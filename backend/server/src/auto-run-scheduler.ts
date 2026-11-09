@@ -15,9 +15,10 @@
  *    1. `start()` → `refreshRoster()` builds the roster from the
  *       recipe store, hydrates counters from SQLite, and arms a
  *       setTimeout per entry.
- *    2. Each timer fires → `fireEntry(recipe_id)` → scheduler.tick →
- *       handleExecute → markFinished → persistCircuit →
- *       scheduleNext. Scheduler-owned promises are tracked and reported so a
+ *    2. Each timer fires → `fireEntry(recipe_id)` → `tick()`: scheduler.tick →
+ *       handleExecute for EVERY entry it fired → markFinished → persistCircuit
+ *       → scheduleNext. A timer waits at most `AUTO_RUN_TIMER_RECHECK_MS`
+ *       before it looks again. Scheduler-owned promises are tracked and reported so a
  *       single store/runtime failure cannot reach the process-wide fatal
  *       rejection handler.
  *    3. `stop()` clears all timers and closes admission: a tick in flight
@@ -44,6 +45,7 @@ import {
   AUTO_RUN_SERVER_FLOOR_MS,
   type CircuitBreakerState,
   type RecipeDefinition,
+  type RunNeed,
 } from '@recued/contracts';
 import type { RecipeStore } from './recipe-store.js';
 import type { DishStore } from './dish-store.js';
@@ -54,7 +56,6 @@ import type { NotificationMessage } from '@recued/notification';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
   deriveRunYield,
-  RpcError,
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
 import { settleWithin, STOP_GRACE_MS } from './lifecycle/settle-within.js';
@@ -67,6 +68,7 @@ import {
   assertPreapprovalLegacyEnable, initializePreapprovalLifecycle, mutatePreapprovalResource,
   notePreapprovalOwnerMutation, preapprovalLogicalEnabled,
 } from './storage/preapproval-lifecycle.js';
+import { isRunRefusedForNow } from './pause-approval.js';
 
 // ────────────────────────────────────────────────────────────────
 // Circuit-breaker persistence (SQLite) — one breaker per dish's timer
@@ -395,6 +397,17 @@ export interface ServerAutoRunHandle {
  *  ran, nothing failed. */
 class SkippedFire extends Error {}
 
+/** The longest a timer waits before it looks at the clock again.
+ *
+ *  ⛔ A TIMER DOES NOT COUNT TIME ASLEEP. Node's timers run on a clock that
+ *  stops while the machine sleeps, so one armed for the whole wait to
+ *  `next_run_at` fired late by every hour the lid was shut: a daily auto-run on
+ *  a laptop awake nine hours a day next ran about two and a half days later.
+ *  Capped, a timer wakes within a minute of the machine and finds the entry due
+ *  on the wall clock. The cap also keeps a wait under setTimeout's 2^31-1 ms
+ *  limit, past which Node fires at once. */
+export const AUTO_RUN_TIMER_RECHECK_MS = 60_000;
+
 export const createServerAutoRunScheduler = (
   config: ServerAutoRunConfig,
 ): ServerAutoRunHandle => {
@@ -520,7 +533,10 @@ export const createServerAutoRunScheduler = (
     const key = autoRunKey(entry);
     const existing = timers.get(key);
     if (existing !== undefined) clearTimer(existing);
-    const delay = Math.max(AUTO_RUN_SERVER_FLOOR_MS, entry.next_run_at - now());
+    const delay = Math.min(
+      AUTO_RUN_TIMER_RECHECK_MS,
+      Math.max(AUTO_RUN_SERVER_FLOOR_MS, entry.next_run_at - now()),
+    );
     const token = setTimer(() => {
       timers.delete(key);
       launchBackground(
@@ -585,6 +601,7 @@ export const createServerAutoRunScheduler = (
     // D-268 — what KIND of failure it was, which decides whether waiting for the
     // breaker buys anything at all.
     let failureCode: string | undefined;
+    let failureNeeds: readonly RunNeed[] | undefined;
     let totalRefusal = false;
     /** D-268 — the run reported an error the recipe DECIDED to raise. Nothing
      *  about the circuit changed, so nothing about the circuit is written. */
@@ -631,6 +648,8 @@ export const createServerAutoRunScheduler = (
             actor: 'system',
             event_kind: 'auto_run_tick',
             source_recipe: recipe_id,
+            // D-341 slice B1b — the timer's dish: what its own standing pre-approval names.
+            ...(dish_id !== undefined ? { dish_id } : {}),
             // ⛔ D-215 slice 1a — NO `contract_id` here, deliberately. Same
             // finding as `scheduler.ts` (see the long note there): D-209 §1.4's
             // stamp changed neither the ceiling (a contract-free `system`
@@ -693,13 +712,15 @@ export const createServerAutoRunScheduler = (
           const first = result.errors[0] as { message?: string; code?: string } | undefined;
           failureCode = typeof first?.code === 'string' ? first.code : undefined;
           failureReason = visibleFailure(first?.message ?? 'execution failed');
+          // D-346 follow-up — what the run needed, so the notice says how to fix it.
+          failureNeeds = (result as { run_needs?: readonly RunNeed[] }).run_needs;
           terminated = result.run_terminated;
         }
       } catch (e) {
         if (e instanceof SkippedFire) {
           outcome = 'skipped';
-        } else if (e instanceof RpcError && e.code === 'draining') {
-          // ⛔ NOT RUN IS NOT FAILED — see `notRun`.
+        } else if (isRunRefusedForNow(e)) {
+          // ⛔ NOT RUN IS NOT FAILED — see `notRun`. A restart or (D-188) a pause.
           outcome = 'skipped';
           notRun = true;
         } else {
@@ -738,6 +759,7 @@ export const createServerAutoRunScheduler = (
           reason: failureReason ?? 'execution failed',
           prior_consecutive_failures: priorFailures,
           threshold: CIRCUIT_BREAKER_THRESHOLD,
+          needs: failureNeeds,
         });
         // ⚠ A `conditional` code reaching here means the run reported an error
         // the recipe DECIDED to raise — a tripped guard. It is not evidence the
@@ -801,14 +823,12 @@ export const createServerAutoRunScheduler = (
       if (entry) scheduleNext(entry);
       return;
     }
-    const t = now();
-    const report = scheduler.tick(t);
-    const fired = report.fired.find((f) => f.key === key);
-    if (fired) {
-      await executeFired(key, fired.process_id, t);
-    }
-    const updated = scheduler.roster.get(key);
-    if (updated) scheduleNext(updated);
+    // ⛔ RUN EVERY ENTRY THE TICK FIRES, NOT ONLY THIS TIMER'S. `scheduler.tick`
+    // advances the `next_run_at` of every due entry; running just `key` let any
+    // other due entry move on a whole interval without running. After a sleep
+    // every auto-run that came due is due at once, and the first timer to wake
+    // used to run itself alone. `tick()` runs them all and re-arms every timer.
+    await tick();
   };
 
   const refreshRoster = async (): Promise<void> => {

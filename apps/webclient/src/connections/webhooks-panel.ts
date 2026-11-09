@@ -42,6 +42,14 @@ import {
   type WebhookProfileDescriptor,
 } from '@recued/contracts';
 
+import {
+  createTriggerPreapprovalSupport,
+  mountTriggerPreapprovalPanel,
+  type TriggerPreapprovalPanelCallers,
+  type TriggerPreapprovalPanelMount,
+  type TriggerPreapprovalSupport,
+} from '../contracts/trigger-preapproval-panel.js';
+
 export const WEBHOOKS_PANEL_ATTR = 'data-recued-webhooks-panel';
 export const WEBHOOKS_PANEL_NEW_ATTR = 'data-recued-webhooks-new';
 export const WEBHOOKS_PANEL_FORM_ATTR = 'data-recued-webhooks-form';
@@ -179,6 +187,9 @@ export interface WebhooksPanelOptions {
   runDeliveryGet?: WebhooksDeliveryGetCaller;
   runDeliveryEventGet?: WebhooksDeliveryEventGetCaller;
   runRejectedDeliveryList?: WebhooksRejectedDeliveryListCaller;
+  /** D-341 slice B2b — "What it may do without asking" on each webhook's card: its pre-approvals,
+   *  and the writes the recipes it runs could make without asking. Absent, no card offers it. */
+  triggerPreapprovals?: TriggerPreapprovalPanelCallers;
 }
 
 export interface WebhooksPanelMount {
@@ -358,6 +369,32 @@ export const mountWebhooksPanel = (
   let credentialIngressId: string | null = null;
   let ingresses: WebhookIngressView[] = [];
   const expandedConfigurations = new Set<string>();
+  /** D-341 slice B2b — each card's "What it may do without asking", by ingress: kept across the
+   *  repaints that rebuild every card (moved into the new one, open or not, mid-grant or not). */
+  const preapprovalPanels = new Map<string, { host: HTMLDetailsElement; panel: TriggerPreapprovalPanelMount | null }>();
+  // Hidden on a server from before pre-approvals, asked once for the page.
+  let preapprovalSupport: TriggerPreapprovalSupport | null = null;
+  const preapprovalHost = (ingress: WebhookIngressView): HTMLDetailsElement | null => {
+    const callers = options.triggerPreapprovals;
+    if (callers === undefined || ingress.intake_state === 'retired') return null;
+    const kept = preapprovalPanels.get(ingress.ingress_id);
+    if (kept !== undefined) return kept.host;
+    const host = doc.createElement('details');
+    (preapprovalSupport ??= createTriggerPreapprovalSupport((args) => callers.choices(args)))
+      .show(host, { kind: 'webhook', ingress_id: ingress.ingress_id });
+    const summary = doc.createElement('summary');
+    summary.textContent = 'What it may do without asking';
+    host.appendChild(summary);
+    const item: { host: HTMLDetailsElement; panel: TriggerPreapprovalPanelMount | null } = { host, panel: null };
+    preapprovalPanels.set(ingress.ingress_id, item);
+    host.addEventListener('toggle', () => {
+      if (!host.open || item.panel !== null || disposed || !root.contains(host)) return;
+      item.panel = mountTriggerPreapprovalPanel({
+        host, trigger: { kind: 'webhook', ingress_id: ingress.ingress_id }, callers, document: doc,
+      });
+    });
+    return host;
+  };
   let filterQuery = ''; let filterStatus = '';
   let profileCapabilities: WebhookProfileRuntimeCapabilityView[] = [];
   let error: string | null = null;
@@ -1599,6 +1636,8 @@ export const mountWebhooksPanel = (
     endpoint.setAttribute(WEBHOOKS_PANEL_ENDPOINT_ATTR, '');
     endpoint.textContent = ingress.endpoint_url ?? 'No public https address yet';
     configuration.appendChild(endpoint); card.appendChild(configuration);
+    const preapprovals = preapprovalHost(ingress);
+    if (preapprovals !== null) card.appendChild(preapprovals);
 
     if (oneTime?.ingress_id === ingress.ingress_id) {
       const callout = doc.createElement('div');
@@ -2106,6 +2145,8 @@ export const mountWebhooksPanel = (
     const active = doc.activeElement as HTMLInputElement | null;
     const focusedFilter = active?.dataset?.webhookFilter;
     const caret = active?.selectionStart;
+    const focusedPreapproval = active !== null && [...preapprovalPanels.values()].some((item) => item.host.contains(active))
+      ? active : null;
     clear(root);
     const head = doc.createElement('div');
     head.className = 'wh-head';
@@ -2160,8 +2201,20 @@ export const mountWebhooksPanel = (
     const visible = ingresses.filter(ingress => (!filterQuery || [ingress.display_name, ingress.profile_id, ingress.environment].join(' ').toLowerCase().includes(filterQuery.toLowerCase()))
       && (!filterStatus || (filterStatus === 'attention' ? ingress.health.status !== 'healthy' || ingress.readiness.blockers.length > 0 : ingress.intake_state === filterStatus)));
     for (const ingress of visible) root.appendChild(ingressCard(ingress));
+    // A webhook gone or retired takes its pre-approvals' panel with it.
+    for (const [ingressId, item] of preapprovalPanels) {
+      if (ingresses.some((ingress) => ingress.ingress_id === ingressId && ingress.intake_state !== 'retired')) continue;
+      item.panel?.dispose();
+      item.host.remove();
+      preapprovalPanels.delete(ingressId);
+    }
     if (ingresses.length && !visible.length) { const empty = doc.createElement('p'); empty.textContent = 'No webhooks match these filters.'; empty.setAttribute('role', 'status'); root.appendChild(empty); }
     restoreActionFocus();
+    // Moving its panel into the new card drops focus to <body>: put it back where it was.
+    if (focusedPreapproval !== null && focusedPreapproval.isConnected
+      && (doc.activeElement === null || doc.activeElement === doc.body)) {
+      focusedPreapproval.focus({ preventScroll: true });
+    }
     if (focusedFilter) {
       const field = root.querySelector<HTMLInputElement>(`[data-webhook-filter="${focusedFilter}"]`); field?.focus({ preventScroll: true });
       if (focusedFilter === 'query' && typeof caret === 'number') field?.setSelectionRange(caret, caret);
@@ -2208,11 +2261,14 @@ export const mountWebhooksPanel = (
     refresh,
     whenLoaded: () => refreshInFlight ?? Promise.resolve(),
     getLoadError: () => error,
-    hasInFlightWork: () => mutationInFlight,
+    hasInFlightWork: () => mutationInFlight
+      || [...preapprovalPanels.values()].some((item) => item.panel?.pending() === true),
     dispose() {
       if (disposed) return;
       disposed = true;
       oneTime = null;
+      for (const item of preapprovalPanels.values()) item.panel?.dispose();
+      preapprovalPanels.clear();
       root.remove();
     },
   };

@@ -1,6 +1,6 @@
 /** Local, read-only removal impact. The fence covers installed inventory, owned
  * recipes/settings, the displayed runtime impact and pack protection metadata. */
-import { RpcError,regressionBytes,type PackRemovalPlan,type PackRemovalReview } from '@recued/contracts';
+import { RpcError,parseDependsOn,regressionBytes,type PackRemovalPack,type PackRemovalPlan,type PackRemovalReview,type PackRemovalStop } from '@recued/contracts';
 import type { PackUninstallRpcDeps } from './pack-uninstall-handler.js';
 import { packDependencyGraph } from './pack-dependencies.js';
 import { createPackConnectionHolderStore } from './storage/pack-connection-holder-store.js';
@@ -8,9 +8,50 @@ import { recipeReleaseDigest as digest } from './storage/recipe-release-authorit
 import { recipeOwnedStateOf } from './recipe-owned-state.js';
 import { resolveBundledPackManifest,isCoreFeaturePack } from './bundled-pack-source.js';
 import { recordsCatalogSlug } from '@recued/ingredient-authoring';
+import type { StoredRecipe } from './types.js';
 
 type Impact = Omit<PackRemovalPlan,'review_id' | 'expires_at' | 'prior_attempt_unconfirmed'>;
 const object = (v: unknown): v is Record<string,unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** D-346 B — what removing this pack stops (ruling 2: a pack other packs use can be
+ *  removed after a warning). The actions, of every pack but this one and of the
+ *  owner's own recipes, whose `depends_on` names it: the rule a run's refusal applies
+ *  (`missingPackDependencies`), so the warning names exactly the actions that will be
+ *  refused before they start. Grouped by pack, by name where this server has its
+ *  manifest; a pack that lists it as a dependency (`dependants`) without such an
+ *  action is listed with none. */
+export const removalStops = (input: {
+  stored: readonly StoredRecipe[];
+  removed: { pack_slug: string; publisher?: string; keys: readonly string[] };
+  /** `graph.dependants`: `direct` lists this pack itself. One that needs it only
+   *  through a pack that stays installed loses nothing, and is not a stop. */
+  dependants: ReadonlyArray<PackRemovalPack & { direct: boolean }>;
+  /** The authored slug of an installed pack, by its inventory key. */
+  authoredOf: (key: string) => string | undefined;
+  nameOfPack: (slug: string) => string | undefined;
+}): PackRemovalStop[] => {
+  const { removed } = input;
+  const namesRemoved = (declared: unknown): boolean => Array.isArray(declared) && declared.some((entry) => {
+    const parsed = typeof entry === 'string' ? parseDependsOn(entry) : null;
+    return parsed !== null && parsed.pack === removed.pack_slug
+      && (removed.publisher === undefined || parsed.publisher === removed.publisher);
+  });
+  const byPack = new Map<string | null,Array<{ recipe_id: string; name?: string }>>();
+  for (const row of input.stored) {
+    if (row.pack_slug !== null && removed.keys.includes(row.pack_slug)) continue;
+    let recipe: { depends_on?: unknown; metadata?: { name?: unknown } };
+    try { recipe = JSON.parse(row.recipe_json) as typeof recipe; } catch { continue; }
+    if (!object(recipe) || !namesRemoved(recipe.depends_on)) continue;
+    const name = typeof recipe.metadata?.name === 'string' && recipe.metadata.name.trim() !== '' ? recipe.metadata.name : undefined;
+    const pack = row.pack_slug === null ? null : input.authoredOf(row.pack_slug) ?? row.pack_slug;
+    byPack.set(pack,[...(byPack.get(pack) ?? []),{ recipe_id: row.recipe_id,...(name !== undefined ? { name } : {}) }]);
+  }
+  for (const dependant of input.dependants) if (dependant.direct && !byPack.has(dependant.pack_slug)) byPack.set(dependant.pack_slug,[]);
+  return [...byPack].map(([pack_slug,actions]): PackRemovalStop => {
+    const name = pack_slug === null ? undefined : input.nameOfPack(pack_slug);
+    return { pack_slug,...(name !== undefined ? { name } : {}),actions: actions.sort((a,b) => a.recipe_id.localeCompare(b.recipe_id)) };
+  }).sort((a,b) => (a.pack_slug === null ? 1 : b.pack_slug === null ? -1 : a.pack_slug.localeCompare(b.pack_slug)));
+};
 export const preparePackRemoval = async (deps: PackUninstallRpcDeps, request: Pick<PackRemovalReview,'pack_slug' | 'publisher'>) => {
   const contracts = deps.contractStore, db = deps.recipeStore.realmDatabase;
   if (!contracts || !db || contracts.realmDatabase !== db) throw new RpcError('pack_removal_unsupported','Reviewed removal requires the built-in stores on the same realm.',409);
@@ -39,8 +80,18 @@ export const preparePackRemoval = async (deps: PackUninstallRpcDeps, request: Pi
       ...(namespace ? { publisher: namespace.owner.publisher } : request.publisher ? { publisher: request.publisher } : {}),
       ...(recordsVersion !== undefined ? { version: recordsVersion } : {}) };
     const manifest = resolveBundledPackManifest(deps.packDir,request.pack_slug), blockers: Impact['blockers'] = [];
+    // D-346 B — packs that list this one no longer block: the plan names them and the
+    // actions that stop (`stops`), and the reviewed removal goes ahead after that
+    // warning. Every other way to uninstall still keeps them intact.
     const dependants = graph.dependants(keys);
-    if (dependants.length) blockers.push({ code: 'dependants',message: 'Remove the dependent packs first. They still require this pack or its last ingredient provider.' });
+    const nameOfPack = (slug: string): string | undefined => {
+      try {
+        const name = resolveBundledPackManifest(deps.packDir,slug)?.name;
+        return typeof name === 'string' && name.trim() !== '' ? name : undefined;
+      } catch { return undefined; }
+    };
+    const stops = removalStops({ stored: deps.recipeStore.listStored(),removed: { pack_slug: pack.pack_slug,...(pack.publisher ? { publisher: pack.publisher } : {}),keys },
+      dependants,authoredOf: key => graph.packs.find(item => item.pack.inventory_key === key)?.pack.pack_slug,nameOfPack });
     const borrowers = createPackConnectionHolderStore(contracts).borrowersOf(request.pack_slug).filter(slug => slug !== request.pack_slug
       && graph.packs.some(item => item.pack.pack_slug === slug || item.pack.inventory_key === slug));
     if (borrowers.length) blockers.push({ code: 'connection_borrowers',message: `Remove packs sharing this sign-in first: ${borrowers.join(', ')}.` });
@@ -81,7 +132,7 @@ export const preparePackRemoval = async (deps: PackUninstallRpcDeps, request: Pi
       owned: counts,runtime: { would_disable: transitions.filter(item => item.after === 'blocked').map(item => item.recipe_id).sort(),
         would_degrade: transitions.filter(item => item.after === 'degraded').map(item => item.recipe_id).sort() },
       protection: { roots: [...new Set(roots)].sort(),release_history: releaseRows.some(row => keys.includes(row.pack_slug)) },
-      ...(records.length === 1 ? { records: { disposition: 'retain',...records[0]!.owner } as const } : {}) };
+      ...(records.length === 1 ? { records: { disposition: 'retain',...records[0]!.owner } as const } : {}),stops };
     const snapshot = { inventory: contracts.scan('installed_pack'),ingredients: contracts.scan('installed_ingredient'),
       recipes: recipes.map(id => ({ stored: deps.recipeStore.getStored(id),bundled: deps.recipeStore.getBundled(id) })),ownedRows,impact,borrowers,
       records: records.map(ns => ({ owner: ns.owner,state: ns.state,state_generation: ns.state_generation,activation_generation: ns.activation_generation })),

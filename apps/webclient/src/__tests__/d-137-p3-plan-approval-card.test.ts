@@ -26,6 +26,7 @@ import {
   CHAT_ROUTE_ERROR_ATTR,
   CHAT_ROUTE_INPUT_ATTR,
   CHAT_ROUTE_MESSAGE_ATTR,
+  CHAT_ROUTE_PLAN_ALWAYS_ATTR,
   CHAT_ROUTE_PLAN_APPROVE_ATTR,
   CHAT_ROUTE_PLAN_CANCEL_ATTR,
   CHAT_ROUTE_PLAN_CARD_ATTR,
@@ -35,6 +36,7 @@ import {
   CHAT_ROUTE_PLAN_CONTINUATION_PROMPT,
   CHAT_ROUTE_PLAN_CONTINUE_ATTR,
   CHAT_ROUTE_PLAN_RECEIPT_ATTR,
+  CHAT_ROUTE_PLAN_CHECKLIST_ATTR,
   CHAT_ROUTE_PLAN_RUN_ATTR,
   CHAT_ROUTE_PLAN_RETRY_ATTR,
   CHAT_ROUTE_PLAN_RETRY_PROMPT,
@@ -2460,6 +2462,108 @@ describe('D-329 — a held write\'s card', () => {
   });
 });
 
+describe('D-341 — "Always allow" on a held write\'s card, where its ask offers it', () => {
+  const ALWAYS = 'Always allow for this scheduled prompt';
+  const NOTE = '“Always allow for this scheduled prompt” stops asking about this write when it runs on its schedule,'
+    + ' once a run, until you end it on the scheduled prompt\'s page or under Contracts.';
+  const offered = (overrides: Partial<Omit<PlanProposedEvent, 'kind'>> = {}) => planProposed({
+    plan_id: 'plan_task', turn_id: 'turn_task', tool: 'work.create', tier: 1, held: true,
+    args: { kind: 'task', title: 'Pay the gas bill' }, always_allow: ALWAYS, always_allow_note: NOTE, ...overrides,
+  });
+  const actionNote = (h: RouteHarness): string | undefined =>
+    requireChildClass(requirePlanCard(h.root, 'plan_task'), 'chat-plan-card-actions').children
+      .find((child) => child.className === 'chat-plan-card-action-note')?.textContent;
+  const stage = async (h: RouteHarness, event = offered()): Promise<void> => {
+    await openMountedRoute(h);
+    h.publish(event);
+    h.publish(messageComplete('turn_task', assistantMessage('msg_task', 'I asked to add it.')));
+    await tick();
+  };
+  const buttons = (h: RouteHarness) => requireChildClass(requirePlanCard(h.root, 'plan_task'), 'chat-plan-card-actions')
+    .children.filter((child) => child.tagName === 'BUTTON').map((child) => child.textContent);
+
+  it('carries the offer from the live proposal and a reload; a plain card takes none', () => {
+    const live = reduceChatThreadEvent(hydrated(), offered());
+    expect(onlyPlanCard(live)).toMatchObject({ plan_id: 'plan_task', held: true, always_allow: ALWAYS, always_allow_note: NOTE });
+    // Only a held write's ask can offer it.
+    const plain = reduceChatThreadEvent(hydrated(), offered({ held: undefined }));
+    expect(onlyPlanCard(plain).always_allow).toBeUndefined();
+    expect(onlyPlanCard(plain).always_allow_note).toBeUndefined();
+    const recovered = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...chatSession(),
+      messages: [],
+      plans: [{
+        plan: chatPlan({ plan_id: 'plan_task', hold: { run_id: 'run-1', always_allow: ALWAYS, always_allow_note: NOTE } }),
+        payload_available: true,
+      }],
+    } as never);
+    expect(onlyPlanCard(recovered)).toMatchObject({ plan_id: 'plan_task', held: true, always_allow: ALWAYS, always_allow_note: NOTE });
+  });
+
+  it('offers it between "Say yes, once" and "Don’t approve", and sends it with the yes', async () => {
+    const approve = deferred<{ plan: ChatPlanProposal }>();
+    const h = mountChatRoute({ approvePlan: () => approve.promise });
+    await stage(h);
+    expect(buttons(h)).toEqual(['Say yes, once', ALWAYS, 'Don’t approve']);
+    // Under its buttons, what "Always allow" lets happen, as its ask says it.
+    expect(actionNote(h)).toBe(NOTE);
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_ALWAYS_ATTR)[0]!.click();
+    await tick();
+    expect(h.connSpy).toHaveBeenCalledWith('chat.plan.approve', { plan_id: 'plan_task', always_allow: true });
+    const pending = collectByAttr(h.root, CHAT_ROUTE_PLAN_ALWAYS_ATTR)[0]!;
+    expect(pending.textContent).toBe('Allowing…');
+    expect(pending.getAttribute('aria-busy')).toBe('true');
+    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.getAttribute('aria-disabled')).toBe('true');
+    expect(allText(requirePlanCard(h.root, 'plan_task'))).toContain('Saving your yes…');
+    // One answer at a time: neither another press nor the other buttons send a second.
+    pending.click();
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    expect(h.connSpy.mock.calls.filter(([method]) => method === 'chat.plan.approve')).toHaveLength(1);
+
+    approve.resolve({ plan: chatPlan({ plan_id: 'plan_task', turn_id: 'turn_task', tool: 'work.create', status: 'approved',
+      resolved_at: 4_000, hold: { run_id: 'run-1', always_allow: ALWAYS } }) });
+    await vi.waitFor(() => expect(requirePlanCard(h.root, 'plan_task').getAttribute('data-status')).toBe('approved'));
+    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_ALWAYS_ATTR)).toHaveLength(0);
+    h.route.dispose();
+  });
+
+  it('a held card whose ask offers none has no such button, and no line under its buttons', async () => {
+    const h = mountChatRoute();
+    await stage(h, offered({ always_allow: undefined, always_allow_note: undefined }));
+    expect(buttons(h)).toEqual(['Say yes, once', 'Don’t approve']);
+    // A held write runs on the yes: there is nothing to carry on in Chat.
+    expect(actionNote(h)).toBeUndefined();
+    expect(allText(requirePlanCard(h.root, 'plan_task'))).not.toContain('carry on in Chat');
+    h.route.dispose();
+  });
+
+  it('a plain card still says the owner carries on in Chat', async () => {
+    const h = mountChatRoute();
+    await stage(h, offered({ held: undefined, always_allow: undefined, always_allow_note: undefined }));
+    expect(actionNote(h)).toBe('Once you say yes, you choose when to carry on in Chat.');
+    h.route.dispose();
+  });
+
+  it('refused, it says why on the route\'s error line and the card still waits, every answer pressable again', async () => {
+    const approve = deferred<{ plan: ChatPlanProposal }>();
+    const h = mountChatRoute({ approvePlan: () => approve.promise });
+    await stage(h);
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_ALWAYS_ATTR)[0]!.click();
+    await tick();
+    approve.reject(new Error('It no longer offers to always allow it; say yes once instead.'));
+    await vi.waitFor(() => {
+      expect(collectByAttr(h.root, CHAT_ROUTE_ERROR_ATTR)[0]?.textContent)
+        .toBe('It no longer offers to always allow it; say yes once instead.');
+    });
+    expect(requirePlanCard(h.root, 'plan_task').getAttribute('data-status')).toBe('proposed');
+    const always = collectByAttr(h.root, CHAT_ROUTE_PLAN_ALWAYS_ATTR)[0]!;
+    expect(always.textContent).toBe(ALWAYS);
+    expect(always.getAttribute('aria-disabled')).toBeNull();
+    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.getAttribute('aria-disabled')).toBeNull();
+    h.route.dispose();
+  });
+});
+
 describe("D-336 slice E — a held save's relationship, changed on its card as part of approving it", () => {
   const SAVE = {
     summary: "Mia is Dana's daughter",
@@ -2524,6 +2628,18 @@ describe("D-336 slice E — a held save's relationship, changed on its card as p
     collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
     await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
     expect(approved(h)[0]).toEqual({ plan_id: 'plan_save' });
+    h.route.dispose();
+  });
+
+  it('D-341 — a relation changed on the card goes with "Always allow" too', async () => {
+    const h = mountChatRoute({ approvePlan: heldApproval });
+    await stage(h, held({ always_allow: 'Always allow for this scheduled prompt' }));
+    typeIn(h, 'claim-relation', 'stepdaughter of');
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_ALWAYS_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(approved(h)).toHaveLength(1));
+    expect(approved(h)[0]).toMatchObject({
+      plan_id: 'plan_save', always_allow: true, edited_args: { claim: { relation: 'stepdaughter of' } },
+    });
     h.route.dispose();
   });
 
@@ -3005,6 +3121,64 @@ describe("D-336 slice E — a held save's relationship, changed on its card as p
     expect(claimHost(h)!.innerHTML).toContain(">Mia is Dana&#39;s sister</textarea>");
     typeIn(h, 'claim-relation', 'sister of');
     expect(conflictRows(h).map((row) => row.getAttribute('data-stale'))).toEqual(['true', 'true']);
+    h.route.dispose();
+  });
+});
+
+describe('D-343 slice 5 — a day’s records, once kept, read as the day’s checklist', () => {
+  const day = { day: '2026-11-06', records: [
+    { title: 'Ran 5 km', outcome: 'done', item: { collection: 'task', id: 'task-run' } },
+    { title: 'Spanish lesson', outcome: 'skipped', item: { collection: 'task', id: 'task-spanish' } },
+    { title: 'Went for a walk', outcome: 'done' }] };
+  const checklistOf = (card: FakeEl): Array<[string | null, string]> => collectByAttr(card, CHAT_ROUTE_PLAN_CHECKLIST_ATTR)[0]!.children
+    .map(item => [item.getAttribute('data-outcome'), item.children.map(part => part.textContent).join(' ')]);
+
+  it('asks with the day’s Done and Skipped, and once they are kept shows them ticked off in its result, in place of its details', async () => {
+    const h = mountChatRoute();
+    await openMountedRoute(h);
+    h.publish(planProposed({ plan_id: 'plan_day', turn_id: 'turn_day', tool: 'episode.record', tier: 1, held: true, args: day }));
+    h.publish(messageComplete('turn_day', assistantMessage('msg_plan_day', 'Shall I record your day?')));
+    await tick();
+    let card = requirePlanCard(h.root, 'plan_day');
+    expect(allText(requireChildClass(card, 'chat-plan-card-tool'))).toBe('Record your day · Fri 6 Nov');
+    expect(requireChildClass(card, 'chat-plan-card-details').children.map(row => row.children.map(cell => cell.textContent)))
+      .toEqual([['Done', 'Ran 5 km, Went for a walk'], ['Skipped', 'Spanish lesson']]);
+    expect(collectByAttr(card, CHAT_ROUTE_PLAN_CHECKLIST_ATTR)).toHaveLength(0);
+    collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await vi.waitFor(() => { expect(requirePlanCard(h.root, 'plan_day').getAttribute('data-status')).toBe('approved'); });
+    h.publish({ kind: 'chat.tool_call_started', session_id: 'chat_1', turn_id: 'turn_record', tool_name: 'episode.record', tier: 1, args: day,
+      plan_id: 'plan_day', cursor: 4 });
+    await tick();
+    // Running is not kept yet.
+    expect(collectByAttr(requirePlanCard(h.root, 'plan_day'), CHAT_ROUTE_PLAN_CHECKLIST_ATTR)).toHaveLength(0);
+    h.publish({ kind: 'chat.tool_call_completed', session_id: 'chat_1', turn_id: 'turn_record', tool_name: 'episode.record', tier: 1, status: 'ok',
+      result_ref: 'chat_1:turn_record:episode.record', plan_id: 'plan_day', cursor: 5 });
+    await tick();
+    card = requirePlanCard(h.root, 'plan_day');
+    const receipt = collectByAttr(card, CHAT_ROUTE_PLAN_RECEIPT_ATTR)[0]!;
+    expect(allText(receipt)).toContain('Your day is recorded');
+    expect(allText(receipt)).not.toContain('using exactly the details you saw');
+    expect(checklistOf(card)).toEqual([['done', '✓ Ran 5 km'], ['done', '✓ Went for a walk'], ['skipped', '– Spanish lesson, skipped']]);
+    // A screen reader reads the words: the marks are for the eye.
+    expect(collectByAttr(card, 'aria-hidden').map(mark => mark.textContent)).toEqual(['✓', '✓', '–']);
+    // The checklist is its details now, listed once.
+    expect(() => requireChildClass(card, 'chat-plan-card-details')).toThrow();
+    h.route.dispose();
+  });
+
+  it('shows the same checklist in a reloaded conversation, and none for a record that did not finish', async () => {
+    const message = assistantMessage('msg_recovered_day', 'Recorded.');
+    const kept = (plan_id: string, execution: { status: 'completed'; turn_id: string; result_ref: string; run_id: string } | { status: 'unknown'; turn_id: string }) => ({
+      plan: chatPlan({ plan_id, tool: 'episode.record', tier: 1, args: day, status: 'approved', resolved_at: 3_500, consumed_at: 4_000 }),
+      message_id: message.id, execution, payload_available: true });
+    const h = mountChatRoute({ messages: [message], plans: [
+      kept('plan_kept', { status: 'completed', turn_id: 'turn_plan_kept', result_ref: 'result:plan_kept', run_id: '' }),
+      kept('plan_unsure', { status: 'unknown', turn_id: 'turn_plan_unsure' })] });
+    await openMountedRoute(h);
+    expect(checklistOf(requirePlanCard(h.root, 'plan_kept'))).toEqual([['done', '✓ Ran 5 km'], ['done', '✓ Went for a walk'], ['skipped', '– Spanish lesson, skipped']]);
+    const unsure = requirePlanCard(h.root, 'plan_unsure');
+    expect(collectByAttr(unsure, CHAT_ROUTE_PLAN_CHECKLIST_ATTR)).toHaveLength(0);
+    expect(requireChildClass(unsure, 'chat-plan-card-details').children).toHaveLength(2);
     h.route.dispose();
   });
 });

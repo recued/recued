@@ -45,6 +45,9 @@ export interface PeerAskTimeoutWiringDeps {
   readonly recoverDelivery?: () => Promise<PeerAskDeliveryRecoveryResult>;
   readonly intervalMs?: number;
   readonly log?: (line: string) => void;
+  /** D-188 — true while the owner's pause holds: no peer ask is timed out, resumed, withdrawn
+   *  or re-delivered until Resume (the emergency stop: nothing leaves). Absent ⇒ never paused. */
+  readonly isPaused?: () => boolean;
 }
 
 export const composePeerAskTimeoutSweep = (deps: PeerAskTimeoutWiringDeps): void => {
@@ -52,7 +55,7 @@ export const composePeerAskTimeoutSweep = (deps: PeerAskTimeoutWiringDeps): void
   let inFlight = false;
 
   const tick = async (): Promise<void> => {
-    if (inFlight) return;
+    if (inFlight || deps.isPaused?.() === true) return;
     inFlight = true;
     try {
       // ⛔ DEADLINES FIRST, ORPHANS SECOND, AND THE ORDER MATTERS FOR ONE CASE:

@@ -67,6 +67,101 @@ const setup = async (browser: Browser, seed?: (fixture: Fixture) => Promise<void
 const noWrites = (calls: Array<{ method: string }>) =>
   expect(calls.filter(call => ['chat.send', 'chat.session.create', 'data.file.attachments.import'].includes(call.method) || call.method.startsWith('upload.'))).toEqual([]);
 
+const xlsxMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const xlsx = (wide = false) => {
+  const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  const rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  const sheet = (body: string) => strToU8(`<worksheet xmlns="${ns}"><dimension ref="A1:XFD1048576"/><sheetData>${body}</sheetData></worksheet>`);
+  return Buffer.from(zipSync({
+    '[Content_Types].xml': strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+      + [1, 2, 3].map(n => `<Override PartName="/xl/worksheets/sheet${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') + '</Types>'),
+    'xl/workbook.xml': strToU8(`<workbook xmlns="${ns}" xmlns:r="${rel}"><sheets>`
+      + '<sheet name="Prices" sheetId="1" r:id="r1"/><sheet name="Summary" sheetId="2" r:id="r2"/><sheet name="Empty" sheetId="3" r:id="r3"/></sheets></workbook>'),
+    'xl/_rels/workbook.xml.rels': strToU8('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+      + [1, 2, 3].map(n => `<Relationship Id="r${n}" Type="${rel}/worksheet" Target="worksheets/sheet${n}.xml"/>`).join('')
+      + `<Relationship Id="strings" Type="${rel}/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="styles" Type="${rel}/styles" Target="styles.xml"/></Relationships>`),
+    'xl/sharedStrings.xml': strToU8(`<sst xmlns="${ns}"><si><t>Name</t></si><si><r><t>Supplier </t></r><r><t>North</t></r><rPh sb="0" eb="1"><t>Phonetic guide</t></rPh></si></sst>`),
+    'xl/styles.xml': strToU8(`<styleSheet xmlns="${ns}"><cellXfs count="3"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="2"/></cellXfs></styleSheet>`),
+    'xl/worksheets/sheet1.xml': sheet(wide ? '<row r="1"><c r="CW1"><v>9</v></c></row>'
+      : '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="inlineStr"><is><t>Amount</t></is></c><c r="C1" t="inlineStr"><is><t>&lt;img src=https://outside.invalid/tracker onerror=alert(1)&gt;</t></is></c></row>'
+      + '<row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>00125.50</v></c><c r="C2" s="1"><v>61</v></c></row>'
+      + '<row r="3"><c r="A3" t="str"><f>WEBSERVICE("https://outside.invalid/formula")</f><v>Cached answer</v></c><c r="B3"><f>SUM(1,2)</f></c><c r="C3" t="b"><v>0</v></c></row>'
+      + Array.from({ length: 57 }, (_, n) => `<row r="${n + 5}"><c r="A${n + 5}" t="inlineStr"><is><t>Customer ${n + 5}</t></is></c></row>`).join('')),
+    'xl/worksheets/sheet2.xml': sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>Total</t></is></c><c r="B1" s="2"><f>SUM(Prices!B2:B61)</f><v>2500.5</v></c></row><row r="1048576"><c r="XFD1048576" s="0"><v/></c></row>'),
+    'xl/worksheets/sheet3.xml': sheet(''),
+    'xl/worksheets/_rels/sheet1.xml.rels': strToU8(`<Relationships><Relationship Target="https://outside.invalid/linked"/></Relationships>`),
+    'xl/vbaProject.bin': strToU8('not executed'),
+  }));
+};
+
+test('XLSX saved values, sparse positions and sheet pages survive file actions on desktop and phone', async ({ browser }, testInfo) => {
+  const bytes = xlsx();
+  const f = await setup(browser, async fixture => {
+    await fixture.addConversationFile({ id: 'xlsx-prices', name: 'Prices.xlsx', mime_type: 'application/octet-stream', bytes });
+  });
+  const outside: string[] = []; f.page.on('request', request => { if (request.url().includes('outside.invalid')) outside.push(request.url()); });
+  try {
+    await f.page.setViewportSize({ width: 1280, height: 900 }); await f.input.fill('Keep this draft');
+    const open = f.page.getByRole('button', { name: 'Preview Prices.xlsx', exact: true }); await open.click();
+    const table = f.viewer.getByRole('table', { name: 'Worksheet: Prices', exact: true });
+    await expect(table.getByRole('cell', { name: 'Supplier North', exact: true })).toBeVisible();
+    await expect(table.getByRole('cell', { name: '00125.50', exact: true })).toBeVisible();
+    await expect(table.getByRole('cell', { name: '1900-03-01', exact: true })).toBeVisible();
+    await expect(table.getByRole('cell', { name: 'Cached answer', exact: true })).toBeVisible();
+    await expect(table.getByRole('cell', { name: 'Result not saved', exact: true })).toBeVisible();
+    await expect(table.getByRole('cell', { name: 'FALSE', exact: true })).toBeVisible();
+    const gap = table.getByRole('row').filter({ has: f.page.getByRole('rowheader', { name: '4', exact: true }) });
+    expect(await gap.getByRole('cell').allTextContents()).toEqual(['', '', '']);
+    await expect(table).toContainText('<img src=https://outside.invalid/tracker onerror=alert(1)>');
+    expect(await table.locator('img,script,iframe,a').count()).toBe(0);
+    await f.page.screenshot({ path: testInfo.outputPath('xlsx-preview-desktop.png') });
+    const next = f.viewer.getByRole('button', { name: 'Next rows', exact: true });
+    await next.focus(); await f.page.keyboard.press('Enter'); await expect(next).toBeFocused();
+    await expect(f.viewer).toContainText('Rows 51–61 of 61');
+    const select = f.viewer.getByRole('combobox', { name: 'Worksheet', exact: true });
+    await select.selectOption({ label: 'Summary' });
+    await expect(f.viewer.getByRole('cell', { name: '2500.50', exact: true })).toBeVisible();
+    await expect(f.viewer).toContainText('Rows 1–1 of 1');
+    await select.selectOption({ label: 'Empty' }); await expect(f.viewer).toContainText('no saved cell values');
+    await select.selectOption({ label: 'Prices' }); await expect(f.viewer).toContainText('Rows 51–61 of 61');
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'File details', exact: true }).click();
+    await expect(f.viewer.getByRole('heading', { name: 'File details' })).toBeVisible();
+    await f.viewer.getByRole('button', { name: /Back to preview/ }).click(); await expect(f.viewer).toContainText('Rows 51–61 of 61');
+    await f.page.setViewportSize({ width: 390, height: 844 });
+    await f.page.screenshot({ path: testInfo.outputPath('xlsx-preview-mobile.png') });
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    expect(await readFile((await (await saving).path())!)).toEqual(bytes);
+    expect(f.calls.filter(call => call.method === previewMethod)).toHaveLength(1);
+    expect(f.calls.some(call => call.method === 'data.file.read' || call.method === 'data.file.attachments.convert')).toBe(false);
+    await f.page.keyboard.press('Escape'); await expect(f.input).toHaveValue('Keep this draft');
+    noWrites(f.calls); expect(outside).toEqual([]); expect((await f.resources()).violations).toEqual([]);
+    expect((await f.resources()).terminated).toBe(1);
+  } finally { await f.close(); }
+});
+
+test('connected XLSX exports explain a worksheet limit and still show other sheets and download the original', async ({ browser }) => {
+  const bytes = xlsx(true); const f = await setup(browser);
+  try {
+    f.fixture.cloudSource!.add('one', 'Native prices', { mime_type: 'application/vnd.google-apps.spreadsheet' });
+    f.fixture.cloudSource!.respond(bytes, xlsxMime);
+    await f.page.evaluate(() => { location.hash = '#data/files'; });
+    await f.page.getByRole('button', { name: /Work drive/ }).click();
+    await f.page.locator('[data-recued-data-action="file-open-preview"]').filter({ hasText: 'Native prices' }).click();
+    await expect(f.viewer.getByRole('alert')).toContainText('exceeds the preview limits');
+    await f.viewer.getByRole('combobox', { name: 'Worksheet' }).selectOption({ label: 'Summary' });
+    await expect(f.viewer.getByRole('cell', { name: '2500.50', exact: true })).toBeVisible();
+    await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Origin', exact: true }).click();
+    await expect(f.viewer).toContainText('/Clients/Native prices');
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download exported file', exact: true }).click();
+    const download = await saving; expect(download.suggestedFilename()).toBe('Native prices.xlsx');
+    expect(await readFile((await download.path())!)).toEqual(bytes);
+    expect(f.fixture.cloudSource!.downloads()).toBe(1); noWrites(f.calls);
+  } finally { await f.close(); }
+});
+
 test('CSV tables page and switch to original text without changing the draft, download or Data preview', async ({ browser }, testInfo) => {
   const csv = 'Name,Amount,Comment\r\n"North, West",00125.50,"First line\nSecond line"\r\n'
     + 'Literal,0,"<img src=x onerror=window.csvExecuted=true>"\r\n'
@@ -508,16 +603,17 @@ test('explicit conversion shows inert document text and keeps the saved original
 
 test('remote conversion waits for approval before downloading and retains no imported source on mobile', async ({ browser }, testInfo) => {
   const original = Buffer.from('remote workbook original');
+  const mime = 'application/vnd.oasis.opendocument.spreadsheet';
   const f = await setup(browser, async fixture => {
     fixture.previewConversion.readers = ['markitdown']; fixture.previewConversion.mode = 'hold';
     fixture.previewConversion.text = 'Approved remote workbook text';
-    fixture.cloudSource!.add('workbook', 'Cloud budget.xlsx', { mime_type: workbookMime, size: original.length });
-    fixture.cloudSource!.respond(original, workbookMime);
+    fixture.cloudSource!.add('workbook', 'Cloud budget.ods', { mime_type: mime, size: original.length });
+    fixture.cloudSource!.respond(original, mime);
   });
   try {
     await f.page.setViewportSize({ width: 390, height: 844 }); const before = f.fixture.files!.totalBytes();
     await f.pick(); await f.picker.getByRole('combobox', { name: 'File source' }).selectOption('google.work.file');
-    await f.picker.getByRole('button', { name: 'Preview Cloud budget.xlsx', exact: true }).click();
+    await f.picker.getByRole('button', { name: 'Preview Cloud budget.ods', exact: true }).click();
     await f.viewer.getByRole('button', { name: 'Convert for preview', exact: true }).click();
     await expect(f.viewer.getByRole('link', { name: 'Review approval (new tab)', exact: true })).toBeVisible();
     expect(f.fixture.cloudSource!.downloads()).toBe(0);
@@ -528,12 +624,12 @@ test('remote conversion waits for approval before downloading and retains no imp
     expect(f.fixture.previewConversion.input).toEqual(original);
     expect(f.fixture.files!.totalBytes()).toBe(before);
     await f.viewer.screenshot({ path: testInfo.outputPath('converted-preview-mobile.png') });
-    f.fixture.cloudSource!.respond('provider changed bytes without a mirror update', workbookMime);
+    f.fixture.cloudSource!.respond('provider changed bytes without a mirror update', mime);
     await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
     await expect(f.viewer.getByLabel('Download status', { exact: true })).toContainText('changed');
     const download = f.calls.filter(call => call.method === 'data.file.read').at(-1)!;
     expect(download.args.expected_hash).toMatch(/^[a-f0-9]{64}$/);
-    f.fixture.cloudSource!.respond(original, workbookMime);
+    f.fixture.cloudSource!.respond(original, mime);
     const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
     expect(await readFile((await (await saving).path())!)).toEqual(original);
     noWrites(f.calls);
@@ -570,16 +666,17 @@ test('missing readers can be rechecked and a failed conversion can be retried ex
 });
 
 test('a remote source changed during an approval hold is rejected before its bytes are fetched', async ({ browser }) => {
+  const mime = 'application/vnd.oasis.opendocument.spreadsheet';
   const f = await setup(browser, async fixture => {
     fixture.previewConversion.readers = ['markitdown']; fixture.previewConversion.mode = 'hold';
-    fixture.cloudSource!.add('workbook', 'Cloud budget.xlsx', { mime_type: workbookMime, size: 10 });
+    fixture.cloudSource!.add('workbook', 'Cloud budget.ods', { mime_type: mime, size: 10 });
   });
   try {
     await f.pick(); await f.picker.getByRole('combobox', { name: 'File source' }).selectOption('google.work.file');
-    await f.picker.getByRole('button', { name: 'Preview Cloud budget.xlsx', exact: true }).click();
+    await f.picker.getByRole('button', { name: 'Preview Cloud budget.ods', exact: true }).click();
     await f.viewer.getByRole('button', { name: 'Convert for preview', exact: true }).click();
     await expect(f.viewer.getByRole('link', { name: 'Review approval (new tab)', exact: true })).toBeVisible();
-    f.fixture.cloudSource!.add('workbook', 'Changed budget.xlsx', { mime_type: workbookMime, revision: 'v2', size: 10 });
+    f.fixture.cloudSource!.add('workbook', 'Changed budget.ods', { mime_type: mime, revision: 'v2', size: 10 });
     await f.fixture.previewConversion.approve();
     await expect(f.viewer.getByLabel('Conversion status', { exact: true })).toContainText('changed');
     expect(f.fixture.cloudSource!.downloads()).toBe(0);

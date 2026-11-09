@@ -274,3 +274,16 @@ describe('every hold no review explains, swept', () => {
     expect(seen.size).toBeGreaterThanOrEqual(8);
   });
 });
+
+describe('the Reason line of a review that asks first (2026-11-08)', () => {
+  it('says why it asks, and promises no "always": a pass or a pre-approval may stop the asking', () => {
+    const reason = (slug: string): string | undefined => {
+      const decision = admitByOpRisk({ slug, risk_tier: 'write', ceiling: 'admin', source: OWNER_PAGE });
+      return decision.verdict === 'ask' ? decision.detail : undefined;
+    };
+    expect(reason('mail-send')).toBe('This sends a message to someone outside this server, so Recued asks you first.');
+    expect(reason('peer-ask')).toBe('This puts your question on another server owner\'s screen, so Recued asks you first.');
+    expect(reason('dom-click')).toBe('This acts on a web page in your browser, signed in as you, so Recued asks you first.');
+  });
+});
+

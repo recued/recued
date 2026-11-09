@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="content-security-policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+    <title>Recued Bridge</title>
+    <!-- D-174 canonical design tokens — shared single source of truth from
+         @recued/ui-shared/theme (the build copies tokens.css next to this
+         file). Replaces the Bridge's old divergent warm palette. -->
+    <link rel="stylesheet" href="tokens.css" />
+    <style>
+      /* Layout + Bridge-local component styling only; colours come from the
+         canonical tokens above. */
+      * { box-sizing: border-box; }
+      body {
+        font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      header {
+        padding: 14px 16px 10px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-elev);
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 600;
+      }
+      header .subtle {
+        font-size: 11px;
+        color: var(--fg-muted);
+        margin-top: 2px;
+      }
+      main {
+        padding: 12px 16px 24px;
+      }
+      section {
+        margin-bottom: 18px;
+      }
+      section h2 {
+        font-size: 11px;
+        margin: 0 0 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--fg-muted);
+        font-weight: 600;
+      }
+      .card {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        padding: 3px 0;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .row .k { color: var(--fg-muted); }
+      .row .v { font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace; }
+      .pill {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 500;
+        background: var(--bg-elev);
+        color: var(--fg-muted);
+        border: 1px solid var(--border);
+      }
+      /* D-174: success/idle states carry meaning by label + weight, NOT a
+         success/warning hue. Only the single danger red is allowed — used
+         for the offline (server-unreachable) state. */
+      .pill-ok {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .pill-danger {
+        background: var(--danger-weak);
+        color: var(--danger);
+        border-color: transparent;
+      }
+      /* D-169 P3.2 — server-status connectedness hero. The pill is the
+         section's lead signal; the server name sits beside it, muted and
+         ellipsis-truncated so a long name can't wrap. */
+      .status-hero {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding-bottom: 10px;
+        margin-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      .status-hero .pill { font-size: 11px; padding: 2px 10px; }
+      .status-hero-name {
+        /* flex-shrink + min-width:0 so the ellipsis actually engages — a
+           flex item's default min-width:auto would otherwise let a long
+           name overflow the hero row instead of truncating. */
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 12px;
+        color: var(--fg-muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* D-169 P3.3 — recipe-run row: the id grows + truncates with an
+         ellipsis (full id on hover via `title`); the status-chip + timing
+         cluster keeps its intrinsic width on the right. */
+      .recipe-id {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .run-meta {
+        flex: none;
+        display: inline-flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      /* Muted sub-line beneath a list row — a recipe's failure category, or
+         the body text under a titled notification / approval. */
+      .subtle {
+        font-size: 11px;
+        color: var(--fg-muted);
+        padding: 0 0 3px;
+      }
+      .empty {
+        font-size: 12px;
+        color: var(--fg-muted);
+        font-style: italic;
+        padding: 4px 0;
+      }
+      /* D-169 P2 brick 3 — "Watch this element" creator block. The button is
+         the panel's one action, so it carries the single accent; the status
+         line is muted, danger uses the one danger hue. */
+      .watch-cta { margin-bottom: 18px; }
+      .watch-button {
+        width: 100%;
+        padding: 8px 12px;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--on-accent);
+        background: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .watch-button:hover { opacity: 0.92; }
+      .watch-status {
+        font-size: 12px;
+        color: var(--fg-muted);
+        margin-top: 6px;
+      }
+      .watch-status-danger { color: var(--danger); }
+      .watch-link {
+        display: inline-block;
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--accent);
+      }
+      /* D-181 slice 6a — active-executions live-control buttons. Rendered
+         beneath a running / queued row when this bridge holds approval mode;
+         Cancel / Kill carry the one danger hue, Promote stays neutral. */
+      .active-controls {
+        display: flex;
+        gap: 6px;
+        padding: 2px 0 6px;
+      }
+      .active-control {
+        font: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 10px;
+        color: var(--fg);
+        background: transparent;
+        border: 1px solid var(--border, var(--fg-muted));
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .active-control:hover { opacity: 0.92; }
+      .active-control:disabled { opacity: 0.5; cursor: default; }
+      .active-control-danger { color: var(--danger); border-color: var(--danger); }
+      details > summary {
+        cursor: pointer;
+        font-size: 11px;
+        color: var(--fg-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 600;
+        list-style: none;
+        margin-bottom: 8px;
+      }
+      details > summary::-webkit-details-marker { display: none; }
+      details[open] > summary::after { content: ' (collapse)'; opacity: 0.5; }
+      details:not([open]) > summary::after { content: ' (expand)'; opacity: 0.5; }
+    </style>
+    <!-- Bridge-local polish loaded last so the panel shares the webclient's
+         geometry, hierarchy, focus treatment, and reduced-motion behavior. -->
+    <link rel="stylesheet" href="side-panel.css" />
+    <!-- The pair form (shown while the bridge is unpaired). -->
+    <link rel="stylesheet" href="pairing.css" />
+  </head>
+  <body>
+    <header>
+      <div class="header-row">
+        <h1 id="header-title">Recued Bridge</h1>
+        <!-- 2026-11-04 — the server's connection, beside the title (`updateHeaderStatus`). -->
+        <span id="header-status" class="pill header-status" role="status" hidden></span>
+      </div>
+      <div class="subtle" id="header-subtitle">Loading…</div>
+    </header>
+    <main id="root">
+      <div class="panel-loading" role="status">Connecting to your bridge…</div>
+    </main>
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

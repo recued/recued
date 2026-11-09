@@ -34,10 +34,18 @@ export interface AssetCondition {
   active: boolean;
   certainty: 'confirmed' | 'conditional';
   as_of: number;
+  /** D-340 §4 — when the condition stops holding (epoch ms), after `as_of`. Once it
+   * passes, every reader treats the condition as inactive with no writer needed, so a
+   * night's state can't carry into the next day. Absent: it holds until a writer clears it. */
+  until?: number;
   evidence: AssetEvidence[];
   /** Stamped by the bound observation writer, never by its input. */
   source: string;
 }
+/** D-340 §4 — whether a condition holds at `at`: active, and not past its `until`.
+ * Every reader of a condition's state asks this rather than `active` alone. */
+export const assetConditionHolds = (condition: Pick<AssetCondition, 'active' | 'until'> | null | undefined, at: number): boolean =>
+  condition != null && condition.active && (condition.until === undefined || at < condition.until);
 export interface AssetValue {
   amount: string;
   currency: string;
@@ -68,7 +76,9 @@ export interface AssetRule {
   enabled: boolean;
   muted: boolean;
   consequence: 'routine' | 'floor';
-  reaction: { notify: boolean; occurrence: 'action' | 'notice' | null; emit: boolean };
+  /** `state` (D-340 §4): show a condition while it holds, never under Due and never as a
+   * reminder; only on a condition rule, with no occurrence and no notification. */
+  reaction: { notify: boolean; occurrence: 'action' | 'notice' | null; emit: boolean; state?: boolean };
   expiry_policy: CommitmentExpiryPolicy;
   schedule: AssetReminderSchedule;
   /** Owner-edited rows are pinned against preset updates. */
@@ -247,6 +257,10 @@ export const validateAssetRule = (rule: AssetRule, asset: Pick<Asset, 'dates' | 
   }
   if (!record(rule.reaction) || typeof rule.reaction.notify !== 'boolean' || typeof rule.reaction.emit !== 'boolean'
     || ![null, 'action', 'notice'].includes(rule.reaction.occurrence)) fail('rules.reaction', 'invalid reaction');
+  if (rule.reaction.state !== undefined && typeof rule.reaction.state !== 'boolean') fail('rules.reaction.state', 'must be boolean');
+  if (rule.reaction.state === true && (when.kind !== 'condition' || rule.reaction.occurrence !== null || rule.reaction.notify)) {
+    fail('rules.reaction.state', 'a state shows a condition while it holds: a condition rule, with nothing under Due and no notification');
+  }
   const schedule = rule.schedule;
   if (!record(schedule) || !Array.isArray(schedule.before) || schedule.before.length > 24 || typeof schedule.on_day !== 'boolean') fail('rules.schedule', 'invalid schedule');
   schedule.before.forEach((point, index) => offset(point, `rules.schedule.before.${index}`, false));
@@ -281,6 +295,9 @@ export const validateAsset = (asset: Asset): void => {
     if (condition !== null && (!record(condition) || typeof condition.active !== 'boolean' || !timestamp(condition.as_of)
       || !['confirmed', 'conditional'].includes(condition.certainty) || !text(condition.source)
       || !Array.isArray(condition.evidence))) fail(`observations.${name}`, 'invalid condition');
+    if (condition && condition.until !== undefined && (!timestamp(condition.until) || condition.until <= condition.as_of)) {
+      fail(`observations.${name}.until`, 'until must be a time after as-of');
+    }
     if (condition) evidence(condition.evidence, `observations.${name}.evidence`);
   }
   if (asset.automatic_updates !== undefined) {

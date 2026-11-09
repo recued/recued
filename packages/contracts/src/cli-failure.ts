@@ -90,6 +90,18 @@ export interface CliFailureDetail {
   install?: string[];
   /** D-321 `not_found` — links to the tool's own install instructions. */
   install_docs?: string[];
+  /** D-321 `not_found` — the tool found where installers put programs, outside
+   *  the server's PATH (`PackToolStatus.found_at`). Install commands are left
+   *  out then: it is installed. */
+  found_at?: string;
+  /** D-321 `not_found`, with `found_at` — the installer re-run that gives the
+   *  server a terminal's PATH (`PackToolStatus.repair`). Shown, never run. */
+  repair?: string;
+  /** D-346 § 9 `spawn_error` — the folder or file the run named that the program
+   *  could not be given: not on the server, not a folder where one was needed, or
+   *  not open to the server (`existing_paths`, `cwd`). The program itself is
+   *  fine, so a run surface offers no program fix for it (`run-needs.ts`). */
+  path?: string;
 }
 
 /** Map a Node spawn-error `code` to a cli failure reason. `ENOENT` ⇒ the binary

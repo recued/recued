@@ -187,9 +187,11 @@ import {
 } from '../pack-inventory.js';
 import type { ContractBroadcastEvent } from '../contract-handler.js';
 import { createAskChatPlanFinder, type HistoryDeps } from '../history-handler.js';
+import { askWaitsForResume } from '../pause-approval.js';
 import type { WsServerHandle } from '../ws-server.js';
 import type { BridgeDispatcher } from '../bridges/dispatcher.js';
 import { createBridgeRegistry } from '../bridges/registry.js';
+import { browserSecrets } from '../bridges/browser-secrets.js';
 import type { BootedServerIdentity } from '../identity/boot.js';
 import {
   createVendorOAuthFlowStore,
@@ -212,7 +214,7 @@ import { createHostnameSniBindingLookup } from '../hostname/index.js';
 import type { CollectionContext } from './compose-collection-context.js';
 import type { ExecutionContext } from './compose-execution-context.js';
 import type { AppContext } from './compose-app-context.js';
-import type { NotificationMessage } from '@recued/notification';
+import type { NotificationMessage, PendingAsk } from '@recued/notification';
 import { composeEventTriggers } from '../composition/bin/wire-event-triggers.js';
 import { composeWatchManager } from '../composition/bin/wire-watch-manager.js';
 import {
@@ -226,7 +228,7 @@ import { forgetTimeRelativeWatcherRecipe } from '../watchers/time-relative-watch
 import { forgetHttpWatcherRecipe } from '../watchers/http-watcher-memory.js';
 import { createDishAutomation } from '../dish-automation.js';
 import { mainDishFor } from '../dish-handler.js';
-import { bundledPackName, bundledPacksShippingRecipe } from '../bundled-pack-source.js';
+import { bundledPackName, bundledPacksShippingRecipe, resolveBundledPackManifest } from '../bundled-pack-source.js';
 import { startsOnItsOwn } from '@recued/contracts';
 import { createUnattendedSettingsGate } from '../unattended-settings-gate.js';
 import { deleteSchedule, listSchedules, updateSchedule } from '../schedule-handler.js';
@@ -251,6 +253,7 @@ import {
   DEFAULT_ROOT_APEX_MODE,
   type FormFieldContractFormView,
   type RootApexMode,
+  readOwnerOperationOverride,
 } from '@recued/contracts';
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
@@ -300,6 +303,7 @@ import { buildUpdateReleaseEntry, updateAutoApplyRegistry } from '../update/auto
 import { runUpdateBootReconcile as runUpdateBootReconcileImpl } from '../update/boot-reconcile.js';
 import { createUpdateOwnerAlertSink } from '../update/owner-alert.js';
 import { SERVER_VERSION } from '../server-version.js';
+import { createTriggerPreapprovalGranter, createTriggerPreapprovalTargets } from '../trigger-preapproval-rpc.js';
 import type { RpcContext } from './compose-rpc-context.js';
 import type { StorageContext } from './compose-storage-context.js';
 
@@ -412,6 +416,10 @@ export interface ComposeListenersOptions {
     // D-329 §3.4 — the owner's write-rule rpc.
     | 'writeRuleStore'
     | 'browserPassStore'
+    // D-335 slice Z — the owner's rpc over the logins remembered for browser steps.
+    | 'browserLoginStore'
+    // D-341 slice B1 — the owner's rpc over triggers' standing pre-approvals.
+    | 'triggerPreapprovalStore'
   >;
   app: Pick<
     AppContext,
@@ -1010,6 +1018,17 @@ export const composeListeners = async (
         },
       })
     : undefined;
+  // D-188 — the supervisor stops each messenger runner while the owner's pause holds (its
+  // reconcile reads the pause, as it reads the vault): run one on each of the pause's edges.
+  if (bootstrapDeps !== undefined && messengerIngressSupervisor !== undefined) {
+    const applyPause = bootstrapDeps.onPauseChanged;
+    const supervisor = messengerIngressSupervisor;
+    bootstrapDeps.onPauseChanged = async (paused): Promise<void> => {
+      const [work, ingress] = await Promise.allSettled([applyPause?.(paused), supervisor.reconcile()]);
+      if (work.status === 'rejected') throw work.reason;
+      if (ingress.status === 'rejected') throw ingress.reason;
+    };
+  }
   // D-158 P2b — the inbound reply-by-email funnel, the peer of the Slack /
   // Telegram webhook dispatcher above. Email has no webhook: a reply arrives in
   // the notification account's own mailbox, and a mail upsert hook checks it
@@ -1127,6 +1146,8 @@ export const composeListeners = async (
             closeMailSendOutcomeAsk({ notifier: execution.notificationBlock, reconciliation_id }),
           publicBaseUrl: () => storage.publicAddress.baseUrl('root'),
           isUnlocked: app.isVaultUnlocked,
+          // D-188 — no answer leaves while the owner's pause holds.
+          ...(app.serverState !== undefined ? { isPaused: () => app.serverState!.isPaused() } : {}),
           ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
           // The follow-up after an approval names the recipe by its title.
           toolTitle: (tool_name) => recipeToolTitle(storage.recipeStore, tool_name),
@@ -1605,9 +1626,19 @@ export const composeListeners = async (
     ...(app.chatDeps?.planApprovalStore?.findByHoldRun !== undefined
       ? { findAskChatPlan: createAskChatPlanFinder(app.chatDeps.planApprovalStore) }
       : {}),
+    // D-188 — an approval the owner's pause holds back, so its card says so (the owner's rulings
+    // of 2026-11-08: no held run can be approved until Resume).
+    ...(app.serverState !== undefined
+      ? {
+          askWaitsForResume: async (ask: PendingAsk) =>
+            askWaitsForResume({ isPaused: () => app.serverState!.isPaused() }, ask),
+        }
+      : {}),
     ...(execution.notificationBlock
       ? {
           listOpenAsks: () => execution.notificationBlock!.listOpenAsks(),
+          // D-335 slice Z — the secret a browser step waits for, given from its ask's card.
+          giveSecret: (ask_id: string, value: string, remember: boolean) => browserSecrets.give(ask_id, value, remember),
           // D-169 P2 Slice 3 — the bridge approval card's submit funnel.
           // The wire layer owns the `via` channel decision (the interactive
           // answer arrives on the `ui` inbound path; the first-class
@@ -1714,6 +1745,8 @@ export const composeListeners = async (
 
   const receptionInboxBundle = composeReceptionInboxDeps({
     auditLog: storage.auditLog,
+    // D-188 — no held item is approved while the server is paused.
+    ...(app.serverState !== undefined ? { isServerPaused: () => app.serverState!.isPaused() } : {}),
     checkpointStore: storage.checkpointStore,
     localManifestStore: storage.localManifestStore,
     eventBus: storage.eventBus,
@@ -1898,6 +1931,12 @@ export const composeListeners = async (
               return undefined;
             }
             return { ttl_ms: offer.ttl_ms, max_uses: offer.max_uses };
+          },
+          // D-341 slice B4 — "Always allow for this form", off the same real ask: an open ask that
+          // carries `allow_trigger` (which replaced its `allow_session`).
+          readAskAlwaysAllow: async (ask_id: string) => {
+            const ask = await execution.notificationBlock!.getAsk(ask_id);
+            return ask !== null && ask.status === 'open' && ask.options.some((o) => o.id === 'allow_trigger');
           },
         }
       : {}),
@@ -2263,6 +2302,10 @@ export const composeListeners = async (
         contractGrantStore: app.contractGrantStoreRef, connectionCatalogBindingStore: app.connectionCatalogBindingStoreRef },
       clientTokens: app.clientTokensRef, definitions: execution.contractDefinitionStore, inboundTokens: app.chatInboundTokenStoreRef,
       notifications: execution.notificationBlock, keys: app.keys,
+      serverTimeZone: () => resolveServerTimeZone(
+        storage.serverTimeZoneStore?.read(),
+        Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ),
       onActivationChanged: () => refreshPreapprovalAutomations?.(),
       // D-315 §6.4 — a sealed event the recovery clock runs is kept on the
       // dispatcher's books, so its run is linked to the email that caused it.
@@ -2316,6 +2359,8 @@ export const composeListeners = async (
     localManifestStore: storage.localManifestStore,
     // R21.1 — poll loops disarm while the vault is sealed.
     isVaultUnlocked: app.isVaultUnlocked,
+    // D-188 — and while the owner's pause holds (the emergency stop).
+    ...(app.serverState !== undefined ? { isPaused: (): boolean => app.serverState!.isPaused() } : {}),
   });
   refreshPreapprovalAutomations = async () => {
     eventTriggersBundle?.dispatcher.rebuild();
@@ -3041,6 +3086,14 @@ export const composeListeners = async (
   // Bound here because this is where the lifecycle exists; every caller shares
   // this deps object, so a cron tick, a trigger and an RPC all see it.
   execution.executeDeps.isDraining = () => lifecycle?.machine.isAtLeast('draining') === true;
+  // D-188 — a run by hand is refused while the owner's pause holds (a lockdown: the owner's
+  // ruling of 2026-11-08). Absent server state (dbless) ⇒ never paused.
+  if (app.serverState !== undefined) {
+    const serverState = app.serverState;
+    execution.executeDeps.isServerPaused = () => serverState.isPaused();
+    // …and a catalog operation run outside a recipe (`runGatedCatalogOperation`).
+    execution.executorConfig.isServerPaused = () => serverState.isPaused();
+  }
   const webhookPublicExposureEnabled = async (): Promise<boolean> => {
     try {
       const machine = exposureDeps?.getMachine();
@@ -3254,6 +3307,8 @@ export const composeListeners = async (
     ? createSavedDataViewAlertRuntime({ store: savedDataViewStore.alerts, auditLog: storage.auditLog,
       notifier: execution.notificationBlock,
       getPublicBaseUrl: () => storage.publicAddress.baseUrl('root'),
+      // D-188 — held while the owner's pause holds.
+      ...(app.serverState !== undefined ? { isPaused: () => app.serverState!.isPaused() } : {}),
     }) : undefined;
   // The owner worklist and unattended alerts read the same passive inventory.
   // No broker, OAuth refresh or provider request is needed by either reader.
@@ -3289,20 +3344,26 @@ export const composeListeners = async (
       isQuiet: at => shouldSuppressForQuietHours({ policy: storage.quietHoursStore?.read() ?? defaultQuietHoursPolicy(), instant: at,
         timeZone: resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
       getPublicBaseUrl: () => storage.publicAddress.baseUrl('root') }) : undefined;
+  /** A scheduled run's answer, from its conversation: what its notice sends, and (D-340 slice 4) what
+   *  a stream carries of its AI suggestions. */
+  const readScheduledAnswer = async (session_id: string, message_id: string) => {
+    const page = await app.chatStoreRef!.listMessagePage(session_id, 1, undefined, { around_message_id: message_id });
+    return page.messages.find(message => message.id === message_id);
+  };
   // D-338 slice 2 — a schedule that notifies when it is done sends its answer; the Agenda's
   // suggestions only on a day the Agenda itself went.
   const promptScheduleDone = storage.db && promptSchedules && execution.notificationBlock && storage.auditLog && app.chatStoreRef
-    ? createPromptScheduleDoneRuntime({ db: storage.db, schedules: promptSchedules,
-      readAnswer: async (session_id, message_id) => {
-        const page = await app.chatStoreRef!.listMessagePage(session_id, 1, undefined, { around_message_id: message_id });
-        return page.messages.find(message => message.id === message_id);
-      },
+    ? createPromptScheduleDoneRuntime({ db: storage.db, schedules: promptSchedules, readAnswer: readScheduledAnswer,
       auditLog: storage.auditLog, notifier: execution.notificationBlock,
       canRun: () => (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
       isQuiet: at => shouldSuppressForQuietHours({ policy: storage.quietHoursStore?.read() ?? defaultQuietHoursPolicy(), instant: at,
         timeZone: resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
       getPublicBaseUrl: () => storage.publicAddress.baseUrl('root'),
       ...(collection.scheduledSituations ? { gate: collection.scheduledSituations.agendaDoneGate } : {}) }) : undefined;
+  // D-340 slice 4 — the streams carry their AI suggestions: they read a run's answer as its notice
+  // does, and "Talk it over" links to its conversation by the server's public address.
+  if (promptSchedules && app.chatStoreRef) collection.scheduledSituations?.bindSuggestionAnswers({ readAnswer: readScheduledAnswer,
+    publicBaseUrl: () => storage.publicAddress.baseUrl('root') });
 
   // D-174 #22 + slice 1 — built ONCE, used TWICE: the `work_entity.{upsert,
   // delete}` pair-RPC below and the Tier-1 `work.create` chat tool both
@@ -3421,6 +3482,47 @@ export const composeListeners = async (
       return JSON.stringify([token.token_id, instance]);
     };
   }
+  // D-341 slices B1/B2 — triggers' standing pre-approvals: one granter for the owner's rpc and for
+  // an ask's answer (the resumer grants what a held write offered), so both are checked alike.
+  const triggerPreapprovalGranter = createTriggerPreapprovalGranter({
+    store: storage.triggerPreapprovalStore,
+    recipeStore: execution.executeDeps.recipeStore,
+    manifestOf: (slug) => execution.executorConfig.manifests.get(slug),
+    ...(execution.executeDeps.contractScan
+      ? { packs: () => buildPackOpResolution(() => execution.executeDeps.contractScan!('installed_pack', []),
+          (slug) => execution.executorConfig.manifests.get(slug)) }
+      : {}),
+    ownerOverrideOf: (ingredient_id, operation_id) => readOwnerOperationOverride({
+      ...(execution.executeDeps.contractScan ? { scan: execution.executeDeps.contractScan } : {}),
+      ingredient_id, operation_id,
+    }),
+    targets: createTriggerPreapprovalTargets({
+      ...(app.webhookConsumerStoreRef ? { webhooks: app.webhookConsumerStoreRef } : {}),
+      ...(scheduleDeps ? { schedules: scheduleDeps.store } : {}),
+      ...(eventTriggersBundle ? { triggers: eventTriggersBundle.store } : {}),
+      // B4 — a reception form's pairing, read at call time like the pair rpcs.
+      ...(receptionRpcDeps ? { receptions: { pairOf: (endpoint_id: string) => {
+        const pair = receptionRpcDeps.getIntakeRecipePairStore?.()?.findByEndpoint(endpoint_id) ?? null;
+        return pair === null ? null : { recipe_id: pair.binding.recipe_id, contract_id: pair.contract_id };
+      } } } : {}),
+      // B1b — a dish's timer: its recipe, while that recipe runs on its own.
+      ...(execution.executeDeps.dishStore ? { timers: { recipeOf: (dish_id: string) => {
+        const dish = execution.executeDeps.dishStore?.get(dish_id) ?? null;
+        return dish !== null && execution.executeDeps.recipeStore.get(dish.recipe_id)?.auto_run !== undefined ? dish.recipe_id : undefined;
+      } } } : {}),
+    }),
+    // B3 — a scheduled prompt's title and the version of its text, read at call time (the
+    // orchestrator is bound late). Absent, it reads as unknown, never as removed.
+    prompts: {
+      version: async (schedule_id: string) => {
+        const schedules = app.chatOrchestratorRef?.promptSchedules;
+        if (schedules === undefined) throw new Error('scheduled prompts are not wired');
+        return schedules.promptVersion(schedule_id);
+      },
+    },
+    ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+  });
+  execution.executeDeps.triggerPreapprovalGranter = triggerPreapprovalGranter;
   const automationRehearsalDeps = app.keys && app.clientTokensRef && scheduleDeps && eventTriggersBundle && rpc.autoRunDeps
     && execution.executeDeps.dishStore && contractStore ? {
       clientTokens: app.clientTokensRef,
@@ -3918,6 +4020,12 @@ export const composeListeners = async (
             writeRules: storage.writeRuleStore,
             // D-335 slice F — passes for Browser Toolkit writes.
             browserPasses: storage.browserPassStore,
+            // D-341 slices B1/B2 — triggers' standing pre-approvals, through the granter the
+            // resumer grants an ask's answer with.
+            triggerPreapprovals: storage.triggerPreapprovalStore,
+            triggerPreapprovalGranter,
+            // D-335 slice Z — the logins remembered for browser steps.
+            browserLogins: storage.browserLoginStore,
             // D-247 D11 — the recipe roster for the op row's STATIC half. Without
             // it `could` is empty everywhere and the row silently degrades to the
             // usage half alone, which is the shape that cannot tell "no recipe
@@ -4269,6 +4377,11 @@ export const composeListeners = async (
       getContractStore: () => app.contractStoreRef,
       getManifest: (slug: string) => execution.executorConfig.manifests.get(slug),
       toolStatus: execution.cliToolStatus,
+      // D-321 C1 — a pack's page before install: the manifest an install would use.
+      resolvePackManifest: (slug: string) =>
+        resolveBundledPackManifest(rpc.packInstallDeps?.packDir, slug)
+          ?? rpc.packInstallDeps?.resolveDependencyManifest?.(slug)
+          ?? null,
     },
     ...(rpc.packUninstallDeps
       ? {
@@ -4854,6 +4967,10 @@ export const composeListeners = async (
           llmGatewayDeps: {
             ...llmGatewayDeps,
             isStopping: () => lifecycle?.machine.isAtLeast('draining') === true,
+            // D-188 — the AI door is shut while the owner's pause holds (a lockdown).
+            ...(app.serverState !== undefined
+              ? { isPaused: (): boolean => app.serverState!.isPaused() }
+              : {}),
           },
         }
       : {}),
@@ -4959,6 +5076,10 @@ export const composeListeners = async (
   let boundPublicPort = runtimeConfig
     ? (runtimeConfig.get('public_port') as number)
     : DEFAULT_PUBLIC_PORT;
+  /** The public port last asked of the listeners: what they bind whenever they bind, which
+   *  `boundPublicPort` follows only once a bind succeeds. They differ after a move that failed, or
+   *  one made while no path was public. */
+  let requestedPublicPort = boundPublicPort;
   // D-272 — publish the BOUND address to `network.local_urls`, which folds it
   // into `lan_exposure`. Assigned here because this is where it becomes known.
   lanBindAddressRef = lanBindAddress;
@@ -5175,6 +5296,17 @@ export const composeListeners = async (
     // false at first boot (lan_only), so this listener doesn't actually
     // bind until the user toggles.
     public_port: publicPort,
+    // ⛔ `boundPublicPort` FOLLOWS EVERY BIND, not only the ones a port change made: an exposure
+    // flip binds the port last asked for, which can differ from the one advertised (asked for while
+    // no path was public, or after a move that failed). Only a listening public listener moves it,
+    // so a failed bind never advertises a port nothing serves.
+    on_applied: (statuses) => {
+      const pub = statuses.find((status) => status.listener === 'public');
+      if (pub?.listening === true && pub.port > 0 && pub.port !== boundPublicPort) {
+        boundPublicPort = pub.port;
+        console.log(`[listener] public port moved to ${String(pub.port)}`);
+      }
+    },
     log: (level, msg, data) => {
       const fn =
         level === 'error'
@@ -5236,7 +5368,10 @@ export const composeListeners = async (
   if (runtimeConfig !== undefined && typeof runtimeConfig.onChange === 'function') {
     runtimeConfig.onChange(() => {
       const wanted = runtimeConfig.get('public_port') as number;
-      if (typeof wanted !== 'number' || wanted === boundPublicPort) return;
+      // Nothing to do only when the port is both bound and the one asked for. Bound but not asked
+      // for: a move that failed is still being asked for, and setting the port back must ask again
+      // (the listener is down meanwhile). Asked for but not bound: a failed move is retried.
+      if (typeof wanted !== 'number' || (wanted === boundPublicPort && wanted === requestedPublicPort)) return;
       void (async () => {
         try {
           // ⚠ THE LIVE RESOLUTION, not a remembered one. `applyResolution`
@@ -5245,14 +5380,24 @@ export const composeListeners = async (
           const machine = exposureDeps?.getMachine();
           if (machine === undefined) return;
           const { resolution } = await machine.current();
+          requestedPublicPort = wanted;
           const statuses = await listenerCoordinator.apply({
             resolution,
             bind_addresses: { lan: lanBindAddress, public: lanBindAddress },
             ports: { public: wanted },
           });
           if (statuses.public.listening) {
-            boundPublicPort = wanted;
-            console.log(`[listener] public port moved to ${String(wanted)}`);
+            // `on_applied` has adopted it already, unless the coordinator reports without one.
+            if (boundPublicPort !== wanted) {
+              boundPublicPort = wanted;
+              console.log(`[listener] public port moved to ${String(wanted)}`);
+            }
+          } else if (statuses.public.failure === undefined) {
+            // Off because no path is public: nothing failed, and the port is bound when one is.
+            console.log(
+              `[listener] public port set to ${String(wanted)}; the public listener binds it once a`
+              + ' path is public',
+            );
           } else {
             // ⛔ NOT ADOPTED. Everything downstream keeps advertising — and the
             // router mapping keeps pointing at — the port still being served.
@@ -5311,6 +5456,23 @@ export const composeListeners = async (
   //    recorded and its handler — for an approval, the whole resumed run — is
   //    left to the next start's sweep, once that server runs
   //    (`NotificationBlock.beginStopping`, `recoverPendingAsksOnceRunning`).
+  // D-188 — a pause the owner set before a restart holds after it. ⛔ The flag was stored, but
+  // only the toggle stopped the server's own work and its sync, so a restart while paused
+  // started every schedule, trigger and poll again. Once the server runs (and again after a
+  // maintenance window), a stored pause is applied as the toggle applies it.
+  if (lifecycle && app.serverState !== undefined) {
+    const serverState = app.serverState;
+    lifecycle.machine.onStateChange((_prev, next) => {
+      if (next !== 'running' || !serverState.isPaused()) return;
+      void Promise.resolve(bootstrapDeps?.onPauseChanged?.(true)).then(() => {
+        // Says why nothing runs after a restart, to whoever reads the log.
+        console.log('[pause] the server is paused: its own work, sync and senders stay stopped until Resume');
+      }, (err: unknown) => {
+        console.warn('[pause] applying the stored pause failed', err);
+      });
+    });
+  }
+
   const turnQueue = app.chatOrchestratorRef?.turnQueue;
   const answers = execution.notificationBlock;
   if (lifecycle && (turnQueue || answers || promptScheduleAlerts || promptScheduleDone)) {

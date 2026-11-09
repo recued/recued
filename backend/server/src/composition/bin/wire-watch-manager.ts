@@ -96,6 +96,8 @@ export interface ComposeWatchManagerInput {
    *  loop while sealed; the coordinator re-arms on unlock. Absent →
    *  un-gated. */
   isVaultUnlocked?: () => boolean;
+  /** D-188 — the master pause: every poll is held while it is on, as while sealed. */
+  isPaused?: () => boolean;
 }
 
 export interface WatchManagerBundle {
@@ -106,7 +108,7 @@ export interface WatchManagerBundle {
 export const composeWatchManager = (
   input: ComposeWatchManagerInput,
 ): WatchManagerBundle | undefined => {
-  const { db, warehouseBus, executeDeps, triggersStore, eventBus, localManifestStore, isVaultUnlocked } = input;
+  const { db, warehouseBus, executeDeps, triggersStore, eventBus, localManifestStore, isVaultUnlocked, isPaused } = input;
   if (!db || !triggersStore) return undefined;
 
   const store = createWatchStore(db);
@@ -258,6 +260,7 @@ export const composeWatchManager = (
     bus: warehouseBus,
     ...(eventBus ? { eventBus } : {}),
     ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
+    ...(isPaused ? { isPaused } : {}),
   });
   // Deliberately NO initial recompute here: vendor reconcilers register
   // with the housekeeping registry in `startHousekeepingStartup` (the

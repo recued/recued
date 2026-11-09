@@ -270,11 +270,17 @@ export const createEpisodeRuntime = (deps: EpisodeRuntimeDeps) => {
     // People link a plan to a trace, so the contact fence applies before assembly:
     // a contact this context may not read must not join two records into one.
     const fence = <T extends { people: string[] }>(value: T): T => ({ ...value, people: value.people.filter(id => sourceAllowed(context, { collection: 'contact', id })) });
-    const result = assembleEpisodes(data.plans.filter(plan => admission(context, [plan.ref], plan.sphere)).map(fence),
+    const assembled = assembleEpisodes(data.plans.filter(plan => admission(context, [plan.ref], plan.sphere)).map(fence),
       data.traces.filter(trace => admission(context, trace.sources, trace.sphere)).map(fence),
       data.owners.filter(episode => admission(context, episode.evidence, episode.sphere)).map(fence), now()).filter(safe);
     const stored: Episode[] = []; for (let offset = 0; ; offset += 500) { const page = history.episodes(500, offset); stored.push(...page); if (page.length < 500) break; }
+    // D-343 slice 2 — the owner's record of an item has the final say (D-325): the episode
+    // assembled from that item's plan gives way to it, whether they did it or skipped it.
+    const recorded = new Set(stored.filter(row => row.outcome !== undefined).flatMap(row => row.subjects.map(ref => episodeCandidateId([ref]))));
+    const result = assembled.filter(value => value.basis === 'declared' || value.id === undefined || !recorded.has(value.id));
     for (const raw of stored) {
+      // A skipped record says what did not happen: it is no episode of what the owner did.
+      if (raw.outcome === 'skipped') continue;
       const episode = { ...raw, ...(raw.where ? { where: history.place(raw.where.name) } : {}) };
       if (!safe(episode)) continue;
       if (episode.basis !== 'declared' && episode.evidence.some(ref => ref.collection === 'history_trace' && !retained.get(ref.id))) continue;

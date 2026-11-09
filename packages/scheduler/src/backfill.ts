@@ -41,16 +41,42 @@ export const BACKFILL_WINDOW_MIN = 30;
 /** Minimal shape `shouldCatchUp` needs. Accepts the server-local
  *  `Schedule` directly and the cloud cron's `ScheduleRow` after
  *  string-to-ms conversion of timestamps — same logic, two callers. */
-export type ScheduleForCatchUp = Pick<Schedule, 'cron_expression' | 'last_run_at'>;
+export type ScheduleForCatchUp = Pick<Schedule, 'cron_expression' | 'last_run_at' | 'time_zone'>;
+
+/** The zone a schedule's cron is read in (D-269): its own `time_zone`,
+ *  else the zone declared for the server, else host-local (`undefined`).
+ *
+ *  ⛔⛔ THE MATCH AND THE MISSED-RUN COUNT MUST READ THE CRON IN THE SAME
+ *  ZONE. The tick matched in the schedule's zone while every function in
+ *  this file read the cron host-local, so on a UTC host a Hong Kong
+ *  `0 7 * * *` ran at 07:00 and again at 15:00 as a "missed-run catch-up",
+ *  every day: 15:00 HKT is 07:00 UTC, which this file counted as a cycle
+ *  the 07:00 HKT run had not covered. A laptop whose own zone changed did
+ *  the same. Every caller that matches or counts a schedule's cron takes
+ *  its zone from here.
+ *
+ *  ⚠ An empty string falls through to the next rung: `Intl` throws a
+ *  RangeError on `timeZone: ''`, which would kill the tick rather than
+ *  fall back. */
+export const scheduleCronZone = (
+  schedule: { time_zone?: string },
+  serverTimeZone: string | undefined,
+): string | undefined => {
+  const own = schedule.time_zone;
+  if (typeof own === 'string' && own.length > 0) return own;
+  return serverTimeZone !== undefined && serverTimeZone.length > 0 ? serverTimeZone : undefined;
+};
 
 /** Should the scheduler fire a catch-up for this schedule on this
  *  tick? `true` only when (1) the schedule has fired before, (2) at
  *  least one cron-matched minute passed since the last fire, and
  *  (3) the wait until the next regular cycle is longer than
- *  `BACKFILL_WINDOW_MIN`. */
+ *  `BACKFILL_WINDOW_MIN`. `serverTimeZone` is the server's declared zone;
+ *  the cron is read in `scheduleCronZone`'s answer. */
 export function shouldCatchUp(
   schedule: ScheduleForCatchUp,
   now: number,
+  serverTimeZone?: string,
 ): boolean {
   // (1) Never fired — no fires can have been missed; schedule starts
   // fresh on its next regular cycle.
@@ -58,19 +84,20 @@ export function shouldCatchUp(
 
   const parts = schedule.cron_expression.trim().split(/\s+/);
   if (parts.length !== 5) return false;
+  const zone = scheduleCronZone(schedule, serverTimeZone);
 
   // (2) Did at least one cron-matched minute pass between last_run_at
   // and now? `nextCronMatch` returns the current minute when it
   // matches, so step strictly forward by 1 min from the last fire.
   // If the next expected match is still in the future, the regular
   // tick handles it — no catch-up.
-  const nextExpected = nextCronMatch(parts, schedule.last_run_at + 60_000);
+  const nextExpected = nextCronMatch(parts, schedule.last_run_at + 60_000, undefined, zone);
   if (nextExpected === null || nextExpected > now) return false;
 
   // (3) Catch up only when the wait until the next regular cycle is
   // longer than the window. Step forward by 1 min for the same
   // reason — we want strictly future matches.
-  const nextFromNow = nextCronMatch(parts, now + 60_000);
+  const nextFromNow = nextCronMatch(parts, now + 60_000, undefined, zone);
   if (nextFromNow === null) return false;
   return (nextFromNow - now) / 60_000 > BACKFILL_WINDOW_MIN;
 }
@@ -120,12 +147,16 @@ export const AUDIT_OCCURRENCE_LIMIT = 10_000;
  *  the question is what keeps that off the tick — the decision needs
  *  only "is there a second one?" and passes 2, measured at ≤ 16 ms for
  *  the worst cadence (monthly). Callers that want a number for display
- *  pass a larger limit and must render `capped` as "N+", never as N. */
+ *  pass a larger limit and must render `capped` as "N+", never as N.
+ *
+ *  `timeZone` is the zone the cron is read in — a schedule's comes from
+ *  `scheduleCronZone`. Absent ⇒ host-local. */
 export function countOutstandingOccurrences(
   cronExpression: string,
   lastRunAt: number,
   now: number,
   limit: number,
+  timeZone?: string,
 ): { count: number; capped: boolean } {
   const parts = cronExpression.trim().split(/\s+/);
   if (parts.length !== 5 || limit <= 0) return { count: 0, capped: false };
@@ -134,7 +165,7 @@ export function countOutstandingOccurrences(
   for (;;) {
     // Step strictly forward: `nextCronMatch` returns the current minute
     // when it matches, so starting at `at` would count it again.
-    const match = nextCronMatch(parts, at + 60_000);
+    const match = nextCronMatch(parts, at + 60_000, undefined, timeZone);
     if (match === null || match > now) return { count, capped: false };
     count += 1;
     at = match;
@@ -158,8 +189,9 @@ export function countOutstandingOccurrences(
  *  `countOutstandingOccurrences` itself and render its `capped` as
  *  "N+". */
 export function countMissedCycles(
-  schedule: Pick<Schedule, 'last_run_at' | 'cron_expression'>,
+  schedule: Pick<Schedule, 'last_run_at' | 'cron_expression' | 'time_zone'>,
   now: number,
+  serverTimeZone?: string,
 ): number | 'unknown' {
   const last = schedule.last_run_at;
   if (last === null) return 'unknown';
@@ -167,6 +199,7 @@ export function countMissedCycles(
   if (parts.length !== 5) return 'unknown';
   const { count } = countOutstandingOccurrences(
     schedule.cron_expression, last, now, AUDIT_OCCURRENCE_LIMIT,
+    scheduleCronZone(schedule, serverTimeZone),
   );
   return Math.max(0, count - 1);
 }
@@ -184,11 +217,12 @@ export interface BackfillMetadata {
 }
 
 export function buildBackfillMetadata(
-  schedule: Pick<Schedule, 'last_run_at' | 'cron_expression'>,
+  schedule: Pick<Schedule, 'last_run_at' | 'cron_expression' | 'time_zone'>,
   now: number,
+  serverTimeZone?: string,
 ): BackfillMetadata {
   return {
-    missed_cycles: countMissedCycles(schedule, now),
+    missed_cycles: countMissedCycles(schedule, now, serverTimeZone),
     last_run_at_before: schedule.last_run_at!,
   };
 }
@@ -218,7 +252,8 @@ const isStale = (
   cronExpression: string,
   lastRunAt: number,
   now: number,
-): boolean => countOutstandingOccurrences(cronExpression, lastRunAt, now, 2).count >= 2;
+  timeZone: string | undefined,
+): boolean => countOutstandingOccurrences(cronExpression, lastRunAt, now, 2, timeZone).count >= 2;
 
 /** What the scheduler should do about this schedule's missed cycle.
  *
@@ -248,11 +283,12 @@ export type ScheduleForMissedAction =
 export function resolveMissedAction(
   schedule: ScheduleForMissedAction,
   now: number,
+  serverTimeZone?: string,
 ): MissedAction {
   // The proximity bound gates everything: when it says no, no cycle is
   // outstanding (or the regular tick is about to cover it), and there
   // is nothing for any policy to decide.
-  if (!shouldCatchUp(schedule, now)) return 'none';
+  if (!shouldCatchUp(schedule, now, serverTimeZone)) return 'none';
 
   // An explicit answer outranks the standing policy — the owner is
   // deciding this occurrence, which is the whole point of `'ask'`. It is
@@ -279,7 +315,7 @@ export function resolveMissedAction(
   // (a schedule that never fired can have missed nothing), so this is a
   // number by the time we reach it — narrowed rather than asserted.
   const lastRunAt = schedule.last_run_at ?? 0;
-  const stale = isStale(schedule.cron_expression, lastRunAt, now);
+  const stale = isStale(schedule.cron_expression, lastRunAt, now, scheduleCronZone(schedule, serverTimeZone));
 
   // `'ask'` gets its trigger for free: a fresh miss is not a question,
   // a stale one is. Without this the strongest option would fire a
@@ -351,13 +387,14 @@ export interface MissedRunReport {
 export function buildMissedRunReport(
   schedules: readonly (Schedule & { enabled: boolean })[],
   now: number,
+  serverTimeZone?: string,
 ): MissedRunReport {
   // D-319 — one line per DISH: two dishes of one recipe run independently,
   // so each catches up on its own. A brief supersedes a brief within a dish.
   const byDish = new Map<string, Schedule[]>();
   for (const schedule of schedules) {
     if (!schedule.enabled) continue;
-    if (resolveMissedAction(schedule, now) !== 'ask') continue;
+    if (resolveMissedAction(schedule, now, serverTimeZone) !== 'ask') continue;
     const key = JSON.stringify([schedule.recipe_id, schedule.dish_id ?? null]);
     const bucket = byDish.get(key);
     if (bucket) bucket.push(schedule);
@@ -375,6 +412,7 @@ export function buildMissedRunReport(
       if (schedule.last_run_at === null) continue;
       const scan = countOutstandingOccurrences(
         schedule.cron_expression, schedule.last_run_at, now, DISPLAY_OCCURRENCE_LIMIT,
+        scheduleCronZone(schedule, serverTimeZone),
       );
       const count = Math.max(0, scan.count - 1);
       if (missed === 'unknown' || count > missed) {

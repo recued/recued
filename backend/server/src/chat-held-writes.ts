@@ -341,6 +341,10 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
  *  once, and few enough that a long uptime keeps it small. */
 const ANSWERED_KEPT = 1000;
 
+/** The answers a held write's card gives its ask: yes once, yes with its trigger's standing
+ *  pre-approval (D-341), or no. */
+export type HeldPlanAskOption = 'approve' | 'allow_trigger' | 'deny';
+
 /** D-329 — the chat card's answer to its held write's ask, over the notification block,
  *  given as the owner's answer from the app (`via: 'ui'`) like the approval cards'. The ask
  *  is found by the hold's run on every call, never kept: a boot re-raise mints a new one.
@@ -348,6 +352,9 @@ const ANSWERED_KEPT = 1000;
  *  the hold's receipt), and the card was never told. Any other missing ask is `no_ask`.
  *  `beforeApprove` (D-336 slice E: the owner's change to the call) runs once the ask is found
  *  open, just before it is approved; a throw leaves it unanswered.
+ *  `allow_trigger` (D-341) approves with the trigger's standing pre-approval the ask offers
+ *  (`ChatPlanProposal.hold.always_allow`): `ignored`, with nothing run first, when the open ask
+ *  offers none.
  *
  *  ⛔ ONE ANSWER AT A TIME PER HOLD (audit 2026-11-01). Finding the ask open, the owner's
  *  change (the hold's checkpoint, then the proposal, or the checkpoint taken back) and the
@@ -365,7 +372,7 @@ export const createHeldPlanAskAnswerer = (
   const answered = new Set<string>();
   const answerOnce = async (
     run_id: string,
-    option: 'approve' | 'deny',
+    option: HeldPlanAskOption,
     beforeApprove?: () => Promise<void>,
   ): Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'> => {
     if (answered.has(run_id)) return 'closed';
@@ -375,7 +382,8 @@ export const createHeldPlanAskAnswerer = (
       return holdExpired !== undefined && await holdExpired(run_id) ? 'expired' : 'no_ask';
     }
     if (ask.status !== 'open') return 'closed';
-    if (option === 'approve') await beforeApprove?.();
+    if (option === 'allow_trigger' && !ask.options.some((offered) => offered.id === 'allow_trigger')) return 'ignored';
+    if (option !== 'deny') await beforeApprove?.();
     const outcome = await block.submitAnswer({ ask_id: ask.ask_id, option, via: 'ui' });
     if (outcome === 'answered') {
       answered.add(run_id);
@@ -385,7 +393,7 @@ export const createHeldPlanAskAnswerer = (
   };
   return async (
     run_id: string,
-    option: 'approve' | 'deny',
+    option: HeldPlanAskOption,
     beforeApprove?: () => Promise<void>,
   ): Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'> => {
     const turn = (answering.get(run_id) ?? Promise.resolve()).then(() => answerOnce(run_id, option, beforeApprove));

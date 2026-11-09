@@ -992,18 +992,58 @@ describe('D-174 P5 - Runs route', () => {
       expect(summary.title, errorCategory).toBe(title);
     }
 
+    // D-346 follow-up (2026-11-08) — refused by its contract, which no one said no to: an
+    // app's run reads that its contract does not allow the step (it read "The step you said
+    // no to was not sent").
     const denied = projectRunOutcomeSummary(
       runDetail('failed', 'denied', { errors: [] }),
     );
-    expect(denied.title).toBe('Permission was denied');
-    expect(denied.detail).toContain('step you said no to was not sent');
+    expect(denied.title).toBe('Not allowed');
+    expect(denied.detail).toContain('Its contract does not allow a step it took');
+    expect(denied.detail).not.toContain('said no');
+    expect(denied.nextStep).toContain('change that contract on the Contracts page');
 
     const policyError = projectRunOutcomeSummary(
       runDetail('failed', 'allowed', {
         errors: [recipeError()],
       }),
     );
-    expect(policyError.title).toBe('Permission was denied');
+    expect(policyError.title).toBe('Not allowed');
+
+    // The owner's own run, refused by a switch: the error names it.
+    const ownSwitch = runDetail('failed', 'allowed', {
+      errors: [{ ...recipeError(), code: 'NOT_AUTHORIZED',
+        message: "'pub/rg.search' is switched off, so it did not run. To use it, open its pack in Packs and turn it on under Self (you) on the Access tab. (cli_reachability_disabled)" }],
+    });
+    const ownRefused = projectRunOutcomeSummary({
+      ...ownSwitch,
+      audit: { ...ownSwitch.audit, origin: { actor: 'user_self', label: 'user_self', channel: 'user' } as RunOrigin },
+    });
+    expect(ownRefused.title).toBe('Not allowed');
+    expect(ownRefused.detail).toContain('switched off or not allowed');
+    expect(ownRefused.nextStep).toContain('what to turn on and where');
+
+    // D-188 — refused because the owner paused the server: no switch or contract decided it,
+    // so it reads as the pause with Resume as the fix, in the neutral tone of a cancelled run
+    // (it read "Not allowed … change that contract on the Contracts page").
+    const pausedRun = projectRunOutcomeSummary(
+      runDetail('failed', 'denied', {
+        errors: [recipeError({
+          message: "Gateway refused dispatch — preflight admission probe denied tool 'hubspot-catalog' "
+            + '(server_paused: server is paused — contracted and AI operations are halted until the owner resumes)',
+        })],
+      }),
+    );
+    expect(pausedRun.title).toBe('The server was paused');
+    expect(pausedRun.tone).toBe('neutral');
+    expect(pausedRun.nextStep).toContain('Resume the server');
+    expect(`${pausedRun.detail} ${pausedRun.nextStep}`).not.toContain('contract');
+
+    // Someone said no to the step's approval: that, and only that, reads as a no.
+    const saidNo = runDetail('failed', 'allowed', { errors: [] });
+    const no = projectRunOutcomeSummary({ ...saidNo, approvals: { ...saidNo.approvals, outcome: 'deny' } });
+    expect(no.title).toBe('Permission was denied');
+    expect(no.detail).toContain('step you said no to was not sent');
 
     // The server's aggregate `blocked` result also covers dispatched commits
     // that failed / cancelled / became uncertain. It is not proof that policy
@@ -1286,7 +1326,7 @@ describe('D-174 P5 - Runs route', () => {
       `${LOGS_ROUTE_OUTCOME_ATTR}="failed" data-tone="danger"`,
     );
     expect(html).toContain('aria-label="Run outcome"');
-    expect(html).toContain('Permission was denied');
+    expect(html).toContain('Not allowed');
     expect(html).toContain('Earlier steps may already have changed things.');
     expect(html).toContain(LOGS_ROUTE_DEGRADED_ATTR);
     expect(html).toContain('provenance_incomplete');
@@ -1303,6 +1343,71 @@ describe('D-174 P5 - Runs route', () => {
     expect(html).not.toContain('SECRET_APPROVAL_OUTPUT_SHOULD_NOT_RENDER');
 
     rig.route.dispose();
+  });
+
+  it('D-341 slice B1 — marks the write a trigger\'s pre-approval let through, and only that one', async () => {
+    const call = (commit_id: string, extra: Partial<RunDetail['gateway']['per_call_trace'][number]> = {}) => ({
+      commit_id, kind: 'action' as const, ingredient: 'recued-core.body-signals', tool: 'daily_metric.batch',
+      decision: 'allowed' as const, verdict: 'succeeded' as const, dispatched_at: NOW - 700, ...extra,
+    });
+    const getCaller = vi.fn<RunsGetCaller>(async () => ({
+      run: runDetail('succeeded', 'allowed', {
+        trace: [call('commit-asked'), call('commit-preapproved', { trigger_preapproval: { id: 'tpa_1' } })],
+      }),
+    }));
+    const rig = mountRoute({ getCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+
+    // The trace's rows, each the HTML of one call.
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const rows = html.split(LOGS_ROUTE_GATEWAY_TRACE_ATTR)[1]!.split('</ul>')[0]!.split('<li').slice(1);
+    expect(rows.map((row) => row.match(/ref (commit-[a-z-]+)/u)?.[1])).toEqual(['commit-asked', 'commit-preapproved']);
+    expect(rows.map((row) => row.includes('Pre-approved: ran without asking'))).toEqual([false, true]);
+    expect(rows[1]).toContain('data-trigger-preapproval="tpa_1"');
+
+    rig.route.dispose();
+  });
+
+  it('D-341 slice B1 — lists what ran without asking, a Records write included, and says nothing when nothing did', async () => {
+    const withList = { ...runDetail('succeeded', 'allowed'), preapproved: [
+      { preapproval_id: 'tpa_1', trigger_kind: 'webhook', op: 'recued-core.body-signals.daily_metric.batch', writes: 1 },
+      { preapproval_id: 'tpa_1', trigger_kind: 'webhook', op: 'recued-core.body-signals.daily_metric.update', writes: 3 },
+    ] };
+    const rig = mountRoute({ getCaller: vi.fn<RunsGetCaller>(async () => ({ run: withList })) });
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Ran without asking, as you allowed for its webhook:');
+    const items = html.split('data-trigger-preapproved-write="tpa_1">').slice(1).map((item) => item.split('</li>')[0]);
+    expect(items).toEqual(['recued-core.body-signals.daily_metric.batch · once', 'recued-core.body-signals.daily_metric.update · 3 times']);
+    // D-341 ruling 10 — it has no end date, so it says where to end it.
+    expect(html).toContain('It stays on until you end it:');
+    expect(html).toMatch(/<a class="logs-inline-link" data-trigger-preapproved-end href="#contracts">End it under Contracts<\/a>/u);
+    rig.route.dispose();
+
+    const plain = mountRoute({ getCaller: vi.fn<RunsGetCaller>(async () => ({ run: runDetail('succeeded', 'allowed') })) });
+    await plain.route.whenLoaded();
+    await plain.route.openRun('run-1');
+    expect(plain.root.children[0]?.innerHTML ?? '').not.toContain('Ran without asking');
+    expect(plain.root.children[0]?.innerHTML ?? '').not.toContain('data-trigger-preapproved-end');
+    plain.route.dispose();
+
+    // D-341 slice B1b — an auto-run's says so.
+    const timer = mountRoute({ getCaller: vi.fn<RunsGetCaller>(async () => ({ run: { ...runDetail('succeeded', 'allowed'), preapproved: [
+      { preapproval_id: 'tpa_2', trigger_kind: 'auto_run', op: 'work-entity-task-create', writes: 1 }] } })) });
+    await timer.route.whenLoaded();
+    await timer.route.openRun('run-1');
+    expect(timer.root.children[0]?.innerHTML ?? '').toContain('Ran without asking, as you allowed for its auto-run:');
+    timer.route.dispose();
+
+    // D-341 slice B4 — a form's says so.
+    const form = mountRoute({ getCaller: vi.fn<RunsGetCaller>(async () => ({ run: { ...runDetail('succeeded', 'allowed'), preapproved: [
+      { preapproval_id: 'tpa_3', trigger_kind: 'reception', op: 'work-entity-task-create', writes: 1 }] } })) });
+    await form.route.whenLoaded();
+    await form.route.openRun('run-1');
+    expect(form.root.children[0]?.innerHTML ?? '').toContain('Ran without asking, as you allowed for its form:');
+    form.route.dispose();
   });
 
   it('opens an inbound #logs run_id on initial mount', async () => {

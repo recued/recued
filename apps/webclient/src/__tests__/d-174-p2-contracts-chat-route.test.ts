@@ -571,6 +571,10 @@ describe('D-174 contracts route — list → detail shell', () => {
       'door_rcpt_1',
     ]);
     expect(rows[0]!.getAttribute('href')).toBe('#contracts/user_self');
+    // The owner's ruling (2026-11-08): the owner's row reads "Self (you)", as a pack's
+    // Access tab names the same row (it read "Owner (you)" here).
+    expect(allText(rows[0]!)).toContain('Self (you)');
+    expect(allText(rows[0]!)).not.toContain('Owner (you)');
     expect(rows[1]!.getAttribute('href')).toBe('#contracts/door_rcpt_1');
     expect(rows[1]!.getAttribute(CONTRACTS_ROUTE_ANONYMOUS_ATTR)).toBe('');
     expect(allText(rows[1]!)).toContain('only what you allow');
@@ -8037,10 +8041,12 @@ describe('D-174 P2 chat route — an answer shown before its closing brief', () 
   /** The real queue, Chat orchestrator and RPC handlers behind the route. An
    *  attempt reads a mail, answers, then folds its closing brief; the FIRST
    *  brief is held, which is the window where the answer is on screen but not
-   *  saved. Broadcasts arrive a task later and in order, as over a socket. */
+   *  saved. Broadcasts arrive a task later and in order, as over a socket.
+   *  D-347 — on a store without the carry, so the turn closes with a fold as
+   *  before: with it, the read rides to the next turn and no brief runs. */
   const mountOnRealQueue = () => {
     const db = new Database(':memory:'); ensureChatSchema(db);
-    const store = createChatStore(db);
+    const { readSessionCarry: _read, writeSessionCarry: _write, deleteSessionCarry: _delete, ...store } = createChatStore(db);
     store.createSession({ id: 'chat_1', title: 'Acme offer' });
     store.setRollingBriefEnabled(true);
     const bus = subscriber();

@@ -16,6 +16,7 @@ import {
   classifyEntryAction,
   createBridgeDomAdapter,
   translateDispatchOutcome,
+  PRESS_NOT_REVIEWABLE_MESSAGE,
 } from '../dom-adapter.js';
 import type {
   BridgeDispatcher,
@@ -570,7 +571,7 @@ describe('D-169 P0 - bridge DOM adapter dispatch', () => {
       action: 'fill',
       args: { selector: '#subject', value: '12345' },
       // D-335 slice J — and a CAPTCHA the page then shows.
-      expects_output_keys: ['filled', 'challenge'],
+      expects_output_keys: ['filled', 'challenge', 'acted_on'],
     });
   });
 
@@ -607,7 +608,7 @@ describe('D-169 P0 - bridge DOM adapter dispatch', () => {
     expect(requestAt(dispatch, 0)).toMatchObject({
       action: 'click',
       args: { selector: '#send' },
-      expects_output_keys: ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent'],
+      expects_output_keys: ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent', 'acted_on'],
     });
   });
 
@@ -662,7 +663,8 @@ describe('D-335 - core.dom.inspect', () => {
     await expect(adapter(call({ target: TARGET_A, page: '7:ABC123', ref: 'e3', selector: null })))
       .resolves.toEqual(answer);
     expect(requests(dispatch)).toEqual([expect.objectContaining({
-      action: 'inspect', args: { page: '7:ABC123', ref: 'e3' },
+      // D-335 slice P — and how much to read: HTML goes to a model as it is, so 40,000 as before.
+      action: 'inspect', args: { page: '7:ABC123', ref: 'e3', max_chars: 40_000, max_value_chars: 2_000 },
       expects_output_keys: ['page', 'url', 'title', 'html', 'truncated'],
       ingredient: expect.objectContaining({ slug: INSPECT, domain_allowlist: [TARGET_A] }),
     })]);
@@ -714,7 +716,7 @@ describe('D-335 - core.dom.click and core.dom.write by ref', () => {
       dispatch: async () => completed(okResult({ clicked: true })) });
     await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' }))).resolves.toEqual({ clicked: 1 });
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'click', args: { page: '7:ABC123', ref: 'e3' },
-      expects_output_keys: ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent'] })]);
+      expects_output_keys: ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent', 'acted_on'] })]);
   });
 
   it('slice J — a CAPTCHA the page shows after a click or typing is in the step\'s output; whether it moved is not', async () => {
@@ -735,6 +737,55 @@ describe('D-335 - core.dom.click and core.dom.write by ref', () => {
       dispatch: async () => completed(okResult({ clicked: true, ...landed })) });
     await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' })))
       .resolves.toEqual({ clicked: 1, ...landed });
+  });
+
+  // D-335 slice U — with a key, the click op presses it in the element instead: the Bridge's `press`.
+  it('slice U — a key is pressed instead of a click, and answers the key with the page its tab then shows', async () => {
+    const landed = { page: '7:DEF456', url: 'https://mail.example.com/results', title: 'Results' };
+    const { adapter, dispatch } = setupAdapter({ manifest: click.manifest,
+      dispatch: async () => completed(okResult({ pressed: 'Enter', sent: true, moved: true, ...landed })) });
+    await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3', key: 'enter' })))
+      .resolves.toEqual({ pressed: 'Enter', sent: true, moved: true, ...landed });
+    expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'press', args: { page: '7:ABC123', ref: 'e3', key: 'Enter' },
+      expects_output_keys: ['pressed', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent', 'acted_on'] })]);
+  });
+
+  it('slice U — a key by selector, as Press a key on a web page passes body for a shortcut of the whole page', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: click.manifest,
+      dispatch: async () => completed(okResult({ pressed: 'Control+k', page: '7:ABC123', url: 'https://mail.example.com/', title: 'Inbox' })) });
+    // The recipe passes what the model left empty as empty text.
+    await adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: '', selector: 'body', key: 'ctrl+k' }));
+    expect(requests(dispatch)[0]).toMatchObject({ action: 'press', args: { page: '7:ABC123', selector: 'body', key: 'Control+k' } });
+  });
+
+  it.each([
+    [{ target: TARGET_A, page: '7:ABC123', ref: 'e3', key: 'Hyper+a' }, "'key' is a key to press"],
+    [{ target: TARGET_A, selector: '#q', key: 'Enter' }, 'presses a key only on a page named by its handle'],
+    // Press a key on a web page with neither its ref nor a selector.
+    [{ target: TARGET_A, page: '7:ABC123', ref: '', selector: '', key: 'Enter' }, "needs the element: a 'selector', or a 'ref' with its 'page'"],
+  ])('slice U — a key it cannot press, or one with no page, is refused before any Bridge is asked (%#)', async (input, message) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: click.manifest });
+    const err = await expectIngredientCode(() => adapter(click.call(input)), 'DOM_SELECTOR_MISSING');
+    expect(err.message).toContain(message);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('slice U — a Bridge before 0.0.8, which does not run press, says to update it, and clicks nothing', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: click.manifest, dispatch: async () => ({ kind: 'capacity_gap',
+      capacity_gap: { kind: 'bridge_online' }, reason: 'bridge_update_required', attempts: 0 }) });
+    const err = await expectIngredientCode(() => adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3', key: 'Escape' })),
+      'ROLE_RESTRICTION');
+    expect(err.message).toBe("Update the Browser Bridge: the connected one cannot run 'press'.");
+    expect(requests(dispatch).map(request => request.action)).toEqual(['press']);
+  });
+
+  it('slice U — a run reviewed before it starts presses no key', async () => {
+    const { adapter, dispatch } = setupAdapter({ manifest: click.manifest });
+    const reviewed = { prepareDomCommand: async () => ({}) } as unknown as PreapprovalIoContext;
+    const err = await expectIngredientCode(() => withPreapprovalIo(reviewed,
+      () => adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3', key: 'Enter' }))), 'ROLE_RESTRICTION');
+    expect(err.message).toBe(PRESS_NOT_REVIEWABLE_MESSAGE);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('types by ref, and presses the submit on the same page', async () => {
@@ -878,7 +929,7 @@ describe('D-335 slice H - core.dom.wait, core.dom.table and core.dom.screenshot'
       page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', image: picture, mime_type: 'image/jpeg', width: 800, height: 600 })) });
     const output = await adapter(shot.call({ target: TARGET_A, page: PAGE, ref: 'e4' })) as Record<string, unknown>;
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'screenshot_page', args: { page: PAGE, ref: 'e4' },
-      expects_output_keys: ['page', 'url', 'title', 'image', 'mime_type', 'width', 'height'] })]);
+      expects_output_keys: ['page', 'url', 'title', 'image', 'mime_type', 'width', 'height', 'screen', 'screens'] })]);
     expect(output).toEqual({ page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', width: 800, height: 600,
       image: { type: 'image', image_id: expect.stringMatching(/^[\w-]{8,64}$/), mime_type: 'image/jpeg', width: 800, height: 600 } });
     // The output holds no picture; the store does.
@@ -906,11 +957,84 @@ describe('D-335 slice H - core.dom.wait, core.dom.table and core.dom.screenshot'
       await expectIngredientCode(() => adapter(which.call({ target: TARGET_A, ...input })), 'INGREDIENT_ADAPTER_ALL_FAILED');
     });
 
+  // D-335 slice S — one screen of a long page, counted from 1 at its top.
+  it('sends the screen asked for, and answers which screen the picture shows of how many', async () => {
+    const picture = Buffer.from('a jpeg, honestly').toString('base64');
+    const answer = { page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', image: picture, mime_type: 'image/jpeg',
+      width: 800, height: 600, screen: 3, screens: 7 };
+    const { adapter, dispatch } = setupAdapter({ manifest: shot.manifest, dispatch: async () => completed(okResult(answer)) });
+    expect(await adapter(shot.call({ target: TARGET_A, page: PAGE, screen: 3 }))).toMatchObject({ screen: 3, screens: 7 });
+    // A recipe's 0 (and nothing) is the page as shown: no screen is sent.
+    await adapter(shot.call({ target: TARGET_A, page: PAGE, screen: 0 }));
+    await adapter(shot.call({ target: TARGET_A, page: PAGE, screen: '2' }));
+    expect(requests(dispatch).map(request => request.args)).toEqual([{ page: PAGE, screen: 3 }, { page: PAGE }, { page: PAGE, screen: 2 }]);
+  });
+
+  it.each([[-1], [1.5], ['next']])('refuses a screen that is not one, %j, before any Bridge is asked', async (screen) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: shot.manifest });
+    const err = await expectIngredientCode(() => adapter(shot.call({ target: TARGET_A, page: PAGE, screen })), 'DOM_SELECTOR_MISSING');
+    expect(err.message).toContain("'screen' is a screen of the page counted from 1 at its top");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('a Bridge before 0.0.8 pictures the page as shown whatever screen was asked: not answered as that screen', async () => {
+    const picture = Buffer.from('a jpeg, honestly').toString('base64');
+    const old = { page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', image: picture, mime_type: 'image/jpeg',
+      width: 800, height: 600 };
+    const images = createBrowserImageStore();
+    const { adapter } = setupAdapter({ manifest: shot.manifest, images, dispatch: async () => completed(okResult(old)) });
+    const err = await expectIngredientCode(() => adapter(shot.call({ target: TARGET_A, page: PAGE, screen: 2 })), 'ROLE_RESTRICTION');
+    expect(err.message).toBe('Update the Browser Bridge: the connected one pictures only the page as it is shown, not a '
+      + 'screen of it. Take the screenshot without screen, or update the Bridge to 0.0.8.');
+    // Without a screen, its picture is the one asked for.
+    expect(await adapter(shot.call({ target: TARGET_A, page: PAGE }))).not.toHaveProperty('screen');
+  });
+
   it('tells the owner to update a Bridge that cannot take a screenshot by page', async () => {
     const { adapter } = setupAdapter({ manifest: shot.manifest, dispatch: async () => ({ kind: 'capacity_gap',
       capacity_gap: { kind: 'bridge_online' }, reason: 'bridge_update_required', attempts: 0 }) });
     const err = await expectIngredientCode(() => adapter(shot.call({ target: TARGET_A, page: PAGE })), 'ROLE_RESTRICTION');
     expect(err.message).toBe("Update the Browser Bridge: the connected one cannot run 'screenshot_page'.");
+  });
+});
+
+// D-335 slice U — `core.dom.scroll`: a page (or a panel, or an element) a screen at a time, a read.
+describe('D-335 slice U - core.dom.scroll', () => {
+  const scroll = { manifest: manifest({ slug: 'dom-scroll', risk_tier: 'read', surface_kind: 'reading' }),
+    call: (input: Record<string, unknown>) => resolved({ slug: 'dom-scroll', risk_tier: 'read', input, output: {} }) };
+  const PAGE = '7:ABC123';
+
+  it('sends the screen asked for, else where to go, and answers the page and its screen of how many', async () => {
+    const answer = { page: PAGE, url: 'https://app.example.com/feed', title: 'Feed', screen: 2, screens: 9 };
+    const { adapter, dispatch } = setupAdapter({ manifest: scroll.manifest, dispatch: async () => completed(okResult(answer)) });
+    await expect(adapter(scroll.call({ target: TARGET_A, page: PAGE, to: 'next', screen: 0 }))).resolves.toEqual(answer);
+    // A recipe always passes `to`: a screen it names wins.
+    await adapter(scroll.call({ target: TARGET_A, page: PAGE, to: 'next', screen: 4 }));
+    await adapter(scroll.call({ target: TARGET_A, page: PAGE, selector: '#inbox', to: 'bottom' }));
+    expect(requests(dispatch).map(request => [request.action, request.args])).toEqual([['scroll', { page: PAGE, to: 'next' }],
+      ['scroll', { page: PAGE, screen: 4 }], ['scroll', { page: PAGE, selector: '#inbox', to: 'bottom' }]]);
+    expect(requests(dispatch)[0]!.expects_output_keys).toEqual(['page', 'url', 'title', 'screen', 'screens']);
+  });
+
+  it.each([
+    [{ target: TARGET_A, selector: '#x' }, 'core.dom.scroll: pass the page handle'],
+    [{ target: TARGET_A, page: PAGE, to: 'sideways' }, "core.dom.scroll: 'to' is next, previous, top, bottom"],
+    [{ target: TARGET_A, page: PAGE, screen: -2 }, "core.dom.scroll: 'screen' is a screen of the page counted from 1"],
+  ])('refuses %j before any Bridge is asked', async (input, message) => {
+    const { adapter, dispatch } = setupAdapter({ manifest: scroll.manifest });
+    const err = await expectIngredientCode(() => adapter(scroll.call(input)), 'DOM_SELECTOR_MISSING');
+    expect(err.message).toContain(message);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('a lost answer is a failed read; a Bridge before 0.0.8 says to update it', async () => {
+    await expectIngredientCode(() => setupAdapter({ manifest: scroll.manifest,
+      dispatch: async () => ({ kind: 'timeout', command_id: 'cmd-1', attempts: 1 }) }).adapter(scroll.call({ target: TARGET_A, page: PAGE })),
+    'INGREDIENT_ADAPTER_ALL_FAILED');
+    const err = await expectIngredientCode(() => setupAdapter({ manifest: scroll.manifest, dispatch: async () => ({ kind: 'capacity_gap',
+      capacity_gap: { kind: 'bridge_online' }, reason: 'bridge_update_required', attempts: 0 }) }).adapter(scroll.call({ target: TARGET_A, page: PAGE })),
+    'ROLE_RESTRICTION');
+    expect(err.message).toBe("Update the Browser Bridge: the connected one cannot run 'scroll'.");
   });
 });
 

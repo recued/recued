@@ -35,6 +35,8 @@ export interface ComposePackListRpcDepsInput {
   packDir?: string;
   /** D-320 audit — whether a connection is set up, for where an update starts. */
   isConnectionSetUp?: (connection_name: string) => boolean;
+  /** D-321 W2 / S8 — `PackListRpcDeps.installedPackRefs`. */
+  installedPackRefs?: () => ReadonlySet<string>;
 }
 
 export interface PackListRpcBundle {
@@ -59,6 +61,7 @@ export const composePackListRpcDeps = (
     ...(recordsStore !== undefined ? { recordsStore } : {}),
     ...(packDir !== undefined ? { packDir } : {}),
     ...(input.isConnectionSetUp !== undefined ? { isConnectionSetUp: input.isConnectionSetUp } : {}),
+    ...(input.installedPackRefs !== undefined ? { installedPackRefs: input.installedPackRefs } : {}),
   };
 
   return { packListDeps };

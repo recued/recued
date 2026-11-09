@@ -28,6 +28,27 @@ const provEntry = (result: ProvenanceArgs[1]) =>
 const resp = (over: Partial<ExecuteResponse>): ExecuteResponse =>
   ({ recipe_id: 'r1', success: true, errors: [], ...over }) as ExecuteResponse;
 
+// D-346 follow-up (2026-11-08) — a failed run's needs ride to the owner's answer as fixes
+// ("Reconnect …", "Turn it on"), beside what the model reads, never in it.
+describe('a failed run in chat carries what it needed as fixes', () => {
+  const need = { kind: 'switch' as const, step_id: 'find', ingredient_id: 'rg-catalog', operation_id: 'search', pack_slug: 'ripgrep' };
+
+  it('as fixes beside the result, not in what the model reads', () => {
+    const r = wrapRecipeRunResult(resp({
+      success: false,
+      errors: [{ code: 'NOT_AUTHORIZED', message: 'switched off' }] as never,
+      run_needs: [need],
+    }));
+    expect(r).toMatchObject({ ok: true, fixes: [{ kind: 'run_need', need }] });
+    expect(JSON.stringify((r as { result: unknown }).result)).not.toContain('rg-catalog');
+  });
+
+  it('none when the run needed nothing', () => {
+    const r = wrapRecipeRunResult(resp({ success: false, errors: [{ code: 'NETWORK_ERROR', message: 'x' }] as never }));
+    expect('fixes' in r).toBe(false);
+  });
+});
+
 describe('D-182 — wrapRecipeRunResult run_failed', () => {
   it('threads only a host-stamped durable run id outside the model-visible result', () => {
     const response = stampExecuteResponseStandingDish(stampExecuteResponseAuditRun(

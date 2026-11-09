@@ -167,7 +167,7 @@ describe('D-221 Records catalog gateway', () => {
       undefined,
       undefined,
       undefined,
-    )).rejects.toThrow(/' is not allowed for this run, so it did not run\. \(operation_not_granted\)$/);
+    )).rejects.toThrow(/' is not available for this contract\. \(operation_not_granted\)$/);
   });
 
   it('treats host-owned reactive work as owner authority but not an anonymous contract-less fire', async () => {

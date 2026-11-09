@@ -65,6 +65,21 @@ export interface YoursOccurrence {
   renewal?: { field: string; current: string };
 }
 export interface YoursSourceControl { id: string; name: string; enabled: boolean; proposals: number }
+/** D-342 — what the owner is working toward, kept as an asset of this built-in class. Its own
+ *  facts are `attributes.horizon` / `why` / `where_i_am`, `dates.target_on` and
+ *  `readings.progress`; the Pursuits tab lists them and the Assets tab leaves them out. */
+export const PURSUIT_CLASS_ID = 'pursuit';
+/** How a pursuit ended, kept on it as `attributes.ended_as` (D-342 ruling 8). A pursuit ended
+ *  with its parent has none. */
+export const PURSUIT_ENDINGS = ['reached', 'let_go'] as const;
+export type PursuitEnding = typeof PURSUIT_ENDINGS[number];
+/** D-342 — `only` reads pursuits alone, `exclude` every asset but them. */
+export type YoursPursuitsFilter = 'only' | 'exclude';
+/** D-343 slice 5 — a pursuit's activity, from the owner's closing records: the day they last recorded
+ *  doing it (YYYY-MM-DD on the server's clock), and on how many days of the last 30 they did. A
+ *  skipped record is not activity, and a day they recorded nothing about is unknown, so this is no
+ *  streak (D-343 §3.5). */
+export interface YoursPursuitActivity { last_on: string; days_30: number }
 export type YoursAssetFilter = 'missing_facts' | 'overdue';
 export type YoursAssetSphere = Sphere | 'unsorted';
 /** Read-only projection of the displayed asset's rules and canonical tasks. */
@@ -121,6 +136,14 @@ export interface YoursSnapshot {
   asset_filter?: { kind: YoursAssetFilter; unavailable: number };
   /** Echoes the applied resolved-sphere filter; older servers may omit it. */
   asset_sphere?: YoursAssetSphere;
+  /** D-342 — echoes the applied pursuits filter. A server older than it ignores the request
+   *  and omits this, and its list then holds every asset. */
+  pursuits?: YoursPursuitsFilter;
+  /** D-343 slice 5 (D-342 §7) — on a read that lists pursuits or opens one: when the owner last
+   *  recorded working on each, from their closing records, by its id. A pursuit never recorded
+   *  done has no entry. Absent from a server older than the slice, whose pursuit page then shows
+   *  no history: its `episodes` are not the pursuit's. */
+  pursuit_activity?: Record<string, YoursPursuitActivity>;
   classes: AssetClassPreset[];
   proposals: ProactiveProposal[];
   total_proposals: number;
@@ -167,7 +190,7 @@ export interface YoursSnapshot {
   sphere_sources?: Array<{ source: string; name: string; sphere?: Sphere }>;
   retirement_impact?: { parts: number; contracts: number; open_occurrences: number };
 }
-export interface YoursReadRequest { asset_id?: string; occasion_id?: string; episode_id?: string; contact_id?: string; trace_id?: string; include_derived?: boolean; search?: string; asset_filter?: YoursAssetFilter; asset_sphere?: YoursAssetSphere; offset?: number; limit?: number; proposal_offset?: number; proposal_kind?: ProactiveProposalKind; include_closed?: boolean; include_asset_summaries?: boolean; mark_shown?: boolean }
+export interface YoursReadRequest { asset_id?: string; occasion_id?: string; episode_id?: string; contact_id?: string; trace_id?: string; include_derived?: boolean; search?: string; asset_filter?: YoursAssetFilter; asset_sphere?: YoursAssetSphere; pursuits?: YoursPursuitsFilter; offset?: number; limit?: number; proposal_offset?: number; proposal_kind?: ProactiveProposalKind; include_closed?: boolean; include_asset_summaries?: boolean; mark_shown?: boolean }
 export interface YoursSpherePlacement { sphere?: Sphere; reason: string; pinned: boolean; source?: string }
 /** Owner UI controls. Grant creation remains in Contracts. These commands
  * cannot run recipes, mint grants, or accept a standing delegation. */
@@ -236,7 +259,25 @@ export type YoursCommand =
    *  `yours.agenda`. */
   | { action: 'agenda.update'; settings: Partial<import('./situation.js').SituationAgendaSettings> }
   | { action: 'agenda.send_now' }
+  /** D-343 slice 4 — Close the day's settings and Send now, and Today's "Close the day", which opens
+   *  a conversation holding today's evening notice (`conversation` in the result). An older server
+   *  refuses each as an unknown change; a client offers them only to a server that named them
+   *  (`SituationAgendaStatus.close_day`, `ProactiveToday.close_day`). */
+  | { action: 'close_day.update'; settings: Partial<import('./situation.js').SituationCloseDaySettings> }
+  | { action: 'close_day.send_now' }
+  | { action: 'close_day.open' }
+  /** D-340 slice 2 — a stream's settings, its Send now, and the preview of its next message (§3.7;
+   *  `preview` in the result). An older server refuses each as an unknown change; a client offers
+   *  them only to a server that named its streams (`SituationAgendaStatus.streams`). */
+  | { action: 'stream.update'; stream: import('./situation.js').SituationStreamKind; settings: Partial<import('./situation.js').SituationStreamSettings> }
+  | { action: 'stream.send_now'; stream: import('./situation.js').SituationStreamKind }
+  | { action: 'stream.preview'; stream: import('./situation.js').SituationStreamKind }
   | { action: 'subscriber.reconciled'; subscriber_id: string; revision: number; run_id: string }
   | { action: 'subscriber.contract'; trigger_id: string; contract_id: string | null }
   | { action: 'settings.update'; digest?: 'daily' | 'weekly' | 'off'; last_time?: 'on' | 'off'; measures?: boolean };
-export interface YoursCommandResult { message: string; id?: string; changed?: number; failed?: Array<{ id: string; reason: string }> }
+export interface YoursCommandResult { message: string; id?: string; changed?: number; failed?: Array<{ id: string; reason: string }>;
+  /** D-343 slice 4 — `close_day.open`: the conversation it made, and its notice, which the app's
+   *  reply quotes. */
+  conversation?: { session_id: string; message_id: string; title: string; text: string };
+  /** D-340 slice 2 — `stream.preview`: the stream's next message as it would go now. */
+  preview?: import('./situation.js').SituationStreamPreview }

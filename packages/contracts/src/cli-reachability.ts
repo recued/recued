@@ -19,7 +19,7 @@
  *
  *  Spec: D-182 §7.2; decisions-log D-182 amendment (F1 RESOLVED). */
 
-/** The owner's principal key (the "Owner (you)" row of the §7.2 grid). The owner
+/** The owner's principal key (the "Self (you)" row of the §7.2 grid). The owner
  *  is D-177 `user_self`; their cli reachability bit lives under this principal,
  *  one row among the door/agent contracts. NB: this equals the `user_self` actor
  *  string by construction — the owner is the only `user_self` principal. */

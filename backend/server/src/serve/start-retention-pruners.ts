@@ -27,6 +27,8 @@ import type { GatedActionStore } from '../gated-action-store.js';
 
 export interface StartRetentionPrunersOptions {
   readonly backgroundServices: BackgroundServiceRegistry;
+  /** D-188 — the stale-approval sweep waits while the owner's pause holds. */
+  readonly isPaused?: () => boolean;
   readonly runtimeConfig: RuntimeConfigStore;
   readonly auditRetention: AuditRetention | undefined;
   readonly s2sPreviewStore: S2SPreviewStore | undefined;

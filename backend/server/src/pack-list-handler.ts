@@ -45,16 +45,19 @@ import {
   type BulkPackManifest,
   type HandlerSlice,
   type PackListEntry,
+  type PackMissingPack,
   type PacksListResult,
   type ServerRpcRegistry,
 } from '@recued/contracts';
 
-import { loadBundledPackManifests } from './bundled-pack-source.js';
+import { coreFeaturePackPublishers, loadBundledPackManifests } from './bundled-pack-source.js';
 import {
   installedPackFromRow,
   isPackInstalledAtVersionFromRow,
   listInstalledPacks,
+  missingPackDependencies,
   scanInstalledPackRowsBySegment,
+  type InstalledPackRow,
 } from './pack-inventory.js';
 import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
 import {
@@ -86,6 +89,11 @@ export interface PackListRpcDeps {
    *  it (`currentPackConnection`). Wired from the connection store
    *  (`composePackListRpcDeps`). */
   isConnectionSetUp?: (connection_name: string) => boolean;
+  /** D-321 W2 / S8 — the installed packs as the run path resolves them
+   *  (`buildPackOpResolution`'s refs), so an installed pack's row can name the
+   *  packs its recipes call that are missing (`missing_packs`). Absent ⇒ no row
+   *  names any, rather than every row naming every pack. */
+  installedPackRefs?: () => ReadonlySet<string>;
   /** Per-pair recipe store. Required — the recipe-bearing `installed`
    *  join is the point of the rpc. Absent → composer returns the
    *  undefined-bundle + the rpc returns `not_configured`. */
@@ -469,6 +477,25 @@ export const listVersionExactInstalledPackManifests = (
     ));
 };
 
+/** D-321 W2 / S8 — the packs `pack_slug`'s installed recipes call that are not
+ *  installed, each with the recipes that call it. `missingPackDependencies` is
+ *  the decision, the one a run of each recipe is refused with. */
+const missingPacksOf = (
+  recipeStore: RecipeStore,
+  pack_slug: string,
+  installedRefs: ReadonlySet<string>,
+): PackMissingPack[] => {
+  const byRef = new Map<string, string[]>();
+  for (const recipe_id of recipeStore.listForPack(pack_slug)) {
+    const recipe = recipeStore.get(recipe_id);
+    if (recipe === null) continue;
+    for (const ref of missingPackDependencies(recipe, installedRefs)) {
+      byRef.set(ref, [...(byRef.get(ref) ?? []), recipe_id]);
+    }
+  }
+  return [...byRef].map(([ref, recipe_ids]) => ({ ref, recipe_ids }));
+};
+
 export const handlePacksList = async (
   deps: PackListRpcDeps,
 ): Promise<PacksListResult> => {
@@ -479,8 +506,10 @@ export const handlePacksList = async (
   manifests.sort((a, b) => a.slug.localeCompare(b.slug));
   // One scan each, before the loop — not one point read per pack.
   const lookups = buildPackRosterLookups(deps.contractStore, deps.recordsStore);
+  // D-321 W2 / S8 — the packs a run resolves through, read once.
+  const installedRefs = deps.installedPackRefs?.();
   const packs = await Promise.all(manifests.map(async (manifest) => {
-    const base = projectManifest(
+    const projected = projectManifest(
       manifest,
       deps.recipeStore,
       deps.contractStore,
@@ -489,6 +518,10 @@ export const handlePacksList = async (
       deps.sellerStore,
       deps.isConnectionSetUp,
     );
+    const missing = projected.installed && installedRefs !== undefined
+      ? missingPacksOf(deps.recipeStore, manifest.slug, installedRefs)
+      : [];
+    const base: PackListEntry = missing.length > 0 ? { ...projected, missing_packs: missing } : projected;
     if (deps.recordsStore === undefined) return base;
     // ⛔⛔ A RECORDS PACK READS AS INSTALLED ON ITS VERSION ALONE, and its recipes
     // can move without one. D-292 moved three importers' pins at the same pack
@@ -574,7 +607,17 @@ export const handlePacksList = async (
   // field and the join falls back to `packs[].installed` (bundled-only, its
   // prior behavior).
   if (deps.contractStore === undefined) return { packs };
-  const installed_versions = listInstalledPacks(deps.contractStore).map((r) => ({
+  // D-145 PA10 — a core feature never shows up in Packs. The roster above leaves
+  // them out, but the boot installs them, so they sit in the inventory too; and
+  // the client builds a row for every installed slug the roster lacks. The core
+  // reception packs showed as "reception-approval · 0 items" in the default
+  // list, and opening one was refused `forbidden`.
+  const core = coreFeaturePackPublishers(deps.packDir);
+  const isCore = (r: InstalledPackRow): boolean => {
+    const publisher = core.get(r.pack_slug);
+    return publisher !== undefined && (r.publisher === undefined || r.publisher === publisher);
+  };
+  const installed_versions = listInstalledPacks(deps.contractStore).filter((r) => !isCore(r)).map((r) => ({
     slug: r.pack_slug,
     version: r.version,
     ...(r.publisher !== undefined ? { publisher: r.publisher } : {}),

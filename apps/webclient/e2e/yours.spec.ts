@@ -1343,6 +1343,17 @@ test('Episodes lists stored episodes only and keeps a cited derived episode only
   await route.getByLabel('More actions for Las Vegas trip', { exact: true }).click();
   await route.getByRole('button', { name: 'Delete and stop suggesting', exact: true }).click(); await expect(route.getByRole('heading', { name: 'Las Vegas trip', exact: true })).toHaveCount(0);
 });
+// D-343 slice 2 — closing a day in the chat records what was skipped as well as what was done. A
+// skipped record is the owner's word that it did not happen, and every list of theirs says so.
+test('A skipped record from closing a day is marked in Episodes and on the contact it names', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&closing_record=1#yours/episodes`);
+  const route = page.locator('[data-recued-yours]');
+  await expect(route.getByRole('heading', { name: 'Spanish lesson', exact: true })).toBeVisible();
+  await expect(route.getByText('Skipped · your record', { exact: true })).toBeVisible();
+  await page.goto(`${HARNESS_URL}?yours=demo&data=contacts&closing_record=1&settle_reads=1#data/contact`);
+  await page.locator('[data-recued-data-contact-row]').first().locator('.data-contact-row-button').click();
+  await expect(page.locator('[data-contact-episode="skipped-spanish"]')).toContainText('Spanish lesson · skipped');
+});
 test('An annual occasion keeps its date notice and offers an editable habit with its own due offset', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}#yours/occasions`);
   const route = page.locator('[data-recued-yours]'); await route.getByRole('button', { name: 'Create occasion', exact: true }).click();
@@ -1360,10 +1371,11 @@ test('An annual occasion keeps its date notice and offers an editable habit with
   await habit.getByRole('button', { name: 'Edit occasion rule', exact: true }).click();
   await expect(page.locator('[data-yours-editor]').getByLabel('Due before the occasion (blank for the occasion date)', { exact: true })).toHaveValue('2');
 });
-test('Yours has five working tabs, Classes within Assets, and same-route addresses replace their content', async ({ page }) => {
+test('Yours has six working tabs, Classes within Assets, and same-route addresses replace their content', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/assets`);
   const route = page.locator('[data-recued-yours]'); const nav = page.getByRole('navigation', { name: 'Yours', exact: true });
-  await expect(nav.getByRole('link')).toHaveCount(5);
+  // D-342 added Pursuits beside Assets.
+  await expect(nav.getByRole('link')).toHaveCount(6);
   await expect(route.getByRole('heading', { name: 'Ana’s passport' })).toBeVisible();
   await nav.getByRole('link', { name: 'Proposals', exact: true }).click();
   await expect(route.locator('summary').filter({ hasText: /^What is read$/u })).toBeVisible();
@@ -2386,12 +2398,76 @@ test('Approval & notifications saves the “Coming up” settings and shows its 
   await panel.getByText('What it sent', { exact: true }).click(); await expect(panel).toContainText('Lisbon trip · Passport expiry');
 });
 
+// D-340 slice 2 — once the streams took over, the Agenda and Coming up are their parts, set on Today
+// with Close the day: the page keeps one note where the Agenda's card was, linking there.
+test('Approval & notifications points to Today once the streams took over the Agenda, Coming up and Close the day', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready&streams=1#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const moved = page.locator('[data-agenda-moved]');
+  await expect(moved).toBeVisible();
+  await expect(moved).toHaveText('Your Agenda, Coming up and Close the day are now part of your daily and weekly streams. Set them on Today.');
+  await expect(moved.getByRole('link', { name: 'Set them on Today', exact: true })).toHaveAttribute('href', '#today/stream');
+  await expect(page.locator('[data-situation-agenda] h3')).toHaveText('Daily stream');
+  await expect(page.locator('[data-agenda-editor]')).toBeHidden();
+  await expect(page.locator('[data-situation-delivery]')).toHaveCount(0);
+  await expect(page.locator('[data-situation-close-day]')).toHaveCount(0);
+  // Its link opens the streams' settings on Today, from Settings.
+  await moved.getByRole('link', { name: 'Set them on Today', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Daily stream' }).getByRole('tab', { name: 'Daily · On' })).toBeVisible();
+});
+test('Today offers its Daily stream, and the note in Settings opens it there', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&streams=1#today`);
+  await page.getByRole('button', { name: 'Daily stream', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Daily stream' });
+  await expect(dialog.getByRole('tab', { name: 'Daily · On' })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Daily stream', exact: true })).toBeFocused();
+  await page.goto(`${HARNESS_URL}?yours=demo&streams=1#today/stream`);
+  await expect(page.getByRole('dialog', { name: 'Daily stream' }).getByRole('tab', { name: 'Weekly · Off' })).toBeVisible();
+});
+// D-340 slice 4 — today's AI suggestions, once they finished, at the top of Today: "Talk it over"
+// opens their conversation.
+test('Today shows the day\'s AI suggestions at the top, and Talk it over opens their conversation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?yours=demo&streams=1&suggestions=1#today`);
+  const block = page.locator('[data-today-suggestions]');
+  await expect(block.getByRole('heading', { name: 'Suggestions', exact: true })).toBeVisible();
+  await expect(block).toContainText('Leave at 08:10 for the dentist: the A4 is closed.');
+  // As written, a line each, and a long word wraps within the page.
+  expect(await block.locator('.today-suggestions-text').evaluate(element => (element as HTMLElement).innerText.split('\n').length)).toBe(2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  // Above everything else Today lists.
+  expect(await page.evaluate(() => {
+    const first = document.querySelector('[data-today-group]');
+    return first !== null && (document.querySelector('[data-today-suggestions]')!.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  })).toBe(true);
+  await page.locator('[data-today-view]').screenshot({ path: test.info().outputPath('recued-today-suggestions.png') });
+  await block.getByRole('link', { name: 'Talk it over', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#chat/session/agenda%20suggestions%2F1');
+});
+test('Today shows no suggestions before they finish', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&streams=1#today`);
+  await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('[data-today-suggestions]')).toHaveCount(0);
+});
+// D-343 slice 4 (ruling 19) — the evening's card sits under the morning's, until D-340's stream.
+test('Approval & notifications puts Close the day between the Agenda and “Coming up” where the server names it', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready&close_day=1#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-situation-close-day]').getByLabel('Ask me each evening what I did', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => {
+    const agenda = document.querySelector('[data-situation-agenda]')!.parentElement!; const closing = document.querySelector('[data-situation-close-day]')!;
+    return agenda.nextElementSibling === closing && closing.nextElementSibling === document.querySelector('[data-situation-delivery]')!.parentElement;
+  })).toBe(true);
+});
 test('Approval & notifications shows the Agenda above “Coming up”, guards it while unsaved, and saves and sends it', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   await page.waitForFunction(() => window.__app?.ready === true);
   const agenda = page.locator('[data-situation-agenda]');
   await expect(agenda.getByLabel('Time', { exact: true })).toHaveValue('07:00');
-  // A card of its own, right above "Coming up" (D-338 §9: your day first, then what changed).
+  // A card of its own, right above "Coming up" (D-338 §9: your day first, then what changed). This
+  // server names no Close the day, whose card goes between them (D-343 ruling 19): it leaves nothing.
   expect(await page.evaluate(() => {
     const comingUp = document.querySelector('[data-situation-delivery]')!; const own = document.querySelector('[data-situation-agenda]')!;
     return own.parentElement!.nextElementSibling === comingUp.parentElement;

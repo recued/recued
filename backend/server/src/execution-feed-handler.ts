@@ -79,6 +79,9 @@ export interface ExecutionFeedRpcDeps {
   /** What an owner's page-started run answered once its approval let it
    *  finish. Absent ⇒ `execution.get` never carries a `result`. */
   settledRunResults?: SettledRunResults;
+  /** D-341 slice B1 — triggers' pre-approvals, for what a run made without asking. Absent ⇒
+   *  `execution.get` carries no `preapproved`. */
+  triggerPreapprovals?: Pick<import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore, 'runWrites' | 'get'>;
 }
 
 interface ValidatedExecutionListQuery {
@@ -323,6 +326,7 @@ const projectGatewayTrace = (
     if (isLocalMutationReceiptSummary(commit.local_receipt)) row.local_receipt = {
       receipt_id: commit.local_receipt.receipt_id, kind: commit.local_receipt.kind, committed_at: commit.local_receipt.committed_at,
     };
+    if (commit.trigger_preapproval !== undefined) row.trigger_preapproval = { id: commit.trigger_preapproval.id };
     return row;
   });
 
@@ -634,6 +638,17 @@ export const handleExecutionGet = async (
       per_call_trace: projectGatewayTrace(commits),
     },
   };
+  // D-341 slice B1 — what the run made without asking, from the pre-approvals' own record: a
+  // Records write runs through no commit, so the trace above cannot show it.
+  const preapproved = deps.triggerPreapprovals?.runWrites(runId) ?? [];
+  if (preapproved.length > 0) {
+    detail.preapproved = preapproved.map((write) => ({
+      preapproval_id: write.preapproval_id,
+      trigger_kind: deps.triggerPreapprovals!.get(write.preapproval_id)?.trigger.kind ?? 'unknown',
+      op: write.op,
+      writes: write.uses,
+    }));
+  }
   // A held run the owner started from a page, now finished: what `execute`
   // would have answered, with the same receipt line under it.
   const settled = deps.settledRunResults?.get(runId);

@@ -79,6 +79,14 @@ export type AsksSubmitAnswerCaller = (args: {
   note?: string;
 }) => Promise<{ ok: true }>;
 
+/** D-335 slice Z — `notification.giveSecret` caller seam: the secret a browser step waits for,
+ *  given from its ask's card. `given: false` when no step waits on the ask any longer. */
+export type AsksGiveSecretCaller = (args: {
+  ask_id: string;
+  value: string;
+  remember: boolean;
+}) => Promise<{ given: boolean }>;
+
 export type AsksPanelState = 'loading' | 'ready' | 'error';
 
 export interface MountAsksPanelOptions {
@@ -92,6 +100,9 @@ export interface MountAsksPanelOptions {
   runList: AsksListCaller;
   /** `notification.submitAnswer` caller seam. */
   runSubmitAnswer: AsksSubmitAnswerCaller;
+  /** D-335 slice Z — `notification.giveSecret` caller seam. Absent ⇒ a secret ask's card says
+   *  where to give it instead. */
+  runGiveSecret?: AsksGiveSecretCaller;
   /** Live broadcast subscription seam. When provided, the mount
    *  subscribes to `notification.ask` + `notification.ask_closed` on
    *  creation and re-fetches the authoritative open-ask list whenever
@@ -265,6 +276,8 @@ export const mountAsksPanel = (
           renderPreapprovalAsk(doc, ask) ??
           renderAskCard(doc, ask, {
             onAnswer: (optionId, note) => submitFromCard(ask.ask_id, optionId, note),
+            ...(opts.runGiveSecret !== undefined ? { onSecret: async (value: string, remember: boolean) =>
+              (await opts.runGiveSecret!({ ask_id: ask.ask_id, value, remember })).given } : {}),
           }),
         );
       }

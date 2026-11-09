@@ -24,6 +24,7 @@ export type {
   RunModalMailFactTypesCaller,
   RunModalMailFactDraft,
   RunModalTriggerKind,
+  RunModalNextStep,
 } from './types.js';
 
 export {
@@ -56,6 +57,7 @@ export {
   renderRunModal,
   RUN_MODAL_OVERLAY_ATTR,
   RUN_MODAL_ACTION_ATTR,
+  RUN_MODAL_NEXT_ACTION_DONE_ATTR,
   RUN_MODAL_TAB_ATTR,
   RUN_MODAL_CONFIG_ATTR,
   RUN_MODAL_CONNECTION_ATTR,
@@ -67,6 +69,8 @@ export {
   RUN_MODAL_RESULT_ATTR,
   RUN_MODAL_FACTS_ATTR,
   RUN_MODAL_REASON_ATTR,
+  RUN_MODAL_NEXT_STEP_ATTR,
+  RUN_MODAL_BEFORE_RUN_ATTR,
   RUN_MODAL_PRESET_ATTR,
   RUN_MODAL_RULE_ID_ATTR,
   RUN_MODAL_SCHEDULE_ERROR_ATTR,

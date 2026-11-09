@@ -16,7 +16,8 @@
  *  paints into the shared container leaves itself behind and the next route
  *  renders underneath it (the defect `bootstrap-stats-route` records). */
 import type { SituationDismissal } from '@recued/contracts';
-import { renderToday, TODAY_CREATE_ACTION, TODAY_VIEW_STYLES } from '../data/today-view.js';
+import { renderToday, TODAY_CLOSE_DAY_ACTION, TODAY_CREATE_ACTION, TODAY_STREAM_ACTION, TODAY_VIEW_STYLES } from '../data/today-view.js';
+import { openStreamDialog, STREAM_PANEL_STYLES } from './stream-panel.js';
 import type { TodaySphereFilter } from '../data/today-view.js';
 import {
   createTodayController, type TodayCallers, type TodayController,
@@ -41,6 +42,9 @@ export interface BootstrapTodayRouteOptions {
    *  calendar, so it listens on the same kinds the Data tab did. Absent ⇒ the
    *  view refreshes only on demand. */
   subscribe?: BroadcastSubscriber['on'];
+  /** D-340 slice 2 — `#today/stream`: open the streams' settings once Today is up (the link the
+   *  notifications page leaves where the Agenda's card was). */
+  openStream?: boolean;
 }
 
 export interface TodayRoute {
@@ -54,6 +58,8 @@ export interface TodayRoute {
   getRecoveryContextFreshness: () => 'current' | 'unavailable';
   /** Test seam — settles the in-flight read. */
   whenLoaded: () => Promise<void>;
+  /** D-340 slice 2 — open the streams' settings over Today (`#today/stream` while Today is up). */
+  openStream: () => void;
 }
 
 const errMessage = (err: unknown): string =>
@@ -114,6 +120,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     if (style) {
       style.setAttribute(TODAY_ROUTE_STYLES_MARKER, '');
       style.textContent = `${TODAY_VIEW_STYLES}
+        ${STREAM_PANEL_STYLES}
         [${TODAY_ROUTE_HOST_ATTR}] { max-width: var(--wc-content-max, 1080px); margin: 0 auto; padding: 16px; }
         [${TODAY_ROUTE_HOST_ATTR}] .today-view { max-width: none; margin-top: 0; }
       `;
@@ -176,6 +183,9 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
         canCloseCommitment: opts.callers.commitmentCloseCaller !== undefined,
         commitmentBusy: controller.busy(),
         canDismissSituation: opts.callers.situationChangeCaller !== undefined,
+        canCloseDay: opts.callers.closeDayCaller !== undefined,
+        canOpenStream: opts.callers.stream !== undefined,
+        closingDay: controller.closingDay(),
         undoDismissal: controller.undoDismissal(),
       },
       sphereFilter,
@@ -252,6 +262,17 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     if (controller.takeQueuedLiveRefresh()) pending = load();
   };
 
+  // D-340 slice 2 (§3.7) — the streams' settings, over Today in a dialog of their own, so Today's
+  // repaints never touch them. Closing it gives focus back to the button that opened it.
+  let streamDialog: ReturnType<typeof openStreamDialog> | null = null;
+  const openStream = (): void => {
+    const stream = opts.callers.stream;
+    if (disposed || !stream || streamDialog) return;
+    streamDialog = openStreamDialog(doc, stream, () => {
+      streamDialog = null;
+      if (!disposed) root.querySelector<HTMLElement>('[data-today-stream-open]')?.focus({ preventScroll: true });
+    });
+  };
   const onClick = (ev: Event): void => {
     const target = (ev.target as HTMLElement | null)
       ?.closest?.(`[${TODAY_ROUTE_ACTION_ATTR}]`) as HTMLElement | null;
@@ -266,6 +287,8 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       if (!controller.refreshing()) pending = load();
       return;
     }
+    if (action === TODAY_CLOSE_DAY_ACTION) { void controller.closeDay(); return; }
+    if (action === TODAY_STREAM_ACTION) { openStream(); return; }
     if (action === 'today-task-complete' || action === 'today-task-reschedule') {
       controller.openEditor(
         target?.getAttribute('data-today-task') ?? '',
@@ -379,9 +402,11 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
 
   render();
   pending = load();
+  if (opts.openStream) openStream();
 
   return {
     dispose: () => {
+      streamDialog?.close(true);
       disposed = true;
       for (const off of unsubscribers) off();
       root.removeEventListener('click', onClick);
@@ -392,7 +417,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       root.remove();
     },
     // A task write in flight must retain its owner across a route change.
-    hasInFlightWork: () => controller.busy(),
+    hasInFlightWork: () => controller.busy() || streamDialog?.panel.hasInFlightWork() === true,
     // ⛔ ALWAYS STARTS A NEW READ — it does NOT skip while one is running.
     // Superseding is the point: `load()` takes a fresh generation, so the
     // in-flight read is retired and can no longer repaint rows the newer one
@@ -406,5 +431,6 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
         ? 'unavailable' : 'current';
     },
     whenLoaded: () => pending,
+    openStream,
   };
 };

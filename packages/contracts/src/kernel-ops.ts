@@ -171,6 +171,10 @@ export const KERNEL_DOMAINS: readonly KernelDomain[] = [
   // gated by the op's risk/approval (read → never, write → ask) + the Bridge's
   // domain_allowlist intersection.
   { domain: 'dom', class: 'closed_kind' },
+  // D-345 — the server's own fetch of a public web address (the HTTP Toolkit): `core.http.get`,
+  // `core.http.read`, `core.http.download`, through the server's kernel storage slot. Closed-kind: no
+  // connection; the address rides as an op arg, public addresses only (`http-toolkit/public-fetch.ts`).
+  { domain: 'http', class: 'closed_kind' },
   { domain: 'crm', class: 'canonical_convention', required_connection_kind: 'crm' },
   { domain: 'acct', class: 'canonical_convention', required_connection_kind: 'acct' },
 ];

@@ -168,6 +168,12 @@ export interface PreflightCheckpointContext {
    *  answer mints exactly this. Kept here so a re-raised ask (after a restart) offers the
    *  same answers. Read defensively, like `browser_target`. */
   browser_pass?: BrowserPassOffer;
+  /** D-341 slice B2 — what this hold's "Always allow for this webhook / schedule / trigger" would
+   *  grant: the run's trigger, the recipe version and the op its step calls, as the hold read them.
+   *  Present only on a held write a trigger's run made that a pre-approval could cover, and then
+   *  the ask offers that answer; the answer grants exactly this. Read defensively, like
+   *  `browser_pass` (`readTriggerPreapprovalOffer`). */
+  trigger_preapproval?: import('./trigger-preapproval.js').TriggerPreapprovalOffer;
 }
 
 /** D-335 slice B — see `PreflightCheckpointContext.browser_target`. `site` is the page's
@@ -183,11 +189,24 @@ export type HeldBrowserTarget =
 
 /** D-335 slice J — one step of a held sequence (`core.dom.act`), in order: its element as the
  *  Bridge read it while the run was held, why it could not be read, or a wait, which names
- *  none. The target's own fields describe the page, from the first element read. */
-export type HeldBrowserStep =
+ *  none. The target's own fields describe the page, from the first element read.
+ *
+ *  Slice X (2026-11-06) — a step on the page as a whole names no element either (a read, a scroll
+ *  of the page, going to an address, back, a reload, closing the tab): `whole_page`. And `on`
+ *  says which tab a step runs on, when the batch names more than one: the page that tab showed
+ *  while the run was held, or the address a new tab opens at. Read defensively, as the rest. */
+export type HeldBrowserStep = (
   | { role: string; label: string; protected: boolean }
   | { unread: string; gone?: true }
-  | { wait: true };
+  | { wait: true }
+  | { whole_page: true }
+) & { on?: HeldBrowserTab;
+  /** D-335 slice AQ — the owner's file an `upload` step puts into the page, as the owner's files name it:
+   *  the ask names the file that leaves, never its ref alone. Display only, read defensively. */
+  file?: { filename: string; size_bytes: number } };
+
+/** D-335 slice X — the tab a held step runs on, as the hold read it. */
+export type HeldBrowserTab = { site: string; title: string } | { opens: string };
 
 /** D-182 §8 (GRANT HALF, Inc B-writes) — the recipe-LESS raw-op door hold.
  *

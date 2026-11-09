@@ -382,6 +382,8 @@ describe('startPostListenerRuntime', () => {
       actualPort: options.actualPort,
     });
     expect(runtimeMocks.startPostHousekeepingTail).toHaveBeenCalledWith({
+      // D-188 — the owner's pause, for the services the tail starts.
+      isServerPaused: expect.any(Function),
       dbPath: options.dbPath,
       runtimeConfig: options.runtimeConfig,
       backgroundServices: options.backgroundServices,

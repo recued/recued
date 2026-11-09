@@ -47,6 +47,7 @@ import type {
 import {
   NOTIFICATION_CHANNEL_NAMES,
   OWNER_OPERATION_SCOPE,
+  OWNER_TOOL_PATH_SCOPE,
   OWNER_TOOL_VERSION_SCOPE,
   isCatalogForm,
   operationSpecHash,
@@ -100,6 +101,7 @@ import {
   type ToolOutputFileIngestInput,
 } from '../../cli-invocation-executor.js';
 import { createCliToolStatus, type CliToolStatus } from '../../cli-tool-status.js';
+import { createProgramPresence } from '../../cli-program-presence.js';
 import { createRunUntestedTools } from '../../execution/run-untested-tools.js';
 import type { InboundFileCollection } from '../../collections/file/inbound-file-collection.js';
 import {
@@ -223,6 +225,8 @@ export interface ComposeExecuteDepsDeps {
   writeRules?: ExecuteHandlerDeps['writeRules'];
   /** D-335 slice F — see `ExecuteHandlerDeps.browserPasses`. */
   browserPasses?: ExecuteHandlerDeps['browserPasses'];
+  /** D-341 slice B1 — see `ExecuteHandlerDeps.triggerPreapprovals`. */
+  triggerPreapprovals?: ExecuteHandlerDeps['triggerPreapprovals'];
   /** Notification-block prereq beyond the four executeDeps shares above
    *  (db / auditLog / checkpointStore). Helper composes the block only
    *  when all four are present together. ALSO forwarded onto
@@ -636,6 +640,7 @@ export const composeExecuteDeps = (
       db: deps.db,
       auditLog: deps.auditLog,
       checkpointStore: deps.checkpointStore,
+      ...(deps.isServerPaused ? { isServerPaused: deps.isServerPaused } : {}),
       ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
       ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
       ...(preserveClaimedPeerDispatch !== undefined
@@ -789,6 +794,10 @@ export const composeExecuteDeps = (
           ...(deps.isLlmGatewayRouteReady
             ? { isLlmGatewayRouteReady: deps.isLlmGatewayRouteReady }
             : {}),
+          // D-341 slice B2 — a webhook run resumes under its live door.
+          ...(contractDefinitionStore ? { webhookDoors: { definitionStore: contractDefinitionStore } } : {}),
+          // D-341 slice B4 — a reception form's door, the same way.
+          ...(contractDefinitionStore ? { receptionDoors: { definitionStore: contractDefinitionStore } } : {}),
         })
       : undefined;
 
@@ -937,6 +946,9 @@ export const composeExecuteDeps = (
       ? {
           readOwnerToolVersion: (ingredientId: string) =>
             deps.contractStore!.get(OWNER_TOOL_VERSION_SCOPE, [ingredientId])?.value,
+          // D-321 — where the owner set a program: every launch of it runs that file.
+          readOwnerToolPath: (ingredientId: string) =>
+            deps.contractStore!.get(OWNER_TOOL_PATH_SCOPE, [ingredientId])?.value,
         }
       : {}),
   });
@@ -1100,6 +1112,7 @@ export const composeExecuteDeps = (
     ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
     ...(deps.writeRules ? { writeRules: deps.writeRules } : {}),
     ...(deps.browserPasses ? { browserPasses: deps.browserPasses } : {}),
+    ...(deps.triggerPreapprovals ? { triggerPreapprovals: deps.triggerPreapprovals } : {}),
     // D-157 server-wiring — the D-158 notification block, threaded as
     // the preflight notifier. `execute-handler` calls `raisePreflightAsk`
     // on this dep when the engine pauses on a policy `ask`; the
@@ -1177,6 +1190,14 @@ export const composeExecuteDeps = (
     // D-166 Slice 4d.4 — the `contract.*` override-scan seam (resolved above).
     // Omitted when no contract store was provided ⇒ override layer skipped.
     ...(contractScan ? { contractScan } : {}),
+    // D-346 A — a run whose program is gone is refused before it starts: the
+    // program read as the launch above reads it, the owner's location included.
+    programPresence: createProgramPresence(deps.contractStore
+      ? {
+          readOwnerToolPath: (ingredientId: string) =>
+            deps.contractStore!.get(OWNER_TOOL_PATH_SCOPE, [ingredientId])?.value,
+        }
+      : {}),
     // D-166 contract_definition — the use-resolution overlay resolver (resolved
     // above). Omitted when no contract store ⇒ the policy gates see no
     // `.<contract_id>` overlay (baseline+snapshot only — additive).

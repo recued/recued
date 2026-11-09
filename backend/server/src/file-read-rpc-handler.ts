@@ -122,7 +122,8 @@ export const makeFileReadRpcHandlers = (
     const origin = record?.hot_fields.origin;
     const labels: Record<string, string> = { webclient_upload: 'Uploaded to Recued', watched_folder: 'Copied from a watched folder',
       mail_attachment: 'Email attachment', connection_download: 'Downloaded from a connection', tool_output: 'Tool output',
-      messenger_media: 'Messenger attachment', reception_drop: 'Received through Reception' };
+      messenger_media: 'Messenger attachment', reception_drop: 'Received through Reception',
+      browser_download: 'Saved from a web page', http_download: 'Downloaded from a web address' };
     return { ...selected, ...(record ? { created_at: record.received_at, modified_at: record.modified_at,
       content_hash: record.hot_fields.content_hash } : {}),
       ...(isFileCloudCapture(capture) ? { origin: { label: capture.source_label, source_filename: capture.filename,

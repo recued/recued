@@ -49,6 +49,7 @@ export type {
   OperationBoundWebhookResolver,
   ProgressEvent, ProgressCallback,
   CatalogGrantCall, CatalogGrantMintCall, CatalogSessionGrantHooks,
+  OperationRefusal,
 } from './types.js';
 export {
   preflight,

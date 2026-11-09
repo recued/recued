@@ -68,7 +68,13 @@ import {
   type PacksToolStatusResult,
 } from '@recued/contracts';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
-import { programConsequence, programStateText, programStopsRuns } from './pack-programs-controls.js';
+import {
+  programConsequence,
+  programFoundAtText,
+  programRepairText,
+  programStateText,
+  programStopsRuns,
+} from './pack-programs-controls.js';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams
@@ -263,6 +269,21 @@ export const mountCliGrantDialog = (
   };
 
   // ── render ──────────────────────────────────────────────────────────
+  /** D-321 — a program installed outside the server's PATH: where it is and how
+   *  to give the server that folder, in the Programs block's words. */
+  const renderOutsidePath = (block: HTMLElement, program: PackToolStatus): void => {
+    const row = doc.createElement('p');
+    row.className = 'cg-tool-install';
+    row.textContent = `${programFoundAtText(program) ?? ''} ${programRepairText(program) ?? ''}`.trim();
+    if (program.repair !== undefined) {
+      const code = doc.createElement('code');
+      code.textContent = program.repair;
+      row.appendChild(doc.createTextNode(' '));
+      row.appendChild(code);
+    }
+    block.appendChild(row);
+  };
+
   /** D-321 — whether the tool's program is installed, and at a tested version,
    *  for the catalog this install added; with the install command when it is
    *  not installed. The commands come from the server and are set as text. */
@@ -280,6 +301,10 @@ export const mountCliGrantDialog = (
       : `${programStateText(program)}. ${consequence}`;
     block.appendChild(state);
     if (program.state === 'ready') return;
+    if (program.found_at !== undefined) {
+      renderOutsidePath(block, program);
+      return;
+    }
     if (program.install.length > 0) {
       // One line, the commands joined by "or", as the not-found error words it.
       const row = doc.createElement('p');

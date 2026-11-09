@@ -36,7 +36,7 @@ describe.runIf(RUNS_POSIX_SH)('managed-launcher × revert-release', () => {
   /** A `:managed` data volume mid-crash-loop: a current binary that always exits
    *  non-zero, and a previous one that runs the REAL profile for the revert and
    *  leaves a marker when it is later exec'd as the server. */
-  const stageVolume = (dir: string, opts: { snapshot?: string }): {
+  const stageVolume = (dir: string, opts: { snapshot?: string; committed?: boolean }): {
     bin: string;
     data: string;
     marker: string;
@@ -72,7 +72,15 @@ describe.runIf(RUNS_POSIX_SH)('managed-launcher × revert-release', () => {
         trigger: 'auto',
         release_identity: 'stable:26.9.2',
         migration: true,
-      })}\n`,
+      })}\n`
+        // A release that was committed — perhaps weeks ago — and crash-loops now
+        // for a cause that is not the binary's.
+        + (opts.committed
+          ? ['apply_staged', 'apply_committed'].map((kind, i) => `${JSON.stringify({
+            id: `c${i}`, kind, at: 2000 + i, from_version: '26.9.1', to_version: '26.9.2',
+            channel: 'stable', trigger: 'auto', release_identity: 'stable:26.9.2', migration: true,
+          })}\n`).join('')
+          : ''),
     );
     writeFileSync(join(data, 'recued-server.db'), 'MIGRATED DB\n');
     if (opts.snapshot !== undefined) {
@@ -115,6 +123,32 @@ describe.runIf(RUNS_POSIX_SH)('managed-launcher × revert-release', () => {
       expect(ledger).toHaveLength(2);
       expect(ledger[1].kind).toBe('apply_reverted');
       expect(String(ledger[1].detail)).toContain('snapshot restored');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('⛔ a committed release that crash-loops is not reverted: its snapshot would erase everything since', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'launcher-join-committed-'));
+    try {
+      const { bin, data, marker } = stageVolume(dir, { snapshot: 'PRE-MIGRATION DB\n', committed: true });
+
+      const code = await runLauncher({
+        binDir: bin,
+        pubkey: '',
+        args: ['--db', join(data, 'recued-server.db')],
+        env: launcherEnv(),
+        crashBackoffMs: 0,
+        log: () => {},
+      });
+
+      // The profile refuses, so the launcher halts for an operator. The database
+      // written since the commit is still there; the old snapshot did not replace it.
+      expect(code).toBe(1);
+      expect(existsSync(marker)).toBe(false);
+      expect(readFileSync(join(data, 'recued-server.db'), 'utf8')).toBe('MIGRATED DB\n');
+      expect(readFileSync(join(bin, 'recued'), 'utf8')).toBe('#!/bin/sh\nexit 1\n');
+      expect(readFileSync(join(data, 'updates.log'), 'utf8').trim().split('\n')).toHaveLength(3);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

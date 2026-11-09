@@ -44,11 +44,20 @@ import {
 import { makeUpdateVersionResolver } from './update-versions.js';
 import {
   describeTestedRange,
+  parseDependsOn,
   type CliToolState,
+  type PackListEntry,
   type PackToolStatus,
   type PacksToolStatusResult,
 } from '@recued/contracts';
 import { programDisplayName, programStopsRuns } from '../settings/pack-programs-controls.js';
+import type { PackConnectionsCallers } from '../settings/pack-connections-controls.js';
+import {
+  connectionNeedsFromSignIns,
+  rejectedConnectionSlots,
+  unsetConnectionSlots,
+  type ConnectionsReadinessListCaller,
+} from '../settings/connections-readiness-controls.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
   readListContinuity,
@@ -83,6 +92,9 @@ export interface RosterPack {
    *  than the server bundle (usually the marketplace version is higher). */
   installed_any_version?: boolean;
   recipe_count?: number;
+  /** D-321 W2 / S8 — the packs its recipes call that are not installed
+   *  (`PackListEntry.missing_packs`). */
+  missing_packs?: ReadonlyArray<{ ref: string; recipe_ids: ReadonlyArray<string> }>;
   /** D-145 PA10 — a foundation pack, auto-installed at every server boot rather
    *  than chosen. Carried so the row can SAY so: the owner who reported this saw
    *  four `Reception —` packs on a server they had installed nothing on, and the
@@ -95,6 +107,10 @@ export interface RosterPack {
     pack_kind?: string;
     tags?: ReadonlyArray<string>;
   };
+  /** D-321 — the connections the pack signs in to, as `packs.list` sends them:
+   *  what the list's connection badge reads. */
+  connection_requirements?: PackListEntry['connection_requirements'];
+  required_scopes_by_connection?: PackListEntry['required_scopes_by_connection'];
 }
 
 /** `packs.list` caller. The union corpus reads `packs[]` (roster projection for
@@ -125,6 +141,20 @@ export interface MountPackDiscoveryOptions {
    *  ready on the server. Optional; absent (or a failed read) ⇒ no program
    *  badge, never a false one. Read with the roster, like `listUnrunnable`. */
   listToolStatus?: () => Promise<PacksToolStatusResult>;
+  /** D-321 — `collection.connection.list`, for the badge on an installed pack
+   *  whose connection is not set up. Optional; absent (or a failed read) ⇒ no
+   *  connection badge, never a false one. Read with the roster, never awaited
+   *  by it, like `listToolStatus`. */
+  listConnections?: ConnectionsReadinessListCaller;
+  /** D-321 P4 — `packs.connections.signins`: each installed pack's own list, so
+   *  the badges count what its runs use. Optional; absent (or a failed read) ⇒
+   *  they count any connection of the service, as before. */
+  listSignIns?: PackConnectionsCallers['signins'];
+  /** D-321 C4 / S8 — each installed pack that needs the owner, as its list badges
+   *  say it (needs update, a program that stops its actions, a connection missing
+   *  or turned down), each time the answer changes: the Packs page's "Needs
+   *  attention" reads the list's own state, so the two cannot disagree. */
+  onNeedsChange?: (needs: readonly PackNeed[]) => void;
   /** Server-side search (`/catalog/search?kind=pack`) — the browse path. When
    *  present the panel pages the catalogue from the server instead of
    *  downloading + reducing over the whole corpus; `fetchCatalog` becomes the
@@ -246,6 +276,15 @@ export const programBadge = (tools: readonly PackToolStatus[] | undefined): Disc
         title: `${name} is installed on the server but does not start. Open the pack to see why.`,
       };
     case 'missing':
+      // D-321 — installed, but where the server does not look: "Needs rg" would
+      // send the owner to install a program they already have.
+      if (worst.found_at !== undefined) {
+        return {
+          label: `${name} not on PATH`,
+          tone: 'danger',
+          title: `${name} is installed at ${worst.found_at}, but the server does not look there. Open the pack to see how to fix it.`,
+        };
+      }
       return {
         label: `Needs ${name}`,
         tone: 'danger',
@@ -266,11 +305,68 @@ export const programBadge = (tools: readonly PackToolStatus[] | undefined): Disc
   }
 };
 
+/** D-321 C4 / S8 — one installed pack that needs the owner, and what its list
+ *  badges say it needs. */
+export interface PackNeed {
+  slug: string;
+  name: string;
+  labels: string[];
+  /** D-346 — the packs it uses that are not installed, by name, when any: its own
+   *  actions that call them wait, and `labels` says so as `usesMissingLabel` does. A
+   *  pack using this one calls its operations, which do not. */
+  missing?: string[];
+}
+
+/** D-321 S8 — the list's words for a pack whose used packs are missing. */
+export const usesMissingLabel = (names: readonly string[]): string =>
+  names.length === 1 ? `Needs ${names[0]}` : `Needs ${names.length} packs`;
+
+/** D-321 — an installed pack's connection slots that need the owner: none set
+ *  up (`unset`), or every one's sign-in turned down (`rejected`, P3). */
+export interface ConnectionNeeds {
+  readonly unset: readonly string[];
+  readonly rejected: readonly string[];
+}
+
+/** D-321 — the badge for an installed pack whose connection is not set up, or
+ *  null. The count only: a slot is the vendor's id (`hubspot`), and the pack's
+ *  page names each one with what to do. */
+export const connectionBadge = (unset: readonly string[] | undefined): DiscoverBadge | null => {
+  if (unset === undefined || unset.length === 0) return null;
+  const one = unset.length === 1;
+  return {
+    label: one ? 'Needs a connection' : `Needs ${unset.length} connections`,
+    tone: 'danger',
+    // D-321 P4 — counted from the pack's own list where the server can say it, so
+    // a connection of the service that is not on the list is not one it has.
+    title: one
+      ? 'This pack has no connection set up for a service it signs in to. Open the pack to add one.'
+      : `This pack has no connection set up for ${unset.length} services it signs in to. Open the pack to add them.`,
+  };
+};
+
+/** D-321 P3 — the badge for an installed pack whose connection's sign-in was
+ *  turned down, or null: the page said "connected" while every run failed. */
+export const signInBadge = (rejected: readonly string[] | undefined): DiscoverBadge | null => {
+  if (rejected === undefined || rejected.length === 0) return null;
+  const one = rejected.length === 1;
+  return {
+    label: one ? 'Sign-in not accepted' : `${rejected.length} sign-ins not accepted`,
+    tone: 'danger',
+    title: one
+      ? 'The service this pack signs in to did not accept its sign-in. Open the pack to reconnect it.'
+      : `${rejected.length} services this pack signs in to did not accept its sign-in. Open the pack to reconnect them.`,
+  };
+};
+
 export const packBadges = (
-  r: CatalogPackRow,
+  /** What the badges read of a row: Needs attention gives a pack's slug alone. */
+  r: Pick<CatalogPackRow, 'slug' | 'publisher_certified' | 'service_kind'>,
   preInstall?: ReadonlySet<string>,
   unrunnable?: ReadonlySet<string>,
   programs?: ReadonlyMap<string, readonly PackToolStatus[]>,
+  connections?: ReadonlyMap<string, ConnectionNeeds>,
+  usesMissing?: ReadonlyMap<string, readonly string[]>,
 ): DiscoverBadge[] => {
   const out: DiscoverBadge[] = [];
   if (unrunnable?.has(r.slug) === true) {
@@ -285,6 +381,23 @@ export const packBadges = (
   // Second: also about what is wrong (or untested) on THIS server.
   const program = programBadge(programs?.get(r.slug));
   if (program !== null) out.push(program);
+  // D-321 — the same for a connection pack: what it needs before it runs. No
+  // shipped pack needs both a program and a connection.
+  const needs = connections?.get(r.slug);
+  const connection = connectionBadge(needs?.unset);
+  if (connection !== null) out.push(connection);
+  const signIn = signInBadge(needs?.rejected);
+  if (signIn !== null) out.push(signIn);
+  // D-321 S8 / W2 — a pack it uses is not installed, so the actions that call
+  // it are refused before they start.
+  const missing = usesMissing?.get(r.slug) ?? [];
+  if (missing.length > 0) {
+    out.push({
+      label: usesMissingLabel(missing),
+      tone: 'danger',
+      title: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not installed, so the actions that use ${missing.length === 1 ? 'it' : 'them'} cannot run.`,
+    });
+  }
   if (preInstall?.has(r.slug) === true) {
     out.push({
       label: 'Included',
@@ -470,7 +583,38 @@ export const mountPackDiscovery = (
     try {
       const res = await opts.listUnrunnable();
       unrunnableSlugs = new Set(res.findings.map((f) => f.slug));
+      emitNeeds();
     } catch { /* keep the last-known set — see above */ }
+  };
+  /** D-321 C4 / S8 — what the Packs page's "Needs attention" lists: each installed
+   *  pack's blocking badges, from the same maps the list draws. Said only when it
+   *  changed. */
+  /** D-321 S8 / W2 — each installed pack's used packs that are not installed,
+   *  by name, from its roster row (`missing_packs`). */
+  let usesMissingBySlug: ReadonlyMap<string, readonly string[]> = new Map();
+  let needsShown = '';
+  const emitNeeds = (): void => {
+    if (opts.onNeedsChange === undefined) return;
+    const needs = bundledRoster
+      .filter((pack) => pack.installed || pack.installed_any_version === true)
+      .map((pack) => ({
+        slug: pack.slug,
+        name: pack.name ?? pack.slug,
+        labels: packBadges(
+          { slug: pack.slug },
+          undefined,
+          unrunnableSlugs,
+          programsBySlug,
+          connectionNeedsBySlug,
+          usesMissingBySlug,
+        ).filter((badge) => badge.tone === 'danger').map((badge) => badge.label),
+        ...((usesMissingBySlug.get(pack.slug)?.length ?? 0) > 0 ? { missing: [...usesMissingBySlug.get(pack.slug)!] } : {}),
+      }))
+      .filter((need) => need.labels.length > 0);
+    const shown = JSON.stringify(needs);
+    if (shown === needsShown) return;
+    needsShown = shown;
+    opts.onNeedsChange(needs);
   };
   /** D-321 — each installed pack's programs, by pack slug. Read with the
    *  roster, and a failed read keeps what the owner was last shown rather than
@@ -498,6 +642,46 @@ export const mountPackDiscovery = (
         programsShown = shown;
         programsBySlug = new Map(res.packs.map((entry) => [entry.slug, entry.tools]));
         panelRef?.setInstalled((slug) => currentLookup(slug));
+        emitNeeds();
+      },
+      () => { /* keep the last-known map — see above */ },
+    );
+  };
+
+  /** D-321 — each installed pack's connection slots that nothing backs yet, or
+   *  (P3) whose every connection had its sign-in turned down, by slug, read with
+   *  the readiness block's own rule (`unsetConnectionSlots`,
+   *  `rejectedConnectionSlots`). Like the programs map: read beside the roster and
+   *  never awaited by it, the newest read wins, and a failed read keeps what the
+   *  owner was last shown. */
+  let connectionNeedsBySlug: ReadonlyMap<string, ConnectionNeeds> = new Map();
+  let connectionNeedsShown = '';
+  let connectionsRead = 0;
+  const refreshConnectionNeeds = (roster: ReadonlyArray<RosterPack>): void => {
+    if (opts.listConnections === undefined) return;
+    const mine = ++connectionsRead;
+    const installed = roster.filter((pack) => pack.installed || pack.installed_any_version === true);
+    // D-321 P4 — each pack's own list, read beside the connections; a server
+    // without the call (or a failed read) counts any connection of the service.
+    const signins = opts.listSignIns?.().then((view) => view.signins, () => null) ?? Promise.resolve(null);
+    void Promise.all([opts.listConnections(), signins]).then(
+      ([{ connections }, lists]) => {
+        if (mine !== connectionsRead) return;
+        const fromLists = lists === null ? null : connectionNeedsFromSignIns(lists, connections);
+        const next = new Map(installed
+          .map((pack) => [pack.slug, fromLists !== null
+            ? fromLists.get(pack.slug) ?? { unset: [], rejected: [] }
+            : {
+              unset: unsetConnectionSlots(pack, connections),
+              rejected: rejectedConnectionSlots(pack, connections),
+            }] as const)
+          .filter(([, needs]) => needs.unset.length > 0 || needs.rejected.length > 0));
+        const shown = JSON.stringify([...next]);
+        if (shown === connectionNeedsShown) return;
+        connectionNeedsShown = shown;
+        connectionNeedsBySlug = next;
+        panelRef?.setInstalled((slug) => currentLookup(slug));
+        emitNeeds();
       },
       () => { /* keep the last-known map — see above */ },
     );
@@ -508,6 +692,12 @@ export const mountPackDiscovery = (
   ): ReadonlyArray<RosterPack> => {
     const roster = src?.packs ?? [];
     bundledRoster = roster;
+    usesMissingBySlug = new Map(roster
+      .filter((pack) => (pack.missing_packs?.length ?? 0) > 0)
+      .map((pack) => [pack.slug, pack.missing_packs!.map((missing) => {
+        const slug = parseDependsOn(missing.ref)?.pack ?? missing.ref;
+        return roster.find((row) => row.slug === slug)?.name ?? slug;
+      })]));
     installedInventory = src?.installed_versions ?? [];
     currentLookup = buildLookup(roster, src?.installed_versions);
     const ids = [
@@ -515,6 +705,8 @@ export const mountPackDiscovery = (
       ...(src?.installed_versions ?? []).map((iv) => iv.slug),
     ];
     void updates?.resolve(ids);
+    refreshConnectionNeeds(roster);
+    emitNeeds();
     return roster;
   };
 
@@ -751,7 +943,7 @@ export const mountPackDiscovery = (
     },
     title: (r) => r.name,
     description: (r) => r.description,
-    badges: (r) => packBadges(r, preInstallSlugs(), unrunnableSlugs, programsBySlug),
+    badges: (r) => packBadges(r, preInstallSlugs(), unrunnableSlugs, programsBySlug, connectionNeedsBySlug, usesMissingBySlug),
     metaLine: packMeta,
     filterGroups: [
       { key: 'service_kind', label: 'Kind' },

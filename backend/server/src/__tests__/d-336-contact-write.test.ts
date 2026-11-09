@@ -308,7 +308,9 @@ describe('D-336 slice F — who may write a contact', () => {
 
     const blind = fixture({ contactsReadable: false });
     expect(await blind.check({ target_id: DANA, birthday: '1990-03-04' })).toMatchObject({
-      ok: false, reason: 'classification_blocked', detail: 'contact.write: this contract cannot read contacts, so it cannot write them',
+      ok: false, reason: 'classification_blocked',
+      detail: '\'contact.write\' needs "Your contacts", which is turned off for you, so it did not run. '
+        + 'To use it, turn on "Your contacts" under Self (you) → Entities on the Contracts page.',
     });
     const fenced = fixture({ spheres: true });
     expect(await fenced.check({ target_id: DANA, birthday: '1990-03-04' })).toMatchObject({ ok: false, reason: 'classification_blocked' });

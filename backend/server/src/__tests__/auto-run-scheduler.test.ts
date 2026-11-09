@@ -5,6 +5,7 @@ import type { RecipeDefinition } from '@recued/contracts';
 import {
   createCircuitBreakerStore,
   createServerAutoRunScheduler as createServerAutoRunSchedulerBare,
+  AUTO_RUN_TIMER_RECHECK_MS,
   type CircuitBreakerStore,
   type ServerAutoRunConfig,
   type ServerAutoRunHandle,
@@ -322,6 +323,8 @@ describe('ServerAutoRunHandle.tick', () => {
       actor: 'system',
       event_kind: 'auto_run_tick',
       source_recipe: 'r',
+      // D-341 slice B1b — the timer's dish, which its own standing pre-approval names.
+      dish_id: 'r',
     });
     // ⛔ D-215 slice 1a — the source must be CONTRACT-FREE. D-209 §1.4 stamped
     // `contract_id: OWNER_CONTRACT_ID` here; it changed neither the ceiling nor
@@ -992,5 +995,112 @@ describe('ServerAutoRunHandle.resetCircuit', () => {
     handle.roster.get('r')!.next_run_at = 0;
     await handle.tick();
     expect(calls).toHaveLength(1);
+  });
+});
+
+/** ⛔ A machine that sleeps. Node's timers stop while it does, so a timer armed
+ *  for the whole wait to `next_run_at` fired late by every hour asleep, and the
+ *  first timer to wake ran only its own entry while every other auto-run that
+ *  had come due was advanced a whole interval without running. A timer now
+ *  waits at most `AUTO_RUN_TIMER_RECHECK_MS`, and a fire runs every due entry. */
+describe('ServerAutoRunHandle — a machine that slept', () => {
+  const DAY = 24 * 60 * 60 * SEC;
+  /** Timers with their delays visible, fired by hand. */
+  const armed = () => {
+    const pending = new Map<number, { fn: () => void; delay: number }>();
+    let token = 1;
+    return {
+      setTimer: (fn: () => void, delay: number) => { pending.set(token, { fn, delay }); return token++; },
+      clearTimer: (t: unknown) => { pending.delete(t as number); },
+      delays: () => [...pending.values()].map((p) => p.delay),
+      fire: async (handle: ServerAutoRunHandle) => {
+        const due = [...pending.values()];
+        pending.clear();
+        for (const { fn } of due) fn();
+        await handle.settled?.();
+        await flush();
+      },
+      /** Fire one timer alone, as the first to wake after a sleep. */
+      fireFirst: async (handle: ServerAutoRunHandle) => {
+        const [first] = [...pending.entries()];
+        if (!first) return;
+        pending.delete(first[0]);
+        first[1].fn();
+        await handle.settled?.();
+        await flush();
+      },
+    };
+  };
+
+  it('⛔ no timer waits more than a minute, however far off its next run is', async () => {
+    const timers = armed();
+    const clock = 0;
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('daily', DAY)]),
+      execute: mkExecutor([true]).execute,
+      circuitStore: createCircuitBreakerStore(new Database(':memory:')),
+      now: () => clock, setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+    });
+    await handle.start();
+    await handle.settled?.();
+    expect(timers.delays()).toEqual([AUTO_RUN_TIMER_RECHECK_MS]);
+    await handle.stop();
+  });
+
+  it('⛔ a daily auto-run whose time passed while asleep runs on waking, not a sleep later', async () => {
+    const timers = armed();
+    let clock = 0;
+    const { execute, calls } = mkExecutor([true, true]);
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('daily', DAY)]),
+      execute, circuitStore: createCircuitBreakerStore(new Database(':memory:')),
+      now: () => clock, setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+    });
+    await handle.start();
+    await handle.settled?.();
+    expect(calls).toHaveLength(1);          // the boot round
+
+    clock = DAY + 6 * 60 * 60 * SEC;        // asleep past the next run; the capped timer wakes now
+    await timers.fire(handle);
+    expect(calls).toHaveLength(2);
+    await handle.stop();
+  });
+
+  it('a timer that wakes before its entry is due looks again without running it', async () => {
+    const timers = armed();
+    let clock = 0;
+    const { execute, calls } = mkExecutor([true, true]);
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('daily', DAY)]),
+      execute, circuitStore: createCircuitBreakerStore(new Database(':memory:')),
+      now: () => clock, setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+    });
+    await handle.start();
+    await handle.settled?.();
+    clock = AUTO_RUN_TIMER_RECHECK_MS;
+    await timers.fire(handle);
+    expect(calls).toHaveLength(1);          // still only the boot round
+    expect(timers.delays()).toEqual([AUTO_RUN_TIMER_RECHECK_MS]);
+    await handle.stop();
+  });
+
+  it('⛔ one timer waking runs EVERY entry that came due, not only its own', async () => {
+    const timers = armed();
+    let clock = 0;
+    const { execute, calls } = mkExecutor([true, true, true, true]);
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('a', DAY), makeReactiveRecipe('b', DAY)]),
+      execute, circuitStore: createCircuitBreakerStore(new Database(':memory:')),
+      now: () => clock, setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+    });
+    await handle.start();
+    await handle.settled?.();
+    expect(calls.map((c) => c.recipe_id).sort()).toEqual(['a', 'b']);
+    calls.length = 0;
+
+    clock = 2 * DAY;                        // both came due during the sleep
+    await timers.fireFirst(handle);
+    expect(calls.map((c) => c.recipe_id).sort()).toEqual(['a', 'b']);
+    await handle.stop();
   });
 });

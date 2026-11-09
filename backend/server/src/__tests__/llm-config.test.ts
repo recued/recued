@@ -80,6 +80,25 @@ describe('LLMConfigManager — slot capability fields round-trip', () => {
   });
 });
 
+// D-344 — the owner's thinking setting for a model, on a slot and on a pool entry.
+describe('LLMConfigManager — a model\'s thinking setting round-trips (D-344)', () => {
+  it('a slot keeps its thinking setting, and a save without one clears it', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setSlot1({ ...slot, thinking: 'off' });
+    expect(mgr.getConfig().slot_1?.thinking).toBe('off');
+    mgr.setSlot1({ ...slot, thinking: 'on' });
+    expect(mgr.getConfig().slot_1?.thinking).toBe('on');
+    mgr.setSlot1(slot);
+    expect(mgr.getConfig().slot_1).not.toHaveProperty('thinking');
+  });
+
+  it('a pool entry keeps its thinking setting', () => {
+    const mgr = createLLMConfigManager(db);
+    expect(mgr.upsertPoolEntry({ ...apiEntry('qwen'), thinking: 'off' })).toBe('saved');
+    expect(mgr.getPool()[0]?.thinking).toBe('off');
+  });
+});
+
 describe('LLMConfigManager — embeddings slot (D-174 R28 Slice C)', () => {
   const embeddingsSlot: LLMSlot = {
     provider: 'openai',

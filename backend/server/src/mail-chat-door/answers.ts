@@ -148,6 +148,9 @@ export interface ComposeMailChatAnswersDeps {
   readonly publicBaseUrl?: () => string | null;
   /** Answers are read and sent only while the vault is open. */
   readonly isUnlocked?: () => boolean;
+  /** D-188 — true while the owner's pause holds: no answer is sent until Resume, as while the
+   *  vault is locked (the emergency stop: nothing leaves). Absent ⇒ never paused. */
+  readonly isPaused?: () => boolean;
   /** The notice's history row. Absent ⇒ the push alone. */
   readonly auditLog?: Pick<AuditLogStore, 'logActivity'>;
   /** The title of the tool a run came from, for the follow-up after an
@@ -785,8 +788,9 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
   const runRound = async (): Promise<void> => {
     do {
       again = false;
-      // The answers are encrypted, and the mailboxes' keys are in the vault.
-      if (deps.isUnlocked !== undefined && !deps.isUnlocked()) {
+      // The answers are encrypted, and the mailboxes' keys are in the vault. And (D-188) none is
+      // sent while the owner's pause holds.
+      if ((deps.isUnlocked !== undefined && !deps.isUnlocked()) || deps.isPaused?.() === true) {
         locked = true;
         return;
       }

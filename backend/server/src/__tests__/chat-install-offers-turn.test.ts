@@ -85,6 +85,28 @@ const turn = async (results: ChatDispatchResult[], queries: string[]) => {
   return messages.find((message) => message.role === 'assistant');
 };
 
+// D-346 follow-up (2026-11-08) — what a call could not do and how the owner fixes it rides to
+// the answer the same way: stamped from the turn's tool results, stored, broadcast.
+describe('the answer to a turn whose call was refused for a switch of the owner\'s', () => {
+  it('carries the switch to turn on, stored and broadcast, and the model reads none of it', async () => {
+    const FIX = { kind: 'switch', entry_key: 'primitive.mail.search', label: 'Search your mail' };
+    const refused: ChatDispatchResult = {
+      ok: false, reason: 'classification_blocked',
+      detail: "'mail.search' is turned off for you, so it did not run.",
+      fixes: [FIX] as never,
+    };
+    const answer = await turn([refused], ['rent collection']);
+    expect(answer?.fixes).toEqual([FIX]);
+    const complete = events.find((event) => event.kind === 'chat.message_complete');
+    expect((complete as { final?: { fixes?: unknown } } | undefined)?.final?.fixes).toEqual([FIX]);
+  });
+
+  it('carries none when no call needed one', async () => {
+    const answer = await turn([noMatch()], ['rent collection']);
+    expect(answer).not.toHaveProperty('fixes');
+  });
+});
+
 describe('the answer to a turn that searched', () => {
   it('carries the offers its search made, stored and broadcast', async () => {
     const answer = await turn([noMatch([OFFER])], ['rent collection']);

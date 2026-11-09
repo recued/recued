@@ -585,7 +585,7 @@ describe('Packs R1.3 — detail section layout', () => {
     expect(text).toContain('crm · billing');
   });
 
-  it('DECLARES renders the counts + the connections-readiness block (moved off the row)', async () => {
+  it('DECLARES renders the counts; the connections-readiness block sits in NEEDS, above the tabs', async () => {
     const { host, mount } = setupMount(
       [
         entry({
@@ -604,7 +604,11 @@ describe('Packs R1.3 — detail section layout', () => {
       'declares',
     )!;
     expect(collectTextContent(declares)).toContain('1 recipes');
-    const readiness = findByAttr(declares, CONNECTIONS_READINESS_SECTION_ATTR)!;
+    // D-321 / the scope's § 6 step 2: what the pack needs shows on every tab,
+    // so it left Manage → Detail for the NEEDS section above the tabs.
+    expect(findByAttr(declares, CONNECTIONS_READINESS_SECTION_ATTR)).toBeNull();
+    const needs = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'needs')!;
+    const readiness = findByAttr(needs, CONNECTIONS_READINESS_SECTION_ATTR)!;
     expect(readiness).not.toBeNull();
     const slot = findByAttrValue(
       readiness,

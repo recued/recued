@@ -35,6 +35,7 @@ import {
   type ServerRpcRegistry,
 } from '@recued/contracts';
 import { RunModal, renderActionLabel } from '@recued/ui-shared';
+import { wireRunModal } from '../shell/run-modal.js';
 
 import {
   buildFormResponseManualRunContext,
@@ -725,7 +726,7 @@ export const mountReceptionFormResponseLens = (
     const match = picker.matches.find((candidate) => candidate.entry.recipe_id === recipeId);
     if (match === undefined) return;
     try {
-      const handle = RunModal.wireRunModal({
+      const handle = wireRunModal({
       ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
         recipe: match.entry,
         document: doc,

@@ -47,7 +47,12 @@ export const withQueuedChatTurns = (
   base: ChatOrchestrator,
   options: { db: Database.Database; store: ChatStore; getKey?: ChatKeyProvider | undefined;
     messengerBridge?: import('./chat-messenger-bridge.js').ChatMessengerBridge;
-    broadcast?: ChatBroadcastEmitter | undefined; pollMs?: number; recoverAlive?: typeof workerAlive },
+    broadcast?: ChatBroadcastEmitter | undefined; pollMs?: number; recoverAlive?: typeof workerAlive;
+    /** D-188 — the master "Pause server" flag. While it is on, no turn is started: the pause
+     *  is a lockdown and chat stops with everything else (the owner's ruling of 2026-11-08).
+     *  A turn sent meanwhile is kept and starts after Resume; one already running ends on its
+     *  own, its tool calls refused. Absent ⇒ never paused. */
+    isPaused?: () => boolean },
 ): ChatOrchestrator => {
   const journal = createChatTurnQueueStore(options.db, options.getKey);
   const worker = { id: randomUUID(), pid: process.pid, started_at: processStartedAt };
@@ -98,7 +103,7 @@ export const withQueuedChatTurns = (
         }
       }
       flushWaiters();
-      while (active.size < 4) {
+      while (active.size < 4 && options.isPaused?.() !== true) {
         const row = journal.claim([...handlers.keys()], worker);
         if (!row) break;
         const execute = handlers.get(row.family)!;

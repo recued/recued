@@ -88,6 +88,7 @@ import {
   type ChatSessionListResult,
   type ConnectionMcpAnnotationState,
   type ExecutionCaseLearnedEntry,
+  type ExecutionBrowserFlowEntry,
   type RecipeDefinition,
   type HandlerSlice,
   type IssuedMcpInboundToken,
@@ -112,6 +113,7 @@ import type { ChatStore } from './storage/chat-store.js';
 import type { ChatConnectionMcpStore } from './storage/chat-connection-mcp-store.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import { PEER_HANDLE_CONFLICT_PREFIX } from './storage/chat-inbound-token-store.js';
+import { PAUSED_APPROVAL_CODE, PAUSED_PLAN_REFUSAL } from './pause-approval.js';
 import type {
   ExecutionCaseFeedbackRecorder,
   ExecutionCaseFeedbackTarget,
@@ -146,6 +148,10 @@ export interface ChatRpcDeps {
    *  cancel rpcs surface `not_configured` (501) the same way the
    *  W2.2 / W2.3 stores do when their backing stores aren't wired. */
   planApprovalStore?: planApprovalModule.PlanApprovalStore;
+  /** D-188 — the master "Pause server" flag. While paused, a plan cannot be approved: its
+   *  writes run as the owner's AI, which the pause stops (the owner's ruling of 2026-11-08,
+   *  `pause-approval.ts`). Cancelling still works. Absent ⇒ never paused. */
+  isServerPaused?: () => boolean;
   /** D-329 — answer the ask of a held write's hold (`ChatPlanProposal.hold`), as any approval
    *  channel answers it: found by the hold's run, so a boot re-raise keeps the card answering
    *  it. `closed` — it was answered somewhere else first; `no_ask` — none is out (not raised
@@ -153,10 +159,12 @@ export interface ChatRpcDeps {
    *  answered here. */
   answerHeldPlanAsk?: (
     run_id: string,
-    option: 'approve' | 'deny',
-    /** D-336 slice E — run once the ask is found open, just before it is answered `approve`:
-     *  the owner's change to the call, written where the resume reads it. A throw answers
-     *  nothing. */
+    /** D-341 — `allow_trigger`: approve with the trigger's standing pre-approval the ask
+     *  offers (`hold.always_allow`); `ignored` when the open ask offers none. */
+    option: 'approve' | 'allow_trigger' | 'deny',
+    /** D-336 slice E — run once the ask is found open, just before it is answered with a yes
+     *  (`approve` or `allow_trigger`): the owner's change to the call, written where the
+     *  resume reads it. A throw answers nothing. */
     beforeApprove?: () => Promise<void>,
   ) => Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'>;
   /** D-336 slice E — apply the owner's change to a held proposal (`chat.plan.approve`'s
@@ -196,6 +204,13 @@ export interface ChatRpcDeps {
   /** D-219 item 2 — what Recued has learned, projected for the owner through
    *  the SAME renderer the model-bound card uses. */
   executionCaseLearned?: () => Promise<ExecutionCaseLearnedEntry[]>;
+  /** D-335 slice W4 — the browser flows the owner kept: listed beside the cases, forgotten, and made
+   *  into a recipe without a model. Absent ⇒ Learning lists cases alone. */
+  executionBrowserFlows?: {
+    list(): Promise<ExecutionBrowserFlowEntry[]>;
+    forget(flow_id: string): Promise<boolean>;
+    recipe(flow_id: string): Promise<{ ok: boolean; recipe?: RecipeDefinition; issues: string[]; reason?: string }>;
+  };
   /** D-219 item 2 — unlearn one case: its source reports and the owner verdicts
    *  recorded against their roots, then a rebuild. */
   executionCaseForget?: (
@@ -350,6 +365,8 @@ type ChatMethods =
   | 'chat.execution.forget'
   | 'chat.execution.draft_recipe'
   | 'chat.execution.authored'
+  | 'chat.execution.browser_flow.forget'
+  | 'chat.execution.browser_flow.recipe'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   | 'chat.session.clear_model_pref'
@@ -1482,13 +1499,17 @@ const heldPlan = async (
  *  of what happened.
  *
  *  D-336 slice E — `edit`, the owner's change made while approving, is written once the ask
- *  is found open and before it is answered, so the write runs it (`chat-plan-edits.ts`). */
+ *  is found open and before it is answered, so the write runs it (`chat-plan-edits.ts`).
+ *
+ *  D-341 — `alwaysAllow` approves with the standing pre-approval the ask offers (`allow_trigger`,
+ *  "Always allow for this scheduled prompt"): the resume grants it, then runs the write. */
 const resolveHeldPlanRpc = async (
   deps: ChatRpcDeps,
   method: 'chat.plan.approve' | 'chat.plan.cancel',
   next_status: 'approved' | 'cancelled',
   plan: ChatPlanProposal,
   edit?: HeldPlanEdit,
+  alwaysAllow = false,
 ): Promise<{ plan: ChatPlanProposal }> => {
   const store = deps.planApprovalStore!;
   if (deps.answerHeldPlanAsk === undefined) {
@@ -1506,14 +1527,17 @@ const resolveHeldPlanRpc = async (
       501,
     );
   }
+  const always = alwaysAllow && next_status === 'approved';
   const answer = await deps.answerHeldPlanAsk(
     plan.hold!.run_id,
-    next_status === 'approved' ? 'approve' : 'deny',
+    next_status === 'approved' ? always ? 'allow_trigger' : 'approve' : 'deny',
     // Every yes from the card, with a change or not: the hold must run what the card shows.
     editHeldPlan === undefined ? undefined : async () => { await editHeldPlan(plan, edit); },
   );
   if (answer === 'ignored') {
-    throw new RpcError('bad_request', `${method}: the approval for plan_id '${plan.plan_id}' refused this answer`, 400);
+    throw new RpcError('bad_request', always
+      ? `${method}: the approval for plan_id '${plan.plan_id}' does not offer to always allow it; say yes once instead`
+      : `${method}: the approval for plan_id '${plan.plan_id}' refused this answer`, 400);
   }
   if (answer === 'expired') {
     // The hold expired unanswered and the card was never told: it lapses now, with nothing
@@ -1554,7 +1578,8 @@ const resolveHeldPlanRpc = async (
       `${resolved.session_id}:${resolved.turn_id}:${resolved.tool}`,
       JSON.stringify({ plan_id: resolved.plan_id, tier: resolved.tier, classification: resolved.classification,
         hold_run_id: plan.hold!.run_id,
-        ...(edit !== undefined && next_status === 'approved' ? { edited: Object.keys(edit.overrides) } : {}) }),
+        ...(edit !== undefined && next_status === 'approved' ? { edited: Object.keys(edit.overrides) } : {}),
+        ...(always ? { always_allow: true } : {}) }),
     );
     try {
       deps.broadcast?.emit({ kind: 'chat.plan_resolved', session_id: resolved.session_id,
@@ -1571,6 +1596,13 @@ const resolveHeldPlanRpc = async (
     }
   }
   return { plan: resolved };
+};
+
+/** D-341 — `chat.plan.approve`'s `always_allow`: absent or `false` is a plain yes. */
+const readAlwaysAllow = (method: string, value: unknown): boolean => {
+  if (value === undefined || value === false) return false;
+  if (value === true) return true;
+  throw new RpcError('bad_request', `${method}: always_allow must be true or false`, 400);
 };
 
 /** D-137 P3 § A.11 — shared resolve helper. Validates the rpc args,
@@ -1598,14 +1630,25 @@ const resolvePlanRpc = async (
   // D-336 slice E — the owner's change, made while approving: checked before anything is
   // answered. A plan that takes none refuses one rather than run what it first showed.
   const edited = next_status === 'approved' ? safe.edited_args : undefined;
+  // D-341 — a yes with the standing pre-approval its ask offers. A plan whose ask offers none
+  // refuses it rather than approve once, which the owner did not choose.
+  const alwaysAllow = next_status === 'approved' && readAlwaysAllow(method, safe.always_allow);
   if (held !== undefined) {
+    if (alwaysAllow && held.hold!.always_allow === undefined) {
+      throw new RpcError('bad_request', `${method}: plan_id '${plan_id}' offers no standing pre-approval`, 400);
+    }
     const edit = readHeldPlanEdit(held, edited, deps.claimRecords ?? {});
-    return resolveHeldPlanRpc(deps, method, next_status, held, edit);
+    return resolveHeldPlanRpc(deps, method, next_status, held, edit, alwaysAllow);
   }
   // Approval must recover the exact reviewed payload before any state change.
   // Cancellation is the safe exception: the durable store may cancel a
   // proposed shell even when corrupt ciphertext made its details unreadable.
   if (next_status === 'approved') {
+    // D-188 — not while paused: the plan's writes run as the owner's AI, which the pause stops,
+    // so approving could only end in their refusal. It waits for Resume; cancelling still works.
+    if (deps.isServerPaused?.() === true) {
+      throw new RpcError(PAUSED_APPROVAL_CODE, PAUSED_PLAN_REFUSAL, 409);
+    }
     const existing = await deps.planApprovalStore.get(plan_id);
     if (!existing) {
       throw new RpcError(
@@ -1623,6 +1666,9 @@ const resolvePlanRpc = async (
     }
     if (edited !== undefined && (edited === null || typeof edited !== 'object' || Object.keys(edited).length > 0)) {
       throw new RpcError('bad_request', `${method}: plan_id '${plan_id}' takes no change while approving`, 400);
+    }
+    if (alwaysAllow) {
+      throw new RpcError('bad_request', `${method}: plan_id '${plan_id}' offers no standing pre-approval`, 400);
     }
   }
   const now = deps.now ?? Date.now;
@@ -1816,7 +1862,7 @@ export const handleExecutionCaseDiagnostics = async (
 
 export const handleExecutionCaseLearned = async (
   deps: ChatRpcDeps,
-): Promise<{ cases: ExecutionCaseLearnedEntry[] }> => {
+): Promise<{ cases: ExecutionCaseLearnedEntry[]; browser_flows?: ExecutionBrowserFlowEntry[] }> => {
   const method = 'chat.execution.learned';
   if (!deps.executionCaseLearned) {
     throw new RpcError(
@@ -1825,7 +1871,44 @@ export const handleExecutionCaseLearned = async (
       501,
     );
   }
-  return { cases: await deps.executionCaseLearned() };
+  return {
+    cases: await deps.executionCaseLearned(),
+    // D-335 slice W4 — the browser flows the owner kept, beside the cases.
+    ...(deps.executionBrowserFlows ? { browser_flows: await deps.executionBrowserFlows.list() } : {}),
+  };
+};
+
+/** D-335 slice W4 — the flow id an owner-only browser flow rpc names. */
+const browserFlowId = (method: string, args: unknown): string => {
+  const safe = ensureRecordArgs(method, args);
+  const flowId = safe.flow_id;
+  if (typeof flowId !== 'string' || flowId.trim().length === 0) {
+    throw new RpcError('bad_request', `${method}: flow_id is required`, 400);
+  }
+  return flowId;
+};
+
+export const handleExecutionBrowserFlowForget = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{ removed: boolean }> => {
+  const method = 'chat.execution.browser_flow.forget';
+  if (!deps.executionBrowserFlows) {
+    throw new RpcError('not_configured', `${method}: browser flows are not wired`, 501);
+  }
+  // An unknown id is `removed: false`, as a case's forget answers.
+  return { removed: await deps.executionBrowserFlows.forget(browserFlowId(method, args)) };
+};
+
+export const handleExecutionBrowserFlowRecipe = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{ ok: boolean; recipe?: RecipeDefinition; issues: string[]; reason?: string }> => {
+  const method = 'chat.execution.browser_flow.recipe';
+  if (!deps.executionBrowserFlows) {
+    throw new RpcError('not_configured', `${method}: browser flows are not wired`, 501);
+  }
+  return deps.executionBrowserFlows.recipe(browserFlowId(method, args));
 };
 
 export const handleExecutionCaseForget = async (
@@ -3329,6 +3412,8 @@ export const makeChatHandlers = (
       'chat.execution.forget',
       'chat.execution.draft_recipe',
       'chat.execution.authored',
+      'chat.execution.browser_flow.forget',
+      'chat.execution.browser_flow.recipe',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       'chat.session.clear_model_pref',
@@ -3472,6 +3557,10 @@ export const makeChatHandlers = (
         handleExecutionCaseDraftRecipe(deps, args),
       'chat.execution.authored': async (args) =>
         handleExecutionCaseAuthored(deps, args),
+      'chat.execution.browser_flow.forget': async (args) =>
+        handleExecutionBrowserFlowForget(deps, args),
+      'chat.execution.browser_flow.recipe': async (args) =>
+        handleExecutionBrowserFlowRecipe(deps, args),
       'chat.session.set_picker': async (args) =>
         handleSetPicker(
           deps,

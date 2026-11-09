@@ -37,6 +37,7 @@ import {
   RECEPTION_BOOTSTRAP_STYLES_MARKER,
 } from '../reception/bootstrap.js';
 import { stashReceptionAuthoringSeed } from '../reception/authoring-section.js';
+import { TRIGGER_PREAPPROVAL_PANEL_STYLES } from '../contracts/trigger-preapproval-panel.js';
 import type {
   LaunchWizardRunResult,
   ReceptionPageShell,
@@ -304,6 +305,7 @@ const makeFakeConn = (): FakeConn => {
       updated_at: null,
     },
     'recipe.list': { recipes: [] },
+    'collection.contract.triggerPreapprovalChoices': { recipes: [] },
   };
   const conn = (method: string, payload?: unknown): Promise<unknown> => {
     calls.push({ method, payload });
@@ -887,7 +889,8 @@ describe('D-200 Slice 6g.4 — bootstrapReceptionRoute: pair selector', () => {
     await flush();
 
     const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
-    expect(content.innerHTML).toContain(
+    // The pairing draws in a host of its own, beside the form's pre-approvals (D-341 B4).
+    expect(content.childList[0]!.innerHTML).toContain(
       'data-reception-intake-recipe-pair-section="intake-1"',
     );
     expect(content.childList.some((child) =>
@@ -905,6 +908,73 @@ describe('D-200 Slice 6g.4 — bootstrapReceptionRoute: pair selector', () => {
 
     route.dispose();
     expect(content.innerHTML).toBe('');
+    expect(content.childList).toEqual([]);
+  });
+
+  it('offers "What it may do without asking" for the form, its panel mounted when first opened (D-341 B4)', async () => {
+    const fakeDoc = makeFakeDocument();
+    const root = makeFakeElement('div');
+    const { shell } = makeFakeShell();
+    const fc = makeFakeConn();
+    const route = bootstrapReceptionRoute({
+      ...baseOpts(root, fakeDoc, shell, fc.conn),
+      initialSection: 'endpoints',
+      initialSubview: 'pair',
+      initialKind: '-intake_1',
+    });
+    await flush();
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
+    // A card of the page's own, under the pairing.
+    const card = content.childList[1]!;
+    expect(card.className).toContain('reception-page');
+    const section = card.childList[0]!;
+    expect(section.tagName).toBe('DETAILS');
+    expect(section.className).toContain('rx-panel');
+    expect(section.childList[0]!.textContent).toBe('What it may do without asking');
+    const asked = () => fc.calls.filter((call) => call.method === 'collection.contract.triggerPreapprovalChoices');
+    const read = { method: 'collection.contract.triggerPreapprovalChoices', payload: { trigger: { kind: 'reception', endpoint_id: '-intake_1' } } };
+    // Asked once as it shows, to learn whether the server offers pre-approvals (a server from
+    // before them hides it: the next test); the panel is not mounted yet.
+    expect(asked()).toEqual([read]);
+    expect((section as unknown as { hidden?: boolean }).hidden).not.toBe(true);
+
+    (section as unknown as { open: boolean }).open = true;
+    section.fireEvent('toggle', section);
+    await flush();
+    expect(asked()).toEqual([read, read]);
+    // Opened again, it is the same section: nothing is mounted twice.
+    section.fireEvent('toggle', section);
+    await flush();
+    expect(asked()).toHaveLength(2);
+    // Its styles ship with the page's.
+    expect(RECEPTION_BOOTSTRAP_STYLES).toContain(TRIGGER_PREAPPROVAL_PANEL_STYLES);
+
+    route.dispose();
+    expect(content.childList).toEqual([]);
+  });
+
+  it('shows no "What it may do without asking" on a server from before pre-approvals (D-341)', async () => {
+    const fakeDoc = makeFakeDocument();
+    const root = makeFakeElement('div');
+    const { shell } = makeFakeShell();
+    const fc = makeFakeConn();
+    // A server from before them knows no such method.
+    const older = (method: string, payload?: unknown): Promise<unknown> => method === 'collection.contract.triggerPreapprovalChoices'
+      ? (fc.calls.push({ method, payload }), Promise.reject(Object.assign(new Error('unknown method'), { code: 'unknown_method' })))
+      : fc.conn(method, payload);
+    const route = bootstrapReceptionRoute({
+      ...baseOpts(root, fakeDoc, shell, older),
+      initialSection: 'endpoints',
+      initialSubview: 'pair',
+      initialKind: '-intake_1',
+    });
+    await flush();
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
+    const section = content.childList[1]!.childList[0]!;
+    expect(section.childList[0]!.textContent).toBe('What it may do without asking');
+    expect((section as unknown as { hidden?: boolean }).hidden).toBe(true);
+    expect(fc.calls.filter((call) => call.method === 'collection.contract.triggerPreapprovalChoices')).toHaveLength(1);
+    route.dispose();
   });
 
   it('routes an intake-row pair action with the endpoint id as an encoded segment', () => {

@@ -245,7 +245,7 @@ const executeRecipeInHostScope = async (
   ctx: ExecutionContext, run: () => Promise<ExecutionResult>,
 ): Promise<ExecutionResult> =>
   ctx.withRunAbortSignal
-    ? ctx.withRunAbortSignal(ctx.runAbortSignal, run)
+    ? ctx.withRunAbortSignal(ctx.runAbortSignal, run, ctx.extendBudget)
     : run();
 
 /** A step's error message can quote the data it failed on — a provider rejecting a

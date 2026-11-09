@@ -111,6 +111,9 @@ const mockedModulePaths = [
 
 const alwaysTopLevelKeys = [
   'resourceReview',
+  // D-335 slice AP — the handoff of files between a page and the owner's files: always wired, since
+  // it looks the owner's files up only when a step keeps or reads one.
+  'browserFiles',
   'cacheMaxBytes',
   'cacheStore',
   'checkTokenBudget',
@@ -187,6 +190,11 @@ const alwaysKernelKeys = [
   // there is no capability to gate the wiring on.
   'fileReadTemp',
   'fileSetScanStatus',
+  // D-345 — the server's own fetch of a public web address (the HTTP Toolkit): always wired, as it
+  // needs nothing of the server's but the owner's files, looked up when a download keeps one.
+  'httpDownload',
+  'httpGet',
+  'httpRead',
   // D-239 — the mail write-back four. Always-present ON PURPOSE: the
   // capability question ("may this mailbox be written?") belongs to the
   // ENROLLMENT and is answered by the dispatcher's `mutationCapable` gate.

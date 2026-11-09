@@ -27,13 +27,14 @@ import {
 import {
   INSTALL_RECIPE_DISCLOSURE_ATTR,
   PACKS_DIALOG_DEPENDENCIES_ATTR,
-  PACKS_DIALOG_DEPENDENCY_ACCESS_ATTR,
+  PACKS_DIALOG_DEPENDENCY_INSTALL_ATTR,
   PACKS_DIALOG_DEPENDENCY_ATTR,
   PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR,
   PACKS_DIALOG_PERMISSION_ATTR,
   PACKS_DIALOG_PERMISSION_NEEDED_BY_ATTR,
   PACKS_DIALOG_RECEPTION_OFF_ATTR,
   PACKS_DIALOG_SETTINGS_OFF_ATTR,
+  PACKS_DIALOG_SLUG_ATTR,
   PACKS_DIALOG_TRIGGER_OFF_ATTR,
   PACKS_DIALOG_WEBHOOK_OPTION_ATTR,
   PACKS_DIALOG_WEBHOOKS_ATTR,
@@ -837,13 +838,16 @@ describe('D-305 — an install asks for what the packs it brings in need', () =>
 });
 
 // ══════════════════════════════════════════════════════════════════
-// D-310 — the dialog lists the packs it brings in, each with its own Access
+// D-310, as D-346 C (ruling 1) reshaped it — the dialog lists the packs it
+// brings in: Install all, at what the actions need, or each one's own Install…
 // ══════════════════════════════════════════════════════════════════
 
-describe('D-310 — an install asks what each pack it brings in may do', () => {
-  /** Driven live: Month-end closer brought Ledger book in at its authored read
-   *  defaults, and every booking was refused `operation_not_granted`. Nothing on
-   *  screen said Ledger book came with it, let alone asked what it may do. */
+describe('D-346 C — the packs an install brings in: Install all, or each in its own dialog', () => {
+  /** Driven live (D-310): Month-end closer brought Ledger book in at its authored
+   *  read defaults, and every booking was refused `operation_not_granted`. D-310
+   *  then asked what each may do inside this dialog: 24 choices for Codex Issue
+   *  Pipeline, in a panel 3,705 px tall. The owner (D-346 ruling 1): install each,
+   *  or install all together. */
   const closer: BulkPackManifest = {
     ...manifest,
     slug: 'month-end-closer',
@@ -889,41 +893,53 @@ describe('D-310 — an install asks what each pack it brings in may do', () => {
     await drain();
   };
   const text = (root: FakeElement): string => root.textContent + root.children.map(text).join('');
-  const change = (el: FakeElement) => { for (const fn of el.listeners.get('change') ?? []) fn({ target: el }); };
   const row = (host: FakeElement, slug: string): FakeElement | undefined =>
     findAllByAttr(host, PACKS_DIALOG_DEPENDENCY_ATTR).find((el) => el.getAttribute(PACKS_DIALOG_DEPENDENCY_ATTR) === slug);
-  const radios = (host: FakeElement, slug: string): FakeElement[] =>
-    findAllByAttr(host, PACKS_DIALOG_DEPENDENCY_ACCESS_ATTR)
-      .filter((el) => el.getAttribute(PACKS_DIALOG_DEPENDENCY_ACCESS_ATTR) === slug);
+  const rows = (host: FakeElement): Array<string | null> =>
+    findAllByAttr(host, PACKS_DIALOG_DEPENDENCY_ATTR).map((el) => el.getAttribute(PACKS_DIALOG_DEPENDENCY_ATTR));
+  const ownInstall = (host: FakeElement, slug: string): FakeElement | undefined =>
+    findAllByAttr(host, PACKS_DIALOG_DEPENDENCY_INSTALL_ATTR)
+      .find((el) => el.getAttribute(PACKS_DIALOG_DEPENDENCY_INSTALL_ATTR) === slug);
   const needsLine = (host: FakeElement, slug: string): string | undefined =>
     findAllByAttr(host, PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR)
       .find((el) => el.getAttribute(PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR) === slug)?.textContent;
+  const installLabel = (host: FakeElement): string | undefined => findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent;
+  const dialogSlug = (host: FakeElement): string | null | undefined =>
+    findByAttr(host, PACKS_DIALOG_ATTR)?.getAttribute(PACKS_DIALOG_SLUG_ATTR);
 
-  it('⛔ lists each pack it brings in, at Read only, and says Ledger book needs more', async () => {
+  it('⛔ lists each pack it brings in with what Install all gives it, and its own Install…', async () => {
     const h = mountWith(async () => withPacks([ledger, statements]));
     await open(h);
     const section = findByAttr(h.host, PACKS_DIALOG_DEPENDENCIES_ATTR)!;
-    expect(text(section)).toContain('Also installs 2 Packs');
+    expect(text(section)).toContain('Month-end closer needs 2 Packs that are not installed');
     expect(text(row(h.host, 'ledger-book')!)).toContain('Ledger book');
     expect(text(row(h.host, 'ledger-book')!)).toContain('Needed by Month-end closer.');
-    expect(radios(h.host, 'ledger-book').map((r) => [r.getAttribute('data-access'), r.checked]))
-      .toEqual([['read', true], ['write', false], ['all', false]]);
     expect(needsLine(h.host, 'ledger-book'))
-      .toBe('Month-end closer adds and changes things in it. Choose Read + write, or those steps will be refused.');
-    expect(needsLine(h.host, 'statement-import')).toBeUndefined();
+      .toBe('Month-end closer adds and changes things in it. Install all gives it Read + write.');
+    expect(needsLine(h.host, 'statement-import')).toBe('Install all gives it Read only.');
+    // No choice of Access inside this dialog any more: each pack has its own.
+    expect(findAllByAttr(h.host, 'data-recued-packs-dialog-dependency-access')).toEqual([]);
+    expect(ownInstall(h.host, 'ledger-book')?.textContent).toBe('Install…');
+    expect(ownInstall(h.host, 'statement-import')?.textContent).toBe('Install…');
+    expect(installLabel(h.host)).toBe('Install all 2 and Month-end closer');
   });
 
-  it('⛔ what the owner picks for each is what the install sends, with the pack\'s own audience', async () => {
+  it('⛔ Install all sends each at what the actions need, with the pack\'s own audience', async () => {
     const h = mountWith(async () => withPacks([ledger, statements]));
     await open(h);
-    change(radios(h.host, 'ledger-book').find((r) => r.getAttribute('data-access') === 'write')!);
-    expect(needsLine(h.host, 'ledger-book')).toBe('Month-end closer adds and changes things in it.');
     await h.mount.clickConfirmInstall();
     const audience = { owner: true, all_customers: false, all_other_contracts: false };
     expect(h.installs[0]?.dependency_install_scopes).toEqual([
       { pack_slug: 'ledger-book', install_scope: { access: 'write', audience } },
       { pack_slug: 'statement-import', install_scope: { access: 'read', audience } },
     ]);
+  });
+
+  it('one pack brought in: the button names it', async () => {
+    const h = mountWith(async () => withPacks([ledger]));
+    await open(h);
+    expect(text(findByAttr(h.host, PACKS_DIALOG_DEPENDENCIES_ATTR)!)).toContain('Month-end closer needs 1 Pack that is not installed');
+    expect(installLabel(h.host)).toBe('Install Ledger book and Month-end closer');
   });
 
   it('who may use them follows the pack\'s own audience', async () => {
@@ -941,48 +957,37 @@ describe('D-310 — an install asks what each pack it brings in may do', () => {
     const h = mountWith(async () => preview);
     await open(h);
     expect(findByAttr(h.host, PACKS_DIALOG_DEPENDENCIES_ATTR)).toBeNull();
+    expect(installLabel(h.host)).toBe('Install');
     await h.mount.clickConfirmInstall();
     expect(h.installs).toHaveLength(1);
     expect(h.installs[0]).not.toHaveProperty('dependency_install_scopes');
   });
 
-  it('a pack the install only updates, or one with nothing to grant, is listed without a choice and not sent', async () => {
+  it('a pack the install only updates has no Install…; one with nothing to grant has one; neither is sent', async () => {
     const h = mountWith(async () => withPacks([
       { ...ledger, updates: true },
       { ...statements, access_options: [] },
     ]));
     await open(h);
     expect(text(row(h.host, 'ledger-book')!)).toContain('Installed already. This updates it for Month-end closer.');
-    expect(radios(h.host, 'ledger-book')).toEqual([]);
-    expect(text(row(h.host, 'statement-import')!)).toContain('Nothing to choose for it here.');
-    h.mount.clickDependencyAccessOption('ledger-book', 'write');
+    expect(ownInstall(h.host, 'ledger-book')).toBeUndefined();
+    expect(text(row(h.host, 'statement-import')!)).toContain('Nothing to choose for it.');
+    expect(ownInstall(h.host, 'statement-import')).toBeDefined();
     await h.mount.clickConfirmInstall();
     expect(h.installs[0]).not.toHaveProperty('dependency_install_scopes');
   });
 
-  it('a tier the pack does not offer is not taken', async () => {
-    const h = mountWith(async () => withPacks([{ ...statements, access_options: ['read', 'write'] }]));
+  it('Install all never gives a tier the pack does not offer, and says those steps will be refused', async () => {
+    const h = mountWith(async () => withPacks([{ ...statements, access_options: ['read', 'write'], needs: { access: 'all', by: ['Month-end closer'] } }]));
     await open(h);
-    h.mount.clickDependencyAccessOption('statement-import', 'all');
-    expect(h.mount.getDialogDependencyScopes()?.[0]?.install_scope.access).toBe('read');
-    h.mount.clickDependencyAccessOption('statement-import', 'write');
     expect(h.mount.getDialogDependencyScopes()?.[0]?.install_scope.access).toBe('write');
+    expect(needsLine(h.host, 'statement-import')).toBe('Month-end closer deletes things in it or changes its settings. '
+      + 'Install all gives it Read + write, the most it offers, so those steps will be refused.');
   });
 
-  it('reopened, every pack starts at Read only again', async () => {
-    const h = mountWith(async () => withPacks([ledger]));
-    await open(h);
-    h.mount.clickDependencyAccessOption('ledger-book', 'write');
-    h.mount.clickCancelDialog();
-    h.mount.clickInstall(closerEntry.slug);
-    await drain();
-    expect(h.mount.getDialogDependencyScopes()?.[0]?.install_scope.access).toBe('read');
-  });
-
-  // D-310 REV 2 — what a pack's OWN workflows need. D-310 left it to "its own
-  // dialog", and no dialog said it: Seller Quote Request, brought in by Seller Quote
-  // Payment Events, was listed at Read with no word, and its own opening and
-  // pricing of requests were then refused.
+  // D-310 REV 2 — what a pack's OWN workflows need, which nothing else in the
+  // install may say: Seller Quote Request, brought in by Seller Quote Payment
+  // Events, had its own opening and pricing of requests refused at Read.
   const quotes = {
     pack_slug: 'seller-quote-request',
     name: 'Seller Quote Request',
@@ -991,25 +996,172 @@ describe('D-310 — an install asks what each pack it brings in may do', () => {
     own_needs: 'write' as const,
   };
 
-  it('⛔ REV 2 — a pack whose own workflows write says so, though nothing else in the install writes into it', async () => {
+  it('⛔ REV 2 — a pack whose own workflows write is given what they need, and the row says why', async () => {
     const h = mountWith(async () => withPacks([quotes]));
     await open(h);
     expect(needsLine(h.host, 'seller-quote-request'))
-      .toBe('Some of its own workflows add and change things. Choose Read + write, or those steps will be refused.');
-    change(radios(h.host, 'seller-quote-request').find((r) => r.getAttribute('data-access') === 'write')!);
-    expect(needsLine(h.host, 'seller-quote-request')).toBe('Some of its own workflows add and change things.');
+      .toBe('Some of its own workflows add and change things. Install all gives it Read + write.');
+    expect(h.mount.getDialogDependencyScopes()?.[0]?.install_scope.access).toBe('write');
   });
 
-  it('REV 2 — both at once: names both, and asks for the higher of the two', async () => {
+  it('REV 2 — both at once: names both, and gives the higher of the two', async () => {
     const h = mountWith(async () => withPacks([{ ...ledger, own_needs: 'all' }]));
     await open(h);
-    const both = 'Month-end closer adds and changes things in it. Some of its own workflows delete things or change settings.';
-    expect(needsLine(h.host, 'ledger-book')).toBe(`${both} Choose Full access, or those steps will be refused.`);
-    // Read + write covers the other pack's writes but not its own deletes.
-    change(radios(h.host, 'ledger-book').find((r) => r.getAttribute('data-access') === 'write')!);
-    expect(needsLine(h.host, 'ledger-book')).toBe(`${both} Choose Full access, or those steps will be refused.`);
-    change(radios(h.host, 'ledger-book').find((r) => r.getAttribute('data-access') === 'all')!);
-    expect(needsLine(h.host, 'ledger-book')).toBe(both);
+    expect(needsLine(h.host, 'ledger-book')).toBe('Month-end closer adds and changes things in it. '
+      + 'Some of its own workflows delete things or change settings. Install all gives it Full access.');
+    expect(h.mount.getDialogDependencyScopes()?.[0]?.install_scope.access).toBe('all');
+  });
+
+  /** Three packs on the panel; an install flips its pack to installed, and the
+   *  closer's preview lists only what is still not installed. */
+  const mountFlow = () => {
+    const host = makeFakeElement('div');
+    const installs: Array<Record<string, unknown>> = [];
+    const selected: Array<string | null> = [];
+    const installed = new Set<string>();
+    const asEntry = (pack: { pack_slug: string; name: string }): PackListEntry => ({
+      ...entry, slug: pack.pack_slug, name: pack.name, manifest: { ...manifest, slug: pack.pack_slug, name: pack.name },
+    });
+    const mount = mountPacksPanel({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      runList: async () => ({ packs: [closerEntry, asEntry(ledger), asEntry(statements)]
+        .map((pack) => ({ ...pack, installed: installed.has(pack.slug) })) }),
+      initialSlug: closerEntry.slug,
+      onSelectSlug: (slug) => { selected.push(slug); },
+      runInstall: async (args) => {
+        installs.push(args as Record<string, unknown>);
+        installed.add((args as { manifest: { slug: string } }).manifest.slug);
+        return { result: { ok: true } as never };
+      },
+      runInstallPreview: async (args) => ((args as { manifest: { slug: string } }).manifest.slug === closer.slug
+        ? withPacks([ledger, statements].filter((pack) => !installed.has(pack.pack_slug)))
+        : preview),
+    });
+    return { host, mount, installs, selected };
+  };
+
+  it('⛔ Install… opens that pack\'s own dialog on its page; its install brings this one back, asked again, without it', async () => {
+    const h = mountFlow();
+    await open(h);
+    expect(rows(h.host)).toEqual(['ledger-book', 'statement-import']);
+    h.mount.clickInstallDependency('ledger-book');
+    await drain();
+    expect(h.selected.at(-1)).toBe('ledger-book');
+    expect(dialogSlug(h.host)).toBe('ledger-book');
+    await h.mount.clickConfirmInstall();
+    await drain();
+    expect(h.installs.map((args) => (args.manifest as { slug: string }).slug)).toEqual(['ledger-book']);
+    // Ledger book went in at its own dialog's choice; the closer's dialog is back.
+    expect(h.installs[0]).not.toHaveProperty('dependency_install_scopes');
+    expect(h.selected.at(-1)).toBe(closer.slug);
+    expect(dialogSlug(h.host)).toBe(closer.slug);
+    expect(rows(h.host)).toEqual(['statement-import']);
+    expect(installLabel(h.host)).toBe('Install Bank statement import and Month-end closer');
+  });
+
+  it('cancelled, its dialog goes back to the one it left; any other dialog ending forgets it', async () => {
+    const h = mountFlow();
+    await open(h);
+    h.mount.clickInstallDependency('ledger-book');
+    await drain();
+    expect(dialogSlug(h.host)).toBe('ledger-book');
+    h.mount.clickCancelDialog();
+    await drain();
+    expect(dialogSlug(h.host)).toBe(closer.slug);
+    expect(rows(h.host)).toEqual(['ledger-book', 'statement-import']);
+    // The closer's own dialog, cancelled: nothing to go back to.
+    h.mount.clickCancelDialog();
+    await drain();
+    expect(findByAttr(h.host, PACKS_DIALOG_ATTR)).toBeNull();
+  });
+
+  // D-346 — an update whose new version brings a pack in: its button and its list
+  // say what the update does, in the button's own verb. The list said "Install all"
+  // while the button said "Update".
+  it('an update that brings packs in says so: the button, the list and each row', async () => {
+    const updating: PackListEntry = { ...closerEntry, installed: false, installed_any_version: true };
+    const mountUpdate = (packs: unknown[]) => {
+      const host = makeFakeElement('div');
+      const mount = mountPacksPanel({
+        host: host as unknown as HTMLElement,
+        document: makeFakeDocument() as unknown as Document,
+        runList: async () => ({ packs: [updating] }),
+        initialSlug: updating.slug,
+        runInstall: async () => ({ result: { ok: true } as never }),
+        runInstallPreview: async () => withPacks(packs),
+      });
+      return { host, mount };
+    };
+    const one = mountUpdate([ledger]);
+    await open(one);
+    expect(installLabel(one.host)).toBe('Update and install Ledger book');
+    expect(text(findByAttr(one.host, PACKS_DIALOG_DEPENDENCIES_ATTR)!)).toContain('Update brings it in with what the actions need');
+    expect(needsLine(one.host, 'ledger-book'))
+      .toBe('Month-end closer adds and changes things in it. Update gives it Read + write.');
+    const two = mountUpdate([ledger, statements]);
+    await open(two);
+    expect(installLabel(two.host)).toBe('Update and install all 2');
+    expect(needsLine(two.host, 'statement-import')).toBe('Update gives it Read only.');
+  });
+
+  /** A chain: the closer needs Ledger book, and Ledger book needs Bank statement
+   *  import. Each preview lists what is still not installed below it. */
+  const mountChain = () => {
+    const host = makeFakeElement('div');
+    const installs: Array<Record<string, unknown>> = [];
+    const selected: Array<string | null> = [];
+    const installed = new Set<string>();
+    const statementsForLedger = { ...statements, needed_by: ['Ledger book'] };
+    const asEntry = (pack: { pack_slug: string; name: string }): PackListEntry => ({
+      ...entry, slug: pack.pack_slug, name: pack.name, manifest: { ...manifest, slug: pack.pack_slug, name: pack.name },
+    });
+    const missing = (packs: Array<{ pack_slug: string }>) => packs.filter((pack) => !installed.has(pack.pack_slug));
+    const mount = mountPacksPanel({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      runList: async () => ({ packs: [closerEntry, asEntry(ledger), asEntry(statements)]
+        .map((pack) => ({ ...pack, installed: installed.has(pack.slug) })) }),
+      initialSlug: closerEntry.slug,
+      onSelectSlug: (slug) => { selected.push(slug); },
+      runInstall: async (args) => {
+        installs.push(args as Record<string, unknown>);
+        installed.add((args as { manifest: { slug: string } }).manifest.slug);
+        return { result: { ok: true } as never };
+      },
+      runInstallPreview: async (args) => {
+        const slug = (args as { manifest: { slug: string } }).manifest.slug;
+        if (slug === closer.slug) return withPacks(missing([ledger, statementsForLedger]));
+        if (slug === ledger.pack_slug) return withPacks(missing([statementsForLedger]));
+        return preview;
+      },
+    });
+    return { host, mount, installs, selected };
+  };
+
+  it('⛔ a chain: an Install… inside an Install… comes back through each dialog it left, innermost first', async () => {
+    const h = mountChain();
+    await open(h);
+    expect(rows(h.host)).toEqual(['ledger-book', 'statement-import']);
+    h.mount.clickInstallDependency('ledger-book');
+    await drain();
+    expect(dialogSlug(h.host)).toBe('ledger-book');
+    expect(rows(h.host)).toEqual(['statement-import']);
+    h.mount.clickInstallDependency('statement-import');
+    await drain();
+    expect(dialogSlug(h.host)).toBe('statement-import');
+    await h.mount.clickConfirmInstall();
+    await drain();
+    // Back to Ledger book, which now brings nothing in.
+    expect(dialogSlug(h.host)).toBe('ledger-book');
+    expect(rows(h.host)).toEqual([]);
+    await h.mount.clickConfirmInstall();
+    await drain();
+    // ⛔ And on to the closer: one slot of the way back forgot it here.
+    expect(dialogSlug(h.host)).toBe(closer.slug);
+    expect(h.selected.at(-1)).toBe(closer.slug);
+    expect(rows(h.host)).toEqual([]);
+    expect(h.installs.map((args) => (args.manifest as { slug: string }).slug)).toEqual(['statement-import', 'ledger-book']);
   });
 
   const ownLine = (host: FakeElement): string | undefined => findByAttr(host, INSTALL_GRANT_OWN_NEEDS_ATTR)?.textContent;
@@ -1096,7 +1248,6 @@ describe('D-311 — a marketplace pack\'s preview resolves from the marketplace'
     expect(h.previews[0]).toEqual({ manifest: book, marketplace: true });
     expect(findByAttr(h.host, PACKS_DIALOG_DEPENDENCY_ATTR)?.getAttribute(PACKS_DIALOG_DEPENDENCY_ATTR))
       .toBe('billable-hours');
-    h.mount.clickDependencyAccessOption('billable-hours', 'all');
     await h.mount.clickConfirmInstall();
     expect(h.bySlug).toHaveLength(1);
     expect(h.bySlug[0]).toMatchObject({

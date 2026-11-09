@@ -200,6 +200,7 @@ describe('ringing', () => {
   let channels: () => readonly string[];
   let sealed = false;
   let isQuiet = false;
+  let paused = false;
   const delivery = () => createReminderDelivery({
     store,
     send: async (message) => {
@@ -208,6 +209,7 @@ describe('ringing', () => {
     },
     isQuiet: () => isQuiet,
     isVaultUnlocked: () => !sealed,
+    isPaused: () => paused,
     now: () => clock,
   });
   beforeEach(() => {
@@ -215,6 +217,7 @@ describe('ringing', () => {
     channels = () => ['in_app'];
     sealed = false;
     isQuiet = false;
+    paused = false;
   });
 
   it('rings once, at its time, and the next check sends nothing', async () => {
@@ -267,6 +270,17 @@ describe('ringing', () => {
     clock = NOW + 9 * HOUR;
     expect(await delivery().tick()).toMatchObject({ delivered: 1 });
     expect(sent.map((m) => m.text)).toEqual(['For 10:00 AM: bins']);
+  });
+
+  // D-188 — the owner's pause (the emergency stop: nothing leaves) holds it the same way.
+  it('holds while the server is paused, and rings once resumed', async () => {
+    await reminders().reminderCreate({ text: 'bins', at: NOW });
+    paused = true;
+    expect(await delivery().tick()).toMatchObject({ due: 1, held: 1, delivered: 0 });
+    expect(sent).toHaveLength(0);
+    paused = false;
+    expect(await delivery().tick()).toMatchObject({ delivered: 1 });
+    expect(sent.map((m) => m.text)).toEqual(['bins']);
   });
 
   it('holds while the vault is sealed', async () => {

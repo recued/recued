@@ -211,6 +211,16 @@ export const YOURS_STYLES = `
 [data-recued-yours] .yours-comparison-inputs small {display:block;font-size:12px;line-height:1.5;margin-top:6px}
 [data-recued-yours] .yours-comparison-note {color:var(--fg-muted);font-size:12px;line-height:1.6;max-width:78ch}
 [data-recued-yours] :is([data-yours-reading],[data-yours-rule],[data-yours-field]):focus {outline:2px solid var(--accent);outline-offset:4px;scroll-margin:24px}
+/* D-342 — a part of a pursuit sits under it, one step in per level (four at most). */
+[data-recued-yours] .yours-pursuit {margin-inline-start:calc(var(--yours-pursuit-depth,0) * 28px)}
+[data-recued-yours] .yours-pursuit-progress {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:12px}
+[data-recued-yours] dl.yours-pursuit-facts {grid-template-columns:max-content minmax(0,1fr);gap:4px 16px}
+[data-recued-yours] .yours-pursuit-facts dt {color:var(--fg-muted)}
+[data-recued-yours] .yours-pursuit>p[data-yours-pursuit-parent] {margin-top:-6px;font-size:13px}
+/* D-343 slice 5 — Episodes by day: each day's heading above its records, quieter than a card's title. */
+[data-recued-yours] .yours-episode-day {display:flex;flex-direction:column;gap:8px}
+[data-recued-yours] .yours-episode-day+.yours-episode-day {margin-top:12px}
+[data-recued-yours] .yours-episode-day>h3 {margin:0;color:var(--fg-muted);font-size:13px;font-weight:650;letter-spacing:.01em}
 @media(pointer:coarse) {
  [data-recued-yours] :is(button,input,select,summary) {min-height:44px}
  [data-recued-yours] .yours-fact .yours-menu>summary,[data-recued-yours] [data-yours-sphere]>summary {min-height:44px;display:flex;align-items:center}
@@ -261,5 +271,6 @@ export const YOURS_STYLES = `
  [data-recued-yours] .yours-change-pair {grid-template-columns:1fr}
  [data-recued-yours] dl.yours-review-facts {grid-template-columns:1fr}
  [data-recued-yours] .yours-review-facts>div {grid-template-columns:minmax(90px,.7fr) minmax(0,1fr);gap:12px}
+ [data-recued-yours] .yours-pursuit {margin-inline-start:calc(var(--yours-pursuit-depth,0) * 14px)}
 }
 `;

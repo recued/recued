@@ -13,13 +13,14 @@ import type { ChatDeliveryListRequest } from '@recued/contracts';
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const close of cleanups.splice(0).reverse()) close(); });
 const signature = { server_kind: 'recued' as const, version: '1', instance_id: 'delivery-details' };
-const fixture = (path = ':memory:') => {
+const fixture = (path = ':memory:', isPaused?: () => boolean) => {
   const db = new Database(path); ensureChatSchema(db);
   let locked = false;
   let keyByte = 51;
   const getKey = () => locked ? null : new Uint8Array(32).fill(keyByte);
   const store = createChatStore(db, getKey);
-  const bridge = createChatMessengerBridge({ db, store, getKey, pollMs: 10, minSendIntervalMs: 0 });
+  const bridge = createChatMessengerBridge({ db, store, getKey, pollMs: 10, minSendIntervalMs: 0,
+    ...(isPaused ? { isPaused } : {}) });
   cleanups.push(() => { bridge.close(); if (db.open) db.close(); });
   const { session_id } = bridge.bind('slack', 'C1', 'slack:T1:B1');
   const add = (id: string, extra: { role?: 'user' | 'assistant'; turn_id?: string; attachments?: Array<{ file_id: string; media_class: string }> } = {}) =>
@@ -31,6 +32,26 @@ const fixture = (path = ':memory:') => {
   const deps = { store, orchestrator: { ...raw, messengerBridge: bridge }, selfSignature: signature };
   return { db, store, bridge, session_id, add, read, deps, lock: () => { locked = true; }, rotate: () => { keyByte++; } };
 };
+
+// D-188 — the owner's pause (the emergency stop: nothing leaves) holds every reply to a messenger;
+// it goes out, in order, after Resume.
+describe('D-188 — while the server is paused', () => {
+  it('sends no reply to a messenger, and sends it once resumed', async () => {
+    let paused = true;
+    const f = fixture(':memory:', () => paused);
+    const sends: unknown[] = [];
+    f.bridge.register('slack', { resolve: async () => ({ token: 'fixture', recipient: 'C1', account: 'slack:T1:B1' }),
+      send: async (message) => { sends.push(message); return { ok: true, vendor_message_id: `posted-${sends.length}` }; },
+    });
+    await f.add('while-paused');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(sends).toEqual([]);
+    expect((await f.read()).deliveries[0]).toMatchObject({ state: 'pending' });
+
+    paused = false;
+    await vi.waitFor(() => expect(sends).toHaveLength(1));
+  });
+});
 
 describe('message-level Messenger delivery reads', () => {
   it('publishes a preparation failure and its revision atomically to another SQLite connection', async () => {

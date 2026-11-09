@@ -84,7 +84,7 @@ import { createOAuthPermissionService } from '../oauth-permission-consolidation.
 import { createOAuthAppUsageService } from '../oauth-app-usage-service.js';
 import { createOAuthAppRenewalService } from '../oauth-app-renewal-service.js';
 import type { OAuthProviderConfig } from '../collections/mail/oauth.js';
-import { contactExcludedFromProactive, oauthAppIssuerForProvider, resolveServerTimeZone } from '@recued/contracts';
+import { contactExcludedFromProactive, executionSourceContractId, oauthAppIssuerForProvider, resolveServerTimeZone } from '@recued/contracts';
 import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
 import type { IngredientManifest, MailFactEmailRef } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
@@ -101,7 +101,9 @@ import { createWatcherDispatcher } from '../watchers/index.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createAssetOccurrenceService, type AssetOccurrenceService } from '../situations/asset-occurrence-service.js';
 import { createOwnerCompletionWriter } from '../situations/owner-completion.js';
-import { createRenewalFulfillGuard } from '../situations/renewal-guard.js';
+import { createConditionReminderLookup, createReminderDateGuard, createRenewalFulfillGuard } from '../situations/renewal-guard.js';
+import { createMailFactClose } from '../situations/mail-fact-records.js';
+import { createClosingRecords } from '../situations/closing-records.js';
 import { assetTypes } from '../situations/asset-types.js';
 import { createAssetReminderService, type AssetReminderService } from '../situations/asset-reminder-service.js';
 import { createHouseholdHomeAssistant, type HouseholdHomeAssistant } from '../situations/household-home-assistant.js';
@@ -156,6 +158,21 @@ type WatcherDispatcher = ReturnType<typeof createWatcherDispatcher>;
 type WorkEntityDispatchers = ReturnType<typeof createWorkEntityDispatchers>;
 
 export interface ComposeCollectionContextOptions {
+  /** D-343 slice 1 — the chat's late-bound view of the occasions made in Yours (the app context's
+   *  `occasionsRef`), set here once Yours is composed. */
+  occasionsRef?: { current: import('../chat-tool-handlers.js').ChatOccasions | undefined };
+  /** D-343 slice 1 (ruling 15) — the chat's late-bound view of the mail facts (the app context's
+   *  `mailFactsRef`), set here once the mail facts and the work dispatchers are composed. */
+  mailFactsRef?: { current: import('../situations/mail-fact-records.js').MailFactClose | undefined };
+  /** D-343 slice 2 — the chat's late-bound view of the owner's closing records (the app context's
+   *  `closingRecordsRef`), set here once the episode store and the work store are composed. */
+  closingRecordsRef?: { current: import('../situations/closing-records.js').ClosingRecords | undefined };
+  /** D-338 — the chat's notice hook, so a notification this context sends to the owner's chat
+   *  (the Agenda, "Due today", the Overview, a recipe's) is a notice they can quote. */
+  chatNotices?: import('@recued/ingredients').ConnectionNoticeHook;
+  /** D-343 slice 4 (ruling 20) — opens a conversation holding today's evening notice for Today's
+   *  "Close the day". Absent ⇒ Today offers no button. */
+  openNoticeConversation?: (notice: { title: string; text: string }) => Promise<{ session_id: string; message_id: string }>;
   oauthAppNativePermissionNeeds?: (row: import('../collections/instance-store.js').CollectionInstanceRecord) => import('@recued/contracts').OAuthPermissionNeeds;
   oauthAppPermissionNeeds?: (name: string) => import('@recued/contracts').OAuthPermissionNeeds;
   oauthAppConnectionUses?: (name: string) => { uses: readonly import('@recued/contracts').ManagedOAuthConnectionUse[]; complete: boolean };
@@ -181,6 +198,10 @@ export interface ComposeCollectionContextOptions {
    *  executors, `vault-gated-executors.ts`). Absent ⇒ no gating (the stacks
    *  default to always-sync). */
   vaultStateBus?: VaultStateBus;
+  /** D-188 — the master pause. While it holds, the mail and calendar poll loops are held like
+   *  while the vault is locked (nothing comes in during the emergency stop), and an unlock does
+   *  not start them; `applyServerPause` moves them on the pause's edges. Absent ⇒ never paused. */
+  isServerPaused?: () => boolean;
   connectionStore: ConnectionStoreSqlite | undefined;
   workEntityStore: WorkEntityStore | undefined;
   enrichmentCascade: CascadeEngine | undefined;
@@ -306,6 +327,10 @@ export interface CollectionContext extends ConnectionNotificationBundle {
   /** BYO OAuth app config rpc deps (get/set/clear). Absent on a db-less boot. */
   oauthAppConfigDeps?: OAuthAppConfigHandlerDeps;
   startCollectionAdapters: () => Promise<void>;
+  /** D-188 — move the mail and calendar poll loops to where the pause and the vault together
+   *  say: running only while the vault is unlocked AND the server is not paused. Called on the
+   *  pause's edges (the toggle, and a paused boot). */
+  applyServerPause: () => Promise<void>;
 }
 
 export const composeCollectionContext = (
@@ -327,6 +352,7 @@ export const composeCollectionContext = (
     eventBus,
     keys,
     vaultStateBus,
+    isServerPaused,
     connectionStore,
     workEntityStore,
     enrichmentCascade,
@@ -342,6 +368,8 @@ export const composeCollectionContext = (
   // (below) resumes it. No `keys` (dbless / harness) ⇒ always-unlocked (no
   // vault to seal), so behaviour is unchanged there.
   const isVaultUnlocked = (): boolean => !keys || keys.state() === 'unlocked';
+  // D-188 — the poll loops run only while unlocked AND not paused (the emergency stop).
+  const isSyncPaused = (): boolean => isServerPaused?.() === true;
 
   // D-172 P2 — created up-front (ahead of the calendar/mail boots) so the
   // mail stack's lazy `fileReadDeps` closure can reference it; the
@@ -498,6 +526,7 @@ export const composeCollectionContext = (
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
+    isPaused: isSyncPaused,
     // Per-use credential resolver (store-only). The calendar factories always
     // register; this decides availability at enroll + on each refresh.
     resolveOAuthConfig: (adapter, appId) =>
@@ -591,6 +620,8 @@ export const composeCollectionContext = (
           .filter((collection): collection is MailCollection => collection.platform === 'mail'),
         ...(auditLog ? { auditLog } : {}),
         isUnlocked: isVaultUnlocked,
+        // D-188 — nothing is checked at the provider while the owner's pause holds.
+        isPaused: isSyncPaused,
         // One mailbox (§8.18) — an email the proof refutes is the owner's mail again.
         ...(mailChatConversationMail
           ? { onNotProven: (slug: string, record_id: string) => mailChatConversationMail.unmark(slug, record_id) }
@@ -633,6 +664,7 @@ export const composeCollectionContext = (
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
+    isPaused: isSyncPaused,
     // Same lazy rationale as `fileReadDeps` below — `collectionRegistry` is
     // declared above this const but the closure only runs when a collection goes
     // live. Supplying it is what makes a post-boot enroll readable without a
@@ -758,11 +790,15 @@ export const composeCollectionContext = (
     ...(db ? { selectConnection: async (channel: string, rows: readonly import('@recued/contracts').ConnectionRow[]) => selectOwnerNotificationConnection({
       settings: await createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(db, 'notification_settings')).get(),
       channel, rows, isHousehold: row => createHouseholdDeliveryStore(db).isHousehold(row) }) } : {}),
+    ...(options.chatNotices !== undefined ? { notices: options.chatNotices } : {}),
   });
 
   const situationStore = db ? createSituationStore(db, warehouseBus) : undefined;
   let assetOccurrences: AssetOccurrenceService | undefined;
   let assetReminders: AssetReminderService | undefined;
+  // D-340 slice 3 — the owner's reminders wait for the daily stream that carries them. The scheduler is
+  // composed after the reminders, so it answers through this once it exists.
+  const streamHold: { current?: () => boolean } = {};
   let householdHomeAssistant: HouseholdHomeAssistant | undefined;
   const householdCatalogBindings = db ? createConnectionCatalogBindingStore(createContractStore(db)) : undefined;
   const proactiveHistory = db ? createProactiveHistoryStore(db, createProactiveProposalStore(db)) : undefined;
@@ -782,7 +818,9 @@ export const composeCollectionContext = (
     ? createWorkEntityDispatchers({
         store: workEntityStore,
         ...(db ? { ownerCompletionWrite: createOwnerCompletionWriter(db, workEntityStore),
-          commitmentFulfillGuard: createRenewalFulfillGuard(db, workEntityStore), assetTypes: assetTypes(db) } : {}),
+          commitmentFulfillGuard: createRenewalFulfillGuard(db, workEntityStore),
+          aiAssetDateGuard: createReminderDateGuard(db, workEntityStore),
+          conditionOfReminder: createConditionReminderLookup(db, workEntityStore), assetTypes: assetTypes(db) } : {}),
         resolver: createWorkEntityResolver(workEntityStore),
         timeZone: serverTimeZone,
         bus: warehouseBus,
@@ -845,6 +883,7 @@ export const composeCollectionContext = (
       isQuiet: instant => shouldSuppressForQuietHours({ policy: quiet.read(), instant, timeZone: serverTimeZone() }),
       measure: (...args) => { situationStore.measure(...args); },
       ownerResponse: (refs, at) => recordDigestResponse(situationStore, refs, at),
+      heldForStream: () => streamHold.current?.() === true,
     });
   }
   const spheres: ReturnType<typeof createSphereStore> | undefined = db && workEntityStore ? createSphereStore(db, workEntityStore, id =>
@@ -924,7 +963,29 @@ export const composeCollectionContext = (
       mailboxes: () => collectionRegistry.list().filter(row => row.platform === 'mail' && !mailChatDoor?.isChatOnlyMailbox(row.slug))
         .flatMap(row => { const address = (row as MailCollection).accountEmail; return typeof address === 'string' && address ? [{ slug: row.slug, address }] : []; }),
       ...(householdHomeAssistant ? { homeAssistant: householdHomeAssistant } : {}),
+      ...(options.openNoticeConversation ? { openNoticeConversation: options.openNoticeConversation } : {}),
       isVaultUnlocked, timeZone: serverTimeZone }) : undefined;
+  // D-343 slice 1 — the chat changes an occasion as Yours' "Save occasion" does. Only the owner's
+  // own call reaches here (`OCCASION_UPDATE_OP_ID`, which no contract grants), and the change it
+  // carries is theirs (ruling 16), so Yours takes it as the owner's own.
+  if (options.occasionsRef && yours) options.occasionsRef.current = {
+    read: id => yours.history.occasion(id),
+    save: async (occasion, by) => {
+      if (by.actor !== 'user_self' || executionSourceContractId(by) !== undefined) throw new Error('Only the owner changes an occasion');
+      return yours.command({ action: 'occasion.save', occasion }, { channel: 'user', actor: 'user_self',
+        user_id: 'user_id' in by && typeof by.user_id === 'string' ? by.user_id : 'local', client_token_id: 'chat' });
+    },
+  };
+  // D-343 slice 1 (ruling 15) — the chat closes a mail fact by making the record it shows through.
+  if (options.mailFactsRef && db && mailFactStore && workEntityDispatchers) {
+    options.mailFactsRef.current = createMailFactClose({ db, mailFacts: mailFactStore, dispatchers: workEntityDispatchers });
+  }
+  // D-343 slice 2 — the chat records the owner's day as episodes, in the store Yours lists them from.
+  if (options.closingRecordsRef && db && proactiveHistory && workEntityStore) {
+    options.closingRecordsRef.current = createClosingRecords({ db, history: proactiveHistory, work: workEntityStore, calendars: localSituationCalendars,
+      ...(contactStore ? { contacts: contactStore } : {}), ...(mailFactStore ? { mailFacts: mailFactStore } : {}), reminders: createReminderStore(db),
+      timeZone: serverTimeZone });
+  }
 
   const scheduledSituations = db && workEntityStore && situationStore && querySituation && yours
     ? createScheduledSituations({ db, work: workEntityStore, store: situationStore, query: querySituation, timeZone: serverTimeZone,
@@ -942,8 +1003,15 @@ export const composeCollectionContext = (
         mailHealth: () => mailboxHealthOf(collectionRegistry.list(), Date.now()),
         ...(enrichmentStore ? { prepNotesReady: preparationNotesReady(enrichmentStore) } : {}),
         ...(options.getPromptSchedules ? { promptSchedules: options.getPromptSchedules } : {}),
+        ...(assetReminders ? { reminders: assetReminders } : {}),
       }) : undefined;
   if (scheduledSituations) yours!.bindScheduled(scheduledSituations);
+  if (scheduledSituations) streamHold.current = () => scheduledSituations.holdsReminders();
+  // D-340 §3.6 — the daily and weekly streams take over from the Agenda and Coming up, once, carrying
+  // over what the owner had. A store that cannot be written keeps sending as before.
+  if (scheduledSituations) {
+    try { scheduledSituations.takeOverStreams(); } catch (error) { console.warn('[situations] The streams could not take over', error); }
+  }
   // D-338 — the Agenda's AI suggestions skip a day the Agenda has nothing on: no model call. The
   // chat is composed first, so its schedules are ready here.
   if (scheduledSituations) options.getPromptSchedules?.()?.setRunGate('agenda', (schedule, due_at) => scheduledSituations.agendaRunGate(schedule, due_at));
@@ -982,6 +1050,22 @@ export const composeCollectionContext = (
         instances: createInstanceStore({ db }), ...(keys ? { key: keys.keyProvider('connection') } : {}),
         ...(options.oauthAppConnectionUses ? { connectionUses: options.oauthAppConnectionUses } : {}) }) } : {}) }
     : undefined;
+
+  const applyServerPause = async (): Promise<void> => {
+    if (isVaultUnlocked() && !isSyncPaused()) {
+      // ⛔ NOT AWAITED, as at boot: a loop's start waits for its first scan, which takes as long
+      // as the mailbox needs (minutes, after a long pause), and the owner's Resume answered only
+      // after every one of them (live, 2026-11-08: past a 60 s client timeout).
+      void mailStack?.resumeSync()?.catch(() => {});
+      void calendarStack?.resumeSync()?.catch(() => {});
+      return;
+    }
+    // A pause is: polling has stopped.
+    await Promise.all([
+      mailStack?.pauseSync()?.catch(() => {}),
+      calendarStack?.pauseSync()?.catch(() => {}),
+    ]);
+  };
 
   const startCollectionAdapters = async (): Promise<void> => {
     // ⛔ Boot does not wait for a first scan. Each reads all that came while the
@@ -1032,7 +1116,8 @@ export const composeCollectionContext = (
       // resume/pause helpers already swallow per-collection errors; this guards
       // a future refactor that could reject at the top level.
       vaultStateBus.subscribe((next) => {
-        if (next === 'unlocked') {
+        // D-188 — an unlock during the owner's pause leaves the loops held; Resume starts them.
+        if (next === 'unlocked' && !isSyncPaused()) {
           void mailStack?.resumeSync()?.catch(() => {});
           void calendarStack?.resumeSync()?.catch(() => {});
         } else {
@@ -1104,5 +1189,6 @@ export const composeCollectionContext = (
     oauthClientConfigDeps,
     ...(oauthAppConfigDeps ? { oauthAppConfigDeps } : {}),
     startCollectionAdapters,
+    applyServerPause,
   };
 };

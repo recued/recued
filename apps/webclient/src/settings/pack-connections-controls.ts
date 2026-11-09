@@ -16,7 +16,7 @@
  *  injected callers, a host re-render hook, a sync `renderForPack` over cached
  *  state that loads on first sight. */
 
-import type { PackListEntry, RpcRequest, RpcResponse, ServerRpcRegistry } from '@recued/contracts';
+import type { ConnectionView, PackListEntry, RpcRequest, RpcResponse, ServerRpcRegistry } from '@recued/contracts';
 import {
   connectionRemovalRecipeChanges,
   connectionRemovalRecipeSentence,
@@ -26,7 +26,9 @@ import {
 } from '@recued/ui-shared';
 
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
-import { connectionsEnrollAddress } from '../connections/connections-navigation.js';
+import { serializeShellRoute } from '../shell/route.js';
+import { connectionsEnrollAddress, connectionsReviewAccessAddress } from '../connections/connections-navigation.js';
+import { connectionProblem } from './connections-readiness-controls.js';
 import { createPackResourceAccessController, type PackResourceAccessCaller } from './pack-resource-access-controls.js';
 
 export type PackConnectionsView = RpcResponse<ServerRpcRegistry, 'packs.connections.list'>;
@@ -41,6 +43,10 @@ export interface PackConnectionsCallers {
   add: (args: PackConnectionChange) => Promise<PackConnectionsView>;
   remove: (args: PackConnectionChange) => Promise<PackConnectionsView>;
   setDefault: (args: PackConnectionChange) => Promise<PackConnectionsView>;
+  /** D-321 P4 — `packs.connections.signins`: every installed pack's own list in one
+   *  read, so the pack list's badges count what each pack's runs use. Absent: they
+   *  count any connection of the service, as before. */
+  signins?: () => Promise<RpcResponse<ServerRpcRegistry, 'packs.connections.signins'>>;
   /** D-320 slice 2g — `packs.connections.removal`. Absent, or a server without
    *  it: Remove asks without saying where the runs go. */
   removal?: (args: { connection_name: string; pack_slug: string }) => Promise<
@@ -70,6 +76,11 @@ export const PACK_CONNECTIONS_SET_UP_ATTR = 'data-recued-pack-connection-set-up'
 /** D-320 ruling 9 — on a borrowing pack's note: the holder's slug. */
 export const PACK_CONNECTIONS_HELD_BY_ATTR = 'data-recued-pack-connection-held-by';
 export const PACK_CONNECTIONS_ERROR_ATTR = 'data-recued-pack-connection-error';
+/** D-321 P4 — on a row's note: what keeps the connection from working for this
+ *  pack (`rejected` / `under_scoped`). */
+export const PACK_CONNECTIONS_PROBLEM_ATTR = 'data-recued-pack-connection-problem';
+/** D-321 P4 — the link that fixes it. */
+export const PACK_CONNECTIONS_FIX_ATTR = 'data-recued-pack-connection-fix';
 
 const COPY = {
   heading: 'Connections',
@@ -80,8 +91,13 @@ const COPY = {
   remove: 'Remove',
   confirm_remove: (alias: string) => `Stop using ${alias} for this pack?`,
   keep: 'Keep',
-  not_set_up: 'No longer set up. Set it up again under Connections, or remove it here.',
-  not_set_up_held: 'No longer set up.',
+  // D-321 P4 — the block cannot tell a connection deleted from one named at
+  // install and never set up (installing with none leaves its name on the list),
+  // so it says what both are, and links to the form (P8: the old line had none).
+  not_set_up: 'Not set up.',
+  not_set_up_held: 'Not set up.',
+  set_up: 'Set up →',
+  set_up_under_connections: 'Set it up under Connections →',
   none_yet: 'This pack has no connection yet.',
   no_default:
     'No default: runs ask which connection to use, and scheduled runs fail until you choose one.',
@@ -101,6 +117,13 @@ const COPY = {
   effect_subject: 'This pack',
   effect_loading: 'Checking where its runs go…',
   effect_failed: 'Could not check where its runs go next.',
+  // D-321 P4 — what keeps a set-up connection from working here, as the
+  // readiness rows said it before install.
+  sign_in_rejected: 'Sign-in not accepted.',
+  reconnect: 'Reconnect →',
+  missing_scopes: (missing: readonly string[]) => `Missing ${missing.join(', ')}.`,
+  reauthorize: 'Re-authorize →',
+  key_fix: (count: number) => `Add ${count === 1 ? 'it' : 'them'} to the key, then Probe →`,
 } as const;
 
 export interface PackConnectionsControllerOptions {
@@ -109,6 +132,10 @@ export interface PackConnectionsControllerOptions {
   callers?: PackConnectionsCallers;
   /** Host re-render hook, fired after every state change. */
   onChange: () => void;
+  /** D-321 P4 — the owner's connections as `collection.connection.list` returns
+   *  them, with `health` and granted scopes, so each row says whether it works for
+   *  this pack. Absent, or null while unread: the rows say what they did. */
+  connectionViews?: () => ReadonlyArray<ConnectionView> | null;
 }
 
 export interface PackConnectionsController {
@@ -279,11 +306,55 @@ export const createPackConnectionsController = (
     return b;
   };
 
+  /** D-321 P4 — under a set-up connection, what keeps it from working for this
+   *  pack's sign-in, and the link that fixes it (`connectionProblem`). */
+  const renderProblem = (
+    row: HTMLElement,
+    packSlug: string,
+    slot: PackConnectionSlot,
+    connectionName: string,
+    needed: readonly string[],
+  ): void => {
+    const view = opts.connectionViews?.()?.find((v) => v.kind === 'api' && v.name === connectionName);
+    if (view === undefined) return;
+    const problem = connectionProblem(view, needed);
+    if (problem === null) return;
+    const note = el(
+      row,
+      'span',
+      'pc-note pc-problem',
+      problem.problem === 'rejected' ? COPY.sign_in_rejected : COPY.missing_scopes(problem.missing),
+    );
+    note.setAttribute(PACK_CONNECTIONS_PROBLEM_ATTR, problem.problem);
+    const fix = el(
+      row,
+      'a',
+      'rx-link pc-fix',
+      problem.problem === 'rejected'
+        ? COPY.reconnect
+        : problem.key === true ? COPY.key_fix(problem.missing.length) : COPY.reauthorize,
+    );
+    fix.setAttribute(PACK_CONNECTIONS_FIX_ATTR, problem.problem);
+    // A turned-down sign-in opens that connection's own editor, where a key is
+    // replaced and an OAuth sign-in starts again. A pasted key short of a scope
+    // gains it at the vendor, then Probe on its Connections row reads it again;
+    // an app sign-in short of one signs in again with the pack's scopes.
+    fix.setAttribute(
+      'href',
+      problem.problem === 'rejected'
+        ? connectionsReviewAccessAddress(connectionName).hash
+        : problem.key === true
+          ? serializeShellRoute('connections', 'others')
+          : connectionsEnrollAddress(slot.vendor ?? slot.slot, { slug: packSlug, slot: slot.slot }).hash,
+    );
+  };
+
   const renderSlot = (
     parent: HTMLElement,
     packSlug: string,
     slot: PackConnectionSlot,
     labelled: boolean,
+    needed: readonly string[],
   ): void => {
     const block = el(parent, 'div', 'pc-slot');
     if (labelled) el(block, 'p', 'pc-slot-label', COPY.slot_label(slot.slot));
@@ -311,6 +382,17 @@ export const createPackConnectionsController = (
       if (connection.is_default) el(row, 'span', 'pc-badge', COPY.default_badge);
       if (!connection.enrolled) {
         el(row, 'span', 'pc-note', heldBy !== undefined ? COPY.not_set_up_held : COPY.not_set_up);
+        // The holder's list is changed on the holder; this pack's own gets the
+        // vendor's form, opened for this pack's sign-in.
+        if (heldBy === undefined) {
+          const fix = el(row, 'a', 'rx-link pc-fix', slot.vendor !== undefined ? COPY.set_up : COPY.set_up_under_connections);
+          fix.setAttribute(PACK_CONNECTIONS_FIX_ATTR, 'not_set_up');
+          fix.setAttribute('href', slot.vendor !== undefined
+            ? connectionsEnrollAddress(slot.vendor, { slug: packSlug, slot: slot.slot }).hash
+            : serializeShellRoute('connections', 'others'));
+        }
+      } else {
+        renderProblem(row, packSlug, slot, connection.connection_name, needed);
       }
       if (heldBy !== undefined) {
         if (connection.enrolled) access.render(row, change, isBusy);
@@ -442,7 +524,9 @@ export const createPackConnectionsController = (
       error.setAttribute(PACK_CONNECTIONS_ERROR_ATTR, '');
     }
     const labelled = current.view.slots.length > 1;
-    for (const slot of current.view.slots) renderSlot(section, pack.slug, slot, labelled);
+    for (const slot of current.view.slots) {
+      renderSlot(section, pack.slug, slot, labelled, pack.required_scopes_by_connection?.[slot.slot] ?? []);
+    }
     return section;
   };
 
@@ -475,9 +559,16 @@ export const PACK_CONNECTIONS_STYLES = `
   gap: 6px;
   margin-bottom: 12px;
 }
+/* The heading of the card it sits in ("What this pack needs", D-321 P4): the same as the
+   card's Programs block and the readiness rows before install, which read "PROGRAMS" and
+   "CONNECTIONS" beside this one's plain "Connections". */
 [${PACK_CONNECTIONS_ATTR}] .pc-heading {
   margin: 0;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #666);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 [${PACK_CONNECTIONS_ATTR}] .pc-note,
 [${PACK_CONNECTIONS_ATTR}] .pc-slot-label {
@@ -518,6 +609,13 @@ export const PACK_CONNECTIONS_STYLES = `
   margin-left: auto;
 }
 [${PACK_CONNECTIONS_ATTR}] .pc-confirm {
+  font-size: 12px;
+}
+/* The pack page gives every link a 44px touch target; in a row its text would sit
+   at the top of that box, above the name beside it. */
+[${PACK_CONNECTIONS_ATTR}] .pc-fix {
+  display: inline-flex;
+  align-items: center;
   font-size: 12px;
 }
 [${PACK_CONNECTIONS_ATTR}] .pc-warning {

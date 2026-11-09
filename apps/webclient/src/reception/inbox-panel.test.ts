@@ -293,6 +293,7 @@ const item = (over: Partial<InboxItem> = {}): InboxItem => ({
   proposed_action: over.proposed_action ?? 'Make a promise',
   status: over.status ?? 'pending',
   ...(over.allow_offer !== undefined ? { allow_offer: over.allow_offer } : {}),
+  ...(over.always_allow !== undefined ? { always_allow: over.always_allow } : {}),
   ...(over.booking_history !== undefined ? { booking_history: over.booking_history } : {}),
 });
 
@@ -1297,6 +1298,26 @@ describe('reception inbox panel — D-177 N.14 allow-for-this-form', () => {
 
     expect(h.mount.getState().error).toBe(RECEPTION_INBOX_ALLOW_WITH_EDITS_COPY);
     expect(h.calls.some((c) => c.op === 'reception.inbox.approve')).toBe(false);
+  });
+});
+
+describe('reception inbox panel — D-341 B4 always allow this form', () => {
+  it('says "always allow this form" where the ask offers the form\'s pre-approval, and flows allow into the dispatch', async () => {
+    const h = setup({ items: [item({ hold_id: 'hold-1', arg_schema: { fields: [] }, always_allow: true })] });
+    await flush();
+    const btn = h.root.querySelector(`[${RECEPTION_INBOX_ALLOW_BUTTON_ATTR}]`);
+    expect(btn?.textContent).toBe('Say yes, and always allow this form');
+    dispatch(btn!, 'click');
+    await flush();
+    expect(h.calls.find((c) => c.op === 'reception.inbox.approve')?.payload)
+      .toMatchObject({ hold_id: 'hold-1', allow: true, edits: {} });
+  });
+
+  it('says it in place of the session\'s bounds when an item somehow carries both', async () => {
+    const h = setup({ items: [item({ hold_id: 'hold-1', arg_schema: { fields: [] }, always_allow: true,
+      allow_offer: { ttl_ms: 86_400_000, max_uses: 20 } })] });
+    await flush();
+    expect(h.root.querySelector(`[${RECEPTION_INBOX_ALLOW_BUTTON_ATTR}]`)?.textContent).toBe('Say yes, and always allow this form');
   });
 });
 

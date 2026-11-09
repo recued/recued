@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { cronMatchesAt, nextCronMatch } from '../cron-interval.js';
+import { cronMatchesAt, isFixedTimeCron, nextCronMatch } from '../cron-interval.js';
 
 const NINE_AM = '0 9 * * *'.split(' ');
 const FROM = Date.parse('2026-06-15T00:00:00Z');
@@ -75,6 +75,40 @@ describe('D-269 — DST, which is where a zone-aware cron earns its keep', () =>
     const next = nextCronMatch(at230, Date.parse('2026-03-08T00:00:00Z'), 527_040, 'America/Los_Angeles');
     // The next match is the FOLLOWING day, not the gap.
     expect(new Date(next!).toISOString()).toBe('2026-03-09T09:30:00.000Z');
+  });
+});
+
+/** The fall-back half. On 2026-11-01 New York plays 01:00–01:59 twice: EDT
+ *  (05:00–05:59Z), then EST (06:00–06:59Z). `30 1 * * *` matched both 01:30s,
+ *  so a daily schedule ran twice and its missed-run check — which scans with
+ *  `nextCronMatch` — counted the second as missed. Classic cron runs a
+ *  fixed-time job once there, and a wildcard job in both hours. */
+describe('D-269 — the repeated hour of a fall-back', () => {
+  const NY = 'America/New_York';
+  const next = (cron: string, from: string): string =>
+    new Date(nextCronMatch(cron.split(' '), Date.parse(from), 527_040, NY)!).toISOString();
+
+  it('⛔ a fixed-time cron matches the repeated 01:30 once: after 01:30 EDT comes the next day', () => {
+    expect(next('30 1 * * *', '2026-11-01T05:31:00Z')).toBe('2026-11-02T06:30:00.000Z');
+  });
+
+  it('⛔ a cron with two times in the hour skips both repeats', () => {
+    expect(next('15,45 1 * * *', '2026-11-01T05:46:00Z')).toBe('2026-11-02T06:15:00.000Z');
+  });
+
+  it('a wildcard cron still runs in the repeated hour: it is another hour of real time', () => {
+    expect(next('0 * * * *', '2026-11-01T05:01:00Z')).toBe('2026-11-01T06:00:00.000Z');
+  });
+
+  it('a scan that starts inside the repeat matches what it has not passed', () => {
+    expect(next('30 1 * * *', '2026-11-01T06:10:00Z')).toBe('2026-11-01T06:30:00.000Z');
+  });
+
+  it('fixed-time means neither the minute nor the hour starts with `*`', () => {
+    expect(isFixedTimeCron('30 1 * * *'.split(' '))).toBe(true);
+    expect(isFixedTimeCron('0 9-17 * * 1-5'.split(' '))).toBe(true);
+    expect(isFixedTimeCron('0 * * * *'.split(' '))).toBe(false);
+    expect(isFixedTimeCron(['*/15', '1', '*', '*', '*'])).toBe(false);
   });
 });
 

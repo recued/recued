@@ -29,6 +29,7 @@ import {
   RpcError,
   AssetValidationError,
   WORK_ENTITY_KIND_SET,
+  type Commitment,
   type ExecutionSource,
   type HandlerSlice,
   type Task,
@@ -650,6 +651,18 @@ export const handleWorkEntityTaskMarkDone = async (
   }
 };
 
+/** Whether a commitment's Source can confirm a close of it: a local one, or one that writes
+ *  back. A read-through Source's row is closed where it lives. */
+export const commitmentSourceConfirmsClose = (store: WorkEntityStore, commitment: Commitment): boolean => {
+  const source = store.getSource(commitment.source_id);
+  return source !== null && source !== undefined && source.top_tier_kind === 'commitment' && source.write_capable
+    && source.sync_posture !== 'read_through';
+};
+/** D-343 slice 1 — the lock a commitment's close takes, so the chat's close of a row queues
+ *  behind Today's and the other way round. */
+export const withCommitmentMutation = <T>(store: WorkEntityStore, id: string, mutate: () => Promise<T>): Promise<T> =>
+  withEntityMutation(commitmentMutations, store, id, mutate);
+
 /** A semantic close, shared by Today, Data and Yours. The server sets its time.
  * Same-state retries retain that first time and emit no second outcome. */
 export const handleWorkEntityCommitmentClose = async (
@@ -673,8 +686,7 @@ export const handleWorkEntityCommitmentClose = async (
       if (current.pending_write) {
         throw new RpcError('bad_request', 'A change is waiting for source confirmation. Reopen this commitment before trying again.');
       }
-      const source = deps.store.getSource(current.source_id);
-      if (!source || source.top_tier_kind !== 'commitment' || !source.write_capable || source.sync_posture === 'read_through') {
+      if (!commitmentSourceConfirmsClose(deps.store, current)) {
         throw new RpcError('bad_request', `${method}: this source cannot confirm a commitment change`);
       }
       const { commitment } = to === 'fulfilled'

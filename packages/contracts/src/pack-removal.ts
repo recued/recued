@@ -23,6 +23,20 @@ export interface PackRemovalPlan {
   protection: { roots: string[]; release_history: boolean };
   records?: { disposition: 'retain'; publisher: string; pack_slug: string };
   prior_attempt_unconfirmed: boolean;
+  /** D-346 B — what removing a pack other packs use stops: each installed pack with
+   *  actions that need it, and those actions. They are refused before they start,
+   *  and offer the pack again, until it is installed again; everything else keeps
+   *  working. A pack that lists it as a dependency without such an action is listed
+   *  with none. Absent from a server before D-346, whose `dependants` block. */
+  stops?: PackRemovalStop[];
+}
+/** D-346 B — one pack whose actions stop when the reviewed pack is removed.
+ *  `pack_slug` null: the owner's own recipes, from no pack. */
+export interface PackRemovalStop {
+  pack_slug: string | null;
+  /** The pack's name, when this server knows it. */
+  name?: string;
+  actions: Array<{ recipe_id: string; name?: string }>;
 }
 export interface PackRemovalReview { pack_slug: string; publisher?: string; request_id: string }
 export interface PackRemovalApply {

@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
@@ -119,12 +119,15 @@ describe('cli_invocation executor', () => {
 
   it('rejects cwd args that do not resolve to an existing directory before spawn', async () => {
     const exec = createCliInvocationExecutor();
+    const missing = join(tmpdir(), 'recued-cli-cwd-missing');
 
+    // D-346 § 9 — said in the owner's words: it read "cli_invocation '…' cwd '…'
+    // must resolve to an existing directory".
     await expect(exec({
       slug: 'vitest',
       operation_key: 'javascript.test_run',
       operation_id: 'recued-core/vitest.javascript.test_run',
-      args: { project_dir: join(tmpdir(), 'recued-cli-cwd-missing') },
+      args: { project_dir: missing },
       timeout_ms: 5_000,
       binding: {
         kind: 'cli_invocation',
@@ -133,7 +136,228 @@ describe('cli_invocation executor', () => {
         shape: 'text',
         exit_code_handling: 'zero_is_success',
       },
-    })).rejects.toThrow(/cwd .* must resolve to an existing directory/);
+    })).rejects.toThrow(`There is no folder ${missing} on your server, so ${basename(process.execPath)} did not start.`);
+  });
+
+  it('says a cwd that names a file is not a folder (D-346 § 9)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'recued-cli-cwd-file-'));
+    try {
+      const file = join(root, 'notes.txt');
+      writeFileSync(file, 'x');
+      await expect(createCliInvocationExecutor()({
+        slug: 'vitest',
+        operation_key: 'javascript.test_run',
+        operation_id: 'recued-core/vitest.javascript.test_run',
+        args: { project_dir: file },
+        timeout_ms: 5_000,
+        binding: {
+          kind: 'cli_invocation',
+          cwd: { arg: '{project_dir}' },
+          argv_template: [process.execPath, '-e', 'process.exit(0)'],
+          shape: 'text',
+          exit_code_handling: 'zero_is_success',
+        },
+      })).rejects.toThrow(`${file} is not a folder, so ${basename(process.execPath)} did not start.`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  describe('D-346 § 9 — existing_paths: a folder the arguments name, checked before the program starts', () => {
+    // A stand-in for rg: writes a marker when it runs, so a refusal provably ran nothing.
+    const runner = (marker: string, extra: Partial<Parameters<ReturnType<typeof createCliInvocationExecutor>>[0]['binding']> = {}) => ({
+      kind: 'cli_invocation' as const,
+      argv_template: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`, '{root_dir}'],
+      existing_paths: [{ arg: '{root_dir}' }],
+      shape: 'text' as const,
+      exit_code_handling: 'zero_is_success' as const,
+      ...extra,
+    });
+    const call = (args: Record<string, unknown>, binding: ReturnType<typeof runner>) => createCliInvocationExecutor()({
+      slug: 'ripgrep',
+      operation_key: 'file.search_content',
+      operation_id: 'recued-core/ripgrep.file.search_content',
+      args,
+      timeout_ms: 5_000,
+      binding,
+    });
+
+    it('refuses a folder that is not there, naming it, and runs nothing; a folder there runs as before', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-'));
+      try {
+        const marker = join(root, 'ran');
+        const missing = join(root, 'projcts');
+        const refused = await call({ root_dir: missing }, runner(marker)).then(() => undefined, (err: unknown) => err);
+        // ripgrep, told --no-messages, said only "cli tool '/opt/homebrew/bin/rg' exited with code 2".
+        expect((refused as Error).message).toBe(`There is no ${missing} on your server, so ${basename(process.execPath)} did not start.`);
+        // The program by its name, as the owner knows it; the failure keeps the
+        // full path, and names the path the run gave, so no program fix is offered.
+        expect((refused as { cli_failure?: unknown }).cli_failure).toMatchObject({
+          reason: 'spawn_error', slug: 'ripgrep', operation_id: 'recued-core/ripgrep.file.search_content',
+          tool: process.execPath, path: missing,
+        });
+        expect(existsSync(marker)).toBe(false);
+
+        await call({ root_dir: root }, runner(marker));
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('reads a relative path from the folder the program starts in, and says to write it in full; ~ is no home folder', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-rel-'));
+      try {
+        mkdirSync(join(root, 'src'));
+        const marker = join(root, 'ran');
+        const base = realpathSync(root);
+        const inRoot = runner(marker, { cwd: { arg: '{project_dir}' } });
+
+        await call({ project_dir: root, root_dir: 'src' }, inRoot);
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+        rmSync(marker);
+
+        await expect(call({ project_dir: root, root_dir: 'srcc' }, inRoot)).rejects.toThrow(
+          `There is no ${join(base, 'srcc')} on your server, so ${basename(process.execPath)} did not start. Write the path in full.`,
+        );
+        // The words name the path to write: on a server launchd started in `/`, a model
+        // told only that ~ is not read asked the owner for the full path 3 runs of 3.
+        await expect(call({ project_dir: root, root_dir: '~/projects' }, inRoot)).rejects.toThrow(
+          `There is no ${join(base, '~', 'projects')} on your server, so ${basename(process.execPath)} did not start. A program your server starts does not read ~ as your home folder: write ${join(homedir(), 'projects')} instead.`,
+        );
+        await expect(call({ project_dir: root, root_dir: '~' }, inRoot)).rejects.toThrow(
+          `does not read ~ as your home folder: write ${homedir()} instead.`,
+        );
+        await expect(call({ project_dir: root, root_dir: '~someone/projects' }, inRoot)).rejects.toThrow(
+          'did not start. Write the path in full: a program your server starts does not read ~ as your home folder.',
+        );
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a detached job before its log file opens', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-detached-'));
+      try {
+        const missing = join(root, 'missing');
+        await expect(call({ result_dir: root, key: 'job_1', root_dir: missing }, {
+          ...runner(join(root, 'ran')),
+          stdin_handling: 'none',
+          detached: {
+            mode: 'runtime_managed',
+            completion: { kind: 'marker_file', exit_pattern: '{result_dir}/{key}.exit.{code}', log_pattern: '{result_dir}/{key}.log' },
+          },
+        } as ReturnType<typeof runner>)).rejects.toThrow(`There is no ${missing} on your server`);
+        expect(existsSync(join(root, 'job_1.log'))).toBe(false);
+        expect(existsSync(join(root, 'ran'))).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('checks every path an action names, in order, and refuses the first that is not there', async () => {
+      // gpgv and minisign name a signature and the file it signs; face_recognition two folders.
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-many-'));
+      try {
+        const marker = join(root, 'ran');
+        const signature = join(root, 'release.minisig');
+        const two = runner(marker, {
+          argv_template: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`, '{root_dir}', '{signature}'],
+          existing_paths: [{ arg: '{root_dir}' }, { arg: '{signature}' }],
+        });
+        await expect(call({ root_dir: root, signature }, two)).rejects.toThrow(
+          `There is no ${signature} on your server, so ${basename(process.execPath)} did not start.`,
+        );
+        expect(existsSync(marker)).toBe(false);
+
+        writeFileSync(signature, 'sig');
+        await call({ root_dir: root, signature }, two);
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('counts a link that points nowhere as there: stat, file, find and du report on the link itself', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-link-'));
+      try {
+        const marker = join(root, 'ran');
+        const link = join(root, 'dangling');
+        symlinkSync(join(root, 'gone'), link);
+        await call({ root_dir: link }, runner(marker));
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('accepts glob: a glob is the program’s to match, and a plain path is still checked', async () => {
+      // eslint and markdownlint take a file, a folder or a glob in one argument.
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-glob-'));
+      try {
+        const marker = join(root, 'ran');
+        const globbing = runner(marker, { existing_paths: [{ arg: '{root_dir}', accepts: 'glob' }] });
+        await call({ root_dir: join(root, 'srcc', '**', '*.ts') }, globbing);
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+        rmSync(marker);
+        await expect(call({ root_dir: join(root, 'srcc') }, globbing)).rejects.toThrow(
+          `There is no ${join(root, 'srcc')} on your server, so ${basename(process.execPath)} did not start.`,
+        );
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('accepts line: the file before :<line> is checked, and the line is the program’s', async () => {
+      // vitest's file:line.
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-line-'));
+      try {
+        const marker = join(root, 'ran');
+        const file = join(root, 'math.test.ts');
+        writeFileSync(file, '');
+        const lined = runner(marker, { existing_paths: [{ arg: '{root_dir}', accepts: 'line' }] });
+        await call({ root_dir: `${file}:12` }, lined);
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+        rmSync(marker);
+        const missing = join(root, 'mth.test.ts');
+        await expect(call({ root_dir: `${missing}:12` }, lined)).rejects.toThrow(
+          `There is no ${missing} on your server, so ${basename(process.execPath)} did not start.`,
+        );
+        // Without it, the whole value is the path.
+        await expect(call({ root_dir: `${file}:12` }, runner(marker))).rejects.toThrow(`There is no ${file}:12 on your server`);
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('leaves a form it does not know to the program, as it leaves a malformed entry', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-form-'));
+      try {
+        const marker = join(root, 'ran');
+        await call({ root_dir: join(root, 'missing') }, runner(marker, {
+          existing_paths: [{ arg: '{root_dir}', accepts: 'node' }] as unknown as ReturnType<typeof runner>['existing_paths'],
+        }));
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('reads a binding that reached it unvalidated defensively: an entry with no arg checks nothing', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'recued-cli-existing-loose-'));
+      try {
+        const marker = join(root, 'ran');
+        await call({ root_dir: join(root, 'missing') }, runner(marker, {
+          existing_paths: [null, { arg: 42 }] as unknown as ReturnType<typeof runner>['existing_paths'],
+        }));
+        expect(readFileSync(marker, 'utf8')).toBe('ran');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it('returns the session id the Codex adapter read off the stream, beside the output', async () => {
@@ -608,6 +832,32 @@ describe('cli_invocation foreground stall detection (D-181 slice 3)', () => {
         // no `progress` → unchanged behaviour
       },
     })).rejects.toThrow(/timed out after 100ms/);
+  });
+
+  it('⛔ a wall clock that jumps mid-run (a machine that slept) does not stall the op', async () => {
+    // 100 ms in, the executor's wall clock leaps two hours, as it does across a
+    // closed lid. On that clock the silent stretch below is a two-hour stall; on
+    // the clock that stops while the machine sleeps it is a few hundred ms.
+    const started = Date.now();
+    const exec = createCliInvocationExecutor({
+      stallTuning: { pollMs: 20 },
+      now: () => Date.now() + (Date.now() - started > 100 ? 2 * 60 * 60_000 : 0),
+    });
+
+    await expect(exec({
+      slug: 'docling',
+      operation_key: 'docling.convert',
+      operation_id: 'recued-core/docling.convert',
+      args: {},
+      stepMeta: { step_id: 's1', trigger_source: 'reactive' }, // unattended
+      binding: {
+        kind: 'cli_invocation',
+        argv_template: [process.execPath, '-e', 'setTimeout(() => {}, 400)'], // silent, then done
+        shape: 'text',
+        exit_code_handling: 'zero_is_success',
+        progress: { contract: 'heartbeat', adapter: 'codex-jsonl', stall_ms: 5_000 },
+      },
+    })).resolves.toBeDefined();
   });
 });
 

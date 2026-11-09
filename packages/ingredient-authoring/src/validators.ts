@@ -46,6 +46,7 @@ import {
   CLI_PROGRESS_ANSWER_ADAPTERS,
   CLI_BINDING_ENV_NAMES,
   CLI_BINDING_ENV_VALUE_MAX,
+  CLI_EXISTING_PATH_ACCEPTS,
   SERVICE_RESTART_POLICIES,
   isClosedRequestSchema,
   closedRequestSchemaDefinitionFindings,
@@ -336,6 +337,81 @@ const validateCliCwd = (
       `cwd arg ${JSON.stringify(ref)} must be declared in editable_args with affects_target: true`,
     );
   }
+};
+
+/** D-346 § 9 — `existing_paths`: caller arguments naming a folder or file the
+ *  program reads, checked on the server before it starts. Each entry is a single
+ *  `{arg_name}` token the argv passes (the value checked is the value the program
+ *  gets), never an engine-owned path: a materialized input always exists, and the
+ *  engine makes the output folder. `accepts`, when present, is one of
+ *  `CLI_EXISTING_PATH_ACCEPTS` (what else the program takes there). */
+const validateCliExistingPaths = (
+  row: Record<string, unknown>,
+  path: string,
+  add: AddIssue,
+): void => {
+  if (!isPlainObject(row.bind) || row.bind.kind !== 'cli_invocation') return;
+  const specs = row.bind.existing_paths;
+  if (specs === undefined) return;
+  const listPath = `${path}.bind.existing_paths`;
+  if (!Array.isArray(specs) || specs.length === 0) {
+    add(
+      'error',
+      'composition_cli_existing_paths_shape',
+      listPath,
+      'existing_paths must be a non-empty array of { "arg": "{arg_name}" } when present',
+    );
+    return;
+  }
+  const accepts: readonly unknown[] = CLI_EXISTING_PATH_ACCEPTS;
+  const argv = Array.isArray(row.bind.argv_template)
+    ? row.bind.argv_template.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  const materialize = isPlainObject(row.bind.input_materialize) ? row.bind.input_materialize.arg : undefined;
+  const capture = isPlainObject(row.bind.output_capture) ? row.bind.output_capture.dir_arg : undefined;
+  specs.forEach((spec, index) => {
+    const at = `${listPath}[${index}]`;
+    if (!isPlainObject(spec) || !(objectKeysExactly(spec, ['arg']) || objectKeysExactly(spec, ['arg', 'accepts']))) {
+      add(
+        'error',
+        'composition_cli_existing_paths_shape',
+        at,
+        'each existing_paths entry must be exactly { "arg": "{arg_name}" }, with "accepts" only beside it',
+      );
+      return;
+    }
+    if (spec.accepts !== undefined && !accepts.includes(spec.accepts)) {
+      add(
+        'error',
+        'composition_cli_existing_paths_accepts',
+        `${at}.accepts`,
+        `existing_paths accepts must be one of ${CLI_EXISTING_PATH_ACCEPTS.join(' | ')}: what else the program takes there besides a path`,
+      );
+      return;
+    }
+    const ref = cliCwdArgRef(spec.arg);
+    if (ref === undefined) {
+      add('error', 'composition_cli_existing_paths_arg', `${at}.arg`, 'existing_paths arg must be a single {arg_name} template token');
+      return;
+    }
+    if (ref === materialize || ref === capture) {
+      add(
+        'error',
+        'composition_cli_existing_paths_engine_owned',
+        `${at}.arg`,
+        `existing_paths arg ${JSON.stringify(ref)} is a path the engine makes; name only a path the caller gives`,
+      );
+      return;
+    }
+    if (!argv.some((entry) => entry.includes(`{${ref}}`))) {
+      add(
+        'error',
+        'composition_cli_existing_paths_not_in_argv',
+        `${at}.arg`,
+        `existing_paths arg ${JSON.stringify(ref)} must be passed in argv_template — the value checked is the value the program gets`,
+      );
+    }
+  });
 };
 
 /** Pinned environment variables — the shared `cliEnvViolations` invariant: a
@@ -1979,6 +2055,7 @@ const validateOperations = (
       }
       if (bindKind === 'cli_invocation') {
         validateCliCwd(row, path, add);
+        validateCliExistingPaths(row, path, add);
         validateCliEnv(row, path, add);
         validateCliOutputCapture(row, path, add);
         validateCliInputMaterialize(row, path, add);

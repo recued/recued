@@ -129,6 +129,24 @@ it('ignores contact matches from an older query or a discarded form', async () =
   expect(surface.render()).not.toContain('old@example.com');
 });
 
+// The live pass of 2026-11-08 (D-188): opened while the server was paused, the form said "The
+// server is paused" AND "No writable calendars are available. Check your connections", which
+// sent the owner to connections that were fine. The second is said only of a list that loaded.
+it('says why the calendar list did not load, and claims no empty list it never saw', async () => {
+  let refuse = true;
+  const { surface } = setup({ destinations: async () => {
+    if (refuse) throw Object.assign(new Error('The server is paused. Resume it, then try this again.'), { code: 'server_paused' });
+    return { destinations: [], unavailable: [] };
+  } });
+  surface.open();
+  await vi.waitFor(() => expect(surface.render()).toContain('The server is paused. Resume it, then try this again.'));
+  expect(surface.render()).not.toContain('No writable calendars');
+  refuse = false;
+  surface.handleAction('calendar-create-reload');
+  await vi.waitFor(() => expect(surface.render()).toContain('No writable calendars are available'));
+  expect(surface.render()).not.toContain('The server is paused');
+});
+
 it('requires an explicit destination when the selected calendar is unavailable', async () => {
   const create = vi.fn(async (request: CalendarEventCreateRequest) => result(request));
   const { surface } = setup({ create, destinations: async () => ({ destinations: [{ slug: 'local', calendar_id: 'local',

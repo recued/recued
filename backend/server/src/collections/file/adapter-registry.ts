@@ -123,6 +123,11 @@ export interface FileAdapterContext {
   onRescanNeeded?: () => void;
   /** Optional log hook. Defaults to no-op. */
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
+  /** D-188 — true while the owner's pause holds: an adapter that reads a store outside the
+   *  server (S3) skips its polls until Resume, and a start while paused lists nothing (its first
+   *  listing waits for the first look after Resume); nothing comes in during the emergency stop.
+   *  Absent ⇒ never paused. */
+  isPaused?: () => boolean;
 }
 
 /** A factory promises two operations: probe an attempted config to

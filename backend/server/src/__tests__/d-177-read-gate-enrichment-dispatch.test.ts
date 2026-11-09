@@ -114,7 +114,7 @@ describe('(ii) recued_enrichmentRead / vectorSimilaritySearch honor the door per
       makeDeps({ topics: ['transcript'] }),
     );
     // The per-topic content gate: a door granted `transcript` can't read `caption`.
-    expect(textOf(response)).toContain('not read-granted');
+    expect(textOf(response)).toContain('is not available for this contract');
   });
 
   it('enrichmentRead ADMITS the granted topic (reaches the handler past the gate)', async () => {
@@ -122,7 +122,7 @@ describe('(ii) recued_enrichmentRead / vectorSimilaritySearch honor the door per
       { name: 'recued_enrichmentRead', arguments: { topic: 'transcript' } },
       makeDeps({ topics: ['transcript'] }),
     );
-    expect(textOf(response)).not.toContain('not read-granted');
+    expect(textOf(response)).not.toContain('is not available for this contract');
   });
 
   it('an allTopics grant admits any topic (collection-subset doors keep reading)', async () => {
@@ -130,7 +130,7 @@ describe('(ii) recued_enrichmentRead / vectorSimilaritySearch honor the door per
       { name: 'recued_enrichmentRead', arguments: { topic: 'caption' } },
       makeDeps({ allTopics: true }),
     );
-    expect(textOf(response)).not.toContain('not read-granted');
+    expect(textOf(response)).not.toContain('is not available for this contract');
   });
 
   it('no checker (owner / unbound bearer) admits any topic', async () => {
@@ -138,7 +138,7 @@ describe('(ii) recued_enrichmentRead / vectorSimilaritySearch honor the door per
       { name: 'recued_enrichmentRead', arguments: { topic: 'caption' } },
       makeDeps(undefined),
     );
-    expect(textOf(response)).not.toContain('not read-granted');
+    expect(textOf(response)).not.toContain('is not available for this contract');
   });
 
   it('vectorSimilaritySearch REJECTS a topic not read-granted to the door', async () => {
@@ -149,7 +149,7 @@ describe('(ii) recued_enrichmentRead / vectorSimilaritySearch honor the door per
       },
       makeDeps({ topics: ['transcript'] }),
     );
-    expect(textOf(response)).toContain('not read-granted');
+    expect(textOf(response)).toContain('is not available for this contract');
   });
 });
 

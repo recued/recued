@@ -34,7 +34,7 @@ import type {
   TokenUsageAttribution,
 } from './types.js';
 import { hasModalityDemand, LLMError, requiredModalities } from './types.js';
-import { computeMaxTokens, shouldEnableThinking } from './router.js';
+import { computeMaxTokens, resolveThinking } from './router.js';
 import { buildContractedPrompt, buildUncontractedPrompt, isContractedSlug } from './prompts.js';
 import {
   parseContractedBatch,
@@ -47,6 +47,7 @@ import {
   hasSystemMessage,
   isContextOverflowRejection,
   isJsonModeRejection,
+  isThinkingSwitchRejection,
   jsonModeUnsupported,
   jsonSchemaUnsupported,
   noteContextAccepted,
@@ -54,13 +55,15 @@ import {
   noteJsonModeUnsupported,
   noteJsonSchemaUnsupported,
   noteSystemRoleUnsupported,
+  noteThinkingSwitchUnsupported,
   isSystemRoleRejection,
   systemRoleUnsupported,
+  thinkingSwitchUnsupported,
 } from './endpoint-capabilities.js';
 import { estimateConservativeMessagesTokens } from './context-budget.js';
 import { resolveLLMTimeoutMs } from './timeout.js';
 import { buildAvailability, describeLLMAvailability } from './availability.js';
-import { matchLLM, type ForceLayer, type PinnedSlot } from './match.js';
+import { matchLLM, type ForceLayer, type PinnedSlot, type PreferredSource } from './match.js';
 import type { QuotaTracker } from './quota.js';
 
 /** §5 publish-policy egress neutralization: web-search is forced OFF for EVERY
@@ -85,6 +88,8 @@ export interface MatchContextHook {
     /** D-191 Phase 6 — exact-slot pin (a manual chat pick of a configured
      *  slot). Restricts the match to this slot only; fail-closed. */
     pinSlot?: PinnedSlot;
+    /** D-344 slice C — the model the owner's chat runs on, preferred, never pinned. */
+    prefer?: PreferredSource;
   } | null;
 }
 
@@ -194,6 +199,11 @@ const completeWithJsonFallback = async (
   try {
     return await adapter.complete(slot, messages, effective);
   } catch (e) {
+    // D-344 — an endpoint that refuses the thinking switch: once without it, and remembered.
+    if (effective.thinking !== undefined && isThinkingSwitchRejection(e)) {
+      noteThinkingSwitchUnsupported(slot);
+      return completeWithJsonFallback(adapter, slot, messages, withoutThinking(effective));
+    }
     if (effective.json && effective.json_schema && isJsonModeRejection(e)) {
       // Protocol rejection only, before any answer was generated. A schema
       // rejected by this endpoint must not poison ordinary JSON support.
@@ -288,12 +298,21 @@ const completeWithFallbacksInner = async (
 
 /** The first provider attempt after applying already learned protocol support.
  * Shared with review; new fallback behavior still needs a new exact match. */
-export const describeInitialLLMProviderRequest = (slot: LLMSlot, messages: LLMMessage[], options: LLMCompletionOptions) => ({
-  messages: hasSystemMessage(messages) && systemRoleUnsupported(slot) ? demoteSystemMessages(messages) : messages,
-  options: options.json && jsonModeUnsupported(slot) ? { ...options, json: false, json_schema: undefined }
-    : options.json_schema && (!options.json || jsonSchemaUnsupported(slot, options.json_schema))
-      ? { ...options, json_schema: undefined } : options,
-});
+export const describeInitialLLMProviderRequest = (slot: LLMSlot, messages: LLMMessage[], options: LLMCompletionOptions) => {
+  const known = options.thinking !== undefined && thinkingSwitchUnsupported(slot) ? withoutThinking(options) : options;
+  return {
+    messages: hasSystemMessage(messages) && systemRoleUnsupported(slot) ? demoteSystemMessages(messages) : messages,
+    options: known.json && jsonModeUnsupported(slot) ? { ...known, json: false, json_schema: undefined }
+      : known.json_schema && (!known.json || jsonSchemaUnsupported(slot, known.json_schema))
+        ? { ...known, json_schema: undefined } : known,
+  };
+};
+
+/** D-344 — a call's options without the thinking switch: the provider's default. */
+const withoutThinking = (options: LLMCompletionOptions): LLMCompletionOptions => {
+  const { thinking: _switch, ...rest } = options;
+  return rest;
+};
 
 /** The actual input normalization and privacy pass. Preparation calls this
  * without resolving bytes or invoking a provider. */
@@ -498,10 +517,12 @@ export const buildLLMCompletionRequest = (manifest: IngredientManifest,
   // despite the declaration degrades via completeWithJsonFallback below.
   const wantsJson =
     contracted || input['llm.output_format'] === 'json';
+  const thinking = resolveThinking(match.resolved_hint, match.slot);
   const options: LLMCompletionOptions = {
     model: match.slot.model,
     max_tokens: computeMaxTokens(match.resolved_hint, match.slot),
-    thinking: shouldEnableThinking(match.resolved_hint, match.slot),
+    // D-344 — the owner's setting for the model, else reasoning for the `thinking` tier, else none.
+    ...(thinking !== undefined ? { thinking } : {}),
     search: wantsWebSearch(manifest, input) && match.slot.supports_search === true,
     timeout_ms: resolveLLMTimeoutMs(timeout_ms),
     json: wantsJson && match.slot.supports_json === true,
@@ -532,8 +553,9 @@ export const describeLLMMatch = (manifest: IngredientManifest, input: Record<str
   const strategy: CoordinationStrategy = deps.strategy
     ?? deps.config.free_pool_strategy
     ?? 'round_robin';
+  const prefer = ctx?.prefer;
 
-  return { requires, forceLayer, pinSlot, allowUpgrade, strategy };
+  return { requires, forceLayer, pinSlot, allowUpgrade, strategy, ...(prefer !== undefined ? { prefer } : {}) };
 };
 
 export const executeLLM = async (
@@ -546,7 +568,7 @@ export const executeLLM = async (
   input = prepared.input;
   const { batchMode, requireModalities, finishPii } = prepared;
 
-  const { requires, forceLayer, pinSlot, allowUpgrade, strategy } = describeLLMMatch(manifest, input, deps);
+  const { requires, forceLayer, pinSlot, allowUpgrade, strategy, prefer } = describeLLMMatch(manifest, input, deps);
 
   const availabilityDeps = {
     config: deps.config,
@@ -559,6 +581,7 @@ export const executeLLM = async (
   const matchRequest = {
     requires, allowUpgrade, forceLayer,
     ...(pinSlot ? { pinSlot } : {}),
+    ...(prefer ? { prefer } : {}),
     ...(requireModalities ? { requireModalities } : {}),
   };
   const withRetryTime = (failure: LLMError): LLMError => {
@@ -907,6 +930,8 @@ export const resolveLLMModelId = async (
       {
         requires, allowUpgrade, forceLayer,
         ...(pinSlot ? { pinSlot } : {}),
+        // D-344 slice C — the same preference the real call has.
+        ...(ctx?.prefer ? { prefer: ctx.prefer } : {}),
         ...(requireModalities ? { requireModalities } : {}),
       },
       {

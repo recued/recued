@@ -43,7 +43,7 @@ import {
 import { eventTriggerInWords } from '../dish-lead.js';
 import { configTextAsDish, parseRunConfig, plural, recipeDisplayName, runConnectionLines, runTargetGate } from './model.js';
 import { connectionSettings } from '../connection-lines.js';
-import type { RunModalState, RunModalTab } from './types.js';
+import type { RunModalNextStep, RunModalState, RunModalTab } from './types.js';
 
 /** The dialog surface: the stylesheet's hook, and the wiring's for putting focus
  *  back on the surface a repaint replaced. */
@@ -66,6 +66,12 @@ export const RUN_MODAL_RESULT_ATTR = 'data-recued-run-modal-result';
 export const RUN_MODAL_FACTS_ATTR = 'data-recued-run-modal-facts';
 /** Why a run returned errors: the first error's message and step (D-312). */
 export const RUN_MODAL_REASON_ATTR = 'data-recued-run-modal-reason';
+/** D-321 P2 — a link in a refused run's next step (`nextStepFor`). */
+export const RUN_MODAL_NEXT_STEP_ATTR = 'data-recued-run-modal-next-step';
+/** D-346 follow-up — said in place of a next step's action once it has worked. */
+export const RUN_MODAL_NEXT_ACTION_DONE_ATTR = 'data-recued-run-modal-next-action-done';
+/** D-321 C2 — the notice above Run: what would stop a run (`beforeRun`). */
+export const RUN_MODAL_BEFORE_RUN_ATTR = 'data-recued-run-modal-before-run';
 export const RUN_MODAL_PRESET_ATTR = 'data-recued-run-modal-preset';
 /** D-215 slice 5 — the Repeat toggle. Off ⇒ the datetime control replaces
  *  the CRON preset picker and Add creates a ONE-SHOT. */
@@ -313,8 +319,16 @@ const renderRunTab = (
     && runResultStatusLabel(state.result) === 'Run returned errors'
     ? runFailureReason(state.result.errors)
     : null;
+  // D-321 P2 / C2 — what the failed step needed, read from this very result.
+  const resultStep = failureReason !== null && state.result_next_step?.result === state.result
+    ? state.result_next_step.step
+    : null;
+  // D-321 P2 — what to do about a refusal, while it is still the error shown.
+  const nextStep = state.run_error !== null && state.run_next_step?.error === state.run_error
+    ? state.run_next_step.step
+    : null;
   const result = state.run_error !== null
-    ? `<div ${RUN_MODAL_RESULT_ATTR} role="alert">${e(state.run_error)}</div>`
+    ? `<div ${RUN_MODAL_RESULT_ATTR} role="alert">${nextStep === null ? e(state.run_error) : renderNextStep(nextStep, state)}</div>`
     : state.result !== null
       ? `<div ${RUN_MODAL_RESULT_ATTR} role="status" aria-live="polite" aria-atomic="true">
           <span>${e(runResultStatusLabel(state.result))}</span>
@@ -324,6 +338,7 @@ const renderRunTab = (
           ${failureReason === null
             ? ''
             : `<p class="run-modal-reason" ${RUN_MODAL_REASON_ATTR}>${e(failureReason)}</p>`}
+          ${resultStep === null ? '' : `<div class="run-modal-next">${renderNextStep(resultStep, state)}</div>`}
         </div>`
       : '';
 
@@ -338,6 +353,7 @@ const renderRunTab = (
       ${configBody}
       ${contextReview}
       ${notWired}
+      ${state.before_run === null ? '' : `<div class="run-modal-before" ${RUN_MODAL_BEFORE_RUN_ATTR} role="status">${renderNextStep(state.before_run, state)}</div>`}
       <div class="run-modal-actions">
         <button type="button" class="run-modal-button run-modal-button--primary"
           ${RUN_MODAL_ACTION_ATTR}="confirm-run"
@@ -717,6 +733,29 @@ const renderMailFactForm = (state: RunModalState, busyAttrs: string): string => 
 };
 
 /** Render the full overlay (backdrop + panel + Run|Schedule tabs). */
+/** A refused run's next step: its sentence, and a link for each place to go.
+ *  Only an address in the app is drawn (`#…`): the dialog closes as it is
+ *  followed, which is right for a page of the app and wrong for anything else. */
+const renderNextStep = (step: RunModalNextStep, state: Pick<RunModalState, 'next_action_status' | 'next_action_error'>): string => {
+  const links = step.links.filter((link) => link.href.startsWith('#') && link.text.trim() !== '');
+  // D-346 follow-up — the one-click fix: its button until it has worked, then what it did, IN
+  // PLACE OF the sentence saying what was off (live, 2026-11-08: "rg is switched off for you"
+  // stood above "It is on now.").
+  const done = step.action !== undefined && state.next_action_status === 'done';
+  const action = step.action === undefined || done
+    ? ''
+    : `<button type="button" class="run-modal-button run-modal-next-action" ${RUN_MODAL_ACTION_ATTR}="next-action"`
+        + `${state.next_action_status === 'running' ? ' disabled' : ''}>${e(step.action.text)}</button>`
+        + (state.next_action_status === 'failed' && state.next_action_error !== null
+          ? `<p class="run-modal-next-error" role="alert">${e(state.next_action_error)}</p>` : '');
+  return (done
+    ? `<p class="run-modal-next-lead run-modal-next-done" ${RUN_MODAL_NEXT_ACTION_DONE_ATTR} role="status">${e(step.action!.done)}</p>`
+    : `<p class="run-modal-next-lead">${e(step.lead)}</p>`)
+    + (links.length === 0 && action === '' ? '' : `<div class="run-modal-next-links">${action}${links.map((link) =>
+      `<a class="run-modal-button run-modal-next-link" href="${e(link.href)}" ${RUN_MODAL_NEXT_STEP_ATTR}>${e(link.text)}</a>`,
+    ).join('')}</div>`);
+};
+
 export const renderRunModal = (
   state: RunModalState,
   recipe: ServerRecipeListEntry,

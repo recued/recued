@@ -111,13 +111,14 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390, 320]) {
   test(`Yours views share usable navigation and fit at ${width}px in ${theme}`, async ({ page }, testInfo) => {
     await page.addInitScript(value => localStorage.setItem('recued.theme', value), theme);
     await page.setViewportSize({ width, height: width < 640 ? 844 : 1000 });
-    for (const view of ['assets', 'assets/classes', 'asset/passport', 'asset/passport/view/rules', 'proposals', 'occurrences', 'occasions', 'episodes']) {
+    for (const view of ['assets', 'assets/classes', 'asset/passport', 'asset/passport/view/rules', 'pursuits', 'proposals', 'occurrences', 'occasions', 'episodes']) {
       await page.goto(`${HARNESS_URL}?yours=demo&yours_provenance=1&contact_history=1#yours/${view}`);
       const route = page.locator('[data-recued-yours]');
       await expect(route).toHaveAttribute('aria-busy', 'false');
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
       const nav = route.getByRole('navigation', { name: 'Yours', exact: true });
-      await expect(nav.getByRole('link')).toHaveCount(5);
+      // D-342 added Pursuits beside Assets.
+      await expect(nav.getByRole('link')).toHaveCount(6);
       await expect(nav.locator('[aria-current="page"]')).toHaveCount(1);
       expect(await route.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);

@@ -30,6 +30,7 @@
 
 import { BOOT_RECONCILE_LEASE_OPERATION } from './early-boot-update-lease.js';
 import { inspectUpdateLease, type UpdateLeaseHolder } from './update-lease.js';
+import { processStartIdentity } from '../lifecycle/process-identity.js';
 
 /** Another live process's claim on the lease, or null. This process's own pid
  *  is never a reason to step aside, nor is a server's boot (above), and no
@@ -37,7 +38,7 @@ import { inspectUpdateLease, type UpdateLeaseHolder } from './update-lease.js';
 export const mcpLeaseHolder = (
   leasePath: string | null,
   pid: number = process.pid,
-  inspect: (leasePath: string) => UpdateLeaseHolder | null = inspectUpdateLease,
+  inspect: (leasePath: string) => UpdateLeaseHolder | null = (path) => inspectUpdateLease(path, processStartIdentity),
 ): UpdateLeaseHolder | null => {
   if (leasePath === null) return null;
   const holder = inspect(leasePath);

@@ -58,6 +58,9 @@ export const DISPATCH_ROLES = [
   // its pack was tested with. Raw owner-authored inventory, read by exact
   // catalog slug before a cli tool runs; never policy-merged.
   'owner_tool_version',
+  // D-321 — where the owner set a cli catalog's program. Same shape of role:
+  // raw owner-authored inventory, read by exact catalog slug before it runs.
+  'owner_tool_path',
   'grant_resolution',
   'approval_composition',
   'risk_override',
@@ -160,6 +163,8 @@ export const INVENTORY_DISPATCH_ROLES = [
   'owner_operation_defaults',
   // D-321 — one raw global owner choice per cli catalog's tool.
   'owner_tool_version',
+  // D-321 — one raw global location per cli catalog's program.
+  'owner_tool_path',
   // D-166 `contract_definition` returns the contract row (keyed by contract_id),
   // not a merged policy — its value_shape is therefore NOT policy-projected (the
   // projection-completeness ratchet exempts inventory-only scopes).
@@ -558,6 +563,17 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       version_hash: 'string',
     },
     required: ['outside', 'version_hash'],
+  },
+  /** D-321 — where the owner set one cli catalog's program. `binary` is the
+   * program the pack launched when the owner chose, the staleness anchor: a row
+   * for another program is left aside (`owner-tool-path.ts`). */
+  owner_tool_path_policy: {
+    fields: ['binary', 'path'],
+    types: {
+      binary: 'string',
+      path: 'string',
+    },
+    required: ['binary', 'path'],
   },
   // D-166 contract_definition — the (channels × actors × ingredient_ids ×
   // operation_ids × connection_names) scope a minted contract authorizes. Empty
@@ -1227,6 +1243,17 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
     required: ['ingredient_id'],
     value_shape: 'owner_tool_version_policy',
     applies_to: ['owner_tool_version'],
+    merge_precedence: 0,
+    merge_rule: 'override',
+    writeable_by: 'user',
+  },
+  owner_tool_path: {
+    // D-321 — global to the owner, like `owner_tool_version`: one row per cli
+    // catalog, which runs one program. Replaces the PATH lookup for it.
+    segments: ['ingredient_id'],
+    required: ['ingredient_id'],
+    value_shape: 'owner_tool_path_policy',
+    applies_to: ['owner_tool_path'],
     merge_precedence: 0,
     merge_rule: 'override',
     writeable_by: 'user',

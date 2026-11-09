@@ -42,6 +42,15 @@ export type UpdateOwnerAlert =
       from_version: string;
       to_version: string;
       reason: string;
+    }
+  | {
+      kind: 'auto-revert-refused';
+      release_identity: string;
+      from_version: string;
+      to_version: string;
+      reason: string;
+      /** Why the rollback cannot be made safely (`decideRollback`). */
+      refusal: string;
     };
 
 export type UpdateOwnerAlertSink = (alert: UpdateOwnerAlert) => void;
@@ -95,6 +104,15 @@ export const describeUpdateOwnerAlert = (
         text:
           `Recued could not prove whether the interrupted rollback for ${alert.release_identity} finished: `
           + `${alert.reason}. Its recovery record was kept. Review Settings → Updates before starting another update or rollback.`,
+      };
+      break;
+    case 'auto-revert-refused':
+      message = {
+        title: 'Update failed; Recued cannot roll back safely',
+        text:
+          `Recued ${alert.to_version} failed its boot health check (${alert.reason}), but Recued `
+          + `cannot return to ${alert.from_version} safely: ${alert.refusal}. Nothing was changed, and `
+          + `the server stays on ${alert.to_version}. Review Settings → Updates.`,
       };
       break;
     case 'supervisor-revert-complete':

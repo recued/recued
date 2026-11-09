@@ -18,6 +18,7 @@ import {
   parsePositionals,
 } from './cli/parse.js';
 import { SERVER_VERSION } from './server-version.js';
+import { processStartIdentity } from './lifecycle/process-identity.js';
 
 setRole('server');
 
@@ -270,6 +271,7 @@ const dispatch = async (): Promise<void> => {
           earlyBootLease = acquireUpdateLease({
             leasePath,
             operation: BOOT_RECONCILE_LEASE_OPERATION,
+            identify: processStartIdentity,
           });
         } catch (err) {
           if (!(err instanceof UpdateLeaseHeldError)) throw err;

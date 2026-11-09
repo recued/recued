@@ -48,8 +48,12 @@ import {
   opGrantEntry,
   ownerOnlyAdjustedAuthorDefault,
   OWNER_CONTRACT_ID,
+  grantSwitchText,
+  isOwnersOwnCall,
+  readRefusalSentence,
   resolveMCPExposure,
   topicGrantEntry,
+  type ChatFix,
   type EnrichmentTopic,
   type ExecutionSource,
 } from '@recued/contracts';
@@ -95,12 +99,29 @@ export const AUTHOR_DEFAULT_ONLY_RESOLVER: GrantEntryResolver = {
  *  Tier-1 outcome carries (`HELD_FOR_APPROVAL_MESSAGE`, `emptyMemoryResult`,
  *  `RECALL_WITHHELD_MESSAGE`): a refusal a reasoning model reads as a transient failure
  *  gets retried to timeout. Pinned by tests; see the D-205 entry in
- *  internal design notes before rewording. */
-export const collectionReadFencedHint = (collection: string): string =>
-  `the ${collection} collection is not read-granted to this contract (data.${collection}). `
-  + `This is NOT an empty result and NOT "not found" — matching records may well exist, but `
-  + `this contract may not read them. Tell the user their contract does not grant `
-  + `data.${collection}, and do not retry this call.`;
+ *  internal design notes before rewording.
+ *
+ *  D-346 follow-up (2026-11-08) — split by caller, as the owner ruled: the owner's own call
+ *  reads which switch is off and where ("Your tasks" on Entities); any other contract only
+ *  that it is not available, and no longer the grant's id. The three loads stay in both. */
+/** D-346 follow-up (2026-11-08) — the switch an owner's own call was refused for, as a fix
+ *  their chat offers under the answer ("Turn it on"); nothing for any other caller, who is
+ *  told nothing about switches. Here, beside the read refusals, because both the chat tools
+ *  and the work-item read tools reach it without a cycle. */
+export const ownerSwitchFix = (
+  entryKey: string,
+  source: ExecutionSource | undefined,
+): { fixes?: ChatFix[] } =>
+  isOwnersOwnCall(source)
+    ? { fixes: [{ kind: 'switch', entry_key: entryKey, label: grantSwitchText(entryKey)?.title ?? entryKey }] }
+    : {};
+
+export const collectionReadFencedHint = (collection: string, ownersOwn: boolean): string =>
+  `${readRefusalSentence(`Reading the ${collection} collection`, `${COLLECTION_GRANT_PREFIX}${collection}`, ownersOwn)} `
+  + 'This is NOT an empty result and NOT "not found": matching records may well exist'
+  + `${ownersOwn ? '' : ', but this contract may not read them'}. `
+  + `${ownersOwn ? 'Tell the owner that' : 'Tell the user it is not available for this contract'}, `
+  + 'and do not retry this call.';
 
 /** The VERB-OP twin of {@link collectionReadFencedHint}, for the Tier-1
  *  `work.search` / `work.read` tools when the dispatching contract lacks
@@ -121,14 +142,17 @@ export const collectionReadFencedHint = (collection: string): string =>
  *  SUCCESS envelope (`ok: true`) for that last reason.
  *
  *  Pinned by tests; see the 2026-07-16 entry in
- *  internal design notes before rewording. */
-export const workEntityReadVerbOpFencedHint = (): string =>
-  `reading work items is not granted to this contract (core.work-entity.read). `
-  + `This is NOT an empty result and NOT "not found" — matching tasks, notes, `
-  + `commitments or projects may well exist, but this contract may not read any of `
-  + `them. Granting a data.<kind> collection will NOT lift this — the missing grant `
-  + `is the core.work-entity.read operation itself. Tell the user that, and do not `
-  + `retry this call.`;
+ *  internal design notes before rewording.
+ *
+ *  D-346 follow-up (2026-11-08) — the owner's own call names the switch by its title ("Read
+ *  tasks, notes and more", on Ops), which no data switch shares, so the wrong-grant trap above
+ *  stays closed; any other contract reads only that it is not available, naming no grant. */
+export const workEntityReadVerbOpFencedHint = (ownersOwn: boolean): string =>
+  `${readRefusalSentence('Reading work items', 'core.work-entity.read', ownersOwn)} `
+  + 'This is NOT an empty result and NOT "not found": matching tasks, notes, commitments or projects may '
+  + `well exist${ownersOwn ? '' : ', but this contract may not read any of them'}. `
+  + `${ownersOwn ? 'Tell the owner that' : 'Tell the user it is not available for this contract'}, `
+  + 'and do not retry this call.';
 
 /** A bound contract's read-grant decisions, resolved for ONE dispatch. The read
  *  surfaces hold this (replacing the retired per-dispatch `EnrichmentVisibilityOverrides`

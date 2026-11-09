@@ -60,6 +60,13 @@ export type TodayCallers = Pick<BootstrapDataRouteOptions,
     /** D-325 §8 — the owner opened an item Today showed. Fire and forget: the link
      *  navigates at once, so this must never hold the route-switch guard. */
     situationOpenedCaller?: (input: Extract<YoursCommand, { action: 'navigation.open' }>) => void;
+    /** D-343 slice 4 (ruling 20) — "Close the day": opens a conversation holding today's evening
+     *  notice and goes to it, with the reply already quoting it. Rejects when it could not. Absent,
+     *  or a server that does not name it (`ProactiveToday.close_day`) → no button. */
+    closeDayCaller?: () => Promise<void>;
+    /** D-340 slice 2 (§3.7) — the streams' settings, opened over Today by "Daily stream". Absent, or a
+     *  server that does not name them (`ProactiveToday.stream`) → no button. */
+    stream?: Omit<import('./stream-panel.js').StreamPanelOptions, 'host' | 'document'>;
   };
 
 /** unix-ms → the `YYYY-MM-DDTHH:mm` a datetime-local input shows, in the
@@ -112,6 +119,9 @@ export interface TodayController {
   restoreSituation: (key: string) => Promise<void>;
   recordOpen: (clusterId: string, index: number) => void;
   closeCommitment: (key: string, outcome: 'fulfill' | 'cancel') => Promise<void>;
+  /** D-343 slice 4 — "Close the day", once at a time. */
+  closeDay: () => Promise<void>;
+  closingDay: () => boolean;
   /** True while an editor is mid-write — the shell blocks navigation on it. */
   busy: () => boolean;
   /** One read. `stillCurrent` is the shell's generation guard. */
@@ -137,6 +147,7 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
   let notice: string | null = null;
   let error: string | null = null;
   let closingCommitment = false;
+  let closingDay = false;
   let undoDismissal: string | null = null;
   let sequence = 0;
 
@@ -345,6 +356,19 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
         if (!host.isDisposed() && mine === sequence) host.render();
       }
     },
+    closeDay: async () => {
+      const open = host.callers.closeDayCaller;
+      if (!open || closingDay || host.isDisposed() || !host.isActive()) return;
+      closingDay = true; error = null; notice = null; host.render();
+      try { await open(); }
+      catch (cause) { if (!host.isDisposed()) error = host.errMessage(cause); }
+      finally {
+        closingDay = false;
+        // On success the route has gone to the conversation; otherwise the error says why.
+        if (!host.isDisposed()) { host.render(); if (error) host.focusTask('[data-today-task-error]'); }
+      }
+    },
+    closingDay: () => closingDay,
     closeCommitment: async (key, outcome) => {
       const item = snapshot?.items.find(row => row.key === key);
       const close = host.callers.commitmentCloseCaller;

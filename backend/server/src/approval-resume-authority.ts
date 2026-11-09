@@ -12,6 +12,8 @@ import {
   KERNEL_OP_REGISTRY,
   MCP_INGREDIENT_TOOL_PREFIX,
   STDIO_MCP_TOKEN_ID,
+  contractPermitsDoorType,
+  isContractActive,
   isGrantableKernelOp,
   executionSourceContractId,
   isCliIngredient,
@@ -23,6 +25,9 @@ import {
 } from '@recued/contracts';
 
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
+import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
+import { buildWebhookContractSnapshot } from './webhook-contract-snapshot.js';
+import { allowedToolsFor, buildReceptionContractSnapshot, grantedOperationsFor } from './reception-contract-snapshot.js';
 import type { ClientTokenStore } from './pairing/client-tokens.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ContractOverlayResolver } from './policy-contract-overlay.js';
@@ -101,6 +106,12 @@ export interface ApprovalResumeAuthorityResolverDeps {
   ) => ReadonlyArray<string>;
   /** Live Settings -> LLM route probe. Required for an llm_gateway source. */
   readonly isLlmGatewayRouteReady?: () => boolean;
+  /** D-341 slice B2 — a webhook run's door, read live (D-209 #1 W3). Absent ⇒ a webhook run's
+   *  approved local write is refused, as before. */
+  readonly webhookDoors?: { readonly definitionStore: Pick<ContractDefinitionStore, 'get'> };
+  /** D-341 slice B4 — a reception form's door, read live as its runner reads it. Absent ⇒ a form's
+   *  approved local write is refused, as before. */
+  readonly receptionDoors?: { readonly definitionStore: ContractDefinitionStore };
   readonly now?: () => number;
 }
 
@@ -446,6 +457,59 @@ export const createApprovalResumeAuthorityResolver = (
           return deny('contract_grant_revoked', 'This operation is no longer granted.');
         }
         return { admitted: true, execution_source: source };
+      }
+
+      // D-341 slice B2 — a webhook run's live authority is its door, the contract its trigger row
+      // stamps on the run (D-209 #1 W3). Re-read as the runner reads it before every (re-)entry:
+      // live and a webhook door, its snapshot built fresh, by the `'recipe'` route, which borrows
+      // none of the door's authored ceiling. A door replaced while the run waited is revoked, so it
+      // refuses here; `webhook-resume-door.ts` gives the engine its successor. Without this, the
+      // owner's approval of a webhook run's held Records write was refused at the write, every time
+      // (D-339 slice 2, live): D-201 5B2A had designed that run to resume.
+      if (source.channel === 'webhook' && source.actor === 'anonymous' && deps.webhookDoors !== undefined) {
+        const doorId = source.contract_id;
+        if (doorId === undefined) return deny('contract_unavailable', 'the webhook run has no door');
+        const door = deps.webhookDoors.definitionStore.get(doorId);
+        if (door === null || !isContractActive(door, now)) {
+          return deny('contract_unavailable', `webhook door '${doorId}' is revoked, expired or gone`);
+        }
+        if (!contractPermitsDoorType(door, 'webhook')) {
+          return deny('door_type_denied', `contract '${doorId}' is not a webhook door`);
+        }
+        return {
+          admitted: true,
+          execution_source: source,
+          contract_snapshot: buildWebhookContractSnapshot(source,
+            { definitionStore: deps.webhookDoors.definitionStore, now: () => now }, 'recipe'),
+        };
+      }
+
+      // D-341 slice B4 — a reception form's run, the same way: its live authority is the form's door
+      // (the source's `contract_id`), re-read as the runner reads it, its snapshot built by the
+      // runner's own builder and projections (`reception-contract-snapshot.ts`), so it equals the
+      // run's field for field unless the door changed. Before this, approving a form's held Records
+      // write was refused at the write (`unsupported_source`).
+      if (source.channel === 'reception' && source.actor === 'anonymous' && deps.receptionDoors !== undefined) {
+        const doorId = source.contract_id;
+        if (doorId === undefined) return deny('contract_unavailable', 'the form run has no door');
+        const { definitionStore } = deps.receptionDoors;
+        const door = definitionStore.get(doorId);
+        if (door === null || !isContractActive(door, now)) {
+          return deny('contract_unavailable', `reception door '${doorId}' is revoked, expired or gone`);
+        }
+        if (!contractPermitsDoorType(door, 'reception')) {
+          return deny('door_type_denied', `contract '${doorId}' is not a reception door`);
+        }
+        return {
+          admitted: true,
+          execution_source: source,
+          contract_snapshot: buildReceptionContractSnapshot(source, {
+            definitionStore,
+            allowedTools: allowedToolsFor(definitionStore),
+            grantedOperations: grantedOperationsFor(definitionStore),
+            now: () => now,
+          }),
+        };
       }
 
       if (executionSourceContractId(source) !== undefined) {

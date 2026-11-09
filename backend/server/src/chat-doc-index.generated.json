@@ -221,7 +221,39 @@
     "section": "Session grants",
     "eyebrow": "Concepts",
     "url": "https://recued.com/docs/concepts/grants-and-approvals#session-grants",
-    "body": "When you work in chat, you can choose to relax the asking for the rest of\nthat session:\n\n- **Exact** means approve this one exact action, once.\n- **Batch** means approve this shape of action for the burst it belongs to.\n- **Open** means allow this kind of action, within one area you set, for the session.\n\nAn approval that offers **Allow this session** says what it lets happen. It\nnames the recipe that may go ahead without asking, how many more times, and\nfor how long. It lists what must stay the same on each later run. For an email, that is who it\ngoes to and the mailbox it is sent from. For a notice to a booking's visitor, it is the booking.\nIt also names what may change, such\nas the subject and the text. A change to anything on the list asks you\nagain. Some actions allow only the same thing again, with every detail the\nsame, and the approval says that instead. The approval email and the Approvals page show\nthis. The approvals pop-up in the top bar leaves it out to stay short.\n\nIf you approve the same thing many times, Recued may suggest a standing rule.\nOnly you can make one. A suggestion never switches itself on."
+    "body": "When you work in chat, you can choose to relax the asking for the rest of\nthat session:\n\n- **Exact** means approve this one exact action, once.\n- **Batch** means approve this shape of action for the burst it belongs to.\n- **Open** means allow this kind of action, within one area you set, for the session.\n\nAn approval that offers **Allow this session** says what it lets happen. It\nnames the recipe that may go ahead without asking, how many more times, and\nfor how long. It lists what must stay the same on each later run. For an email, that is who it\ngoes to and the mailbox it is sent from. For a notice to a booking's visitor, it is the booking.\nIt also names what may change, such\nas the subject and the text. A change to anything on the list asks you\nagain. Some actions allow only the same thing again, with every detail the\nsame, and the approval says that instead. The approval email and the Approvals page show\nthis. The approvals pop-up in the top bar leaves it out to stay short.\n\nSome changes always need your own look, so they never offer **Allow this\nsession**. These are a proposed commitment, a quote, a job a customer accepted,\nand a customer payment.\n\nIf you approve the same thing many times, Recued may suggest a standing rule.\nOnly you can make one. A suggestion never switches itself on."
+  },
+  {
+    "id": "concepts/grants-and-approvals#don-t-ask-about-browser-actions",
+    "doc": "Grants and approvals",
+    "section": "Don't ask about browser actions",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#don-t-ask-about-browser-actions",
+    "body": "Your AI can work in your browser for you. Below the chat's box is a switch:\n**Don't ask about browser actions**. Turn it on, and the job you ask for goes\nahead without asking at each step. That covers opening pages, typing, clicks\nand sent forms. It covers every site the job goes to.\n\nThe switch stays on while the job goes on. That includes your AI's questions\nto you and your answers. It ends when you turn it off. It also ends when you\nsend a message with it off, or after 8 hours.\n\nSome things still stop or ask:\n\n- Sites you blocked are still refused.\n- A sign-in code is still asked for at its step.\n- Putting one of your files into a page still asks.\n- A change outside your browser, such as an email or a record, still asks."
+  },
+  {
+    "id": "concepts/grants-and-approvals#approve-ahead",
+    "doc": "Grants and approvals",
+    "section": "Approve ahead",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#approve-ahead",
+    "body": "Some runs happen while you are away. A schedule starts one. So can a webhook,\nan event trigger, an auto-run you switched on, a public form, or a scheduled\nprompt. A change such a run makes waits for your approval. You can approve it\nahead instead.\n\nThere are two ways:\n\n1. Open the trigger's own page, and open **What it may do without asking**.\n   Tick the changes to allow, and how many times a run. Then choose\n   **Allow without asking**.\n2. Or answer a waiting approval with **Always allow for this webhook**. The\n   last word names the trigger: schedule, trigger, auto-run, form or\n   scheduled prompt.\n\nA webhook's page is its card under Connections. A schedule's page is under\nAutomation. A form's page is under Reception.\n\nWhat you allow stays on until you end it. End it on the trigger's page, or\nunder **Contracts**. Contracts lists it under **Happening without asking**. A\nrun's page says what it did without asking."
+  },
+  {
+    "id": "concepts/grants-and-approvals#what-still-asks-when-you-approve-ahead",
+    "doc": "Grants and approvals",
+    "section": "What still asks when you approve ahead",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#what-still-asks-when-you-approve-ahead",
+    "body": "A yes given ahead is narrow on purpose:\n\n- It covers only the changes it names.\n- It covers only that recipe, as it is now. A change to the recipe asks you\n  again. So does a change to a scheduled prompt's words.\n- A change that deletes still asks.\n- A change you set to ask every time still asks.\n- Some changes always need your own look. A proposed commitment, a quote, and\n  a job a customer accepted still ask.\n\nA scheduled prompt's AI decides what it writes, and its approval says so. Its\nbrowser actions can be approved ahead too, on any site. That allows up to 100 a\nrun. Sites you blocked are still refused. Putting your files into a page still\nasks, and so does a sign-in code."
+  },
+  {
+    "id": "concepts/grants-and-approvals#when-something-is-turned-off-for-you",
+    "doc": "Grants and approvals",
+    "section": "When something is turned off for you",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#when-something-is-turned-off-for-you",
+    "body": "A switch is an on or off for one thing on the Contracts page. Your own row\nthere is **Self (you)**. Is a switch off for you? Then a call that needs it\ndoes not run. Recued tells you what is off and where to turn it on. For\nexample: \"'mail.search' is turned off for you, so it did not run. To use it,\nturn it on under Self (you) → Ops on the Contracts page.\"\n\nIn chat, the fix shows under the answer. Press **Turn it on**, then ask\nagain. The run dialog has **Turn it on** too, for a program that is switched\noff for you.\n\nAn AI app, or anyone else you gave a contract, is told less. It reads only\nthat the thing is not available for that contract. It never sees your\nswitches."
   },
   {
     "id": "concepts/grants-and-approvals#doors",
@@ -678,6 +710,14 @@
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/ai-chat-and-mcp#when-nothing-installed-can-do-it",
     "body": "Sometimes you ask chat for something that none of your installed recipes\ncan do. Chat says so. Under its answer, it names up to three packs or\nrecipes from the marketplace that could. Each name is a link to its page.\n\nChat also links a pack when something you asked for needs one. Ask about a\nPDF before a document reader pack is installed, and chat links MarkItDown\nand Docling. Ask for a recipe whose pack you removed, and chat links that\npack.\n\nChat never installs anything. You open the page and read what the pack may\ndo. Then you install it there, if you want it. To find these, chat looks in\nyour server's own copy of the marketplace list. Your words stay on your\nserver. Chat names only packs whose publisher has the marketplace's\nCertified badge.\n\nOnly your own chat gets these suggestions. An outside agent never does, and\nneither does a customer you sell access to. In Slack and Telegram, the names\ncome as links when your server has a public address. Without one, chat\ngives the names, and you install from the web app.\n\nTo turn the suggestions off, open Settings → AI/Models and find Chat\nbehaviour. Choose **Stop suggesting packs**."
+  },
+  {
+    "id": "guides/ai-chat-and-mcp#fixes-under-an-answer",
+    "doc": "AI chat and MCP",
+    "section": "Fixes under an answer",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/ai-chat-and-mcp#fixes-under-an-answer",
+    "body": "Sometimes a call in your chat cannot do its job. Then chat lists the fix\nunder its answer. A connection may need you to reconnect it, or to set it\nup. A program may be missing, so the fix links to its pack's page. A switch\nmay be off for you. Then press **Turn it on**, and ask again.\n\nThe fixes come from the calls themselves, not from what the AI writes. Only\nyour own chat shows them."
   },
   {
     "id": "guides/ai-chat-and-mcp#connect-an-outside-agent",
@@ -3125,7 +3165,23 @@
     "section": "Dependencies",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/recipes-and-packs#dependencies",
-    "body": "A recipe can need a capability pack. During setup, Recued shows you which\nknown packs are missing. You can install them first, together with the\nrecipe. Packs\nyou already have stay visible. They are not installed a second time.\n\nDo you want the JSON for recipe pins, typed contents, and needed versions?\nSee the [pack manifest reference](../reference/pack-manifest.md)."
+    "body": "A recipe can need a capability pack. A pack can need other packs, too.\nDuring setup, the install dialog shows you which known packs are missing.\nFor example: \"Month-end closer needs 2 Packs that are not installed\". Packs\nyou already have stay visible. They are not installed a second time.\n\nEach missing pack gets a row. The row says which packs need it. It says what\nthey do with it, like \"adds and changes things in it\". It also says what\naccess the install gives it, like Read + write.\n\nYou can go on in one of two ways:\n\n1. **Install all.** Press the dialog's main button. It says how many it\n   installs, like **Install all 2 and Month-end closer**. Each pack gets the\n   access its row names.\n2. **Install…** Press it on one row. That pack opens in its own dialog.\n   There you choose what it may do. Once it is installed, or you cancel, you\n   come back to the first dialog.\n\nDoes a needed pack need another pack in turn? Then you go one more step in,\nand you come back the same way.\n\nCan a pack not get the access its actions need? Then its row says so: those\nsteps will be refused.\n\nDo you want the JSON for recipe pins, typed contents, and needed versions?\nSee the [pack manifest reference](../reference/pack-manifest.md)."
+  },
+  {
+    "id": "guides/recipes-and-packs#updates-that-bring-in-a-pack",
+    "doc": "Recipes and packs",
+    "section": "Updates that bring in a pack",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#updates-that-bring-in-a-pack",
+    "body": "An update can need a pack you do not have. Then its button says so, like\n**Update and install Ledger book**. Each row says what the update gives that\npack. **Install…** works here the same way. Once that pack is installed, the\nupdate is checked again, with the same choices."
+  },
+  {
+    "id": "guides/recipes-and-packs#remove-a-pack-that-other-packs-use",
+    "doc": "Recipes and packs",
+    "section": "Remove a pack that other packs use",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#remove-a-pack-that-other-packs-use",
+    "body": "You can remove a pack that other packs use. Press **Delete** on it. Before\nyou confirm, a review warns you. For example: \"Removing github-repos stops\nthese actions until you install it again. Their packs' other actions keep\nworking.\"\n\nBelow that is a line for each pack whose actions stop. Your own recipes get\na line too. Then comes the list **Packs that list it as a dependency**. Press\n**Confirm reviewed removal** to go on.\n\nThe packs that use it stay installed. Only their actions that need it stop.\nInstall it again, and those actions work again."
   },
   {
     "id": "guides/recipes-and-packs#review-vendor-permissions-before-installing-or-updating",
@@ -3157,7 +3213,31 @@
     "section": "Programs a pack runs",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/recipes-and-packs#programs-a-pack-runs",
-    "body": "Some packs run a program on your server, like `ffmpeg` or `opencode`.\nRecued does not install the program for you. You install it.\n\nThe pack's page has a **Programs** block. It lists each program the pack\nruns. It says if the program is there, and which version you have.\n\nIs a program missing? If the pack says how to install it, the block shows\nthe command. Press **Copy**, then run the command yourself. Recued never\nruns it. When you are done, press **Check again**.\n\nThe packs list puts a badge on a pack when a program needs you:\n\n- **Needs ffmpeg.** The program is not installed. The pack's actions fail\n  until you install it.\n- **ffmpeg does not start.** The program is there, but it does not start.\n  The pack's actions are refused until it starts.\n- **opencode 2.0.1 not tested.** The pack was not tested with your version.\n  See the next section.\n\nThe badge is red only when the program stops the pack's actions."
+    "body": "Some packs run a program on your server, like `ffmpeg` or `opencode`.\nRecued does not install the program for you. You install it.\n\nThe pack's page has a **Programs** block. It lists each program the pack\nruns. It says if the program is there, and which version you have.\n\nIs a program missing? If the pack says how to install it, the block shows\nthe command. Press **Copy**, then run the command yourself. Recued never\nruns it. When you are done, press **Check again**.\n\nThe packs list puts a badge on a pack when a program needs you:\n\n- **Needs ffmpeg.** The program is not installed. The pack's actions fail\n  until you install it.\n- **ffmpeg not on PATH.** The program is installed, but the server cannot\n  find it. See the next section.\n- **ffmpeg does not start.** The program is there, but it does not start.\n  The pack's actions are refused until it starts.\n- **opencode 2.0.1 not tested.** The pack was not tested with your version.\n  See **When a program's version was not tested**, below.\n\nThe badge is red only when the program stops the pack's actions."
+  },
+  {
+    "id": "guides/recipes-and-packs#a-run-checks-its-programs-first",
+    "doc": "Recipes and packs",
+    "section": "A run checks its programs first",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#a-run-checks-its-programs-first",
+    "body": "Before a run starts, Recued checks the programs its steps will use. Is one\nmissing? Or can your server not find it? Then the run does not start. No\nstep runs, not even the first one. This holds for a run you start, a\nschedule, an automation, and a run from chat.\n\nYou see a message like this: \"rg is not installed on your server, or your\nserver cannot find it, so 'Find in files' did not start. Ripgrep's page in\nPacks says what to do.\" Press **Open Ripgrep Pack** to go to that page.\n\nA step that may be skipped is checked when it runs."
+  },
+  {
+    "id": "guides/recipes-and-packs#when-a-folder-or-file-is-not-there",
+    "doc": "Recipes and packs",
+    "section": "When a folder or file is not there",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#when-a-folder-or-file-is-not-there",
+    "body": "Some actions read a folder or a file you name. Before the program starts,\nRecued checks that it is there. If it is not, the program does not start.\nYou see a message like this: \"There is no /Users/me/projcts on your server,\nso rg did not start.\"\n\nWrite each path in full. A program your server starts does not read `~` as\nyour home folder. So when you write a `~` path, the message gives you the\nfull path to write instead. Is your server not allowed to open the folder?\nThe message says that too."
+  },
+  {
+    "id": "guides/recipes-and-packs#when-the-server-cannot-find-a-program",
+    "doc": "Recipes and packs",
+    "section": "When the server cannot find a program",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#when-the-server-cannot-find-a-program",
+    "body": "Does the block say **Not on the server's PATH**? Then the program is\ninstalled, but in a folder the server does not look in. The block names the\nfile it found. Press **Use** with that file's path, and the server runs the\nprogram from there. A server that starts by itself when you log in takes the\nPATH of the terminal you installed it from. So you can also run the\ninstaller again from a terminal where the program works. The block shows\nthat command too.\n\nIs the program in a folder the server did not look in? Open **Set where it\nis**. Type the full path to the program, then press **Use this file**. The\nfile must have the program's name. The server checks that it can run it.\nTo let the server look on its PATH again, press **Use the server's PATH**.\n\nDid you copy the pack in the Kitchen? The copy runs the program from the\nlocation you set for the pack it copies. Its page says so. Set a location on\nthe copy to change it for the copy alone."
   },
   {
     "id": "guides/recipes-and-packs#when-a-program-s-version-was-not-tested",
@@ -3173,7 +3253,7 @@
     "section": "Access and audience",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/recipes-and-packs#access-and-audience",
-    "body": "A pack that uses a connection asks you two things:\n\n- **Access.** Which operations the pack may use. For example, read only, or\n  read and write.\n- **Audience.** Who may use those grants. The default is only you, the owner.\n\nThe grant you pick attaches to the installed pack. A single recipe cannot\nquietly make it bigger."
+    "body": "A pack that uses a connection asks you two things:\n\n- **Access.** Which operations the pack may use. For example, read only, or\n  read and write.\n- **Audience.** Who may use those grants. The default is only you, the owner.\n\nThe grant you pick attaches to the installed pack. A single recipe cannot\nquietly make it bigger.\n\nFor you, Access decides which of the pack's workflows you can use. Some\npacks hold only connection actions. You can use every action of those\neither way, and each change asks you first. So there, Access is for the apps\nyou share the pack with. The choice shows once you tick one under Audience."
   },
   {
     "id": "guides/recipes-and-packs#risk-and-approval-for-an-operation",
@@ -3837,7 +3917,7 @@
     "section": "P",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/glossary#p",
-    "body": "**Pack** — a box that holds recipes, ingredients, and rules. You install the\nwhole box at once. Grants attach to the pack. See\n[Recipes, ingredients, and packs](../concepts/recipes-ingredients-packs.md).\n\n**Pairing** — linking a device (the webclient or the Bridge) to your server.\nThe device gets a limited pass. You can cancel it.\nPairing goes\nstraight to your server, never through the cloud.\n\n**Pro** — a paid extra, $5.99 USD a month, and you can skip it. It gives your\nserver a `<handle>.recued.net` name and a certificate that renews by itself.\nIt unlocks no features.\n\n**Publisher handle** — your name in the marketplace. It is free. Everything\nyou publish lives under it."
+    "body": "**Pack** — a box that holds recipes, ingredients, and rules. You install the\nwhole box at once. Grants attach to the pack. See\n[Recipes, ingredients, and packs](../concepts/recipes-ingredients-packs.md).\n\n**Pairing** — linking a device (the webclient or the Bridge) to your server.\nThe device gets a limited pass. You can cancel it.\nPairing goes\nstraight to your server, never through the cloud.\n\n**Pause server** — the emergency stop for your server. While it is on,\nnothing leaves your server and nothing comes in. See\n[Pause the server](../setup/pause-server.md).\n\n**Pro** — a paid extra, $5.99 USD a month, and you can skip it. It gives your\nserver a `<handle>.recued.net` name and a certificate that renews by itself.\nIt unlocks no features.\n\n**Publisher handle** — your name in the marketplace. It is free. Everything\nyou publish lives under it."
   },
   {
     "id": "reference/glossary#r-s",
@@ -3893,7 +3973,7 @@
     "section": "AI tools, part 2",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-2",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `document.read` | **Read a document.** Reads the text of a file, like an email attachment or a stored PDF. Needs `data.file`. Also needs `core.storage.data-file-read` for a plain text file and `core.storage.file.read-temp` for a document it converts. To convert a document, the MarkItDown or Docling pack must be installed, with its convert switch on. |\n| `document.search` | **Search document contents.** Finds words inside saved files and attachments, with excerpts and file links. Needs `data.file`. Also needs `core.storage.data-file-read` to read text and verify saved matches and `core.storage.file.read-temp` to read converted documents. Uses installed MarkItDown or Docling when conversion is needed. Shows files it could not search. |\n| `enrichment.search` | **Search worked-out facts.** Finds facts Recued worked out about records, like a score or a summary. Each kind of fact also needs its own switch on the Entities tab. |\n| `file.search` | **Search your files.** Finds files in your connected folders. Needs `data.file`. |\n| `mail.read` | **Read an email.** Reads one email in full and lists its attachments. Needs `data.mail`. Also needs `data.file` to list attachments. |\n| `mail.search` | **Search your mail.** Searches your mail by subject, sender, words or date. Needs `data.mail`. |\n| `memory.forget` | **Forget a saved fact.** Forgets a fact the AI saved earlier. You can bring it back. Needs `core.memory.write`. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `document.read` | **Read a document.** Reads the text of a file, like an email attachment or a stored PDF. Needs `data.file`. Also needs `core.storage.data-file-read` for a plain text file and `core.storage.file.read-temp` for a document it converts. To convert a document, the MarkItDown or Docling pack must be installed, with its convert switch on. |\n| `document.search` | **Search document contents.** Finds words inside saved files and attachments, with excerpts and file links. Needs `data.file`. Also needs `core.storage.data-file-read` to read text and verify saved matches and `core.storage.file.read-temp` to read converted documents. Uses installed MarkItDown or Docling when conversion is needed. Shows files it could not search. |\n| `enrichment.search` | **Search worked-out facts.** Finds facts Recued worked out about records, like a score or a summary. Each kind of fact also needs its own switch on the Entities tab. |\n| `episode.record` | **Record your day.** Records what you did or skipped on a day, in your words, as your history. Needs `core.situation.record`. Naming an item from your agenda also needs the read switch for that kind of item. |\n| `file.search` | **Search your files.** Finds files in your connected folders. Needs `data.file`. |\n| `mail.read` | **Read an email.** Reads one email in full and lists its attachments. Needs `data.mail`. Also needs `data.file` to list attachments. |\n| `mail.search` | **Search your mail.** Searches your mail by subject, sender, words or date. Needs `data.mail`. |"
   },
   {
     "id": "reference/grant-switches#ai-tools-part-3",
@@ -3901,7 +3981,7 @@
     "section": "AI tools, part 3",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-3",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `memory.relations` | **Look up how to save a fact about someone.** Tells an AI how to save a fact about a person or a thing, like \"Mia is Dana's daughter\". Then one fact is saved the same way each time. Needs `core.memory.write`. |\n| `memory.search` | **Search your memory.** Finds facts and notes saved in your memory. Needs `core.memory.read`. |\n| `memory.write` | **Save to your memory.** Saves a fact to your memory. You can see it and undo it. Needs `core.memory.write`. |\n| `recipe.run` | **Run a recipe.** Runs one of your recipes. Each step of the recipe needs its own switch here, unless the recipe is on under Recipes. |\n| `recipe.schedule` | **Schedule a recipe.** Sets a recipe to run later or on a timer. Needs `core.schedule.recipe`. Only you can schedule, from your own chat. An AI app that connects with a key cannot. |\n| `recipe.stop` | **Stop a recipe.** Stops a recipe run that the same conversation started. |\n| `schedule.list` | **Read scheduled requests.** Lists saved requests and their timing. Needs `core.schedule.prompt`. |\n| `schedule.pause` | **Pause a scheduled request.** Stops future and queued occurrences. A turn already running can finish. Needs `core.schedule.prompt`. |\n| `schedule.remove` | **Remove a scheduled request.** Removes future and queued occurrences. The conversation and its history remain. Needs `core.schedule.prompt`. |\n| `schedule.resume` | **Resume a scheduled request.** Starts future occurrences of a paused request. Needs `core.schedule.prompt`. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `memory.forget` | **Forget a saved fact.** Forgets a fact the AI saved earlier. You can bring it back. Needs `core.memory.write`. |\n| `memory.relations` | **Look up how to save a fact about someone.** Tells an AI how to save a fact about a person or a thing, like \"Mia is Dana's daughter\". Then one fact is saved the same way each time. Needs `core.memory.write`. |\n| `memory.search` | **Search your memory.** Finds facts and notes saved in your memory. Needs `core.memory.read`. |\n| `memory.write` | **Save to your memory.** Saves a fact to your memory. You can see it and undo it. Needs `core.memory.write`. |\n| `recipe.run` | **Run a recipe.** Runs one of your recipes. Each step of the recipe needs its own switch here, unless the recipe is on under Recipes. |\n| `recipe.schedule` | **Schedule a recipe.** Sets a recipe to run later or on a timer. Needs `core.schedule.recipe`. Only you can schedule, from your own chat. An AI app that connects with a key cannot. |\n| `recipe.stop` | **Stop a recipe.** Stops a recipe run that the same conversation started. |\n| `schedule.list` | **Read scheduled requests.** Lists saved requests and their timing. Needs `core.schedule.prompt`. |\n| `schedule.pause` | **Pause a scheduled request.** Stops future and queued occurrences. A turn already running can finish. Needs `core.schedule.prompt`. |\n| `schedule.remove` | **Remove a scheduled request.** Removes future and queued occurrences. The conversation and its history remain. Needs `core.schedule.prompt`. |"
   },
   {
     "id": "reference/grant-switches#ai-tools-part-4",
@@ -3909,7 +3989,7 @@
     "section": "AI tools, part 4",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-4",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `schedule.run_prompt` | **Schedule an AI request.** Runs a saved request later in its own conversation. Needs `core.schedule.prompt`. |\n| `schedule.update` | **Edit a scheduled request.** Changes the saved request or its timing. Needs `core.schedule.prompt`. |\n| `situation.query` | **Ask what is going on.** Gets a short, ranked picture of what is going on around a time. Needs `core.situation.read`. Each kind of item in the picture also needs its own read switch and data switch. |\n| `work.create` | **Add a task, note or more.** Adds a task, note, commitment, project or thing you own. Needs `core.work-entity.task.create` to add tasks, `core.work-entity.note.create` to add notes, `core.work-entity.commitment.create` to add commitments, `core.work-entity.project.create` to add projects and `core.work-entity.asset.create` to add things you own. |\n| `work.read` | **Read a task, note or more.** Reads one task, note, commitment, project, booking or thing you own in full. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |\n| `work.search` | **Search tasks, notes and more.** Finds tasks, notes, commitments, projects, bookings and things you own. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `schedule.resume` | **Resume a scheduled request.** Starts future occurrences of a paused request. Needs `core.schedule.prompt`. |\n| `schedule.run_prompt` | **Schedule an AI request.** Runs a saved request later in its own conversation. Needs `core.schedule.prompt`. |\n| `schedule.update` | **Edit a scheduled request.** Changes the saved request or its timing. Needs `core.schedule.prompt`. |\n| `situation.query` | **Ask what is going on.** Gets a short, ranked picture of what is going on around a time. Needs `core.situation.read`. Each kind of item in the picture also needs its own read switch and data switch. |\n| `work.create` | **Add a task, note or more.** Adds a task, note, commitment, project or thing you own. Needs `core.work-entity.task.create` to add tasks, `core.work-entity.note.create` to add notes, `core.work-entity.commitment.create` to add commitments, `core.work-entity.project.create` to add projects and `core.work-entity.asset.create` to add things you own. |\n| `work.read` | **Read a task, note or more.** Reads one task, note, commitment, project, booking or thing you own in full. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |"
   },
   {
     "id": "reference/grant-switches#ai-tools-part-5",
@@ -3917,7 +3997,7 @@
     "section": "AI tools, part 5",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-5",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `work.type` | **Look up a type of thing you own.** Tells an AI which dates and reminders a type of thing has, such as a passport, before it adds one. Needs `core.work-entity.asset.create`. |\n| `work.update` | **Change a task, note or more.** Changes a task, note, commitment, project or thing you own, or ticks a task off. Needs `core.work-entity.task.update` to change tasks, `core.work-entity.note.update` to change notes, `core.work-entity.commitment.update` to change commitments, `core.work-entity.project.update` to change projects, `core.work-entity.asset.update` to change things you own and `core.work-entity.task.mark-done` to tick a task off. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `work.search` | **Search tasks, notes and more.** Finds tasks, notes, commitments, projects, bookings and things you own. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |\n| `work.type` | **Look up a type of thing you own.** Tells an AI which dates and reminders a type of thing has, such as a passport, before it adds one. Needs `core.work-entity.asset.create`. |\n| `work.update` | **Change a task, note or more.** Changes a task, note, commitment, project or thing you own, or ticks a task off. Needs `core.work-entity.task.update` to change tasks, `core.work-entity.note.update` to change notes, `core.work-entity.commitment.update` to change commitments, `core.work-entity.project.update` to change projects, `core.work-entity.asset.update` to change things you own and `core.work-entity.task.mark-done` to tick a task off. |"
   },
   {
     "id": "reference/grant-switches#operations",
@@ -4109,7 +4189,7 @@
     "section": "Situations",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#situations",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.situation.prefetch` | **Look ahead before each chat turn.** Lets Recued add a short picture of what is going on to your chat before the AI answers. |\n| `core.situation.read` | **Read what is going on.** Reads a short, ranked picture of what is going on around a time. Each kind of item also needs its own switches. Needed by `situation.query`. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.situation.prefetch` | **Look ahead before each chat turn.** Lets Recued add a short picture of what is going on to your chat before the AI answers. |\n| `core.situation.read` | **Read what is going on.** Reads a short, ranked picture of what is going on around a time. Each kind of item also needs its own switches. Needed by `situation.query`. |\n| `core.situation.record` | **Record your day.** Lets an AI record what you did or skipped on a day, in your words. Each day it records waits for your yes. Needed by `episode.record`. |"
   },
   {
     "id": "reference/grant-switches#ai-models",
@@ -4125,7 +4205,7 @@
     "section": "Browser",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#browser",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.act` | **Act on a web page.** Types, clicks and sends forms on a web page in your browser, several steps at once, through the Browser Bridge. A click or a sent form cannot be undone. |\n| `core.dom.click` | **Click on a web page.** Clicks a link or a button on a web page open in your browser, through the Browser Bridge. A click can send, post or delete, and cannot be undone. |\n| `core.dom.inspect` | **See a whole web page.** Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.open` | **Open a web page.** Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site. |\n| `core.dom.read` | **Read from a web page.** Reads text from a web page open in your browser, through the Browser Bridge. |\n| `core.dom.screenshot` | **Take a screenshot of a web page.** Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs \"Allow screenshots\" in the Bridge's side panel. |\n| `core.dom.table` | **Read a table on a web page.** Reads a table on a web page open in your browser as rows of text, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.tabs` | **See your open tabs.** Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.act` | **Act on web pages.** Reads, types, clicks and sends forms on web pages in your browser, through the Browser Bridge. It does several steps at once, across tabs. A click or a sent form cannot be undone. |\n| `core.dom.click` | **Click on a web page.** Clicks a link or a button, or presses a key, on a web page in your browser. It goes through the Browser Bridge. A click or a key can send, post or delete, and cannot be undone. |\n| `core.dom.download` | **Save a file from a web page.** Saves a file a web page in your browser links to, such as a PDF, among your files. It goes through the Browser Bridge and fetches the file as the page would, signed in as you are. |\n| `core.dom.inspect` | **See a whole web page.** Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.open` | **Open a web page.** Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site. |\n| `core.dom.read` | **Read from a web page.** Reads text from a web page open in your browser, through the Browser Bridge. |\n| `core.dom.screenshot` | **Take a screenshot of a web page.** Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs \"Allow screenshots\" in the Bridge's side panel. |"
   },
   {
     "id": "reference/grant-switches#browser-part-2",
@@ -4133,7 +4213,7 @@
     "section": "Browser, part 2",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#browser-part-2",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.wait` | **Wait for a web page.** Waits until part of a web page open in your browser shows or goes, through the Browser Bridge. Changes nothing on the page. |\n| `core.dom.write` | **Type into a web page.** Types into a web page open in your browser, through the Browser Bridge. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.scroll` | **Scroll a web page.** Scrolls a web page in your browser a screen at a time. It goes through the Browser Bridge, so what loads as you scroll shows. Changes nothing on the page. |\n| `core.dom.table` | **Read a table on a web page.** Reads a table on a web page open in your browser as rows of text, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.tabs` | **See your open tabs.** Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge. It can list the ones showing an address. |\n| `core.dom.wait` | **Wait for a web page.** Waits until part of a web page open in your browser shows or goes, through the Browser Bridge. Changes nothing on the page. |\n| `core.dom.write` | **Type into a web page.** Types into a web page open in your browser, through the Browser Bridge. |"
   },
   {
     "id": "reference/grant-switches#schedules",
@@ -4150,6 +4230,14 @@
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#triggers",
     "body": "A contract for an AI app cannot get these.\n\n| Switch | What it does |\n| --- | --- |\n| `core.watch.http` | **Watch a web page.** Starts a recipe when a web page changes. |\n| `core.watch.time` | **Run only at set times.** Lets a recipe run only on chosen days or hours. |\n| `core.watch.time-relative` | **Run before or after a date.** Starts a recipe when the time comes near a date on a record, like a day before a meeting. |"
+  },
+  {
+    "id": "reference/grant-switches#web-addresses",
+    "doc": "Grant switches",
+    "section": "Web addresses",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/grant-switches#web-addresses",
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.http.download` | **Download a file from a web address.** Your server downloads a file from a public web address and keeps it among your files. It takes files up to 25 MB, to read or use from there. Nothing of yours is sent with it. |\n| `core.http.get` | **Get a web address.** Your server fetches a public web address and answers what the site sent: its status, type and text, or JSON. Nothing of yours is sent with it, and only public addresses are fetched, never one on your own network. |\n| `core.http.read` | **Read a web address.** Your server fetches a public web page and answers its text, as you would read it. Nothing of yours is sent, so a page that needs you signed in is read in your browser instead. |"
   },
   {
     "id": "reference/grant-switches#recipes",
@@ -5264,6 +5352,70 @@
     "body": "Decide whether your server needs a public name in\n[Reachability](reachability.md)."
   },
   {
+    "id": "setup/pause-server",
+    "doc": "Pause the server",
+    "section": "Pause the server",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server",
+    "body": "**Pause server** is your server's emergency stop. While your server is\npaused, nothing leaves it and nothing comes in. Use it when something looks\nwrong. You can look around and fix things in peace. Then you resume."
+  },
+  {
+    "id": "setup/pause-server#pause-and-resume",
+    "doc": "Pause the server",
+    "section": "Pause and resume",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server#pause-and-resume",
+    "body": "1. Open the menu at the top right: **Your account and servers**.\n2. Click your server's status in that menu. A small panel opens:\n   **Active server controls**.\n3. Click **Pause server**. The panel lists what will stop.\n4. Read the list. Then click **Confirm pause**. Or click **Cancel**.\n\nTo start again, open the same panel and click **Resume**. Everything goes\nback to work at once.\n\nA pause stays on until you resume. It stays on when the server restarts,\ntoo."
+  },
+  {
+    "id": "setup/pause-server#what-stops",
+    "doc": "Pause the server",
+    "section": "What stops",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server#what-stops",
+    "body": "- AI and apps, chat included. A message you send waits. It is answered\n  after you resume. An answer that is already being written stops at its\n  next step and says so. Ask again after you resume.\n- Schedules, automations, and runs. A run that is already going stops at\n  its next step. It never stops in the middle of a step.\n- Mail and calendar sync.\n- Checking your S3 bucket for new or changed files.\n- Salesforce live updates.\n- Checking Slack, Telegram, Discord, and Teams for new messages.\n- Everything Recued sends for you: emails, messages, reminders, digests,\n  and changes to your accounts.\n- Anything you do that reaches an account. That means a calendar change, a\n  connection test, or a re-sync. You see: \"The server is paused. Resume it,\n  then try this again.\"\n- Webhooks and forms sent to your server. They are turned away."
+  },
+  {
+    "id": "setup/pause-server#what-still-works",
+    "doc": "Pause the server",
+    "section": "What still works",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server#what-still-works",
+    "body": "- Looking at what your server holds, and its history.\n- Opening an email or an event. You see the copy your server holds. To\n  reply, forward, or change it, resume first.\n- Changing settings, keys, and recipes.\n- Saying no to an approval. Saying yes waits until you resume.\n- What keeps you connected to your server. Its name, its certificate,\n  updates, and your own devices keep working."
+  },
+  {
+    "id": "setup/pause-server#approvals-during-a-pause",
+    "doc": "Pause the server",
+    "section": "Approvals during a pause",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server#approvals-during-a-pause",
+    "body": "An approval is when Recued stops and asks you before it does something.\nWhile your server is paused, you can deny an approval. You cannot approve\nit. The approval card says so, and its other buttons are greyed out.\n\nThe approval waits. After you resume, you can approve it.\n\nNo new approvals are asked while your server is paused."
+  },
+  {
+    "id": "setup/pause-server#when-you-resume",
+    "doc": "Pause the server",
+    "section": "When you resume",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server#when-you-resume",
+    "body": "Everything starts again:\n\n- Schedules, automations, and triggers run again.\n- Messages you sent while paused are answered. A messenger may not keep\n  them all. See the next section.\n- Mail, calendar, and your S3 bucket catch up.\n- Salesforce live updates start again. Your server's copy of your\n  Salesforce records catches up.\n- Approvals that waited can be approved.\n- Reminders that came due ring."
+  },
+  {
+    "id": "setup/pause-server#messages-sent-to-a-messenger-during-a-pause",
+    "doc": "Pause the server",
+    "section": "Messages sent to a messenger during a pause",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server#messages-sent-to-a-messenger-during-a-pause",
+    "body": "Your server does not check your messengers while it is paused. After you\nresume, it picks up what each messenger still keeps:\n\n- **Telegram** keeps a message for one day.\n- **Teams** keeps your chat. Every message is picked up.\n- **Slack** and **Discord** keep a message only for a few minutes. A\n  message you send there during a longer pause is not answered. Send it\n  again after you resume."
+  },
+  {
+    "id": "setup/pause-server#pause-server-and-pause-ai",
+    "doc": "Pause the server",
+    "section": "Pause server and Pause AI",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/pause-server#pause-server-and-pause-ai",
+    "body": "[Pause AI](../concepts/ai-models.md) stops only background AI, for as long\nas you pick. **Pause server** stops everything on this page."
+  },
+  {
     "id": "setup/reachability",
     "doc": "Reachability",
     "section": "Reachability",
@@ -5493,7 +5645,15 @@
     "section": "Recipes and automation",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/troubleshooting#recipes-and-automation",
-    "body": "**A reactive recipe stopped firing.** After it fails several times in a\nrow, the circuit breaker turns the recipe off and tells you. That is on\npurpose. Fix the cause. Maybe a connection is missing, or an AI step cannot\nbe served. Then turn the recipe on again. It never turns itself back on.\n\n**A watcher seems to do nothing.** Quiet ticks are silent on purpose. When\na trigger step returns `should_run: false`, the tick leaves no audit entry\nand no output. Silence means \"nothing matched\". It does not mean \"broken\".\n\n**A condition never matches.** The most common cause is quotes around a\nvalue. `equal 'closed_won'` compares against the quotes too, so it never\nmatches. Values in condition strings are always bare: `equal closed_won`.\n\n**A guard halts a run you expected to pass.** A guard halts when its\ncondition is **met**. So `\"guard\": \"{{step.deal}} is_null\"` stops the run\nwhen the deal is missing. Read it as \"stop if\". Do not read it as \"require\nthat\"."
+    "body": "**A reactive recipe stopped firing.** After it fails several times in a\nrow, the circuit breaker turns the recipe off and tells you. That is on\npurpose. Fix the cause. Maybe a connection is missing, or an AI step cannot\nbe served. Then turn the recipe on again. It never turns itself back on.\nWhen the run named what it needed, the notice says so. It links to the\npack's page that fixes it.\n\n**A watcher seems to do nothing.** Quiet ticks are silent on purpose. When\na trigger step returns `should_run: false`, the tick leaves no audit entry\nand no output. Silence means \"nothing matched\". It does not mean \"broken\".\n\n**A condition never matches.** The most common cause is quotes around a\nvalue. `equal 'closed_won'` compares against the quotes too, so it never\nmatches. Values in condition strings are always bare: `equal closed_won`.\n\n**A guard halts a run you expected to pass.** A guard halts when its\ncondition is **met**. So `\"guard\": \"{{step.deal}} is_null\"` stops the run\nwhen the deal is missing. Read it as \"stop if\". Do not read it as \"require\nthat\"."
+  },
+  {
+    "id": "setup/troubleshooting#runs-that-did-not-start",
+    "doc": "Troubleshooting",
+    "section": "Runs that did not start",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/troubleshooting#runs-that-did-not-start",
+    "body": "**A run says a program is not installed.** The run checks its programs\nbefore it starts, so no step ran. Open the pack's page from the message. It\nsays how to install the program, or where to point your server. See\n[A run checks its programs first](../guides/recipes-and-packs.md#a-run-checks-its-programs-first).\n\n**A run says there is no folder or file on your server.** Write the path in\nfull. A program your server starts does not read `~` as your home folder.\nSee [When a folder or file is not there](../guides/recipes-and-packs.md#when-a-folder-or-file-is-not-there).\n\n**A message says something is turned off for you.** Turn it on under\n**Self (you)** on the Contracts page. The message names the switch and the\ntab. In chat, press **Turn it on** under the answer.\n\n**A run's log says Not allowed.** A switch or a contract stopped one of its\nsteps. Nobody said no to it. Read the error under it. For an app's run,\nchange that app's contract on the Contracts page."
   },
   {
     "id": "setup/troubleshooting#ai",
@@ -5526,6 +5686,14 @@
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/troubleshooting#updates",
     "body": "**An update seemed to apply, then the old version is running.** The\nstart-up health check failed. So the server went back by itself. That is\nthe safety working. It is not a failed rollback. Check the server logs for\nwhat broke before you try again. The attempt is written in the update\nledger."
+  },
+  {
+    "id": "setup/troubleshooting#a-paused-server",
+    "doc": "Troubleshooting",
+    "section": "A paused server",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/troubleshooting#a-paused-server",
+    "body": "**Something says \"The server is paused\".** Your server is paused. While it\nis paused, it does nothing that reaches outside. Open **Your account and\nservers**, click your server's status, then click **Resume**. Then try\nagain. See [Pause the server](pause-server.md).\n\n**Nothing runs or syncs after a restart.** A pause stays on when the server\nrestarts. Look at your server's status in **Your account and servers**. If\nit is paused, click **Resume**."
   },
   {
     "id": "setup/updates",
@@ -5589,7 +5757,7 @@
     "section": "Safety model",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/updates#safety-model",
-    "body": "An update happens in two steps. First the new version is staged and\nstarted. Then it must pass a start-up health check. Only then is it kept.\nIf the check keeps failing, the old version comes back.\n[If the new version does not start](#if-the-new-version-does-not-start)\nsays when that happens by itself.\n\nSome releases change the database. Those take a snapshot first, before the\nchange. Going back to a version from before that change is refused. That\nkeeps your data safe.\n\nOne lock on the whole machine stops two update paths from running at once.\nEvery try is written to an update ledger. The ledger only grows. It is kept\noutside the database it talks about."
+    "body": "An update happens in two steps. First the new version is staged and\nstarted. Then it must pass a start-up health check. Only then is it kept.\nIf the check keeps failing, the old version comes back.\n[If the new version does not start](#if-the-new-version-does-not-start)\nsays when that happens by itself.\n\nSome releases change the database. Those take a snapshot first, before the\nchange. Going back to a version from before that change is refused. That\nkeeps your data safe.\n\nEach release says whether it changes the database. Your server does not\njust trust a release that says no. Before that update, it checks for\nitself. It briefly starts both versions, each on a new, empty database,\nand compares them. Neither one touches your data.\n\nDoes the new version change the database in a way the one you have cannot\nuse? Or can the check not tell, for example on a machine low on memory?\nThen your server takes the snapshot anyway. Is there no room on the disk\nfor the snapshot? Then the update stops, and your server keeps the version\nit has.\n\nOne lock on the whole machine stops two update paths from running at once.\nEvery try is written to an update ledger. The ledger only grows. It is kept\noutside the database it talks about."
   },
   {
     "id": "setup/updates#owner-only",

@@ -188,6 +188,23 @@ export interface RunModalState {
   executing: boolean;
   /** Last run error, surfaced in the result block. */
   run_error: string | null;
+  /** D-321 P2 — what the host read from that error to offer instead (a pack to
+   *  install, a connection to set up), with the error it was read from: it is
+   *  shown only while `run_error` is still that error, so a later problem never
+   *  sits under an older one's links. */
+  run_next_step: { readonly error: string; readonly step: RunModalNextStep } | null;
+  /** D-321 P2 / C2 — what the host read from a run that returned errors (a
+   *  program to install, a connection to set up or reconnect), with the result
+   *  it was read from: shown under that result's reason only. */
+  result_next_step: { readonly result: ServerExecuteResponse; readonly step: RunModalNextStep } | null;
+  /** D-321 C2 — what the host found, as the dialog opened, that would stop a run
+   *  (a program missing on the server), shown above Run. Null when nothing does. */
+  before_run: RunModalNextStep | null;
+  /** D-346 follow-up — where the shown next step's action stands: `idle` until its
+   *  button is pressed, `running` while it works, then `done` or `failed` (with
+   *  `next_action_error`). Back to `idle` whenever a new next step is shown. */
+  next_action_status: 'idle' | 'running' | 'done' | 'failed';
+  next_action_error: string | null;
   /** Last successful/failed run summary, or null before the first run. */
   result: ServerExecuteResponse | null;
   // ── Schedule tab ──
@@ -237,6 +254,23 @@ export interface RunModalState {
 }
 
 /** Options for `wireRunModal`. */
+/** D-321 P2 — a refused run's next step, which the host reads from the error:
+ *  one sentence, and where to go. Data, not markup, so the dialog draws it in its
+ *  own look. Each link is an address in the app (`#…`); one that is not is left
+ *  out. Following one closes the dialog, as the page it sat over is left. */
+export interface RunModalNextStep {
+  readonly lead: string;
+  readonly links: ReadonlyArray<{ readonly text: string; readonly href: string }>;
+  /** D-346 follow-up (2026-11-08) — a fix the dialog makes itself, in one click, where
+   *  the fix is a switch the owner turns on (the owner's ruling: "Turn it on"). `run`
+   *  makes it; `done` is said once it has, in place of the button. Absent: links only. */
+  readonly action?: {
+    readonly text: string;
+    readonly run: () => Promise<void>;
+    readonly done: string;
+  };
+}
+
 export interface WireRunModalOptions {
   /** Human-readable source of the opener's argument prefill. */
   prefillSource?: string;
@@ -276,6 +310,16 @@ export interface WireRunModalOptions {
   initialTab?: RunModalTab;
   /** `execute` rpc. Absent → Run shows a "not wired" note. */
   execute?: RunModalExecuteCaller;
+  /** D-321 P2 — read a refused run's error for a next step to show in place of
+   *  its message. Absent, or null for this error: the message, as before. */
+  nextStepFor?: (err: unknown) => RunModalNextStep | null;
+  /** D-321 P2 / C2 — read a run that returned errors for a next step to show
+   *  under its reason. Absent, or null for this result: the reason alone. */
+  nextStepForResult?: (result: ServerExecuteResponse) => RunModalNextStep | null;
+  /** D-321 C2 — read once as the dialog opens: what would stop a run before it
+   *  starts, to say above Run. It does not hold Run: a run still reports its own
+   *  outcome. Absent, null, or a failed read: nothing is said. */
+  beforeRun?: () => Promise<RunModalNextStep | null>;
   /** D-200 — owner-file inventory search for `type:'file_ref'` variables.
    * Absent keeps a pasteable durable-ref input. */
   fileRefSearch?: RefPickerSearchCaller;

@@ -532,10 +532,46 @@ test('a server without timing previews still saves the schedule without exposing
   await expect(preview).not.toContainText('chat.schedule.preview');
   // D-338 — nor does it offer to notify: such a server refuses the field.
   await expect(panel.getByLabel('Notify me when it’s done')).toBeHidden();
+  // D-344 — nor a model, for the same reason.
+  await expect(panel.locator('[data-prompt-schedule-model]')).toBeHidden();
   await panel.getByRole('button', { name: 'Create schedule', exact: true }).click();
   await expect(panel.getByRole('article', { name: 'Compatible briefing' })).toBeVisible();
   expect(creates).toEqual([expect.objectContaining({ title: 'Compatible briefing', prompt: 'Summarize unread work mail.' })]);
   expect(creates[0]).not.toHaveProperty('notify_on_done');
+  expect(creates[0]).not.toHaveProperty('model_source_id');
+});
+
+// D-344 slice D — the owner: "for schedule-prompt we never allow user to pick the slot as it should".
+test('D-344 — offers a Model once the server says it takes one, then saves and shows it', async ({ context, page }) => {
+  let schedule: PromptSchedule | undefined; const creates: Array<Record<string, unknown>> = [];
+  await context.route('**/prompt-rpc', async route => {
+    const { method, args } = route.request().postDataJSON(); let result: unknown = {};
+    if (method === 'recipe.list') result = { recipes: [] };
+    if (method === 'chat.schedules.list') result = schedule ? [schedule] : [];
+    if (method === 'chat.schedule.preview') result = { mode: args.mode, time_zone: args.time_zone, calculated_at: Date.now(),
+      next_runs: [Date.now() + 3600000], notify_on_done_available: true, model_choice_available: true };
+    if (method === 'chat.schedule.create') {
+      creates.push(args); schedule = { ...args, run_at: Date.parse(args.run_at), schedule_id: 'model-schedule',
+        session_id: 'scheduled-session', enabled: true, revision: 1, created_at: Date.now(), next_run_at: Date.parse(args.run_at),
+        last_run_at: null, last_turn_id: null, last_status: null }; result = schedule;
+    }
+    await route.fulfill({ json: { result } });
+  });
+  await page.goto('/prompt-harness.html?automation');
+  await page.getByRole('button', { name: 'Add schedule', exact: true }).click();
+  await page.getByLabel('Schedule type', { exact: true }).selectOption('prompt');
+  const panel = page.locator('[data-prompt-schedules]');
+  const model = panel.getByLabel('Model', { exact: true });
+  await expect(model).toBeVisible();
+  await expect(model).toHaveValue('');
+  await expect(model.locator('option')).toHaveText(['Chat default', 'Slot 1: fast', 'Slot 2: better, slower thinking', 'Free pool']);
+  await panel.getByLabel('Title', { exact: true }).fill('Weekly review');
+  await panel.getByLabel('Request to run').fill('Review what I finished this week.');
+  await model.selectOption('slot_2');
+  await panel.getByRole('button', { name: 'Create schedule', exact: true }).click();
+  const card = panel.getByRole('article', { name: 'Weekly review' });
+  await expect(card).toContainText('Model'); await expect(card).toContainText('Slot 2: better, slower thinking');
+  expect(creates).toEqual([expect.objectContaining({ title: 'Weekly review', model_source_id: 'slot_2' })]);
 });
 
 test('D-338 — offers "Notify me when it’s done" once the server says it can, then saves and shows it', async ({ context, page }) => {

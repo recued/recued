@@ -68,6 +68,8 @@ const harness = (opts: {
   conversations?: MailChatConversations;
   /** Whether the vault is open; always, unless given. */
   isUnlocked?: () => boolean;
+  /** D-188 — whether the owner's pause holds; never, unless given. */
+  isPaused?: () => boolean;
 } = {}) => {
   const db = opts.db ?? new Database(':memory:');
   if (opts.db === undefined) dbs.push(db);
@@ -91,6 +93,7 @@ const harness = (opts: {
     mailboxes: () => mailboxes,
     ...(opts.auditLog === false ? {} : { auditLog: { logActivity } }),
     ...(opts.isUnlocked ? { isUnlocked: opts.isUnlocked } : {}),
+    ...(opts.isPaused ? { isPaused: opts.isPaused } : {}),
     now: () => clock,
     log,
   });
@@ -999,6 +1002,25 @@ describe('D-318 audit — which copy is the request, and whose mailbox proves it
     expect(await runUntilSettled(h.proof)).toMatchObject({ state: 'not_proven', reason: 'unreachable' });
     expect(clock - START).toBe(MAIL_CHAT_PROOF_WAIT_MS);
     expect(h.notify).toHaveBeenCalledTimes(1);
+  });
+});
+
+// D-188 — the owner's pause holds the door the same way (the emergency stop: nothing comes in).
+describe('D-188 — a paused server pauses the door', () => {
+  it('checks nothing at the provider while paused, and the wait starts again on Resume', async () => {
+    let paused = true;
+    const h = harness({ isPaused: () => paused });
+    land(h, request(), stored());
+    await h.proof.tick();
+    clock += 2 * MAIL_CHAT_PROOF_WAIT_MS;
+    await h.proof.tick();
+    expect(h.lookup).not.toHaveBeenCalled();
+    expect(h.proof.get(CHAT, ID)).toMatchObject({ state: 'pending', attempts: 0 });
+
+    paused = false;
+    await h.proof.tick();
+    expect(h.lookup).toHaveBeenCalledTimes(1);
+    expect(h.proof.get(CHAT, ID)).toMatchObject({ state: 'pending', attempts: 1 });
   });
 });
 

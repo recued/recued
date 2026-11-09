@@ -40,8 +40,10 @@ export interface HeldRunWaiters {
   /** The run's settlement once it settles, or `undefined` once `until` passes or `signal` aborts
    *  (the caller went away). */
   wait(run_id: string, until: number, signal?: AbortSignal): Promise<PreflightRunSettled | undefined>;
-  /** Told each settled run, from the server's run-settled listener. */
-  settled(settled: PreflightRunSettled): void;
+  /** Told each settled run, from the server's run-settled listener: `true` when a wait took it.
+   *  D-345 follow-up (the owner's 3a) — told before the chat records the settlement, so a round that
+   *  waited for its own call's answer is known to have it, and no continuation turn tells it again. */
+  settled(settled: PreflightRunSettled): boolean;
 }
 
 export interface HeldRunWaitersOptions {
@@ -66,17 +68,18 @@ export const createHeldRunWaiters = (options: HeldRunWaitersOptions = {}): HeldR
   };
   return {
     settled(settled) {
-      if (settled.run_id.length === 0 || isNonTerminalToolResult(settled.result)) return;
+      if (settled.run_id.length === 0 || isNonTerminalToolResult(settled.result)) return false;
       const waiters = waiting.get(settled.run_id);
       if (waiters !== undefined && waiters.size > 0) {
         waiting.delete(settled.run_id);
         for (const resolve of waiters) resolve(settled);
-        return;
+        return true;
       }
       const at = now();
       recent.delete(settled.run_id);
       recent.set(settled.run_id, { settled, at });
       forget(at);
+      return false;
     },
     wait(run_id, until, signal) {
       const at = now();
@@ -108,6 +111,44 @@ export const createHeldRunWaiters = (options: HeldRunWaitersOptions = {}): HeldR
         waiting.set(run_id, set);
       });
     },
+  };
+};
+
+/** The owner's 3a (2026-11-07) — a settlement's way through: first to a round of the owner's chat
+ *  waiting for its own call's answer (`OWNER_CHAT_HELD_WAIT_MS`), then to the chat's record of it.
+ *  A run a round took is told no further: its continuation is answered `true`, "continued", so
+ *  neither a continuation turn nor a fixed reply tells the model what the round already did.
+ *
+ *  ⛔ THE ROUND IS TOLD FIRST. Told after the chat recorded the settlement (as the LLM gateway's
+ *  wait was), a wait that ended between the two would leave the answer with neither the round nor
+ *  a continuation. */
+export interface RoundAnswers {
+  /** Tell the waiting rounds, then `record` the settlement, knowing whether a round took it. */
+  settle(settled: PreflightRunSettled, record: () => Promise<void>): Promise<void>;
+  /** `continueWith`, answered `true` for a run a waiting round took. */
+  continueUnless<C extends { readonly run_id: string }>(continueWith: (continuation: C) => Promise<boolean>):
+    (continuation: C) => Promise<boolean>;
+}
+
+export const createRoundAnswers = (waiters: Pick<HeldRunWaiters, 'settled'>): RoundAnswers => {
+  const answered = new Set<string>();
+  return {
+    async settle(settled, record) {
+      let taken = false;
+      try {
+        taken = waiters.settled(settled);
+      } catch (error) {
+        console.error('[chat] held-run waiter failed', error);
+      }
+      if (taken) answered.add(settled.run_id);
+      try {
+        await record();
+      } finally {
+        if (taken) answered.delete(settled.run_id);
+      }
+    },
+    continueUnless: (continueWith) => (continuation) => (answered.has(continuation.run_id)
+      ? Promise.resolve(true) : continueWith(continuation)),
   };
 };
 

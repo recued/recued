@@ -52,7 +52,7 @@ import type {
   NotificationMessage,
 } from '../types.js';
 import { isChannelName, type AskOption } from '../types.js';
-import { receivesOnly, type AskDeliveryDestination, type AskDeliveryEnvelope, type AskDeliveryOutcome } from '../ask-delivery-store.js';
+import { receivesOnly, type AskDeliveryDestination, type AskDeliveryEnvelope, type AskDeliveryOutcome, type AskDeliveryReceipt } from '../ask-delivery-store.js';
 
 /** The BYO credential a remote channel sends with — resolved fresh per
  *  delivery from `connection.notification` (D-125). */
@@ -342,7 +342,13 @@ export const createRemoteChannel = (
    * gets an equal share of a body that stays well inside Telegram's limit, which
    * refuses a longer message rather than trimming it. A household copy carries no
    * link: it opens the owner's own Recued, which nobody in the group can reach. */
-  const deliveryBody = (envelope: AskDeliveryEnvelope) => {
+  const deliveryBody = (envelope: AskDeliveryEnvelope | AskDeliveryReceipt) => {
+    // D-340 slice 3 — inside a stream: its own text, which lists the items by number; once sent, what
+    // went (a notice adds its lines), so an edit leaves it as the owner saw it.
+    if (envelope.lead) {
+      if ('sent' in envelope && envelope.sent) return envelope.sent.text;
+      return [envelope.repeat ? 'Repeat — the previous delivery could not be confirmed.' : undefined, envelope.lead.text].filter(Boolean).join('\n\n');
+    }
     const links = envelope.destination.audience === 'household' ? [] : [...new Set(envelope.asks.map(ask => ask.message.link_url).filter((url): url is string =>
       typeof url === 'string' && /^https?:\/\//.test(url)))];
     const link = envelope.asks.length === 1 ? links[0] : links[0] && `${links[0].split('#')[0]}#today`;
@@ -529,33 +535,54 @@ export const createRemoteChannel = (
       catch { return { outcome: 'not_delivered', error: 'The pinned notification credential is unavailable' }; }
       if (!credential) return { outcome: 'not_delivered', error: 'The pinned notification connection is unavailable or changed', permanent: true };
       const { token, recipient } = credential;
+      // D-340 slice 3 — inside a stream, the stream's message: the owner's chat makes it a notice, as the
+      // stream is, so a reply quoting it reaches the conversation. A hook that fails costs the notice,
+      // never the send; what was sent is kept for the edits that withdraw answered items' buttons.
+      let notice: RemoteNoticeDecoration | undefined;
+      if (envelope.lead) {
+        try {
+          notice = await deps.notices?.prepare({ vendor: name, recipient, token,
+            message: { title: envelope.lead.title, text: deliveryBody(envelope) } });
+        } catch { notice = undefined; }
+      }
+      const title = envelope.lead ? notice?.title ?? envelope.lead.title : undefined;
+      const body = notice?.text ?? deliveryBody(envelope);
+      const sentAs = async (result: AskDeliveryOutcome, presentation: 'buttons' | 'text' | 'notice', text: string): Promise<AskDeliveryOutcome> => {
+        if (result.outcome !== 'delivered') return result;
+        if (notice) {
+          try { await notice.sent(result.provider_message_id); }
+          catch { /* The message went; only its record in the chat is missing. */ }
+        }
+        return { ...result, presentation, ...(envelope.lead ? { sent: { ...(title !== undefined ? { title } : {}), text } } : {}) };
+      };
       // D-325 §15.7 (2026-10-24) — a copy that only receives (`receivesOnly`): the
       // reminder as a message, with no buttons and nothing to answer, so nothing is
       // withdrawn later. Only the household's carries no link.
       if (receivesOnly(envelope.destination)) {
-        const result = deliveryOutcome(await transport.send({ token, recipient, delivery_id: envelope.attempt_id,
-          text: deliveryBody(envelope) }));
-        return result.outcome === 'delivered' ? { ...result, presentation: 'notice' } : result;
+        return sentAs(deliveryOutcome(await transport.send({ token, recipient, delivery_id: envelope.attempt_id,
+          text: body, ...(title !== undefined ? { title } : {}) })), 'notice', body);
       }
       if (isInteractive(transport) && managedButtons(envelope)) {
-        const result = deliveryOutcome(await transport.sendPrompt({ token, recipient,
-          text: deliveryBody(envelope), correlation_id: envelope.group_id,
-          options: deliveryOptions(envelope) }));
-        return result.outcome === 'delivered' ? { ...result, presentation: 'buttons' } : result;
+        return sentAs(deliveryOutcome(await transport.sendPrompt({ token, recipient,
+          text: body, ...(title !== undefined ? { title } : {}), correlation_id: envelope.group_id,
+          options: deliveryOptions(envelope) })), 'buttons', body);
       }
       const instructions = envelope.asks.length > 1
         ? 'Reply with the item number and answer, for example: 2 later.'
         : renderAnswerHint(envelope.asks[0]!.options);
       const choices = envelope.asks.map((ask, index) => `${envelope.asks.length > 1 ? `${index + 1}: ` : ''}`
         + ask.options.map(option => option.label).join(', ')).join('\n');
-      const result = deliveryOutcome(await transport.send({ token, recipient, delivery_id: envelope.attempt_id,
-        text: `${instructions}\n${choices}\n\n${deliveryBody(envelope)}` }));
-      return result.outcome === 'delivered' ? { ...result, presentation: 'text' } : result;
+      const text = `${instructions}\n${choices}\n\n${body}`;
+      return sentAs(deliveryOutcome(await transport.send({ token, recipient, delivery_id: envelope.attempt_id,
+        text, ...(title !== undefined ? { title } : {}) })), 'text', text);
     },
 
     restoreAskDelivery(receipt, closed) {
+      // A stream's message keeps its heading once its last buttons go.
+      const title = receipt.lead ? receipt.sent?.title ?? receipt.lead.title : undefined;
+      const close_text = title !== undefined ? composeCloseText({ title, text: deliveryBody(receipt) }) : deliveryBody(receipt);
       for (const [index, ask] of receipt.asks.entries()) delivered.set(ask.ask_id, {
-        vendor_message_id: receipt.provider_message_id ?? '', close_text: deliveryBody(receipt),
+        vendor_message_id: receipt.provider_message_id ?? '', close_text,
         options: ask.options, closed: closed.includes(ask.ask_id),
         expected_sender: receipt.destination.expected_sender, destination: receipt.destination,
         group_id: receipt.group_id, item: index + 1, group_size: receipt.asks.length,
@@ -574,12 +601,14 @@ export const createRemoteChannel = (
       if (!credential) return false;
       const options = deliveryOptions(receipt, closed);
       const text = deliveryBody({ ...receipt, closed_ask_ids: closed });
+      // D-340 slice 3 — a stream's message keeps its heading and text; only its buttons change.
+      const title = receipt.lead ? receipt.sent?.title ?? receipt.lead.title : undefined;
       const result = options.length > 0 && transport.updatePrompt
         ? await transport.updatePrompt({ token: credential.token, recipient: credential.recipient,
-          text, correlation_id: receipt.group_id, vendor_message_id: receipt.provider_message_id, options })
+          text, ...(title !== undefined ? { title } : {}), correlation_id: receipt.group_id, vendor_message_id: receipt.provider_message_id, options })
         : options.length === 0
           ? await transport.closePrompt({ token: credential.token, recipient: credential.recipient,
-            text, vendor_message_id: receipt.provider_message_id }) : null;
+            text: title !== undefined ? composeCloseText({ title, text }) : text, vendor_message_id: receipt.provider_message_id }) : null;
       return result?.ok === true;
     },
 

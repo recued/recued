@@ -54,6 +54,7 @@ const newHarness = (overrides: Partial<SignalListenerDeps> = {}): Harness => {
     onShutdown: 'onShutdown' in overrides ? overrides.onShutdown! : h.onShutdown,
     onReload: 'onReload' in overrides ? overrides.onReload : h.onReload,
     onDumpSnapshot: 'onDumpSnapshot' in overrides ? overrides.onDumpSnapshot : h.onDumpSnapshot,
+    ...(overrides.onRestart !== undefined ? { onRestart: overrides.onRestart } : {}),
     onUncaughtException: 'onUncaughtException' in overrides
       ? overrides.onUncaughtException!
       : h.onUncaughtException,
@@ -85,7 +86,7 @@ describe('SignalListener.install', () => {
 
   it('uninstall removes every handler it added', () => {
     h.listener.install();
-    const events = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGUSR1', 'uncaughtException', 'unhandledRejection'];
+    const events = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGUSR1', 'SIGUSR2', 'uncaughtException', 'unhandledRejection'];
     for (const e of events) expect(h.proc.listenerCount(e)).toBeGreaterThan(0);
     h.listener.uninstall();
     for (const e of events) expect(h.proc.listenerCount(e)).toBe(0);
@@ -210,5 +211,27 @@ describe('uncaughtException / unhandledRejection → fatal', () => {
     h.proc.emitSignal('uncaughtException', new Error('original'), 'uncaughtException');
     await new Promise((r) => setImmediate(r));
     expect(h.exits).toEqual([1]);
+  });
+});
+
+/** `recued restart` asks a supervised server to restart ITSELF: SIGUSR2 drains
+ *  with intent=restart and exits with the supervisor's restart code. */
+describe('SIGUSR2 → restart', () => {
+  it('invokes onRestart with the SIGUSR2 reason, and does not exit itself', async () => {
+    const restarts: string[] = [];
+    const h = newHarness({ onRestart: async (reason) => { restarts.push(reason); } });
+    h.listener.install();
+    h.proc.emitSignal('SIGUSR2');
+    await new Promise((r) => setImmediate(r));
+    expect(restarts).toEqual(['SIGUSR2']);
+    expect(h.exits).toEqual([]);
+    h.listener.uninstall();
+  });
+
+  it('is a logged no-op when onRestart is not provided', () => {
+    const h = newHarness();
+    h.listener.install();
+    expect(() => h.proc.emitSignal('SIGUSR2')).not.toThrow();
+    h.listener.uninstall();
   });
 });

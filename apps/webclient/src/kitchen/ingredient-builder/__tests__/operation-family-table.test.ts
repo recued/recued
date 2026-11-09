@@ -76,6 +76,7 @@ import {
 } from '../../../webclient-bootstrap.js';
 import {
   INSTALL_GRANT_ACCESS_OPTION_ATTR,
+  INSTALL_GRANT_OWNER_ONLY_ATTR,
   INSTALL_GRANT_PICKER_ATTR,
   INSTALL_GRANT_SCOPE_OPTION_ATTR,
 } from '../../../settings/install-grant-picker.js';
@@ -3011,14 +3012,22 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
         { key: 'contact.update', surface: 'api', risk_tier: 'write', approval_mapping: 'ask' },
       ]),
     );
+    // The owner's ruling (2026-11-08): a composition's actions are the owner's whatever
+    // the tier, so while only "You" is ticked there is no choice, only the note saying so.
+    expect(accessRadio(root, 'write')).toBeUndefined();
+    expect(findByAttr(root, INSTALL_GRANT_OWNER_ONLY_ATTR)).toBeDefined();
+    const others = audienceCheck(root, 'all_other_contracts');
+    others!.checked = true;
+    others!.dispatch('change');
     const writeRadio = accessRadio(root, 'write');
     expect(writeRadio).toBeDefined();
+    expect(findByAttr(root, INSTALL_GRANT_OWNER_ONLY_ATTR)).toBeUndefined();
     writeRadio!.dispatch('change');
     findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
     await tick();
     expect(installScopeOf(calls)).toEqual({
       access: 'write',
-      audience: { owner: true, all_customers: false, all_other_contracts: false },
+      audience: { owner: true, all_customers: false, all_other_contracts: true },
     });
   });
 
@@ -3048,15 +3057,23 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
         { key: 'contact.update', surface: 'api', risk_tier: 'write', approval_mapping: 'ask' },
       ]),
     );
+    const others = audienceCheck(root, 'all_other_contracts');
+    others!.checked = true;
+    others!.dispatch('change');
     accessRadio(root, 'write')!.dispatch('change');
-    // Edit a field → markDirty invalidates the review + resets the grant tier;
-    // re-save re-reviews, and the picker must show `read` again, not the stale
-    // `write`.
+    // Edit a field → markDirty invalidates the review + resets the grant tier and who
+    // may use it; re-save re-reviews, and the install must send `read` again, not the
+    // stale `write`. With only "You" ticked again, the choice is not shown.
     setValue(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR), 'HubSpot local edited');
     findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
     await tick();
+    expect(findByAttr(root, INSTALL_GRANT_OWNER_ONLY_ATTR)).toBeDefined();
+    audienceCheck(root, 'all_other_contracts')!.checked = true;
+    audienceCheck(root, 'all_other_contracts')!.dispatch('change');
     expect(accessRadio(root, 'read')?.checked).toBe(true);
     expect(accessRadio(root, 'write')?.checked).toBe(false);
+    audienceCheck(root, 'all_other_contracts')!.checked = false;
+    audienceCheck(root, 'all_other_contracts')!.dispatch('change');
     findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
     await tick();
     expect(installScopeOf(calls)).toEqual({

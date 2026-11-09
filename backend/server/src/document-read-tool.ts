@@ -5,7 +5,7 @@ import type { Tier1Handler } from '@recued/middleware/internal-tool-registry/ind
 import { buildPackOpResolution } from './pack-inventory.js';
 import { isCollectionReadGrantedForDispatch, wrapRecipeRunResult, type ChatToolHandlerDeps } from './chat-tool-handlers.js';
 import { registerResumedRunFinisher } from './resumed-run-finishers.js';
-import { documentReadRecipe } from './document-read-recipe.js';
+import { DOCUMENT_READER_OPS, documentReadRecipe, documentReaderTakes, isDocumentReader } from './document-read-recipe.js';
 export { documentReadRecipe } from './document-read-recipe.js';
 import type { ExecuteResponse } from './types.js';
 import { isWatchedFolderCollection, parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
@@ -75,13 +75,18 @@ export const documentReadPlanner = (deps: ChatToolHandlerDeps, requested: string
   const config = deps.getExecutorConfig();
   const scan = deps.documentPacks ?? deps.scanInstalledPacks;
   const resolution = scan ? buildPackOpResolution(scan, slug => config.manifests.get(slug)) : new Map();
-  const choices = requested === 'auto' ? ['markitdown', 'docling'] : [requested];
+  // D-335 slice AR — PDFToText last: it reads a PDF only, and a PDF read with MarkItDown or Docling
+  // before still is.
+  const readers = requested === 'auto' ? ['markitdown', 'docling', 'pdftotext'] : [requested];
   return (record: CollectionRecord, version = record.blob_hash ?? String(record.hot_fields.content_hash ?? '')) => {
     const mime = String(record.hot_fields.mime_type ?? '').toLowerCase();
     const media = mediaType(record.hot_fields.mime_type);
     const plain = media.essence.startsWith('text/') || TEXT_TYPES.includes(media.essence);
     const direct = plain && requested === 'auto';
-    const converter = direct ? undefined : choices.find(name => resolution.get(`recued-core.${name}`)?.operations.has('document.to_markdown'));
+    // The readers this kind of file takes.
+    const choices = readers.filter(name => !isDocumentReader(name) || documentReaderTakes(name, media.essence));
+    const converter = direct ? undefined : choices.find(name => isDocumentReader(name)
+      && resolution.get(`recued-core.${name}`)?.operations.has(DOCUMENT_READER_OPS[name]));
     const binding = converter ? resolution.get(`recued-core.${converter}`) : undefined;
     const manifest = binding ? config.manifests.get(binding.catalog_slug) : undefined;
     const key = createHash('sha256').update(JSON.stringify([record.record_id, version, record.hot_fields.filename, mime, direct, converter ?? choices, manifest])).digest('hex');
@@ -127,8 +132,9 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
     const hash = watched ? watchedRevision() ?? '' : record.blob_hash ?? String(record.hot_fields.content_hash ?? '');
     const { media, direct, converter, choices, key } = documentReadPlan(deps, record, requested, hash);
     if (!direct && !converter) return { ok: true, result: { status: 'needs_pack', file_ref: args.file_ref,
-      suggested_packs: requested === 'auto' ? ['markitdown', 'docling'] : choices,
-      hint: 'Enable an appropriate document reader pack, then resume this investigation. MarkItDown handles ordinary documents; Docling can use OCR for scans. No attachment content has been read.' },
+      suggested_packs: choices,
+      hint: 'Enable an appropriate document reader pack, then resume this investigation. MarkItDown handles ordinary documents; Docling can use OCR for scans'
+        + `${choices.includes('pdftotext') ? '; PDFToText reads the text of a PDF' : ''}. No attachment content has been read.` },
       // D-323 — the same packs as data, as the resolution above names them, so
       // chat can offer them under its answer.
       missing_packs: choices.map((name) => `recued-core.${name}`) };

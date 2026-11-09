@@ -851,3 +851,49 @@ describe('composeReceptionSubstrate tells the owner a visitor was turned away (D
     expect(bundle.receptionPortDeps.noticeIntakeFormTurnedAway).toBeUndefined();
   });
 });
+
+// D-188 — the four follow-up sweeps notify the owner on their own: held while the owner's pause
+// holds (the emergency stop: nothing leaves), and swept on the first tick after Resume.
+describe('the follow-up sweeps while the server is paused', () => {
+  const SWEEPS = ['quote-signoff-reminders', 'quote-completion-reminders',
+    'customer-account-payment-reminders', 'quote-payment-reminders'];
+
+  it('read only the pause while paused, and sweep once resumed', async () => {
+    const BetterSqlite = (await import('better-sqlite3')).default;
+    const { createServerStateStore } = await import('../server-state.js');
+    const db = new BetterSqlite(':memory:');
+    try {
+      const state = createServerStateStore(db);
+      const notify = vi.fn(async () => undefined);
+      const { deps } = await composeDefined({
+        db, recordsStore: {}, executeDeps: { preflightNotifier: { notify } },
+        blobStore: { kind: 'blob-store', putFile: vi.fn(), get: vi.fn(), put: vi.fn() },
+      });
+      const specs = (deps.backgroundServices.registerInterval.mock.calls as Array<[{ name: string; tick: () => Promise<void> }]>)
+        .map(([spec]) => spec).filter((spec) => SWEEPS.includes(spec.name));
+      expect(specs.map((spec) => spec.name).sort()).toEqual([...SWEEPS].sort());
+
+      // Every statement the sweeps prepare from here on.
+      const prepared: string[] = [];
+      const prepare = db.prepare.bind(db);
+      (db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+        prepared.push(sql);
+        return prepare(sql);
+      };
+
+      state.setPaused(true);
+      prepared.length = 0;
+      for (const spec of specs) await spec.tick();
+      expect(prepared.length).toBeGreaterThan(0);
+      expect(prepared.every((sql) => sql.includes('server_state'))).toBe(true);
+      expect(notify).not.toHaveBeenCalled();
+
+      state.setPaused(false);
+      prepared.length = 0;
+      for (const spec of specs) await spec.tick().catch(() => undefined);
+      expect(prepared.some((sql) => !sql.includes('server_state'))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+});

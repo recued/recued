@@ -109,7 +109,57 @@ export type BridgeAction =
    *  like a write by ref. `{ filled, picked, page, url, title, moved, challenge? }`: the option's
    *  text, and the page as a click answers it, since a suggestion can be a link.
    *  `apps/bridge/src/actions/page-pick.ts`. */
-  | 'pick';
+  | 'pick'
+  /** D-335 slice T (2026-11-05) — reads a page as `inspect` does, for the server to answer what an
+   *  action changed on it, but keeps the refs of elements the page removed (the latest of them), so a
+   *  ref a model read before the action is still found again (slice M). `inspect` drops them, as it
+   *  always has. A Bridge before 0.0.8 does not run it, and the server then answers an action as
+   *  before. `apps/bridge/src/actions/page-inspect.ts`. */
+  | 'reread'
+  /** D-335 slice U (2026-11-05) — presses a key (`args.key`, as {@link parseBridgeKey} reads it) in
+   *  the element a page handle names with a ref or a selector, or, with neither, in the element that
+   *  has the focus: the key's events, then what the browser does for it that a script's events do
+   *  not (Enter sends a field's form or activates a button or link, Space activates a button or a
+   *  checkbox, Escape closes an open dialog, Tab moves the focus). Answers as a click does, with
+   *  `pressed` (the key as read) for `clicked`. `apps/bridge/src/actions/page-keys.ts`. */
+  | 'press'
+  /** D-335 slice U (2026-11-05) — scrolls the page a handle names (or the panel it scrolls instead,
+   *  or the element a ref or a selector names) by a screen, as a screenshot's `screen` steps:
+   *  `args.to` is `next` (the default), `previous`, `top` or `bottom`, or `args.screen` names one
+   *  from 1. It is left there, unlike a screenshot's, and the page is given a moment to draw what
+   *  scrolling brought in. `{ page, url, title, screen, screens }`.
+   *  `apps/bridge/src/actions/page-scroll.ts`. */
+  | 'scroll'
+  /** D-335 slice X (2026-11-06) — loads `args.url` in the tab a page handle names, as following a
+   *  link would, and answers the page it then shows as `open_tab` does: `{ page, url, title }`.
+   *  Only an http or https address on the command's pattern, never on a site the owner listed. The
+   *  tab is the owner's, so a page that goes on where the step may not read is left there, and the
+   *  answer says so. `apps/bridge/src/actions/page-tabs.ts`. */
+  | 'navigate'
+  /** D-335 slice X — the tab's back button, and its reload: the page it then shows, as `navigate`
+   *  answers it. */
+  | 'go_back'
+  | 'reload_page'
+  /** D-335 slice X — closes the tab a page handle names, never the owner client's: `{ closed }`. */
+  | 'close_tab'
+  /** D-335 slice X — points at the element a page handle names with a ref or a selector: the
+   *  events a mouse moved onto it sends, for a menu that opens under the pointer. A style sheet's
+   *  `:hover` rule does not apply, which only a real pointer does. `{ hovered, page, url, title }`.
+   *  `apps/bridge/src/actions/page-hover.ts`. */
+  | 'hover'
+  /** D-335 slice AP (2026-11-07) — fetches a file the page a handle names links to, as the page would
+   *  fetch it, its cookies with it: the link `args.ref` or `args.selector` names (its `href`, or a
+   *  `src`), or `args.address`. At most `args.max_bytes`, and {@link BRIDGE_FILE_MAX_BYTES}: a larger
+   *  file is refused, saying its size. `{ page, url, title, address, filename, mime_type, size, data }`,
+   *  `data` the file in base64, which the server keeps among the owner's files and answers by its ref.
+   *  `apps/bridge/src/actions/page-files.ts`. */
+  | 'download_file'
+  /** D-335 slice AQ (2026-11-07) — puts a file into the file field (`<input type="file">`) a page
+   *  handle's `args.ref` or `args.selector` names, as choosing it in the field's dialog would:
+   *  `args.filename`, `args.mime_type` and `args.data` (base64, at most {@link BRIDGE_FILE_MAX_BYTES}),
+   *  then the field's `input` and `change` events. A label for the field, or what wraps it (a button,
+   *  a drop zone), names it too. `{ attached, page, url, title }`. `apps/bridge/src/actions/page-files.ts`. */
+  | 'upload_file';
 
 export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'read_dom',
@@ -128,6 +178,16 @@ export const BRIDGE_ACTIONS: ReadonlyArray<BridgeAction> = [
   'screenshot_page',
   'submit',
   'pick',
+  'reread',
+  'press',
+  'scroll',
+  'navigate',
+  'go_back',
+  'reload_page',
+  'close_tab',
+  'hover',
+  'download_file',
+  'upload_file',
 ] as const;
 
 /** The actions every Bridge has run since D-148. A Bridge whose capability
@@ -164,12 +224,22 @@ export const bridgeRunsCommand = (
   && (action === 'inspect' || action === 'describe' || (args.page === undefined && args.ref === undefined)
     || bridgeRunsAction(profile, 'describe'));
 
-/** D-335 §3.2 — the most HTML one `inspect` answers, about 10k tokens. A page
- *  that does not fit is cut at an element boundary and answers `truncated`. */
+/** D-335 §3.2 — the most HTML one `inspect` answers when the command names no
+ *  `max_chars`, about 10k tokens. A page that does not fit is cut at an element
+ *  boundary and answers `truncated`. Since slice P the server names the size of
+ *  each read; a server from before names none and hands the HTML to a model as
+ *  it is, so this stays its size. */
 export const BRIDGE_INSPECT_MAX_CHARS = 40_000;
 /** D-335 §3.2 — the most of one text node, field value or attribute `inspect`
- *  keeps; a longer one is cut and ends with an ellipsis. */
+ *  keeps when the command names no `max_value_chars`; a longer one is cut and
+ *  ends with an ellipsis. */
 export const BRIDGE_INSPECT_MAX_VALUE_CHARS = 2_000;
+/** D-335 slice P — the most one `inspect` answers whatever size the server
+ *  names, a fit rather than a choice: the answer is one WebSocket message, the
+ *  server takes one of at most 4 MiB (`RPC_WS_MAX_PAYLOAD_BYTES`, pinned against
+ *  this by `bridge-inspect-ceiling.test.ts`), and a character costs at most 6
+ *  bytes of JSON (`\u001f`), so 600,000 of them always fit. */
+export const BRIDGE_INSPECT_CEILING_CHARS = 600_000;
 /** The keys of an `inspect` answer. */
 export const BRIDGE_INSPECT_OUTPUT_KEYS = ['page', 'url', 'title', 'html', 'truncated'] as const;
 /** The keys of a `describe` answer. */
@@ -194,18 +264,139 @@ export const BRIDGE_OPEN_OUTPUT_KEYS = ['page', 'url', 'title'] as const;
  *  `args.send_watch_ms` the Bridge then watches that long for the page to move on, as for a
  *  sent form. A watch ends as soon as a CAPTCHA, a problem or the failure shows. */
 export const BRIDGE_CLICK_OUTPUT_KEYS = ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed',
-  'sent'] as const;
+  'sent', 'acted_on'] as const;
 /** D-335 slice J — the keys of a `fill` answer: `filled`, and `challenge` when the page shows a
  *  CAPTCHA nobody has solved once the text is in (a sign-in form with one cannot be sent). */
-export const BRIDGE_FILL_OUTPUT_KEYS = ['filled', 'challenge'] as const;
+export const BRIDGE_FILL_OUTPUT_KEYS = ['filled', 'challenge', 'acted_on'] as const;
 /** D-335 slice J — the keys of a `submit` answer: `submitted` (and `filled` when it typed first),
  *  and the page the tab shows once it settles, as a click answers (slice K: with `problem` and
  *  `failed`). */
 export const BRIDGE_SUBMIT_OUTPUT_KEYS = ['submitted', 'filled', 'page', 'url', 'title', 'moved', 'challenge', 'problem',
-  'failed'] as const;
+  'failed', 'acted_on'] as const;
+/** D-335 slice U — the keys of a `press` answer: `pressed` (the key as read), then as a click
+ *  answers; `sent` when Enter sent the form the element is in. */
+export const BRIDGE_PRESS_OUTPUT_KEYS = ['pressed', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed',
+  'sent', 'acted_on'] as const;
+
+/** D-335 slice W — `acted_on`, in a `click`, `fill`, `submit`, `press` or `pick` answer by page handle: the element
+ *  acted on, as the Bridge read it just before (the page's address and title, its role and label as an ask names it,
+ *  whether it is a field for a password, a sign-in code or a card) and `selector`, a CSS selector that finds it again
+ *  another day, by the picker's rules, present only when it matches that element alone (never one inside a web
+ *  component or a frame). From Bridge 0.0.8, to a server that asks; the server keeps it for the turn's steps and does
+ *  not pass it to the model. */
+export const BRIDGE_ACTED_ON_KEY = 'acted_on';
+export interface BridgeActedOn {
+  url: string;
+  title: string;
+  role: string;
+  label: string;
+  protected: boolean;
+  selector?: string;
+}
+/** The `acted_on` of an answer, when it is one. */
+export const readBridgeActedOn = (value: unknown): BridgeActedOn | undefined => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.url !== 'string' || typeof v.title !== 'string' || typeof v.role !== 'string' || typeof v.label !== 'string'
+    || typeof v.protected !== 'boolean' || (v.selector !== undefined && typeof v.selector !== 'string')) return undefined;
+  return { url: v.url, title: v.title, role: v.role, label: v.label, protected: v.protected,
+    ...(typeof v.selector === 'string' ? { selector: v.selector } : {}) };
+};
+
+/** D-335 slice U — the keys of a `scroll` answer: the page, and the screen it now shows, of how many. */
+export const BRIDGE_SCROLL_OUTPUT_KEYS = ['page', 'url', 'title', 'screen', 'screens'] as const;
+/** D-335 slice U — where a `scroll` goes, a screen at a time. */
+export const BRIDGE_SCROLL_TO = ['next', 'previous', 'top', 'bottom'] as const;
+export type BridgeScrollTo = typeof BRIDGE_SCROLL_TO[number];
+
+/** D-335 slice X — the keys of a `navigate`, `go_back` or `reload_page` answer: the page the tab
+ *  then shows. */
+export const BRIDGE_NAVIGATE_OUTPUT_KEYS = ['page', 'url', 'title'] as const;
+/** D-335 slice X — the keys of a `close_tab` answer. */
+export const BRIDGE_CLOSE_OUTPUT_KEYS = ['closed'] as const;
+/** D-335 slice X — the keys of a `hover` answer. */
+export const BRIDGE_HOVER_OUTPUT_KEYS = ['hovered', 'page', 'url', 'title'] as const;
+
+/** D-335 slice U — a key to press, with its modifiers, as a page's handlers see it in a
+ *  `KeyboardEvent`. `name` is how Recued writes it back: `Control+Enter`. */
+export interface BridgeKeyPress {
+  name: string;
+  key: string;
+  code: string;
+  keyCode: number;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}
+
+const NAMED_KEYS: Readonly<Record<string, readonly [key: string, code: string, keyCode: number]>> = {
+  enter: ['Enter', 'Enter', 13], escape: ['Escape', 'Escape', 27], esc: ['Escape', 'Escape', 27], tab: ['Tab', 'Tab', 9],
+  space: [' ', 'Space', 32], backspace: ['Backspace', 'Backspace', 8], delete: ['Delete', 'Delete', 46],
+  arrowup: ['ArrowUp', 'ArrowUp', 38], arrowdown: ['ArrowDown', 'ArrowDown', 40], arrowleft: ['ArrowLeft', 'ArrowLeft', 37],
+  arrowright: ['ArrowRight', 'ArrowRight', 39], up: ['ArrowUp', 'ArrowUp', 38], down: ['ArrowDown', 'ArrowDown', 40],
+  left: ['ArrowLeft', 'ArrowLeft', 37], right: ['ArrowRight', 'ArrowRight', 39], home: ['Home', 'Home', 36],
+  end: ['End', 'End', 35], pageup: ['PageUp', 'PageUp', 33], pagedown: ['PageDown', 'PageDown', 34],
+};
+const PUNCTUATION: Readonly<Record<string, readonly [code: string, keyCode: number]>> = {
+  '/': ['Slash', 191], '.': ['Period', 190], ',': ['Comma', 188], '-': ['Minus', 189], '=': ['Equal', 187],
+  ';': ['Semicolon', 186], "'": ['Quote', 222], '[': ['BracketLeft', 219], ']': ['BracketRight', 221],
+  '\\': ['Backslash', 220], '`': ['Backquote', 192],
+};
+const MODIFIERS: Readonly<Record<string, 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>> = {
+  control: 'ctrlKey', ctrl: 'ctrlKey', meta: 'metaKey', cmd: 'metaKey', command: 'metaKey', alt: 'altKey',
+  option: 'altKey', shift: 'shiftKey',
+};
+
+/** D-335 slice U — a key as an AI or a recipe writes it: a named key (Enter, Escape, Tab, Space,
+ *  Backspace, Delete, the arrows, Home, End, PageUp, PageDown, F1 to F12), a letter, a digit, or
+ *  one of / . , - = ; ' [ ] \ `, after any of Control, Meta, Alt and Shift joined with `+`
+ *  (`Control+Enter`, `Shift+Tab`, `Meta+k`). Case does not matter. `null` for anything else. */
+export const parseBridgeKey = (text: unknown): BridgeKeyPress | null => {
+  if (typeof text !== 'string') return null;
+  const parts = text.trim().split('+').map((part) => part.trim());
+  // `Control++` is Control with the plus key, which is not on the list.
+  if (parts.length === 0 || parts.length > 5 || parts.some((part) => part === '')) return null;
+  const press: BridgeKeyPress = { name: '', key: '', code: '', keyCode: 0, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+  for (const part of parts.slice(0, -1)) {
+    const modifier = MODIFIERS[part.toLowerCase()];
+    if (modifier === undefined || press[modifier]) return null;
+    press[modifier] = true;
+  }
+  const base = parts.at(-1)!;
+  const lower = base.toLowerCase();
+  const named = Object.hasOwn(NAMED_KEYS, lower) ? NAMED_KEYS[lower] : undefined;
+  const fkey = /^f([1-9]|1[0-2])$/.exec(lower);
+  if (named) {
+    [press.key, press.code, press.keyCode] = named;
+  } else if (fkey) {
+    press.key = `F${fkey[1]!}`;
+    press.code = press.key;
+    press.keyCode = 111 + Number(fkey[1]);
+  } else if (/^[a-z]$/.test(lower)) {
+    press.key = press.shiftKey ? lower.toUpperCase() : lower;
+    press.code = `Key${lower.toUpperCase()}`;
+    press.keyCode = lower.toUpperCase().charCodeAt(0);
+  } else if (/^[0-9]$/.test(base)) {
+    press.key = base;
+    press.code = `Digit${base}`;
+    press.keyCode = base.charCodeAt(0);
+  } else if (Object.hasOwn(PUNCTUATION, base)) {
+    press.key = base;
+    [press.code, press.keyCode] = PUNCTUATION[base]!;
+  } else {
+    return null;
+  }
+  const shown = press.key === ' ' ? 'Space' : press.key.length === 1 ? press.key.toLowerCase() : press.key;
+  press.name = [press.ctrlKey ? 'Control' : '', press.metaKey ? 'Meta' : '', press.altKey ? 'Alt' : '', press.shiftKey ? 'Shift' : '', shown]
+    .filter((piece) => piece !== '').join('+');
+  return press;
+};
+
 /** D-335 slice L — the keys of a `pick` answer: `filled`, `picked` (the text of the option it
  *  clicked), and the page the tab shows once the click settles, as a click answers it. */
-export const BRIDGE_PICK_OUTPUT_KEYS = ['filled', 'picked', 'page', 'url', 'title', 'moved', 'challenge'] as const;
+export const BRIDGE_PICK_OUTPUT_KEYS = ['filled', 'picked', 'page', 'url', 'title', 'moved', 'challenge',
+  'acted_on'] as const;
 /** D-335 slice L — the longest a `pick` waits for its suggestion (`args.pick_ms`). */
 export const BRIDGE_PICK_MAX_MS = 10_000;
 /** How long a click by page handle watches its tab for a page to start loading, and the longest
@@ -218,6 +409,11 @@ export const BRIDGE_CLICK_LOAD_MAX_MS = 10_000;
  *  the site has answered. A Bridge asked for a CAPTCHA (`challenge`) stops watching as soon as one
  *  shows, and one that predates the argument watches for the usual time. */
 export const BRIDGE_WATCH_MAX_MS = 10_000;
+/** D-347 follow-up 18 (2026-11-08) — the longest a click by its page waits for what covers its element to go:
+ *  a banner shown in turn over the one it names, a notice that new mail has come, a list's loading veil. A
+ *  dialog over it is refused at once. Within the command's budget, leaving 15 s for the click and the watch
+ *  after it, so a command of the default 30 s waits this long and a shorter one less. */
+export const BRIDGE_CLICK_WAIT_MS = 8_000;
 
 /** D-335 — the Bridge's answer (`selector_not_found`) for a ref whose element has gone from a
  *  page still open. */
@@ -235,6 +431,22 @@ export const BRIDGE_PAGE_GONE_MESSAGE = 'The page has reloaded, gone to another 
 export const isBridgeTargetGone = (error: { readonly code?: string; readonly message?: string } | undefined): boolean =>
   error?.code === 'selector_not_found'
   && (error.message === BRIDGE_PAGE_CHANGED_MESSAGE || error.message === BRIDGE_PAGE_GONE_MESSAGE);
+
+/** D-347 follow-up 17 (2026-11-08) — the Bridge's answer (`selector_not_found`) before a step that acts by a
+ *  ref whose element is still on the page but shows something other than the page's last read did, when no
+ *  other element now shows that: a list the page drew anew into the same elements, on its own (a timer, a
+ *  push) or after a step. `now` and `was` say what it shows, in its row when it has one (`page-rebind.ts`). */
+export const bridgeElementChangedMessage = (ref: string, now: string, was: string): string =>
+  `${ref} now shows ${now}, where the page's last read showed ${was}: the page changed it since it was `
+  + 'inspected. Inspect it again.';
+const BRIDGE_ELEMENT_CHANGED = /^e\d+ now shows .+, where the page's last read showed .+: the page changed it since it was inspected\. Inspect it again\.$/s;
+/** D-347 follow-up 17 — whether a Bridge error says the page changed what a ref names since it was read: its
+ *  element gone ({@link BRIDGE_PAGE_CHANGED_MESSAGE}) or showing something else
+ *  ({@link bridgeElementChangedMessage}). The server then reads the page again and answers what changed with
+ *  the error, so the AI can act on the page as it is without a round to inspect it. */
+export const isBridgeRefChanged = (error: { readonly code?: string; readonly message?: string } | undefined): boolean =>
+  error?.code === 'selector_not_found'
+  && (error.message === BRIDGE_PAGE_CHANGED_MESSAGE || BRIDGE_ELEMENT_CHANGED.test(error.message ?? ''));
 
 /** D-335 slice H — how long `wait_for_element` waits when no time is given,
  *  and the longest it waits. The command's own budget stays above it. */
@@ -258,8 +470,18 @@ export const BRIDGE_SCREENSHOT_MAX_EDGE = 1568;
 /** The most base64 one screenshot may be (about 1.5 MB of picture), well under
  *  the server socket's 4 MiB message cap. A JPEG over it is re-encoded smaller. */
 export const BRIDGE_SCREENSHOT_MAX_BASE64 = 2_000_000;
-/** The keys of a `screenshot_page` answer. */
-export const BRIDGE_SCREENSHOT_OUTPUT_KEYS = ['page', 'url', 'title', 'image', 'mime_type', 'width', 'height'] as const;
+/** D-335 slice AP — the largest file one Bridge answer hands the server: its base64, a third larger,
+ *  stays under the server socket's 4 MiB message cap. */
+export const BRIDGE_FILE_MAX_BYTES = 2_500_000;
+/** D-335 slice AP — the keys of a `download_file` answer. */
+export const BRIDGE_DOWNLOAD_OUTPUT_KEYS = ['page', 'url', 'title', 'address', 'filename', 'mime_type', 'size', 'data'] as const;
+/** D-335 slice AQ — the keys of an `upload_file` answer. */
+export const BRIDGE_UPLOAD_OUTPUT_KEYS = ['attached', 'page', 'url', 'title'] as const;
+/** The keys of a `screenshot_page` answer. D-335 slice S — `screen` and `screens`: which screen of
+ *  the page (or of the element) the picture shows, counted from 1 at its top, of how many. A Bridge
+ *  before 0.0.8 answers neither, and the Bridge answers them only to a server that asks. */
+export const BRIDGE_SCREENSHOT_OUTPUT_KEYS = ['page', 'url', 'title', 'image', 'mime_type', 'width', 'height',
+  'screen', 'screens'] as const;
 
 /** D-335 slice H — a picture in a step's output, by reference: the server keeps
  *  the bytes for {@link BROWSER_IMAGE_TTL_MS} and the output carries this. An

@@ -39,7 +39,7 @@ const owner: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_sessi
 const ask = (overrides: Partial<Extract<AdmissionDecision, { verdict: 'ask' }>> = {}): AdmissionDecision => ({
   verdict: 'ask',
   risk_tier: 'write',
-  detail: 'This acts on a web page in your browser, signed in as you, so Recued always asks you first.',
+  detail: 'This acts on a web page in your browser, signed in as you, so Recued asks you first.',
   authorization_provenance: { pre_lift_approval: 'never', lift_reason: 'review_send' },
   ...overrides,
 } as AdmissionDecision);
@@ -200,19 +200,26 @@ describe('D-335 slice F — the ask offers the pass, in place of "Allow this ses
       { id: 'approve', label: 'Approve' },
       { id: 'allow_site_session', label: 'Allow on github.com for this session' },
       { id: 'allow_site_always', label: 'Always allow on github.com' },
+      // D-341 slice A — from the owner's own chat, the switch below its input too.
+      { id: 'allow_request', label: 'Don’t ask about browser actions in this chat' },
       { id: 'deny', label: 'Deny' },
     ]);
     expect(built.message.text).toContain('\n\n“Allow on github.com for this session” stops asking about clicks on '
       + 'github.com in this conversation, for up to 8 hours. “Always allow on github.com” stops asking about them in '
-      + 'all your chats, until you end it under Contracts.\n\nApprove?');
+      + 'all your chats, until you end it under Contracts. “Don’t ask about browser actions in this chat” stops asking '
+      + 'about any of them, on any site, in this conversation, until you turn it off below the chat\'s input, for up to '
+      + '8 hours.\n\nApprove?');
     expect(built.message.text).not.toContain("'Allow this session'");
     expect(built.handler.payload.session_grant).toBeUndefined();
   });
 
-  it('an AI app\'s pass is for that app', () => {
-    const app = { ...OFFER, key: { ...OFFER.key, principal: { kind: 'ai_app' as const, contract_id: 'ct-1' } } };
-    expect(buildPreflightAsk({ checkpoint: checkpoint({ browser_pass: app }), context: context() }).message.text)
-      .toContain('stops asking about them for this AI app, until you end it under Contracts.');
+  it('an AI app\'s pass is for that app, and its ask offers no switch of the owner\'s chat', () => {
+    const app = { ...OFFER, key: { ...OFFER.key, principal: { kind: 'ai_app' as const, contract_id: 'ct-1' } },
+      channel_session_id: 'mcp:t' };
+    const built = buildPreflightAsk({ checkpoint: checkpoint({ browser_pass: app }), context: context() });
+    expect(built.message.text).toContain('stops asking about them for this AI app, until you end it under Contracts.');
+    expect(built.message.text).not.toContain('Don’t ask about browser actions');
+    expect(built.options.map((option) => option.id)).not.toContain('allow_request');
   });
 
   it('a host too long for a button is shortened on the button, and every label fits Slack\'s 75', () => {

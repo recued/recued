@@ -166,6 +166,36 @@ export const RUN_MODAL_STYLES = `
   margin: 4px 0 0;
   overflow-wrap: anywhere;
 }
+/* D-321 C2 — what would stop a run, said before it. */
+.run-modal-before {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  padding: 9px;
+  font-size: 12px;
+}
+/* D-321 P2 — a refused run's next step, and under a failed run's reason what
+   its step needed. */
+.run-modal-next {
+  margin-top: 8px;
+}
+.run-modal-next-lead {
+  margin: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.run-modal-next-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.run-modal-next-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
 .run-modal-button {
   box-sizing: border-box;
   appearance: none;

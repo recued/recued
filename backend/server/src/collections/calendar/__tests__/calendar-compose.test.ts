@@ -136,7 +136,8 @@ interface Harness {
   cleanup: () => void;
 }
 
-const buildHarness = (opts: { isVaultUnlocked?: () => boolean; initialScan?: CalendarProvider['initialScan'] } = {}): Harness => {
+const buildHarness = (opts: { isVaultUnlocked?: () => boolean; isPaused?: () => boolean;
+  initialScan?: CalendarProvider['initialScan'] } = {}): Harness => {
   const db = new Database(':memory:');
   const bus = createWarehouseEventBus();
   const hooks: FakeProviderHooks = {
@@ -153,6 +154,7 @@ const buildHarness = (opts: { isVaultUnlocked?: () => boolean; initialScan?: Cal
     {
       factories: [mkFactory('gcal', hooks, opts.initialScan), mkFactory('graph', hooks, opts.initialScan), mkFactory('caldav', hooks, opts.initialScan)],
       ...(opts.isVaultUnlocked ? { isVaultUnlocked: opts.isVaultUnlocked } : {}),
+      ...(opts.isPaused ? { isPaused: opts.isPaused } : {}),
     },
   );
   const cleanup = () => { bus.dispose(); db.close(); };
@@ -279,6 +281,23 @@ describe('composeCalendarStack — lifecycle', () => {
     await harness.stack.enrollDeps.onDeleted?.('work');
     expect(harness.stack.listLive()).toHaveLength(0);
     expect(harness.hooks.close).toBe(1);
+  });
+});
+
+// D-188 — the owner's pause (the emergency stop: nothing comes in) defers the poll the same way.
+describe('composeCalendarStack — pause gate (poll deferred while the server is paused)', () => {
+  it('startAll does not arm the poll while paused, and resumeSync arms it on Resume', async () => {
+    const h = buildHarness({ isVaultUnlocked: () => true, isPaused: () => true });
+    enrollRow(h, 'work', 'gcal');
+
+    await h.stack.startAll();
+    expect(h.stack.listLive()).toHaveLength(1);
+    expect(h.hooks.startSyncCount).toBe(0);
+
+    await h.stack.resumeSync();
+    expect(h.hooks.startSyncCount).toBe(1);
+
+    h.cleanup();
   });
 });
 

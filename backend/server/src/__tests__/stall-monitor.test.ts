@@ -5,7 +5,7 @@
 // end at the monitor level: a hung file-growth op is killed after k·T, a
 // slow-but-growing op is spared, and a silent op is bounded only by the cap.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   STALL_FACTOR_K,
   DEFAULT_EXPECTED_INTERVAL_MS,
@@ -290,5 +290,56 @@ describe('D-274 — the flag latch is per EPISODE, not per monitor lifetime', ()
     monitor.start(() => {}, (d) => flags.push(d));
     for (let i = 0; i < 40; i += 1) h.advance(50);   // 2s of unbroken stillness
     expect(flags).toHaveLength(1);                    // not 1-per-poll
+  });
+});
+
+/** ⛔ A closed lid is not a stall. No-progress time was measured on `Date.now`,
+ *  which jumps by the time slept, so the first poll after waking killed an agent
+ *  CLI "idle" for the whole sleep — 45 minutes for the coding agents, 90 seconds
+ *  for yt-dlp. It is measured on a clock that stops while the machine sleeps. */
+describe('StallMonitor — a machine that slept', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('⛔ a sleep longer than the window is not a stall; a window of AWAKE silence still is', () => {
+    const h = makeHarness();
+    let wall = Date.UTC(2026, 10, 6, 9, 0);
+    const stalls: StallDecision[] = [];
+    const monitor = new StallMonitor({
+      contract: 'heartbeat', origin: 'unattended', expectedIntervalMs: 1_000, factorK: 1, pollMs: 100,
+      killOnNoProgress: true, now: h.now, wallNow: () => wall, setTimer: h.setTimer, clearTimer: h.clearTimer,
+    });
+    monitor.start((d) => stalls.push(d));
+    h.advance(100);
+    wall += 2 * 60 * 60_000; // the lid is shut for two hours; the stopped clock does not move
+    h.advance(100);          // the first poll after waking
+    expect(stalls).toEqual([]);
+    h.advance(1_000);
+    expect(stalls).toHaveLength(1);
+    expect(stalls[0]!.reason).toBe('no_progress');
+  });
+
+  it('reports a progress signal at the wall-clock time the active list shows', () => {
+    const h = makeHarness();
+    const wall = Date.UTC(2026, 10, 6, 9, 0);
+    const seen: number[] = [];
+    const monitor = new StallMonitor({
+      contract: 'heartbeat', origin: 'unattended', now: h.now, wallNow: () => wall,
+      onSignal: (at) => seen.push(at), setTimer: h.setTimer, clearTimer: h.clearTimer,
+    });
+    h.advance(500);
+    monitor.signal();
+    expect(seen).toEqual([wall]);
+  });
+
+  it('⛔ by default the wall clock jumping does not move no-progress time', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.UTC(2026, 10, 6, 9, 0));
+    const monitor = new StallMonitor({
+      contract: 'heartbeat', origin: 'unattended', expectedIntervalMs: 1_000, factorK: 1, killOnNoProgress: true,
+    });
+    vi.setSystemTime(Date.UTC(2026, 10, 6, 11, 0));
+    const decision = monitor.poll();
+    expect(decision.stalled).toBe(false);
+    expect(decision.idle_ms).toBeLessThan(1_000);
   });
 });

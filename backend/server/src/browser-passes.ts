@@ -16,14 +16,17 @@ import {
   browserPassHostOf,
   browserPassKeyHash,
   browserPassOccasionOf,
+  browserPassOffersRequest,
   browserPassSiteOf,
   describeBrowserPass,
   readBrowserPassOffer,
   writeRulePrincipalOf,
   type BrowserPassKey,
+  type BrowserPassAnswerKind,
   type BrowserPassKind,
   type BrowserPassOffer,
   type BrowserPassRow,
+  type BrowserRequestPass,
   type Checkpoint,
   type ExecutionSource,
 } from '@recued/contracts';
@@ -89,22 +92,27 @@ export const recordBrowserPassAnswer = (
   } | undefined,
   checkpoint: Checkpoint,
   outcome: 'approved' | 'refused',
-  options: { readonly pass?: BrowserPassKind; readonly now?: number } = {},
+  options: { readonly pass?: BrowserPassAnswerKind; readonly now?: number } = {},
 ): void => {
   const store = deps?.browserPasses;
   const offer = readBrowserPassOffer(checkpoint.preflight_context?.browser_pass);
   if (store === undefined || offer === undefined) return;
   const now = options.now ?? Date.now();
   try {
-    // First the pass, so an "Always allow" answer is never also suggested to the owner.
     if (outcome === 'approved' && options.pass !== undefined) {
-      store.mint({
-        key: offer.key,
-        host: offer.host,
-        kind: options.pass,
-        channel_session_id: offer.channel_session_id,
-        now,
-      });
+      if (options.pass === 'request') {
+        // D-341 slice A — "Don't ask about browser actions in this chat": the switch beside Send, on.
+        if (browserPassOffersRequest(offer)) store.startRequestPass(offer.channel_session_id, now);
+      } else {
+        // First the pass, so an "Always allow" answer is never also suggested to the owner.
+        store.mint({
+          key: offer.key,
+          host: offer.host,
+          kind: options.pass,
+          channel_session_id: offer.channel_session_id,
+          now,
+        });
+      }
     }
   } catch (error) {
     console.warn(`[browser-passes] the pass on ${offer.host} was not kept: `
@@ -144,6 +152,27 @@ export const recordBrowserPassAnswer = (
 };
 
 /** The live pass that lets this write go ahead without asking, its use counted, or none. */
+/** D-341 slice A — the request approved ahead that lets this browser write through, with one more
+ *  use counted, or undefined (⇒ the write asks, or a site pass decides). Only the owner's own chat
+ *  has one: an AI app, a scheduled prompt, a messenger thread are never covered. */
+export const useBrowserRequestPass = (
+  store: BrowserPassStore | undefined,
+  source: ExecutionSource | undefined,
+  channel_session_id: string | undefined,
+  now: number = Date.now(),
+): BrowserRequestPass | undefined => {
+  if (store === undefined || source === undefined || channel_session_id === undefined) return undefined;
+  if (source.channel !== 'chat' || writeRulePrincipalOf(source)?.kind !== 'owner_chat') return undefined;
+  try {
+    return store.useRequestPass(channel_session_id, now);
+  } catch (error) {
+    // Unknown is "ask", as for any pass.
+    console.warn(`[browser-passes] the request pass for ${channel_session_id} could not be read: `
+      + (error instanceof Error ? error.message : String(error)));
+    return undefined;
+  }
+};
+
 export const useBrowserPass = (
   store: BrowserPassStore | undefined,
   key: BrowserPassKey,

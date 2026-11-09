@@ -59,11 +59,15 @@
  *  state, so paging cannot discard an in-progress sheet on this surface.
  */
 
+import { isNotSwitchedOn } from '@recued/contracts';
 import type {
+  ConnectionNotSetUpDetails,
+  Dish,
   PackListEntry,
   RecipeInvocation,
   ResolvedTableEditDescriptor,
   ResolvedTableSelectDescriptor,
+  RunProgramNeed,
   ServerExecuteResponse,
   ServerRecipeListEntry,
 } from '@recued/contracts';
@@ -153,6 +157,8 @@ import {
   missingPacksFromError,
   renderPackInstallOffer,
 } from '../shell/pack-install-offer.js';
+import { connectionSetupFromError, renderConnectionSetupOffer } from '../shell/connection-setup-offer.js';
+import { programNeedsFromError, renderRunNeedList } from '../shell/run-needs-offer.js';
 import {
   focusListTarget,
   readListScroll,
@@ -165,6 +171,40 @@ export const PACK_APP_VIEW_TAB_ATTR = 'data-recued-pack-app-view';
 export const PACK_APP_VIEW_PANEL_ATTR = 'data-recued-pack-app-view-panel';
 export const PACK_APP_OPERATION_ATTR = 'data-recued-pack-app-operation';
 export const PACK_APP_AUTOMATION_ATTR = 'data-recued-pack-app-automation';
+/** D-321 W1 — an automation's state on its card: `on`, `off`, `not_switched_on`. */
+export const PACK_APP_AUTOMATION_STATE_ATTR = 'data-recued-pack-app-automation-state';
+/** D-321 W1 — the "Switch on all" button. */
+export const PACK_APP_SWITCH_ON_ALL_ATTR = 'data-recued-pack-app-switch-on-all';
+/** D-321 W1 — what "Switch on all" did. */
+export const PACK_APP_SWITCH_ON_OUTCOME_ATTR = 'data-recued-pack-app-switch-on-outcome';
+
+/** D-321 W1 — what "Runs on its own" reads and switches (D-319): the dishes,
+ *  what a recipe's first dish starts from, and making one. */
+export interface PackAppAutomationDishes {
+  list: () => Promise<{ dishes: readonly Dish[] }>;
+  defaults: (args: { recipe_id: string }) => Promise<{ config_overlay: Record<string, unknown> }>;
+  create: (args: { recipe_id: string; config_overlay?: Record<string, unknown> }) => Promise<unknown>;
+}
+
+/** D-321 W1 — an automation's state, from its dishes: switched on (a dish on),
+ *  off (dishes, none on), or never switched on (D-319's "Not switched on"). */
+export type PackAppAutomationState = 'on' | 'off' | 'not_switched_on';
+
+export const packAppAutomationState = (
+  automation: Pick<PackAppRecipe, 'recipe_id' | 'entry'>,
+  dishes: readonly Dish[],
+): PackAppAutomationState | null => {
+  const mine = dishes.filter((dish) => dish.recipe_id === automation.recipe_id);
+  if (isNotSwitchedOn({ recipe: automation.entry.recipe, dishes: mine.length })) return 'not_switched_on';
+  if (mine.length === 0) return null;
+  return mine.some((dish) => dish.enabled) ? 'on' : 'off';
+};
+
+const AUTOMATION_STATE_LABEL: Readonly<Record<PackAppAutomationState, string>> = {
+  on: 'On',
+  off: 'Off',
+  not_switched_on: 'Not switched on',
+};
 export const PACK_APP_RESULT_ATTR = 'data-recued-pack-app-result';
 export const PACK_APP_STATUS_ATTR = 'data-recued-pack-app-status';
 export const PACK_APP_MISSING_ATTR = 'data-recued-pack-app-missing';
@@ -258,6 +298,11 @@ export interface MountPackAppViewOptions {
    *  can replay a write is a URL that acts, and this is the boundary that keeps
    *  the address bar out of that business. */
   onOpenLookup?: (open: { readonly recipe_id: string; readonly target: string } | null) => void;
+  /** D-321 W1 — each automation's state and "Switch on all". Absent ⇒ the
+   *  block lists them with "Manage" only. */
+  automationDishes?: PackAppAutomationDishes;
+  /** D-321 W1 — a pack's name, for an automation of a pack this one uses. */
+  packNameOf?: (pack_slug: string) => string | undefined;
 }
 
 export interface PackAppViewMount {
@@ -352,6 +397,12 @@ export const mountPackAppView = (
   /** Packs a `pack_not_installed` run named — rendered as the shared offer in
    *  place of the bare message. Null for every other failure. */
   let missingPacks: readonly string[] | null = null;
+  /** D-321 P2 — a connection a `connection_not_set_up` run needs set up,
+   *  rendered as the offer to set it up. Null for every other failure. */
+  let connectionSetup: ConnectionNotSetUpDetails | null = null;
+  /** D-346 A — the programs a `program_not_installed` run named, refused before
+   *  it started, rendered as the run-needs offer. Null for every other failure. */
+  let programNeeds: readonly RunProgramNeed[] | null = null;
   /** The currently displayed run, including the bounded return chain used when
    *  an action opens a detail/receipt over a browse view. */
   let resultPanel: RecipesResultPanelSnapshot | null = null;
@@ -359,6 +410,11 @@ export const mountPackAppView = (
    *  visible; refresh when the owner returns to the view. */
   let viewNeedsRefresh = false;
   let disposed = false;
+  /** D-321 W1 — the dishes "Runs on its own" reads its states from; null until read. */
+  let dishes: readonly Dish[] | null = null;
+  let dishesError: string | null = null;
+  let switchingOn = false;
+  let switchOnOutcome: { on: number; failed: Array<{ recipe_id: string; name: string; reason: string }> } | null = null;
   /** Registry for the CURRENTLY rendered result. Replaced on every paint —
    *  action ids are per-render, so holding an older one would resolve a button
    *  to a descriptor from a result no longer on screen. */
@@ -622,6 +678,8 @@ export const mountPackAppView = (
     busyOwner = owner;
     error = null;
     missingPacks = null;
+    connectionSetup = null;
+    programNeeds = null;
     paint();
     void execute({
       recipe_id: recipeId,
@@ -648,6 +706,8 @@ export const mountPackAppView = (
         // A missing pack has an action attached, so it renders as the shared
         // offer; every other failure keeps the plain message.
         missingPacks = missingPacksFromError(err);
+        connectionSetup = connectionSetupFromError(err);
+        programNeeds = programNeedsFromError(err);
         error = errMessage(err);
       })
       .finally(() => {
@@ -965,6 +1025,8 @@ export const mountPackAppView = (
     viewNeedsRefresh = false;
     error = null;
     missingPacks = null;
+    connectionSetup = null;
+    programNeeds = null;
     opts.onSelectView?.(recipeId);
     runActiveView();
   };
@@ -1044,6 +1106,12 @@ export const mountPackAppView = (
     if (missingPacks !== null) {
       return renderPackInstallOffer(missingPacks);
     }
+    if (programNeeds !== null) {
+      return renderRunNeedList(programNeeds);
+    }
+    if (connectionSetup !== null) {
+      return renderConnectionSetupOffer(connectionSetup);
+    }
     if (error !== null) {
       return `<p class="pack-app-error" ${PACK_APP_STATUS_ATTR}="error" role="alert">${escapeHtml(error)}</p>`;
     }
@@ -1118,11 +1186,49 @@ export const mountPackAppView = (
     </section>`;
   };
 
+  /** D-321 W1 — "Runs on its own": every recipe this pack, and the packs it
+   *  uses, start on their own, each with its state; and "Switch on all" for the
+   *  ones never switched on. Since D-319 none runs until switched on, and the
+   *  only word of it was a one-time notice. */
+  const renderSwitchOnAll = (): string => {
+    if (opts.automationDishes === undefined) return '';
+    if (dishesError !== null) return `<p class="pack-app-note" role="alert">${escapeHtml(dishesError)}</p>`;
+    const outcome = switchOnOutcome === null ? '' : renderSwitchOnOutcome(switchOnOutcome);
+    if (dishes === null) return outcome;
+    const off = surface.automations.filter((automation) => packAppAutomationState(automation, dishes!) === 'not_switched_on');
+    if (off.length === 0) return outcome;
+    return outcome + `<div class="pack-app-switch-on-all">
+      <p class="pack-app-operations-description">${off.length === 1 ? 'One of them is' : `${off.length} of them are`} not switched on, so ${off.length === 1 ? 'it does' : 'they do'} nothing yet. Switching on starts each with the settings the install chose.</p>
+      <button type="button" class="recipes-button pack-app-switch-on-all-button" ${PACK_APP_SWITCH_ON_ALL_ATTR}=""${switchingOn ? ' disabled aria-busy="true"' : ''}>${switchingOn ? 'Switching on…' : off.length === 1 ? 'Switch it on' : `Switch on all ${off.length}`}</button>
+    </div>`;
+  };
+
+  const renderSwitchOnOutcome = (outcome: NonNullable<typeof switchOnOutcome>): string => {
+    const lines = outcome.failed.map((failure) => `<li><strong>${escapeHtml(failure.name)}</strong>: ${escapeHtml(failure.reason)} `
+      + `<a class="rx-link" href="${escapeHtml(serializeShellRoute('automation', failure.recipe_id))}">Switch it on in Automation</a>, where its settings can be changed.</li>`).join('');
+    const said = outcome.failed.length === 0
+      ? `Switched on ${outcome.on === 1 ? 'one' : String(outcome.on)}.`
+      : `Switched on ${outcome.on} of ${outcome.on + outcome.failed.length}. ${outcome.failed.length === 1 ? 'This one was' : 'These were'} not:`;
+    return `<div class="pack-app-switch-on-outcome" ${PACK_APP_SWITCH_ON_OUTCOME_ATTR}="" role="status">`
+      + `<p class="pack-app-operations-description">${escapeHtml(said)}</p>`
+      + (lines === '' ? '' : `<ul>${lines}</ul>`)
+      + '</div>';
+  };
+
   const renderAutomations = (): string => {
     if (surface.automations.length === 0) return '';
-    const cards = surface.automations.map((automation) => `
-      <article class="pack-app-automation-card">
-        <span class="pack-app-operation-name">${escapeHtml(automation.name)}</span>
+    const cards = surface.automations.map((automation) => {
+      const state = dishes === null ? null : packAppAutomationState(automation, dishes);
+      const from = automation.from_pack === undefined
+        ? ''
+        : `<span class="pack-app-automation-from">From ${escapeHtml(opts.packNameOf?.(automation.from_pack) ?? automation.from_pack)}</span>`;
+      return `
+      <article class="pack-app-automation-card"${state === null ? '' : ` ${PACK_APP_AUTOMATION_STATE_ATTR}="${state}"`}>
+        <span class="pack-app-automation-head">
+          <span class="pack-app-operation-name">${escapeHtml(automation.name)}</span>
+          ${state === null ? '' : `<span class="pack-app-automation-state pack-app-automation-state--${state}">${AUTOMATION_STATE_LABEL[state]}</span>`}
+        </span>
+        ${from}
         ${automation.description === '' ? '' : `<span class="pack-app-operation-description">${escapeHtml(automation.description)}</span>`}
         ${renderReferenceLink({
           label: 'Manage',
@@ -1133,14 +1239,59 @@ export const mountPackAppView = (
           attributes: { [PACK_APP_AUTOMATION_ATTR]: automation.recipe_id },
         })}
       </article>
-    `).join('');
+    `;
+    }).join('');
     return `<section class="pack-app-operations">
       <header class="pack-app-operations-header">
-        <h3 class="pack-app-operations-title">Automation</h3>
-        <p class="pack-app-operations-description">These recipes start on their own once you switch them on, each with its settings. Switch them on, or pause them, in Automation.</p>
+        <h3 class="pack-app-operations-title">Runs on its own</h3>
+        <p class="pack-app-operations-description">These start on their own once switched on: on a timer, or when something happens. Each runs with its settings; change them, or pause one, in Automation.</p>
+        ${renderSwitchOnAll()}
       </header>
       <div class="pack-app-operations-grid">${cards}</div>
     </section>`;
+  };
+
+  /** D-321 W1 — read the dishes, then paint the states. */
+  const loadDishes = async (): Promise<void> => {
+    const caller = opts.automationDishes;
+    if (caller === undefined || surface.automations.length === 0) return;
+    try {
+      dishes = (await caller.list()).dishes;
+      dishesError = null;
+    } catch (err) {
+      dishesError = `Recued could not read which of these are switched on: ${errMessage(err)}`;
+    }
+    if (!disposed) paint();
+  };
+
+  /** D-321 W1 — switch on each automation never switched on, one at a time:
+   *  its first dish, from what the install chose (`dishes.defaults`, what
+   *  Automation's Switch on form starts from). The server refuses settings that
+   *  cannot run on their own (`dishes.create`), and each refusal is said with
+   *  the way to Automation's form. */
+  const switchOnAll = async (): Promise<void> => {
+    const caller = opts.automationDishes;
+    if (caller === undefined || switchingOn || dishes === null) return;
+    const targets = surface.automations.filter((automation) => packAppAutomationState(automation, dishes!) === 'not_switched_on');
+    if (targets.length === 0) return;
+    switchingOn = true;
+    switchOnOutcome = null;
+    paint();
+    let on = 0;
+    const failed: Array<{ recipe_id: string; name: string; reason: string }> = [];
+    for (const target of targets) {
+      try {
+        const { config_overlay } = await caller.defaults({ recipe_id: target.recipe_id });
+        await caller.create({ recipe_id: target.recipe_id, config_overlay });
+        on += 1;
+      } catch (err) {
+        failed.push({ recipe_id: target.recipe_id, name: target.name, reason: errMessage(err) });
+      }
+      if (disposed) return;
+    }
+    switchingOn = false;
+    switchOnOutcome = { on, failed };
+    await loadDishes();
   };
 
   /** Lookups first, then writes. Two rows rather than one: pressing "Tenant
@@ -1336,6 +1487,8 @@ export const mountPackAppView = (
     busyOwner = null;
     error = null;
     missingPacks = null;
+    connectionSetup = null;
+    programNeeds = null;
     paint();
     void execute({ recipe_id: entry.recipe_id, config: { [variable]: target } })
       .then((res) => {
@@ -1361,6 +1514,8 @@ export const mountPackAppView = (
       .catch((err: unknown) => {
         if (disposed || token !== runToken) return;
         missingPacks = missingPacksFromError(err);
+        connectionSetup = connectionSetupFromError(err);
+        programNeeds = programNeedsFromError(err);
         error = errMessage(err);
       })
       .finally(() => {
@@ -1420,6 +1575,8 @@ export const mountPackAppView = (
       busyOwner = null;
       error = null;
       missingPacks = null;
+      connectionSetup = null;
+      programNeeds = null;
       const previous = withoutRenderedRecipe(
         resultPanel ?? undefined,
         nextResult.recipe_id,
@@ -1478,6 +1635,8 @@ export const mountPackAppView = (
       resultPanel = null;
       error = null;
       missingPacks = null;
+      connectionSetup = null;
+      programNeeds = null;
       runActiveView(
         null,
         returnFrame === undefined
@@ -1493,6 +1652,8 @@ export const mountPackAppView = (
     }
     error = null;
     missingPacks = null;
+    connectionSetup = null;
+    programNeeds = null;
     paint();
   };
 
@@ -1683,6 +1844,10 @@ export const mountPackAppView = (
       return;
     }
 
+    if (target.closest(`[${PACK_APP_SWITCH_ON_ALL_ATTR}]`) !== null) {
+      void switchOnAll();
+      return;
+    }
     const tab = target.closest(`[${PACK_APP_VIEW_TAB_ATTR}]`) as HTMLElement | null;
     if (tab !== null) {
       const id = tab.getAttribute(PACK_APP_VIEW_TAB_ATTR);
@@ -1810,6 +1975,7 @@ export const mountPackAppView = (
 
   opts.host.appendChild(root);
   paint();
+  void loadDishes();
   // Open on the first view already loaded — the app-not-launcher promise.
   //
   // D-282 B5 — a bookmarked detail runs AFTER the browse view, not instead of
@@ -1951,6 +2117,21 @@ ${PACK_INSTALL_OFFER_STYLES}
 [${PACK_APP_ATTR}] .pack-app-automation-manage {
   width: fit-content; margin-top: 4px; font-size: 12px; font-weight: 650;
 }
+[${PACK_APP_ATTR}] .pack-app-automation-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px;
+}
+[${PACK_APP_ATTR}] .pack-app-automation-state {
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 650;
+  border: 1px solid var(--border); color: var(--fg-muted); background: var(--surface-subtle);
+}
+[${PACK_APP_ATTR}] .pack-app-automation-state--on { color: var(--fg); border-color: var(--border-strong); }
+[${PACK_APP_ATTR}] .pack-app-automation-state--not_switched_on { color: var(--danger); border-color: currentColor; background: transparent; }
+[${PACK_APP_ATTR}] .pack-app-automation-from { color: var(--fg-muted); font-size: 12px; }
+[${PACK_APP_ATTR}] .pack-app-switch-on-all {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px;
+}
+[${PACK_APP_ATTR}] .pack-app-switch-on-outcome { margin-top: 8px; }
+[${PACK_APP_ATTR}] .pack-app-switch-on-outcome ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
 [${PACK_APP_ATTR}] .pack-app-operation:hover {
   border-color: var(--border-strong); background: var(--surface-subtle);
 }

@@ -1303,6 +1303,28 @@ export const clearPendingAfterWait = (stored_json: string): string | null => {
   return JSON.stringify({ ...(stored as Record<string, unknown>), pending: [] });
 };
 
+/** A finding that says something waits for approval. A held call's result never reaches the fold
+ *  (`foldableToolResults`), but the turn's own answer does ("It is awaiting your approval"), and the
+ *  fold files it as a fact: 12 of the 22 distinct findings the D-337 scheduled-run drive's folds
+ *  wrote ("… is awaiting owner approval", "Status: awaiting_approval", "Approval required for
+ *  work.create …"), 2026-11-09. The other 10 said the task was created, or "Once approved, …". */
+const WAITS_FOR_APPROVAL =
+  /\bawaiting[ _](?:the )?(?:owner(?:'s)? |your )?approval\b|\b(?:waiting for|pending) (?:the )?(?:owner(?:'s)? |your )?approval\b|\bapproval required\b/iu;
+
+/** D-337 slice Z — a brief once the calls its conversation waited on have settled: what it wrote
+ *  around the wait goes, its `pending` (as `clearPendingAfterWait` clears a stored one) and its
+ *  findings that something awaits approval. The same object when there is nothing to drop.
+ *
+ *  ⛔ Findings are otherwise never dropped (`mergeBriefs`), so a wait it filed as a fact outlived
+ *  the approval: the next turn read it as still on. What still waits reaches the model from the
+ *  durable record, as the waited-calls lines. */
+export const briefAfterWait = (brief: RollingBrief): RollingBrief => {
+  const findings = brief.findings.filter((finding) => !WAITS_FOR_APPROVAL.test(finding));
+  return brief.pending.length === 0 && findings.length === brief.findings.length
+    ? brief
+    : { ...brief, pending: [], findings };
+};
+
 /** ⛔⛔ USER STATEMENTS FROM TURNS THAT NEVER GOT A FOLD.
  *
  *  The closing fold runs only when a turn did RETAINABLE tool work. Measured
@@ -1331,8 +1353,21 @@ interface PendingStatement {
 }
 const SESSION_UNFOLDED_MESSAGES = new Map<string, PendingStatement[]>();
 const SESSION_STATEMENT_SEQ = new Map<string, number>();
+/** D-347 follow-up 3 — the sessions whose list this process holds or has rebuilt. One it does not (a
+ *  restarted server, or a session the bound below let go) is rebuilt from the conversation's saved
+ *  messages before its next statement joins (`restoreUnfoldedUserMessages`). */
+const SESSION_STATEMENTS_RESTORED = new Set<string>();
 
-/** ⛔⛔ HOW LONG A STATEMENT MAY SIT UNCLASSIFIED.
+/** ⛔⛔ HOW LONG A STATEMENT MAY SIT UNCLASSIFIED — until the list is full
+ *  ({@link pendingStatementsFull}), no longer 3 turns.
+ *
+ *  ⛔ D-347 follow-up 3 (the owner, 2026-11-08: "Rebuild, fold when full") lifted
+ *  the deadline below, `MAX_PENDING_STATEMENT_TURNS = 3`. It ran the closing brief
+ *  on every fourth turn that used tools, where D-347 runs it only near the context
+ *  limit. Its reason stands as the trade made: a statement now rides unclassified
+ *  until the list's limits (12 messages, 4 KB), and a session resumed later carries
+ *  at most that, labelled as awaiting capture. The list survives a restart, rebuilt
+ *  from the conversation's own messages. The deadline's reasoning, as it was:
  *
  *  The backlog is a HOLDING PEN, not a store: it keeps a user statement visible
  *  until a fold can decide whether it is DURABLE (a levy, a standing rule →
@@ -1351,7 +1386,6 @@ const SESSION_STATEMENT_SEQ = new Map<string, number>();
  *  ON 2/2), and one call converts "held indefinitely" into "durable or dropped".
  *  That is far rarer than folding on every tool-free turn, which is the cost
  *  this backlog exists to avoid. */
-export const MAX_PENDING_STATEMENT_TURNS = 3;
 /** Per-session ceiling. Generous enough that overflow is rare (a fold clears
  *  the list), small enough that the backlog cannot dominate the fold's input. */
 export const UNFOLDED_MESSAGE_LIMIT = 12;
@@ -1394,6 +1428,8 @@ export const appendUnfoldedUserMessage = (
     if (oldest.done === true) break;
     SESSION_UNFOLDED_MESSAGES.delete(oldest.value);
     SESSION_STATEMENT_SEQ.delete(oldest.value);
+    // Let go here, so its next turn rebuilds it from the saved conversation.
+    SESSION_STATEMENTS_RESTORED.delete(oldest.value);
   }
 };
 
@@ -1405,7 +1441,8 @@ export const peekUnfoldedUserMessages = (
   (SESSION_UNFOLDED_MESSAGES.get(session_id) ?? []).map((e) => e.text);
 
 /** How many user turns the OLDEST unclassified statement has been waiting, or 0
- *  when the pen is empty. See {@link MAX_PENDING_STATEMENT_TURNS}. */
+ *  when the pen is empty. (A diagnostic since the deadline was lifted; nothing
+ *  decides on it.) */
 export const oldestPendingStatementAge = (session_id: string): number => {
   const list = SESSION_UNFOLDED_MESSAGES.get(session_id) ?? [];
   const first = list[0];
@@ -1413,10 +1450,15 @@ export const oldestPendingStatementAge = (session_id: string): number => {
   return (SESSION_STATEMENT_SEQ.get(session_id) ?? first.seq) - first.seq;
 };
 
-/** True when a statement has waited too long to be classified — the point at
- *  which a fold is worth its cost rather than a waste. */
-export const hasStalePendingStatement = (session_id: string): boolean =>
-  oldestPendingStatementAge(session_id) >= MAX_PENDING_STATEMENT_TURNS;
+/** Whether the list holds as many statements as it can: the next would drop off
+ *  its end (the list keeps the oldest), so a fold should take them now. What forces
+ *  the closing brief for the owner's statements since the deadline was lifted
+ *  (above); "full" leaves a quarter of the byte limit for the next message. */
+export const pendingStatementsFull = (session_id: string): boolean => {
+  const list = SESSION_UNFOLDED_MESSAGES.get(session_id) ?? [];
+  return list.length >= UNFOLDED_MESSAGE_LIMIT
+    || list.reduce((n, e) => n + e.text.length, 0) >= UNFOLDED_MESSAGE_BYTES * 0.75;
+};
 
 /** Clear the backlog — call ONLY after a fold has successfully stored a brief
  *  that ingested it.
@@ -1498,7 +1540,57 @@ export const clearIngestedUserMessages = (
   };
 };
 
+/** Whether a session's list must be rebuilt before its next statement joins: this
+ *  process has not held it (see `SESSION_STATEMENTS_RESTORED`). */
+export const statementsRestoreNeeded = (session_id: string): boolean =>
+  !SESSION_STATEMENTS_RESTORED.has(session_id);
+
+/** D-347 follow-up 3 — rebuild a session's list from its saved messages: the owner's
+ *  messages after its last fold (`folded_at`), and before it those holding a figure
+ *  the brief does not carry, which a fold keeps ({@link clearIngestedUserMessages}).
+ *  Oldest first, within the list's limits, keeping the oldest as
+ *  {@link appendUnfoldedUserMessage} does. No fold recorded and a brief held means
+ *  which messages it took is unknown, so the list starts empty, as before; no fold
+ *  and no brief means none was ever taken. Nothing is copied anywhere: the messages
+ *  are the conversation's own rows. Returns how many it holds. */
+export const restoreUnfoldedUserMessages = (
+  session_id: string,
+  saved: ReadonlyArray<{ readonly text: string; readonly ts: number }>,
+  folded_at: number | null,
+  brief: RollingBrief | null,
+): number => {
+  const carried = brief === null ? '' : JSON.stringify(brief);
+  const waiting = folded_at === null && brief !== null ? [] : saved
+    .filter((m) => m.text.trim().length > 0)
+    .filter((m) => folded_at === null || m.ts > folded_at || unpromotedFigures(m.text, carried).length > 0)
+    .slice().sort((a, b) => a.ts - b.ts);
+  const list: PendingStatement[] = [];
+  let bytes = 0;
+  for (const m of waiting) {
+    if (list.length >= UNFOLDED_MESSAGE_LIMIT || (list.length > 0 && bytes + m.text.length > UNFOLDED_MESSAGE_BYTES)) break;
+    list.push({ text: m.text, seq: list.length + 1 });
+    bytes += m.text.length;
+  }
+  if (list.length > 0) {
+    SESSION_UNFOLDED_MESSAGES.set(session_id, list);
+    SESSION_STATEMENT_SEQ.set(session_id, list.length);
+  } else {
+    SESSION_UNFOLDED_MESSAGES.delete(session_id);
+    SESSION_STATEMENT_SEQ.delete(session_id);
+  }
+  SESSION_STATEMENTS_RESTORED.delete(session_id);
+  SESSION_STATEMENTS_RESTORED.add(session_id);
+  // Bounded as the lists are: the least recently rebuilt are let go first.
+  while (SESSION_STATEMENTS_RESTORED.size > SESSION_BRIEF_LIMIT) {
+    const oldest = SESSION_STATEMENTS_RESTORED.values().next();
+    if (oldest.done === true) break;
+    SESSION_STATEMENTS_RESTORED.delete(oldest.value);
+  }
+  return list.length;
+};
+
 export const __clearUnfoldedUserMessages = (): void => {
   SESSION_UNFOLDED_MESSAGES.clear();
   SESSION_STATEMENT_SEQ.clear();
+  SESSION_STATEMENTS_RESTORED.clear();
 };

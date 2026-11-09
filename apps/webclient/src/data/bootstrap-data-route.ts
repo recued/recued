@@ -227,6 +227,7 @@ import {
   type MergeReviewItem,
   type ScanProgress,
 } from '@recued/ui-shared';
+import { wireRunModal } from '../shell/run-modal.js';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
@@ -3884,7 +3885,7 @@ const renderContactDetailView = (
       ${state.history !== undefined ? `<section data-contact-proactive-history><h3 class="data-subsection-title">Occasions and recorded episodes</h3>
         ${state.history_failed ? '<p role="status">This history could not be read. Reopen the contact to retry.</p>' : state.history === null ? '<p>Loading recorded history…</p>'
           : `<ul>${state.history.occasions.map(row => `<li><a href="#yours/occasions/occasion/${e(encodeURIComponent(row.id))}">${e(row.title)}</a> · ${e(row.source_next_on ?? row.month_day)}</li>`).join('')}
-            ${state.history.episodes.map(row => `<li data-contact-episode="${e(row.id)}"><a href="#yours/episodes/episode/${e(encodeURIComponent(row.id))}">${e(row.title)}</a> · ${e(new Date(row.when.from).toLocaleDateString())}
+            ${state.history.episodes.map(row => `<li data-contact-episode="${e(row.id)}"><a href="#yours/episodes/episode/${e(encodeURIComponent(row.id))}">${e(row.title)}</a>${row.outcome === 'skipped' ? ' · skipped' : ''} · ${e(new Date(row.when.from).toLocaleDateString())}
               <a href="#yours/episodes/episode/${e(encodeURIComponent(row.id))}/correct" aria-label="Correct ${e(row.title)}">Correct</a>
               ${state.history_can_hide ? `<button type="button" ${DATA_ROUTE_ACTION_ATTR}="hide-contact-episode" data-episode-id="${e(row.id)}" aria-label="Hide ${e(row.title)}">Hide</button>` : ''}</li>`).join('')}</ul>
             ${!state.history.occasions.length && !state.history.episodes.length ? '<p>No recorded occasions or episodes for this contact.</p>' : ''}`}</section>` : ''}
@@ -15086,7 +15087,7 @@ export const bootstrapDataRoute = (
 
     let handle: RunModal.RunModalHandle | null = null;
     try {
-      handle = RunModal.wireRunModal({
+      handle = wireRunModal({
         recipe: match.entry,
         document: doc,
         initialTab: 'run',

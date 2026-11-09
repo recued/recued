@@ -33,6 +33,8 @@ export const EXECUTION_CASE_DRAFT_THIN_ATTR =
   'data-recued-execution-case-draft-thin';
 export const EXECUTION_CASE_DRAFT_BACK_ATTR =
   'data-recued-execution-case-draft-back';
+/** D-335 slice W4 — the notes a draft built from a kept browser flow carries. */
+export const EXECUTION_CASE_DRAFT_NOTES_ATTR = 'data-recued-execution-case-draft-notes';
 /** D-219 — the refine control: ask the model to revise the draft on screen. */
 export const EXECUTION_CASE_DRAFT_REFINE_ATTR =
   'data-recued-execution-case-draft-refine';
@@ -248,6 +250,18 @@ export const mountExecutionCaseDraftRoute = (
       hasInFlightWork: () => false,
       whenRefineSettled: () => Promise.resolve(),
     };
+  }
+
+  // D-335 slice W4 — what to look at before it runs, from a draft built of a kept browser flow.
+  if (options.draft.notes !== undefined && options.draft.notes.length > 0) {
+    const notes = doc.createElement('ul');
+    notes.setAttribute(EXECUTION_CASE_DRAFT_NOTES_ATTR, '');
+    for (const text of options.draft.notes) {
+      const item = doc.createElement('li');
+      item.textContent = text;
+      notes.appendChild(item);
+    }
+    host.appendChild(notes);
   }
 
   if (!options.draft.request_aliased) {

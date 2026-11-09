@@ -143,6 +143,16 @@ describe('packsUsingConnection', () => {
       expect(usage.map((u) => [u.pack_slug, u.pack_name])).toEqual([['nameless', 'nameless'], ['wise-core', 'Wise Core']]);
     });
 
+    it("D-321 P8 — keeps the host's address for a pack's page, an app address only", () => {
+      const usage = packsUsingConnection(
+        [{ slug: 'wise-core', name: 'Wise Core', href: '#packs/wise-core' }, { slug: 'outside', href: 'https://example.com/' }, { slug: 'plain' }],
+        'wise',
+        undefined,
+        ['wise-core', 'outside', 'plain'],
+      );
+      expect(usage.map((u) => [u.pack_slug, u.href])).toEqual([['outside', undefined], ['plain', undefined], ['wise-core', '#packs/wise-core']]);
+    });
+
     it('folds each member into its holder, its scopes with it, so a missing one still shows', () => {
       const usage = packsUsingConnection(
         [
@@ -272,6 +282,23 @@ describe('renderConnectionsPage — "Used by packs" connection-detail section', 
     expect(html).toContain('<span class="connections-pack-usage-name">Wise Core</span>');
     expect(html).toContain('data-pack-usage-members="2" title="Wise &lt;Transfers&gt;, Wise Quotes">and 2 packs that sign in through it</span>');
     expect(html).not.toContain('data-pack-usage="wise-quotes"');
+  });
+
+  it("D-321 P8 — names a pack as a link to its page when the host gives one", () => {
+    const wise = {
+      name: 'wise-business', kind: 'api', display_name: 'Wise',
+      bound_pack_slugs: ['wise-core', 'wise-quotes'],
+    } as unknown as ConnectionView;
+    const html = renderConnectionsPage({
+      ...initialConnectionsPageState(),
+      connections: [wise],
+      installedPacks: [
+        { slug: 'wise-core', name: 'Wise <Core>', href: '#packs/wise-core' },
+        { slug: 'wise-quotes', name: 'Wise Quotes' },
+      ],
+    });
+    expect(html).toContain('<a class="connections-pack-usage-name rx-link" href="#packs/wise-core" data-pack-usage-link>Wise &lt;Core&gt;</a>');
+    expect(html).toContain('<span class="connections-pack-usage-name">Wise Quotes</span>');
   });
 
   it('D-320 slice 2h — opens the API group with the grids placeholder only when the host mounts them', () => {

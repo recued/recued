@@ -61,6 +61,17 @@ describe('listServerRecipes', () => {
       .not.toHaveProperty('run_context_targets');
   });
 
+  it('D-321 W1 — names the pack that installed a recipe, and none for one no pack did', async () => {
+    const store = createRecipeStore('/nonexistent', db);
+    store.save(recipe('closure-watch'), 'recued-core', 'pair-sync', 1_700_001_000_000, 'linear-issue-comment-closure');
+    store.save(recipe('by-hand'), 'owner', 'pair-sync', 1_700_001_000_000);
+    const rows = (await listServerRecipes({ store, serverStartedAt: SERVER_STARTED_AT })).recipes;
+    expect(rows.find((row) => row.recipe_id === 'closure-watch')?.pack_slug).toBe('linear-issue-comment-closure');
+    expect(rows.find((row) => row.recipe_id === 'by-hand')).not.toHaveProperty('pack_slug');
+    expect((await getServerRecipe({ store, serverStartedAt: SERVER_STARTED_AT }, 'closure-watch')).recipe?.pack_slug)
+      .toBe('linear-issue-comment-closure');
+  });
+
   it('⛔⛔ A KERNEL RECIPE IS NOT LISTED — `#recipes` IS the manage UI', async () => {
     // Reported from a live webclient: kernel recipes showing on the Recipes page.
     // CLAUDE.md's publisher table says the `recued` namespace is "invisible in
